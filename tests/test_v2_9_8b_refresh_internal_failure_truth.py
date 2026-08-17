@@ -6,6 +6,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sqlite3
 
+import pytest
+
 from printer_v1.db import apply_migrations
 from printer_v1.discovery.pre_lifecycle_refresh_composition import (
     PreLifecycleRefreshCompositionError,
@@ -16,6 +18,7 @@ from printer_v1.discovery.pre_lifecycle_temporal_acquisition import (
     REFRESH_SOURCE_FAILURE,
 )
 from printer_v1.operator_cli.authoritative_live_operational_campaign import (
+    LiveOperationalError,
     LiveTransportError,
 )
 from printer_v1.operator_cli.pre_lifecycle_persistent_refresh_owner import (
@@ -25,6 +28,13 @@ from printer_v1.operator_cli.pre_lifecycle_persistent_refresh_owner import (
     PreLifecycleTemporalRefreshOwner,
     classify_refresh_stage_exception,
 )
+from printer_v1.sources.campaign_six_unit_accounting import (
+    CampaignCycleAccountingRegistry,
+    CampaignSixUnitError,
+    build_campaign_stage_id,
+    seal_campaign_stage_evidence,
+)
+from printer_v1.sources.measured_transport import LocalValidationIdentity
 
 
 NOW = datetime(2026, 8, 17, 16, 0, tzinfo=timezone.utc)
@@ -104,6 +114,40 @@ def _insert_complete_clean(connection: sqlite3.Connection, request_key: str) -> 
     return request_id
 
 
+def _accounting_evidence(cycle_id: str) -> dict:
+    stage_id = build_campaign_stage_id(
+        campaign_id="campaign-f",
+        run_id="run-f",
+        cycle_id=cycle_id,
+        stage_kind="REFRESH_TEST",
+        stage_sequence=1,
+    )
+    return seal_campaign_stage_evidence(
+        stage_id=stage_id,
+        stage_kind="REFRESH_TEST",
+        stage_sequence=1,
+        stage_terminal_status="COMPLETED",
+        campaign_id="campaign-f",
+        run_id="run-f",
+        cycle_id=cycle_id,
+        evidence={
+            "evidence_kind": "CAMPAIGN_SIX_UNIT_EVIDENCE_V1",
+            "transport_operations": [],
+            "local_validations": 0,
+            "scheduler_work_items": 0,
+            "lifecycle_reservations": 0,
+        },
+        local_validation_identities=[
+            LocalValidationIdentity(
+                stage_id=stage_id,
+                subject_identity=f"{cycle_id}:refresh",
+                validation_kind="REFRESH_ACCOUNTING_ROUTED",
+                validation_ordinal=1,
+            )
+        ],
+    )
+
+
 def test_classify_transport_and_rate_failures_are_source() -> None:
     status, domain, cause = classify_refresh_stage_exception(
         LiveTransportError("TRANSPORT_UNAVAILABLE", "getTransaction")
@@ -129,6 +173,23 @@ def test_classify_known_internal_and_unexpected_runtime() -> None:
     assert status == INTERNAL_RUNTIME_ERROR
     assert domain == FAILURE_DOMAIN_INTERNAL
     assert "INTERNAL_RUNTIME" in cause
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        CampaignSixUnitError(
+            "SIX_UNIT_STAGE_EVIDENCE_IDENTITY_MISMATCH:cycle_id:'cycle-2'!='cycle-1'"
+        ),
+        LiveOperationalError("SOURCE_GOVERNOR_UNAVAILABLE"),
+        LiveOperationalError("MIGRATE_ACCOUNT_LAYOUT_MISMATCH"),
+    ],
+)
+def test_accounting_governance_and_migrate_codes_are_internal_invariants(exc) -> None:
+    status, domain, cause = classify_refresh_stage_exception(exc)
+    assert status == INTERNAL_INVARIANT
+    assert domain == FAILURE_DOMAIN_INTERNAL
+    assert "INTERNAL_INVARIANT" in cause
 
 
 def test_governed_provider_transport_failure_is_source(tmp_path) -> None:
@@ -223,6 +284,88 @@ def test_complete_clean_survives_later_internal_exception(tmp_path) -> None:
     assert request == ("COMPLETE", "CLEAN_DATA")
     assert response == ("COMPLETE", "CLEAN_DATA")
     assert int(failures) == 0
+
+
+def test_complete_clean_survives_real_six_unit_identity_mismatch(tmp_path) -> None:
+    def stage(connection, **kwargs):
+        del kwargs
+        _insert_complete_clean(connection, "cycle-f-six-unit-mismatch")
+        raise CampaignSixUnitError(
+            "SIX_UNIT_STAGE_EVIDENCE_IDENTITY_MISMATCH:cycle_id:'cycle-2'!='cycle-1'"
+        )
+
+    outcome = _request(_owner(tmp_path, stage=stage))
+    assert outcome.status == INTERNAL_INVARIANT
+    assert outcome.failure_domain == FAILURE_DOMAIN_INTERNAL
+    assert outcome.provider_failures == 0
+    db = sqlite3.connect(tmp_path / "refresh-f.sqlite3")
+    request = db.execute(
+        "SELECT source_status,data_quality_label FROM printer_source_requests"
+    ).fetchone()
+    response = db.execute(
+        "SELECT source_status,data_quality_label FROM printer_source_responses"
+    ).fetchone()
+    failures = db.execute("SELECT COUNT(*) FROM printer_source_failures").fetchone()[0]
+    db.close()
+    assert request == ("COMPLETE", "CLEAN_DATA")
+    assert response == ("COMPLETE", "CLEAN_DATA")
+    assert int(failures) == 0
+
+
+def test_wrong_cycle_accounting_sink_is_internal_without_fake_source_failure(
+    tmp_path,
+) -> None:
+    registry = CampaignCycleAccountingRegistry(
+        campaign_id="campaign-f",
+        run_id="run-f",
+        initial_cycle_id="cycle-1",
+    )
+
+    def stage(connection, **kwargs):
+        del connection, kwargs
+        registry.owner_for_cycle("cycle-1").ingest_stage_evidence(
+            _accounting_evidence("cycle-f")
+        )
+
+    outcome = _request(_owner(tmp_path, stage=stage))
+    assert outcome.status == INTERNAL_INVARIANT
+    assert outcome.failure_domain == FAILURE_DOMAIN_INTERNAL
+    assert outcome.provider_failures == 0
+
+
+def test_repaired_cycle_accounting_sink_completes_without_fake_source_failure(
+    tmp_path,
+) -> None:
+    registry = CampaignCycleAccountingRegistry(
+        campaign_id="campaign-f",
+        run_id="run-f",
+        initial_cycle_id="cycle-1",
+    )
+    registry.register_authoritative_cycle(
+        campaign_id="campaign-f",
+        run_id="run-f",
+        cycle_id="cycle-f",
+    )
+    sink = registry.stage_evidence_sink_for_cycle("cycle-f")
+
+    def stage(connection, **kwargs):
+        del connection, kwargs
+        sink(_accounting_evidence("cycle-f"))
+        return {
+            "source_operations": 0,
+            "provider_failures": 0,
+            "channels_unavailable": (),
+            "campaign_id": "campaign-f",
+            "run_id": "run-f",
+            "cycle_id": "cycle-f",
+        }
+
+    outcome = _request(_owner(tmp_path, stage=stage))
+    assert outcome.status == "REFRESH_COMPLETED"
+    assert outcome.failure_domain is None
+    assert outcome.provider_failures == 0
+    assert registry.owner_for_cycle("cycle-1").ingested_stage_ids == []
+    assert len(registry.owner_for_cycle("cycle-f").ingested_stage_ids) == 1
 
 
 def test_internal_failure_does_not_increment_source_failure_counters(tmp_path) -> None:

@@ -1819,6 +1819,9 @@ def _build_pre_lifecycle_temporal_refresh_owner(
     def compose_owner(
         *, owner_cycle_id: str, owner_cycle_cutoff: str,
         owner_evaluated_at: str, owner_request_key_prefix: str,
+        owner_stage_evidence_sink: (
+            Callable[[Mapping[str, Any]], None] | None
+        ) = None,
     ) -> PreLifecycleTemporalRefreshOwner:
         return PreLifecycleTemporalRefreshOwner(
             command.db_path,
@@ -1843,7 +1846,7 @@ def _build_pre_lifecycle_temporal_refresh_owner(
                 locator_transport=supply_kwargs.get("locator_transport"),
                 geckoterminal_nomination_transport=geckoterminal_nomination_transport,
                 protocol_account_batch_transport=protocol_account_batch_transport,
-                stage_evidence_sink=stage_evidence_sink,
+                stage_evidence_sink=owner_stage_evidence_sink,
                 transport_identity_observer=transport_identity_observer,
                 local_validation_identity_observer=local_validation_identity_observer,
             ),
@@ -1867,19 +1870,30 @@ def _build_pre_lifecycle_temporal_refresh_owner(
     def cycle_rebinder(
         *, cycle_id: str, cycle_cutoff: str, evaluated_at: str,
         request_key_prefix: str,
+        stage_evidence_sink: Callable[[Mapping[str, Any]], None] | None = None,
     ) -> PreLifecycleTemporalRefreshOwner:
+        if (
+            stage_evidence_sink is None
+            and stage_evidence_sink_for_initial_cycle is not None
+        ):
+            raise OperationalMemoryFactoryError(
+                "LATER_CYCLE_ACCOUNTING_STAGE_EVIDENCE_SINK_REQUIRED"
+            )
         return compose_owner(
             owner_cycle_id=cycle_id,
             owner_cycle_cutoff=cycle_cutoff,
             owner_evaluated_at=evaluated_at,
             owner_request_key_prefix=request_key_prefix,
+            owner_stage_evidence_sink=stage_evidence_sink,
         )
 
+    stage_evidence_sink_for_initial_cycle = stage_evidence_sink
     return compose_owner(
         owner_cycle_id=cycle_id,
         owner_cycle_cutoff=cycle_cutoff,
         owner_evaluated_at=evaluated_at,
         owner_request_key_prefix=execution_id,
+        owner_stage_evidence_sink=stage_evidence_sink_for_initial_cycle,
     )
 
 
@@ -3408,13 +3422,21 @@ def _run_operational_campaign(
     # The public coordinator owns accounting before the first accounted stage.
     from printer_v1.sources.campaign_six_unit_accounting import (
         CampaignActionLocalLedger,
+        CampaignCycleAccountingRegistry,
+        CampaignSixUnitError,
         CampaignSixUnitOwner,
     )
-    campaign_units = CampaignSixUnitOwner(
+    cycle_accounting_registry = CampaignCycleAccountingRegistry(
         campaign_id=command.campaign_id,
         run_id=command.run_id,
-        cycle_id=cycle_id,
+        initial_cycle_id=cycle_id,
         started_at=now,
+    )
+    campaign_units: CampaignSixUnitOwner = (
+        cycle_accounting_registry.owner_for_cycle(cycle_id)
+    )
+    cycle_1_stage_evidence_sink = (
+        cycle_accounting_registry.stage_evidence_sink_for_cycle(cycle_id)
     )
     action_local_ledger = CampaignActionLocalLedger(
         campaign_id=command.campaign_id,
@@ -3470,7 +3492,17 @@ def _run_operational_campaign(
     def _campaign_stage_evidence_sink(evidence: Mapping[str, Any]) -> None:
         # Owner side only. Action-local identities arrive via the measurement
         # observer, not by mirroring this sealed evidence block.
-        campaign_units.ingest_stage_evidence(evidence)
+        cycle_accounting_registry.ingest_stage_evidence(evidence)
+
+    def _campaign_stage_evidence_sink_for_cycle(
+        *, campaign_id: str, run_id: str, cycle_id: str
+    ) -> Callable[[Mapping[str, Any]], None]:
+        return cycle_accounting_registry.registered_stage_evidence_sink(
+            campaign_id=campaign_id,
+            run_id=run_id,
+            cycle_id=cycle_id,
+            started_at=_iso(),
+        )
 
     def _seal_holder_stage(ledger, status: str, cause: str | None):
         from printer_v1.sources.campaign_six_unit_accounting import (
@@ -3688,7 +3720,7 @@ def _run_operational_campaign(
                 lifecycle_duration_seconds=policy.duration_seconds,
                 heartbeat=heartbeat,
                 cancellation_probe=cancellation_probe,
-                stage_evidence_sink=_campaign_stage_evidence_sink,
+                stage_evidence_sink=cycle_1_stage_evidence_sink,
                 transport_identity_observer=_observe_transport_identity,
                 local_validation_identity_observer=(
                     _observe_local_validation_identity
@@ -3832,7 +3864,10 @@ def _run_operational_campaign(
                 graduated_supply_kwargs=bridge_graduated_supply_kwargs,
                 fifteen_minute_only=True,
                 standard_four_hour_campaign=policy.standard_four_hour_campaign,
-                accounting_stage_evidence_sink=_campaign_stage_evidence_sink,
+                accounting_stage_evidence_sink=cycle_1_stage_evidence_sink,
+                accounting_stage_evidence_sink_for_cycle=(
+                    _campaign_stage_evidence_sink_for_cycle
+                ),
                 transport_identity_observer=_observe_transport_identity,
                 local_validation_identity_observer=(
                     _observe_local_validation_identity
@@ -4065,9 +4100,14 @@ def _run_operational_campaign(
                 local_validation_identities=terminal_validations,
             )
         )
+        campaign_accounting_projection: Any = campaign_units
+        if len(cycle_accounting_registry.registered_cycle_ids) > 1:
+            campaign_accounting_projection = (
+                cycle_accounting_registry.campaign_projection()
+            )
         # Repaired lifecycle acceptance finalizes the same coordinator-created
-        # owner and action-local ledger before the canonical report is persisted.
-        # This is the only full-run accounting/report extension boundary.
+        # per-cycle owners through one derived campaign projection and the
+        # independently observed action-local ledger before report persistence.
         full_run_acceptance = _apply_full_run_campaign_acceptance(
             db_path=command.db_path,
             campaign_id=command.campaign_id,
@@ -4082,7 +4122,7 @@ def _run_operational_campaign(
             lifecycle_started=bool(result.lifecycle_started),
             lifecycle_operation_records=lifecycle_operation_records,
             forbidden_deltas=dict(lifecycle.get("forbidden_deltas") or {}),
-            accounting_owner=campaign_units,
+            accounting_owner=campaign_accounting_projection,
             action_local_ledger=action_local_ledger,
             runtime_terminal_status=(
                 "COMPLETED"
@@ -4093,8 +4133,12 @@ def _run_operational_campaign(
             cleanup_result=cleanup,
             four_token_proof_owned=four_token_proof_controller is not None,
         )
-        aggregated_six_unit_totals = campaign_units.six_unit_totals()
-        aggregated_six_unit_evidence = campaign_units.durable_evidence()
+        aggregated_six_unit_totals = (
+            campaign_accounting_projection.six_unit_totals()
+        )
+        aggregated_six_unit_evidence = (
+            campaign_accounting_projection.durable_evidence()
+        )
         payload = build_campaign_terminal_report(
             campaign_id=command.campaign_id,
             configuration_id=command.configuration_id,
@@ -4218,6 +4262,14 @@ def _run_operational_campaign(
         if heartbeat is not None:
             heartbeat.stop()
         try:
+            terminal_accounting_owner: Any = campaign_units
+            if len(cycle_accounting_registry.registered_cycle_ids) > 1:
+                try:
+                    terminal_accounting_owner = (
+                        cycle_accounting_registry.campaign_projection()
+                    )
+                except CampaignSixUnitError as projection_exc:
+                    campaign_units.block(str(projection_exc))
             _terminalize_initialized_failure(
                 original_exception=exc,
                 command=command,
@@ -4236,7 +4288,7 @@ def _run_operational_campaign(
                     heartbeat.poll_failure()
                     if heartbeat is not None else observed_heartbeat_failure
                 ),
-                accounting_owner=campaign_units,
+                accounting_owner=terminal_accounting_owner,
             )
         except BaseException as closure_exc:
             exc.add_note(

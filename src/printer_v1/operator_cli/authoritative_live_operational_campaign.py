@@ -139,6 +139,68 @@ class LiveTransportError(RuntimeError):
         super().__init__(code if not detail else f"{code}: {detail}")
 
 
+def _bind_later_cycle_accounting_owner(
+    *,
+    campaign_id: str,
+    run_id: str,
+    proposed_cycle_id: str,
+    cycle_cutoff: str,
+    evaluated_at: str,
+    request_key_prefix: str,
+    initial_temporal_refresh_owner: Any | None,
+    accounting_stage_evidence_sink_for_cycle: Callable[
+        ..., Callable[[Mapping[str, Any]], None]
+    ],
+) -> tuple[
+    Callable[[Mapping[str, Any]], None],
+    Any | None,
+]:
+    """Register canonical later-cycle accounting and rebind its refresh sink."""
+    canonical_campaign_id = str(campaign_id or "").strip()
+    canonical_run_id = str(run_id or "").strip()
+    canonical_cycle_id = str(proposed_cycle_id or "").strip()
+    if not canonical_campaign_id or not canonical_run_id or not canonical_cycle_id:
+        raise LiveOperationalError("LATER_CYCLE_ACCOUNTING_IDENTITY_INVALID")
+    if initial_temporal_refresh_owner is not None:
+        if (
+            str(getattr(initial_temporal_refresh_owner, "campaign_id", ""))
+            != canonical_campaign_id
+            or str(getattr(initial_temporal_refresh_owner, "run_id", ""))
+            != canonical_run_id
+            or str(getattr(initial_temporal_refresh_owner, "cycle_id", ""))
+            == canonical_cycle_id
+        ):
+            raise LiveOperationalError("LATER_CYCLE_ACCOUNTING_IDENTITY_INVALID")
+
+    stage_evidence_sink = accounting_stage_evidence_sink_for_cycle(
+        campaign_id=canonical_campaign_id,
+        run_id=canonical_run_id,
+        cycle_id=canonical_cycle_id,
+    )
+    if not callable(stage_evidence_sink):
+        raise LiveOperationalError("LATER_CYCLE_ACCOUNTING_SINK_INVALID")
+
+    rebound = None
+    if initial_temporal_refresh_owner is not None:
+        rebind = getattr(initial_temporal_refresh_owner, "for_cycle", None)
+        if not callable(rebind):
+            raise LiveOperationalError("LATER_CYCLE_TEMPORAL_REFRESH_OWNER_INVALID")
+        rebound = rebind(
+            cycle_id=canonical_cycle_id,
+            cycle_cutoff=str(cycle_cutoff),
+            evaluated_at=str(evaluated_at),
+            request_key_prefix=str(request_key_prefix),
+            stage_evidence_sink=stage_evidence_sink,
+        )
+        if (
+            str(getattr(rebound, "campaign_id", "")) != canonical_campaign_id
+            or str(getattr(rebound, "run_id", "")) != canonical_run_id
+            or str(getattr(rebound, "cycle_id", "")) != canonical_cycle_id
+        ):
+            raise LiveOperationalError("LATER_CYCLE_ACCOUNTING_REBIND_INVALID")
+    return stage_evidence_sink, rebound
+
+
 # ---------------------------------------------------------------------------
 # Transport ports (one-shot; no retry, rotation, reconnect, session)
 # ---------------------------------------------------------------------------
@@ -2841,6 +2903,9 @@ class AuthoritativeLiveOperationalCampaignOwner:
         accounting_stage_evidence_sink: (
             Callable[[Mapping[str, Any]], None] | None
         ) = None,
+        accounting_stage_evidence_sink_for_cycle: (
+            Callable[..., Callable[[Mapping[str, Any]], None]] | None
+        ) = None,
         transport_identity_observer: (
             Callable[[Any], None] | None
         ) = None,
@@ -2913,17 +2978,11 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     evaluated = context["evaluated_at"]
                     later_cycle_refresh_owner = None
                     later_cycle_deadline = None
+                    later_cycle_stage_evidence_sink = None
                     if pre_lifecycle_temporal_refresh_owner is not None:
                         from printer_v1.discovery.permanent_discovery_availability import (
                             build_campaign_source_request_scope,
                         )
-                        rebind = getattr(
-                            pre_lifecycle_temporal_refresh_owner, "for_cycle", None
-                        )
-                        if not callable(rebind):
-                            raise LiveOperationalError(
-                                "LATER_CYCLE_TEMPORAL_REFRESH_OWNER_INVALID"
-                            )
                         cycle_ordinal = int(context["proposed_cycle_ordinal"])
                         cycle_source_execution_identity = (
                             f"{selection_seed}:c{cycle_ordinal:04d}"
@@ -2940,14 +2999,68 @@ class AuthoritativeLiveOperationalCampaignOwner:
                             if isinstance(cutoff_value, datetime)
                             else str(cutoff_value)
                         )
-                        later_cycle_refresh_owner = rebind(
-                            cycle_id=str(context["proposed_cycle_id"]),
-                            cycle_cutoff=cutoff_text,
-                            evaluated_at=evaluated.isoformat(),
-                            request_key_prefix=cycle_scope.request_key_root,
-                        )
+                        if accounting_stage_evidence_sink_for_cycle is None:
+                            if accounting_stage_evidence_sink is not None:
+                                raise LiveOperationalError(
+                                    "LATER_CYCLE_ACCOUNTING_SINK_RESOLVER_REQUIRED"
+                                )
+                            later_cycle_refresh_owner = (
+                                pre_lifecycle_temporal_refresh_owner.for_cycle(
+                                    cycle_id=str(context["proposed_cycle_id"]),
+                                    cycle_cutoff=cutoff_text,
+                                    evaluated_at=evaluated.isoformat(),
+                                    request_key_prefix=cycle_scope.request_key_root,
+                                )
+                            )
+                        else:
+                            (
+                                later_cycle_stage_evidence_sink,
+                                later_cycle_refresh_owner,
+                            ) = _bind_later_cycle_accounting_owner(
+                                campaign_id=str(context["campaign_id"]),
+                                run_id=str(context["campaign_run_id"]),
+                                proposed_cycle_id=str(context["proposed_cycle_id"]),
+                                cycle_cutoff=cutoff_text,
+                                evaluated_at=evaluated.isoformat(),
+                                request_key_prefix=cycle_scope.request_key_root,
+                                initial_temporal_refresh_owner=(
+                                    pre_lifecycle_temporal_refresh_owner
+                                ),
+                                accounting_stage_evidence_sink_for_cycle=(
+                                    accounting_stage_evidence_sink_for_cycle
+                                ),
+                            )
                         later_cycle_deadline = (
                             later_cycle_refresh_owner.acquisition_deadline_at
+                        )
+                    elif accounting_stage_evidence_sink_for_cycle is not None:
+                        (
+                            later_cycle_stage_evidence_sink,
+                            later_cycle_refresh_owner,
+                        ) = _bind_later_cycle_accounting_owner(
+                            campaign_id=str(context["campaign_id"]),
+                            run_id=str(context["campaign_run_id"]),
+                            proposed_cycle_id=str(context["proposed_cycle_id"]),
+                            cycle_cutoff=str(context["cycle_cutoff"]),
+                            evaluated_at=evaluated.isoformat(),
+                            request_key_prefix="not-used-without-temporal-owner",
+                            initial_temporal_refresh_owner=None,
+                            accounting_stage_evidence_sink_for_cycle=(
+                                accounting_stage_evidence_sink_for_cycle
+                            ),
+                        )
+
+                    if later_cycle_stage_evidence_sink is not None:
+                        later_supply_kwargs["stage_evidence_sink"] = (
+                            later_cycle_stage_evidence_sink
+                        )
+                    if transport_identity_observer is not None:
+                        later_supply_kwargs["transport_identity_observer"] = (
+                            transport_identity_observer
+                        )
+                    if local_validation_identity_observer is not None:
+                        later_supply_kwargs["local_validation_identity_observer"] = (
+                            local_validation_identity_observer
                         )
 
                     def holder_evidence_owner(supply: Any) -> Mapping[str, Mapping[str, Any]]:

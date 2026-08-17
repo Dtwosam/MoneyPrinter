@@ -11,7 +11,7 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from printer_v1.sources.measured_transport import (
     SIX_UNITS,
@@ -899,6 +899,414 @@ def _transport_identity_key(raw: Mapping[str, Any] | TransportOperationIdentity)
     )
 
 
+class CampaignSixUnitProjection:
+    """Read-only campaign projection derived from strict cycle owners.
+
+    Stage evidence is ingested exactly once by its cycle owner. This projection
+    only validates and unions those already-owned ledgers for terminal
+    reconciliation/reporting; it has no evidence-ingestion or cycle-registration
+    authority.
+    """
+
+    def __init__(
+        self,
+        *,
+        campaign_id: str,
+        run_id: str,
+        primary_cycle_id: str,
+        cycle_owners: Sequence[CampaignSixUnitOwner],
+    ) -> None:
+        self.campaign_id = _require_nonempty_text(
+            campaign_id, field_name="campaign_id"
+        )
+        self.run_id = _require_nonempty_text(run_id, field_name="run_id")
+        self.cycle_id = _require_nonempty_text(
+            primary_cycle_id, field_name="cycle_id"
+        )
+        if not cycle_owners:
+            raise CampaignSixUnitError("SIX_UNIT_CAMPAIGN_CYCLE_OWNERS_MISSING")
+
+        owners = tuple(cycle_owners)
+        cycle_ids: list[str] = []
+        stage_ids: set[str] = set()
+        combined_ledger = MeasuredTransportLedger(
+            campaign_id=self.campaign_id,
+            run_id=self.run_id,
+            cycle_id=self.cycle_id,
+        )
+        combined_non_transport: dict[str, list[dict[str, Any]]] = {
+            field_name: [] for field_name in _NON_TRANSPORT_IDENTITY_FIELDS
+        }
+        combined_non_transport_keys: dict[str, set[tuple[Any, ...]]] = {
+            field_name: set() for field_name in _NON_TRANSPORT_IDENTITY_FIELDS
+        }
+        cycle_evidences: list[dict[str, Any]] = []
+        cycle_owner_ids: list[str | None] = []
+        sealed_stage_diagnostics: list[dict[str, Any]] = []
+        accounting_block_reason: str | None = None
+
+        for owner in owners:
+            if (
+                owner.campaign_id != self.campaign_id
+                or owner.run_id != self.run_id
+            ):
+                raise CampaignSixUnitError(
+                    "SIX_UNIT_CAMPAIGN_OWNER_IDENTITY_MISMATCH"
+                )
+            owner_cycle_id = _require_nonempty_text(
+                owner.cycle_id, field_name="cycle_id"
+            )
+            if owner_cycle_id in cycle_ids:
+                raise CampaignSixUnitError(
+                    f"SIX_UNIT_CAMPAIGN_DUPLICATE_CYCLE_OWNER:{owner_cycle_id}"
+                )
+            cycle_ids.append(owner_cycle_id)
+            duplicate_stage_ids = stage_ids.intersection(owner.ingested_stage_ids)
+            if duplicate_stage_ids:
+                raise CampaignSixUnitError(
+                    "SIX_UNIT_CAMPAIGN_DUPLICATE_STAGE_ID:"
+                    + sorted(duplicate_stage_ids)[0]
+                )
+            stage_ids.update(owner.ingested_stage_ids)
+            try:
+                combined_ledger.extend(owner.ledger)
+            except MeasuredTransportError as exc:
+                if "DUPLICATE_TRANSPORT_IDENTITY" in str(exc):
+                    raise CampaignSixUnitError(
+                        f"SIX_UNIT_CAMPAIGN_DUPLICATE_TRANSPORT_IDENTITY:{exc}"
+                    ) from exc
+                raise CampaignSixUnitError(
+                    f"SIX_UNIT_CAMPAIGN_LEDGER_MALFORMED:{exc}"
+                ) from exc
+
+            owner_evidence = owner.durable_evidence()
+            cycle_evidences.append(copy.deepcopy(owner_evidence))
+            cycle_owner_ids.append(owner.owner_id)
+            for field_name in _NON_TRANSPORT_IDENTITY_FIELDS:
+                key_func = _NON_TRANSPORT_IDENTITY_KEY_FUNCS[field_name]
+                for raw in owner_evidence.get(field_name) or ():
+                    if not isinstance(raw, Mapping):
+                        raise CampaignSixUnitError(
+                            f"SIX_UNIT_CAMPAIGN_IDENTITY_MALFORMED:{field_name}"
+                        )
+                    key = key_func(raw)
+                    if key in combined_non_transport_keys[field_name]:
+                        raise CampaignSixUnitError(
+                            "SIX_UNIT_CAMPAIGN_DUPLICATE_NON_TRANSPORT_IDENTITY:"
+                            f"{field_name}:{key}"
+                        )
+                    combined_non_transport_keys[field_name].add(key)
+                    combined_non_transport[field_name].append(dict(raw))
+            for diagnostic in owner.sealed_stage_diagnostics:
+                sealed_stage_diagnostics.append(
+                    {"cycle_id": owner_cycle_id, **dict(diagnostic)}
+                )
+            if accounting_block_reason is None and owner.accounting_block_reason:
+                accounting_block_reason = str(owner.accounting_block_reason)
+
+        if self.cycle_id not in cycle_ids:
+            raise CampaignSixUnitError(
+                "SIX_UNIT_CAMPAIGN_PRIMARY_CYCLE_OWNER_MISSING"
+            )
+
+        totals = combined_ledger.six_unit_totals()
+        identity_units = {
+            _SCHEDULER_IDENTITY_FIELD: UNIT_SCHEDULER_WORK_ITEM,
+            _RESERVATION_IDENTITY_FIELD: (
+                UNIT_LIFECYCLE_RESERVED_TRANSPORT_OPERATION
+            ),
+            _VALIDATION_IDENTITY_FIELD: UNIT_LOCAL_VALIDATION_STEP,
+        }
+        any_identity_mode = any(
+            combined_non_transport[field_name]
+            for field_name in _NON_TRANSPORT_IDENTITY_FIELDS
+        )
+        if any_identity_mode:
+            for field_name, unit in identity_units.items():
+                if len(combined_non_transport[field_name]) != int(totals[unit]):
+                    raise CampaignSixUnitError(
+                        "SIX_UNIT_CAMPAIGN_NON_TRANSPORT_IDENTITY_INCOMPLETE:"
+                        f"{field_name}:{len(combined_non_transport[field_name])}"
+                        f"!={int(totals[unit])}"
+                    )
+
+        primary_owner = next(
+            owner for owner in owners if str(owner.cycle_id) == self.cycle_id
+        )
+        self.owner_id = primary_owner.owner_id
+        self.projection_id = (
+            f"six-unit-campaign-projection|{self.campaign_id}|{self.run_id}"
+        )
+        self._cycle_ids = tuple(cycle_ids)
+        self._cycle_evidences = tuple(cycle_evidences)
+        self._cycle_owner_ids = tuple(cycle_owner_ids)
+        self._ledger = combined_ledger
+        self._non_transport = combined_non_transport
+        self._non_transport_keys = combined_non_transport_keys
+        self.ingested_stage_ids = [
+            stage_id
+            for owner in owners
+            for stage_id in owner.ingested_stage_ids
+        ]
+        self.sealed_stage_diagnostics = sealed_stage_diagnostics
+        self.stage_evidence_count = sum(
+            int(owner.stage_evidence_count) for owner in owners
+        )
+        self.accounting_block_reason = accounting_block_reason
+        self.started_at = min(owner.started_at for owner in owners)
+        self.ended_at = max(
+            str(owner.ended_at or owner.started_at) for owner in owners
+        )
+
+    @property
+    def ledger(self) -> MeasuredTransportLedger:
+        return copy.deepcopy(self._ledger)
+
+    @property
+    def owner_transport_operation_count(self) -> int:
+        return int(self._ledger.source_transport_operations)
+
+    @property
+    def sealed_stage_count(self) -> int:
+        return len(self.sealed_stage_diagnostics)
+
+    def close(self, *, ended_at: str | None = None) -> None:
+        del ended_at
+
+    def non_transport_identity_keys(self) -> dict[str, set[tuple[Any, ...]]]:
+        return {
+            _NON_TRANSPORT_IDENTITY_UNIT[field_name]: set(keys)
+            for field_name, keys in self._non_transport_keys.items()
+        }
+
+    def accounting_diagnostics(self) -> dict[str, Any]:
+        return {
+            "accounting_scope": "CAMPAIGN_MULTI_CYCLE_PROJECTION",
+            "registered_cycle_ids": list(self._cycle_ids),
+            "cycle_owner_ids": list(self._cycle_owner_ids),
+            "sealed_stage_count": self.sealed_stage_count,
+            "sealed_stage_diagnostics": [
+                dict(item) for item in self.sealed_stage_diagnostics
+            ],
+            "ingested_stage_count": self.stage_evidence_count,
+            "ingested_stage_ids": list(self.ingested_stage_ids),
+            "owner_transport_operation_count": self.owner_transport_operation_count,
+            "accounting_block_reason": self.accounting_block_reason,
+        }
+
+    def six_unit_totals(self) -> dict[str, int]:
+        return self._ledger.six_unit_totals()
+
+    def durable_evidence(self) -> dict[str, Any]:
+        totals = self.six_unit_totals()
+        cycle_evidences = copy.deepcopy(list(self._cycle_evidences))
+        pre_operation_no_work = all(
+            bool(item.get("pre_operation_no_work")) for item in cycle_evidences
+        )
+        pre_operation_no_work_reason = None
+        if pre_operation_no_work:
+            pre_operation_no_work_reason = (
+                "MULTI_CYCLE_PRE_OPERATION_NO_WORK:"
+                + "|".join(
+                    f"{item['cycle_id']}:{item['pre_operation_no_work_reason']}"
+                    for item in cycle_evidences
+                )
+            )
+        evidence: dict[str, Any] = {
+            "evidence_kind": (
+                EVIDENCE_KIND_V2
+                if any(
+                    self._non_transport[field_name]
+                    for field_name in _NON_TRANSPORT_IDENTITY_FIELDS
+                )
+                else EVIDENCE_KIND_V1
+            ),
+            "accounting_scope": "CAMPAIGN_MULTI_CYCLE_PROJECTION",
+            "campaign_id": self.campaign_id,
+            "run_id": self.run_id,
+            # Kept as the canonical campaign-entry cycle for existing terminal
+            # identity consumers; every contributing cycle is explicit below.
+            "cycle_id": self.cycle_id,
+            "cycle_ids": list(self._cycle_ids),
+            "cycle_evidences": cycle_evidences,
+            "owner_id": self.owner_id,
+            "projection_id": self.projection_id,
+            "stage_evidence_count": self.stage_evidence_count,
+            "ingested_stage_ids": list(self.ingested_stage_ids),
+            "sealed_stage_count": self.sealed_stage_count,
+            "sealed_stage_diagnostics": [
+                dict(item) for item in self.sealed_stage_diagnostics
+            ],
+            "started_at": self.started_at,
+            "ended_at": self.ended_at,
+            "elapsed_seconds": max(
+                0.0,
+                (_parse_iso(self.ended_at) - _parse_iso(self.started_at)).total_seconds(),
+            ),
+            "pre_operation_no_work": pre_operation_no_work,
+            "pre_operation_no_work_reason": pre_operation_no_work_reason,
+            "accounting_block_reason": self.accounting_block_reason,
+            "transport_operations": [
+                item.as_dict() for item in self._ledger.transports
+            ],
+            "local_validations": int(totals[UNIT_LOCAL_VALIDATION_STEP]),
+            "scheduler_work_items": int(totals[UNIT_SCHEDULER_WORK_ITEM]),
+            "lifecycle_reservations": int(
+                totals[UNIT_LIFECYCLE_RESERVED_TRANSPORT_OPERATION]
+            ),
+        }
+        if evidence["evidence_kind"] == EVIDENCE_KIND_V2:
+            for field_name in _NON_TRANSPORT_IDENTITY_FIELDS:
+                evidence[field_name] = [
+                    dict(item) for item in self._non_transport[field_name]
+                ]
+        reconstructed = reconstruct_six_unit_totals_from_evidence(evidence)
+        if reconstructed != totals:
+            raise CampaignSixUnitError(
+                "SIX_UNIT_CAMPAIGN_PROJECTION_TOTAL_MISMATCH"
+            )
+        return evidence
+
+
+class CampaignCycleAccountingRegistry:
+    """Explicit registry and fail-closed router for cycle-bound owners."""
+
+    def __init__(
+        self,
+        *,
+        campaign_id: str,
+        run_id: str,
+        initial_cycle_id: str,
+        started_at: str | None = None,
+    ) -> None:
+        self.campaign_id = _require_nonempty_text(
+            campaign_id, field_name="campaign_id"
+        )
+        self.run_id = _require_nonempty_text(run_id, field_name="run_id")
+        self.initial_cycle_id = _require_nonempty_text(
+            initial_cycle_id, field_name="cycle_id"
+        )
+        self._cycle_accounting_owners: dict[str, CampaignSixUnitOwner] = {
+            self.initial_cycle_id: CampaignSixUnitOwner(
+                campaign_id=self.campaign_id,
+                run_id=self.run_id,
+                cycle_id=self.initial_cycle_id,
+                started_at=started_at or _utc_now_iso(),
+            )
+        }
+
+    @property
+    def registered_cycle_ids(self) -> tuple[str, ...]:
+        return tuple(self._cycle_accounting_owners)
+
+    def owner_for_cycle(self, cycle_id: str) -> CampaignSixUnitOwner:
+        canonical_cycle_id = _require_nonempty_text(
+            cycle_id, field_name="cycle_id"
+        )
+        owner = self._cycle_accounting_owners.get(canonical_cycle_id)
+        if owner is None:
+            raise CampaignSixUnitError(
+                f"SIX_UNIT_STAGE_EVIDENCE_CYCLE_UNREGISTERED:{canonical_cycle_id}"
+            )
+        return owner
+
+    def register_authoritative_cycle(
+        self,
+        *,
+        campaign_id: str,
+        run_id: str,
+        cycle_id: str,
+        started_at: str | None = None,
+    ) -> CampaignSixUnitOwner:
+        for field_name, supplied, expected in (
+            ("campaign_id", campaign_id, self.campaign_id),
+            ("run_id", run_id, self.run_id),
+        ):
+            if str(supplied) != str(expected):
+                raise CampaignSixUnitError(
+                    "SIX_UNIT_STAGE_EVIDENCE_IDENTITY_MISMATCH:"
+                    f"{field_name}:{supplied!r}!={expected!r}"
+                )
+        canonical_cycle_id = _require_nonempty_text(
+            cycle_id, field_name="cycle_id"
+        )
+        existing = self._cycle_accounting_owners.get(canonical_cycle_id)
+        if existing is not None:
+            return existing
+        owner = CampaignSixUnitOwner(
+            campaign_id=self.campaign_id,
+            run_id=self.run_id,
+            cycle_id=canonical_cycle_id,
+            started_at=started_at or _utc_now_iso(),
+        )
+        self._cycle_accounting_owners[canonical_cycle_id] = owner
+        return owner
+
+    def ingest_stage_evidence(self, evidence: Mapping[str, Any]) -> None:
+        if not isinstance(evidence, Mapping):
+            raise CampaignSixUnitError("SIX_UNIT_STAGE_EVIDENCE_MISSING")
+        for field_name, expected in (
+            ("campaign_id", self.campaign_id),
+            ("run_id", self.run_id),
+        ):
+            supplied = evidence.get(field_name)
+            if str(supplied or "") != str(expected):
+                raise CampaignSixUnitError(
+                    "SIX_UNIT_STAGE_EVIDENCE_IDENTITY_MISMATCH:"
+                    f"{field_name}:{supplied!r}!={expected!r}"
+                )
+        cycle_id = _require_nonempty_text(
+            evidence.get("cycle_id"), field_name="cycle_id"
+        )
+        self.owner_for_cycle(cycle_id).ingest_stage_evidence(evidence)
+
+    def stage_evidence_sink_for_cycle(
+        self, cycle_id: str
+    ) -> Callable[[Mapping[str, Any]], None]:
+        canonical_cycle_id = _require_nonempty_text(
+            cycle_id, field_name="cycle_id"
+        )
+        self.owner_for_cycle(canonical_cycle_id)
+
+        def sink(evidence: Mapping[str, Any]) -> None:
+            if not isinstance(evidence, Mapping):
+                self.ingest_stage_evidence(evidence)
+                return
+            evidence_cycle_id = str(evidence.get("cycle_id") or "")
+            if evidence_cycle_id != canonical_cycle_id:
+                raise CampaignSixUnitError(
+                    "SIX_UNIT_STAGE_EVIDENCE_IDENTITY_MISMATCH:"
+                    f"cycle_id:{evidence_cycle_id!r}!={canonical_cycle_id!r}"
+                )
+            self.ingest_stage_evidence(evidence)
+
+        return sink
+
+    def registered_stage_evidence_sink(
+        self,
+        *,
+        campaign_id: str,
+        run_id: str,
+        cycle_id: str,
+        started_at: str | None = None,
+    ) -> Callable[[Mapping[str, Any]], None]:
+        owner = self.register_authoritative_cycle(
+            campaign_id=campaign_id,
+            run_id=run_id,
+            cycle_id=cycle_id,
+            started_at=started_at,
+        )
+        return self.stage_evidence_sink_for_cycle(str(owner.cycle_id))
+
+    def campaign_projection(self) -> CampaignSixUnitProjection:
+        return CampaignSixUnitProjection(
+            campaign_id=self.campaign_id,
+            run_id=self.run_id,
+            primary_cycle_id=self.initial_cycle_id,
+            cycle_owners=tuple(self._cycle_accounting_owners.values()),
+        )
+
+
 @dataclass
 class CampaignActionLocalLedger:
     """Independent action-local observation ledger (verification only).
@@ -1525,8 +1933,10 @@ def pre_operation_no_work_evidence(
 
 __all__ = [
     "CampaignActionLocalLedger",
+    "CampaignCycleAccountingRegistry",
     "CampaignSixUnitError",
     "CampaignSixUnitOwner",
+    "CampaignSixUnitProjection",
     "EVIDENCE_KIND_V1",
     "EVIDENCE_KIND_V2",
     "SEALED_STAGE_METADATA_FIELDS",

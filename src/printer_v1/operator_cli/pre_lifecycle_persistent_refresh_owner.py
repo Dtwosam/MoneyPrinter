@@ -60,10 +60,14 @@ def classify_refresh_stage_exception(
         PreLifecycleRefreshWorkError,
     )
     from printer_v1.operator_cli.authoritative_live_operational_campaign import (
+        LiveOperationalError,
         LiveTransportError,
     )
     from printer_v1.operator_cli.later_cycle_graduated_supply import (
         LaterCycleGraduatedSupplyError,
+    )
+    from printer_v1.sources.campaign_six_unit_accounting import (
+        CampaignSixUnitError,
     )
 
     if isinstance(exc, LiveTransportError):
@@ -73,23 +77,16 @@ def classify_refresh_stage_exception(
             FAILURE_DOMAIN_SOURCE,
             f"PRE_LIFECYCLE_REFRESH_SOURCE_FAILURE:{code}",
         )
-    code = str(getattr(exc, "code", "") or "")
-    if code.startswith(("SOURCE_", "PROVIDER_", "HTTP_", "TRANSPORT_", "RPC_")) or (
-        "RATE" in code
-    ):
-        return (
-            REFRESH_SOURCE_FAILURE,
-            FAILURE_DOMAIN_SOURCE,
-            f"PRE_LIFECYCLE_REFRESH_SOURCE_FAILURE:{code}",
-        )
     if isinstance(
         exc,
         (
+            CampaignSixUnitError,
             PreLifecycleTemporalRefreshError,
             PreLifecycleTemporalAcquisitionError,
             PreLifecycleRefreshCompositionError,
             PreLifecycleRefreshWorkError,
             LaterCycleGraduatedSupplyError,
+            LiveOperationalError,
             TypeError,
             ValueError,
         ),
@@ -135,13 +132,21 @@ class PreLifecycleTemporalRefreshOwner:
         self._cycle_rebinder=cycle_rebinder
         self.refresh_interval_seconds=int(next_check_interval_seconds(JobKind.DISCOVERY_REFRESH) if refresh_interval_seconds is None else refresh_interval_seconds)
         self.published_states=[]; self._acquisition_mark=None
-    def for_cycle(self, *, cycle_id:str, cycle_cutoff:str, evaluated_at:str, request_key_prefix:str):
+    def for_cycle(self, *, cycle_id:str, cycle_cutoff:str, evaluated_at:str,
+        request_key_prefix:str,
+        stage_evidence_sink: Callable[[Mapping[str, Any]], None] | None = None):
         """Rebuild this bounded owner for a later cycle under canonical authority."""
         if self._cycle_rebinder is None:
             raise PreLifecycleTemporalRefreshError('TEMPORAL_CYCLE_REBINDER_NOT_CONFIGURED')
+        rebind_kwargs={
+            'cycle_id':str(cycle_id), 'cycle_cutoff':str(cycle_cutoff),
+            'evaluated_at':str(evaluated_at),
+            'request_key_prefix':str(request_key_prefix),
+        }
+        if stage_evidence_sink is not None:
+            rebind_kwargs['stage_evidence_sink']=stage_evidence_sink
         rebound=self._cycle_rebinder(
-            cycle_id=str(cycle_id), cycle_cutoff=str(cycle_cutoff),
-            evaluated_at=str(evaluated_at), request_key_prefix=str(request_key_prefix),
+            **rebind_kwargs,
         )
         if not isinstance(rebound, type(self)):
             raise PreLifecycleTemporalRefreshError('TEMPORAL_CYCLE_REBINDER_RESULT_INVALID')
