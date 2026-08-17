@@ -3452,6 +3452,12 @@ class AuthoritativeLiveOperationalCampaignOwner:
                             or "AUXILIARY_FRESH_INTAKE"
                         ),
                         cooperative_stage_budget=cooperative_stage_budget,
+                        # Slice B: the direct lane's categorical mode for this
+                        # claim. A new attempt always starts at the live tail.
+                        cooperative_direct_mode=str(
+                            (progress or {}).get("direct_acquisition_mode")
+                            or "LIVE_TAIL"
+                        ),
                     )
                     if result.terminal_cause in {
                         "WAITING_FOR_ELIGIBLE_SUPPLY",
@@ -3480,6 +3486,19 @@ class AuthoritativeLiveOperationalCampaignOwner:
                             "cooperative_phase": str(
                                 diagnostics.get("next_cooperative_phase")
                                 or "MARKET_DISCOVERY"
+                            ),
+                            # Slice B attempt-local direct acquisition facts.
+                            "direct_acquisition_mode": str(
+                                diagnostics.get("next_direct_acquisition_mode")
+                                or "LIVE_TAIL"
+                            ),
+                            "direct_live_tail_completed": bool(
+                                (progress or {}).get("direct_live_tail_completed")
+                                or diagnostics.get("direct_live_tail_completed")
+                            ),
+                            "direct_backfill_completed": bool(
+                                (progress or {}).get("direct_backfill_completed")
+                                or diagnostics.get("direct_backfill_completed")
                             ),
                         }
                     else:

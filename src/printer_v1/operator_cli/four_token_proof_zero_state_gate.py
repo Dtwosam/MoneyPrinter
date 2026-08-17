@@ -42,17 +42,24 @@ ZERO_STATE_SCHEMA_VERSION = "PRINTER_V1_FOUR_TOKEN_PROOF_ZERO_STATE_GATE_V1"
 # immutable pre-lifecycle terminal provenance that
 # ``ONE_CYCLE_PRE_LIFECYCLE_ZERO_ATTEMPT`` requires. Migration 057 adds durable
 # Scheduler-owned pre-lifecycle discovery-refresh work, so proof admission must
-# bind the 057 head and prove that no live RUNNING refresh ownership remains.
-# Historical terminal refresh-work rows remain evidence and are never deleted or
-# counted as active ownership.
+# prove that no live RUNNING refresh ownership remains. Historical terminal
+# refresh-work rows remain evidence and are never deleted or counted as active
+# ownership.
+#
+# Migration 058 adds the durable direct Pump migration traversal cursor owned by
+# the canonical migration feeder. It is a mutable local projection: it carries no
+# campaign, lifecycle, authorization, selection or financial ownership, so it
+# introduces no new zero-state domain. The pin is advanced to the 058 head so the
+# authorized schema and the canonical migration-ledger drift guard continue to
+# describe the same database.
 #
 # These are deliberately explicit literals, never derived from the migrations
 # directory. Adding a migration must not silently re-authorize bounded-proof
 # admission: a future head requires its own gate review and an explicit re-pin
 # here. The canonical migration-ledger drift guard still runs independently and
 # is not replaced by this pin.
-REQUIRED_MIGRATION_COUNT = 57
-REQUIRED_MIGRATION_HEAD = "057_pre_lifecycle_discovery_refresh_work.sql"
+REQUIRED_MIGRATION_COUNT = 58
+REQUIRED_MIGRATION_HEAD = "058_direct_pump_migration_cursor.sql"
 LOCKED_LONG_WINDOWS = LOCKED_WINDOWS
 
 #: Every domain that must be exactly zero before this proof may start. Each

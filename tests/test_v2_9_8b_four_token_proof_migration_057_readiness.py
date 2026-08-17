@@ -19,10 +19,16 @@ def test_four_token_current_migration_evidence_is_exactly_057() -> None:
     assert profile.migration_package_kind == "MIGRATION_057_EVIDENCE"
 
 
-def test_four_token_zero_state_is_explicitly_pinned_to_057() -> None:
-    assert zero_state.REQUIRED_MIGRATION_COUNT == 57
+def test_four_token_zero_state_is_explicitly_pinned_to_the_current_head() -> None:
+    """Slice B advanced the canonical head to 058 (direct migration cursor).
+
+    The 057 pre-lifecycle refresh-work zero-state domain is still required;
+    only the schema pin moved, so the gate and the canonical migration-ledger
+    drift guard keep describing the same database.
+    """
+    assert zero_state.REQUIRED_MIGRATION_COUNT == 58
     assert zero_state.REQUIRED_MIGRATION_HEAD == (
-        "057_pre_lifecycle_discovery_refresh_work.sql"
+        "058_direct_pump_migration_cursor.sql"
     )
     assert "active_pre_lifecycle_discovery_refresh_work" in (
         zero_state.REQUIRED_ZERO_STATE_DOMAINS

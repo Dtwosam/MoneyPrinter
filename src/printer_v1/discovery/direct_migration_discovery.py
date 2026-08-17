@@ -1,17 +1,29 @@
-"""V2-9.8B restored direct Pump migration discovery orchestrator.
+"""V2-9.8B direct Pump migration discovery orchestrator.
 
-Turns one bounded, cursor-free finalized Pump-program live-tail page into
+Turns one bounded finalized **migration-targeted** signature page into
 operational graduated Pump.fun candidate supply:
 
-    governed getSignaturesForAddress(Pump program, finalized)
+    governed getSignaturesForAddress(Pump migration withdraw authority, finalized)
       -> governed getTransaction(signature, finalized)
-      -> exact pinned Pump migrate instruction/account verification
+      -> exact pinned Pump migrate/migrate_v2 instruction/account verification
       -> resolve unique PumpSwap pool from the signature
       -> confirm PumpSwap owner + exact base_mint
       -> persist PUMPSWAP_GRADUATED_CONFIRMED candidate
 
-The live tail owns no cursor, backfill, recovery or historical completeness
-claim. Every RPC operation is separately Source-Governed and recorded before any
+Slice B adds exactly two categorical acquisition modes over the same bounded
+transport shape — ``LIVE_TAIL`` (no cursor) and ``BACKFILL`` (strictly
+``before`` a durable cursor position) — plus ownership of the restart-safe
+cursor in ``printer_direct_pump_migration_cursor``.
+
+The cursor may advance only through a CONTIGUOUS prefix of signatures that were
+fully resolved: a definitive non-migration, or a supported migration whose
+canonical PumpSwap confirmation AND canonical registry persistence both
+succeeded. A transaction source failure, an unsupported migration-like contract
+observation, or an unverified genuine migration all stop the walk and are never
+skipped. Cursor reads/writes are local state: they create zero source requests
+and zero transports.
+
+Every RPC operation is separately Source-Governed and recorded before any
 candidate is persisted. No wallet, authentication, payment, subscription,
 execution, lifecycle, pilot authorization or memory work is performed here.
 """
@@ -19,6 +31,7 @@ execution, lifecycle, pilot authorization or memory work is performed here.
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from types import MappingProxyType
@@ -33,6 +46,9 @@ from printer_v1.sources.pump_migration import (
     build_graduation_verifier_transport,
 )
 from printer_v1.sources.direct_pump_migration import (
+    DIRECT_MIGRATION_INDEXED_ADDRESS,
+    DIRECT_PUMP_MIGRATION_CONTRACT_HASH,
+    DIRECT_PUMP_MIGRATION_DECODER_VERSION,
     MAX_TRANSACTION_LOOKUPS,
     SIGNATURE_PAGE_REQUEST_KIND,
     SOURCE_NAME as MIGRATION_SOURCE,
@@ -64,6 +80,395 @@ STAGE_KIND_DIRECT_MIGRATION = "DIRECT_MIGRATION"
 MIGRATION_REQUEST_KIND = SIGNATURE_PAGE_REQUEST_KIND
 VERIFY_SOURCE = "pumpswap"
 VERIFY_REQUEST_KIND = "pumpswap_signature_pool_resolution"
+
+# --- Slice B: bounded migration-targeted acquisition modes -------------------
+LIVE_TAIL_MODE = "LIVE_TAIL"
+BACKFILL_MODE = "BACKFILL"
+DIRECT_ACQUISITION_MODES = (LIVE_TAIL_MODE, BACKFILL_MODE)
+
+DIRECT_MIGRATION_NETWORK = "solana-mainnet"
+DIRECT_MIGRATION_CURSOR_TABLE = "printer_direct_pump_migration_cursor"
+
+CONTINUITY_UNINITIALIZED = "UNINITIALIZED"
+CONTINUITY_CONTIGUOUS = "CONTIGUOUS"
+CONTINUITY_EXHAUSTED = "EXHAUSTED"
+CONTINUITY_BLOCKED_CONTRACT = "BLOCKED_CONTRACT"
+
+# Ordered page-walk outcomes. Only the first two may ever advance the cursor.
+COVERED_NON_MIGRATION = "COVERED_NON_MIGRATION"
+MIGRATION_LOCATED = "MIGRATION_LOCATED"
+TRANSACTION_SOURCE_FAILURE = "TRANSACTION_SOURCE_FAILURE"
+CONTRACT_BLOCKED = "CONTRACT_BLOCKED"
+UNRESOLVED_CANDIDATE_LOCAL = "UNRESOLVED_CANDIDATE_LOCAL"
+NOT_INSPECTED = "NOT_INSPECTED"
+
+#: Outcomes that stop the ordered page walk. None of them may be crossed.
+_WALK_STOPPING_OUTCOMES = frozenset(
+    {TRANSACTION_SOURCE_FAILURE, CONTRACT_BLOCKED, UNRESOLVED_CANDIDATE_LOCAL}
+)
+
+_MIGRATION_REJECTION_PREFIX = "direct_pump_migration_rejected_"
+
+#: Decoder reasons that positively prove no supported Pump migrate instruction
+#: was present. Only these may be treated as a definitive non-migration and
+#: allowed to advance the contiguous cursor.
+_DEFINITIVE_NON_MIGRATION_REASONS = frozenset(
+    {
+        # The finalized transaction failed on chain; it cannot carry a
+        # successful migration.
+        "transaction_failed_or_meta_missing",
+        # Zero matching pinned migrate/migrate_v2 instructions were decoded.
+        "exactly_one_migrate_instruction_required",
+    }
+)
+
+#: Decoder reasons that describe migration-like evidence the currently adopted
+#: contract/decoder cannot validate. These are never generic non-migrations:
+#: they block the cursor until a new contract/decoder identity restarts a fresh
+#: bounded traversal.
+_CONTRACT_BLOCKING_REASONS = frozenset(
+    {
+        "unsupported_transaction_version",
+        "malformed_account_index",
+        "migrate_account_layout_mismatch",
+        "migrate_v2_account_layout_mismatch",
+    }
+)
+
+
+class DirectMigrationCursorError(RuntimeError):
+    """Fail-closed direct Pump migration cursor fault."""
+
+
+@dataclass(frozen=True)
+class DirectMigrationCursorState:
+    """Immutable snapshot of the durable direct-migration traversal position."""
+
+    network: str
+    indexed_address: str
+    pump_contract_hash: str
+    decoder_version: str
+    next_before_signature: str | None
+    next_before_slot: int | None
+    continuity_state: str
+    pages_advanced: int
+    signatures_covered: int
+    last_live_tail_at: str | None
+    last_backfill_at: str | None
+    last_block_reason: str | None
+
+    @property
+    def backfill_permitted(self) -> bool:
+        """BACKFILL is legal only from a CONTIGUOUS cursor with a position."""
+        return (
+            self.continuity_state == CONTINUITY_CONTIGUOUS
+            and bool(self.next_before_signature)
+        )
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "network": self.network,
+            "indexed_address": self.indexed_address,
+            "pump_contract_hash": self.pump_contract_hash,
+            "decoder_version": self.decoder_version,
+            "next_before_signature": self.next_before_signature,
+            "next_before_slot": self.next_before_slot,
+            "continuity_state": self.continuity_state,
+            "pages_advanced": self.pages_advanced,
+            "signatures_covered": self.signatures_covered,
+            "last_live_tail_at": self.last_live_tail_at,
+            "last_backfill_at": self.last_backfill_at,
+            "last_block_reason": self.last_block_reason,
+        }
+
+
+def direct_migration_cursor_identity() -> tuple[str, str, str, str]:
+    """The one cursor identity this feeder owns. Never caller-supplied."""
+    return (
+        DIRECT_MIGRATION_NETWORK,
+        DIRECT_MIGRATION_INDEXED_ADDRESS,
+        DIRECT_PUMP_MIGRATION_CONTRACT_HASH,
+        DIRECT_PUMP_MIGRATION_DECODER_VERSION,
+    )
+
+
+_CURSOR_COLUMNS = (
+    "network",
+    "indexed_address",
+    "pump_contract_hash",
+    "decoder_version",
+    "next_before_signature",
+    "next_before_slot",
+    "continuity_state",
+    "pages_advanced",
+    "signatures_covered",
+    "last_live_tail_at",
+    "last_backfill_at",
+    "last_block_reason",
+)
+
+
+def load_direct_migration_cursor(
+    connection: sqlite3.Connection,
+) -> DirectMigrationCursorState | None:
+    """Read the durable cursor for the exact current contract/decoder identity.
+
+    Local state only: zero source requests, zero transports.
+    """
+    identity = direct_migration_cursor_identity()
+    try:
+        row = connection.execute(
+            f"SELECT {', '.join(_CURSOR_COLUMNS)} FROM {DIRECT_MIGRATION_CURSOR_TABLE} "
+            "WHERE network=? AND indexed_address=? AND pump_contract_hash=? "
+            "AND decoder_version=?",
+            identity,
+        ).fetchone()
+    except sqlite3.OperationalError as exc:
+        raise DirectMigrationCursorError(
+            f"DIRECT_PUMP_MIGRATION_CURSOR_TABLE_UNAVAILABLE:{exc}"
+        ) from exc
+    if row is None:
+        return None
+    values = dict(zip(_CURSOR_COLUMNS, tuple(row)))
+    return DirectMigrationCursorState(
+        network=str(values["network"]),
+        indexed_address=str(values["indexed_address"]),
+        pump_contract_hash=str(values["pump_contract_hash"]),
+        decoder_version=str(values["decoder_version"]),
+        next_before_signature=(
+            None
+            if values["next_before_signature"] is None
+            else str(values["next_before_signature"])
+        ),
+        next_before_slot=(
+            None if values["next_before_slot"] is None else int(values["next_before_slot"])
+        ),
+        continuity_state=str(values["continuity_state"]),
+        pages_advanced=int(values["pages_advanced"] or 0),
+        signatures_covered=int(values["signatures_covered"] or 0),
+        last_live_tail_at=(
+            None if values["last_live_tail_at"] is None else str(values["last_live_tail_at"])
+        ),
+        last_backfill_at=(
+            None if values["last_backfill_at"] is None else str(values["last_backfill_at"])
+        ),
+        last_block_reason=(
+            None if values["last_block_reason"] is None else str(values["last_block_reason"])
+        ),
+    )
+
+
+def ensure_direct_migration_cursor(
+    connection: sqlite3.Connection, *, now: str
+) -> DirectMigrationCursorState:
+    """Return the cursor for this contract identity, creating it UNINITIALIZED.
+
+    A new Pump contract hash or decoder version always produces a NEW row. An
+    older contract's cursor is never mutated into a new contract identity.
+    """
+    existing = load_direct_migration_cursor(connection)
+    if existing is not None:
+        return existing
+    network, indexed_address, contract_hash, decoder_version = (
+        direct_migration_cursor_identity()
+    )
+    try:
+        connection.execute(
+            f"INSERT INTO {DIRECT_MIGRATION_CURSOR_TABLE}("
+            "network,indexed_address,pump_contract_hash,decoder_version,"
+            "next_before_signature,next_before_slot,continuity_state,"
+            "pages_advanced,signatures_covered,created_at,updated_at) "
+            "VALUES (?,?,?,?,NULL,NULL,?,0,0,?,?)",
+            (
+                network,
+                indexed_address,
+                contract_hash,
+                decoder_version,
+                CONTINUITY_UNINITIALIZED,
+                str(now),
+                str(now),
+            ),
+        )
+    except sqlite3.Error as exc:
+        raise DirectMigrationCursorError(
+            f"DIRECT_PUMP_MIGRATION_CURSOR_BOOTSTRAP_FAILED:{exc}"
+        ) from exc
+    created = load_direct_migration_cursor(connection)
+    if created is None:
+        raise DirectMigrationCursorError(
+            "DIRECT_PUMP_MIGRATION_CURSOR_BOOTSTRAP_MISSING"
+        )
+    return created
+
+
+def _update_direct_migration_cursor(
+    connection: sqlite3.Connection,
+    *,
+    assignments: Mapping[str, Any],
+    now: str,
+) -> DirectMigrationCursorState:
+    if not assignments:
+        raise DirectMigrationCursorError("DIRECT_PUMP_MIGRATION_CURSOR_NO_ASSIGNMENT")
+    columns = list(assignments)
+    clause = ", ".join(f"{name}=?" for name in columns)
+    parameters = [assignments[name] for name in columns]
+    parameters.append(str(now))
+    parameters.extend(direct_migration_cursor_identity())
+    try:
+        connection.execute(
+            f"UPDATE {DIRECT_MIGRATION_CURSOR_TABLE} SET {clause}, updated_at=? "
+            "WHERE network=? AND indexed_address=? AND pump_contract_hash=? "
+            "AND decoder_version=?",
+            tuple(parameters),
+        )
+    except sqlite3.Error as exc:
+        raise DirectMigrationCursorError(
+            f"DIRECT_PUMP_MIGRATION_CURSOR_UPDATE_REJECTED:{exc}"
+        ) from exc
+    updated = load_direct_migration_cursor(connection)
+    if updated is None:
+        raise DirectMigrationCursorError("DIRECT_PUMP_MIGRATION_CURSOR_LOST")
+    return updated
+
+
+def advance_direct_migration_cursor(
+    connection: sqlite3.Connection,
+    *,
+    signature: str,
+    slot: int,
+    covered_count: int,
+    now: str,
+    mode: str = BACKFILL_MODE,
+) -> DirectMigrationCursorState:
+    """Move the traversal position to the OLDEST fully covered signature.
+
+    The caller must already have proven a contiguous covered prefix ending at
+    ``signature``. This never advances past an uncovered page member.
+    """
+    if mode not in DIRECT_ACQUISITION_MODES:
+        raise DirectMigrationCursorError("DIRECT_PUMP_MIGRATION_CURSOR_MODE_INVALID")
+    if not isinstance(signature, str) or not signature.strip():
+        raise DirectMigrationCursorError("DIRECT_PUMP_MIGRATION_CURSOR_SIGNATURE_INVALID")
+    if type(slot) is not int or slot < 0:
+        raise DirectMigrationCursorError("DIRECT_PUMP_MIGRATION_CURSOR_SLOT_INVALID")
+    if type(covered_count) is not int or covered_count < 0:
+        raise DirectMigrationCursorError("DIRECT_PUMP_MIGRATION_CURSOR_COVERAGE_INVALID")
+    current = ensure_direct_migration_cursor(connection, now=now)
+    assignments: dict[str, Any] = {
+        "next_before_signature": signature,
+        "next_before_slot": int(slot),
+        "continuity_state": CONTINUITY_CONTIGUOUS,
+        "pages_advanced": int(current.pages_advanced) + 1,
+        "signatures_covered": int(current.signatures_covered) + int(covered_count),
+        "last_block_reason": None,
+    }
+    if mode == BACKFILL_MODE:
+        assignments["last_backfill_at"] = str(now)
+    else:
+        assignments["last_live_tail_at"] = str(now)
+    return _update_direct_migration_cursor(connection, assignments=assignments, now=now)
+
+
+def mark_direct_migration_cursor_exhausted(
+    connection: sqlite3.Connection, *, now: str
+) -> DirectMigrationCursorState:
+    """A successful finalized BACKFILL page returned zero rows.
+
+    Backward traversal for this contract identity has reached its end. Live tail
+    stays active; the historical walk is never restarted from the top.
+    """
+    ensure_direct_migration_cursor(connection, now=now)
+    return _update_direct_migration_cursor(
+        connection,
+        assignments={
+            "continuity_state": CONTINUITY_EXHAUSTED,
+            "last_backfill_at": str(now),
+        },
+        now=now,
+    )
+
+
+def mark_direct_migration_cursor_contract_blocked(
+    connection: sqlite3.Connection,
+    *,
+    reason: str,
+    now: str,
+    signature: str | None = None,
+    slot: int | None = None,
+    covered_count: int = 0,
+) -> DirectMigrationCursorState:
+    """Record migration-like evidence the adopted contract cannot validate.
+
+    The blocked signature is never crossed. While BLOCKED_CONTRACT, automatic
+    BACKFILL under the same contract hash + decoder version issues zero source
+    requests. A later contract/decoder revision creates a new cursor identity.
+    """
+    categorical = str(reason or "").strip() or "UNSUPPORTED_MIGRATION_CONTRACT_EVIDENCE"
+    # Bounded: a block reason is a category, never a raw transaction body.
+    categorical = categorical[:120]
+    current = ensure_direct_migration_cursor(connection, now=now)
+    assignments: dict[str, Any] = {
+        "continuity_state": CONTINUITY_BLOCKED_CONTRACT,
+        "last_block_reason": categorical,
+    }
+    if signature is not None and slot is not None:
+        assignments["next_before_signature"] = str(signature)
+        assignments["next_before_slot"] = int(slot)
+        assignments["pages_advanced"] = int(current.pages_advanced) + 1
+        assignments["signatures_covered"] = (
+            int(current.signatures_covered) + int(covered_count)
+        )
+    return _update_direct_migration_cursor(connection, assignments=assignments, now=now)
+
+
+def touch_direct_migration_cursor_live_tail(
+    connection: sqlite3.Connection, *, now: str
+) -> DirectMigrationCursorState:
+    """Record a live-tail observation WITHOUT moving the historical position.
+
+    LIVE_TAIL and BACKFILL are separate concerns: live tail is newest activity,
+    the cursor is historical progress. An established CONTIGUOUS position must
+    never be dragged back to the top of the chain by a later live tail.
+    """
+    ensure_direct_migration_cursor(connection, now=now)
+    return _update_direct_migration_cursor(
+        connection, assignments={"last_live_tail_at": str(now)}, now=now
+    )
+
+
+def classify_direct_migration_transaction_failure(
+    failure_type: str | None,
+    migration_rejection_digest: Mapping[str, Any] | None,
+) -> tuple[str, str]:
+    """Classify one failed transaction lookup for the contiguous cursor law.
+
+    Returns ``(outcome, reason)``. Uncertainty always fails closed to a
+    non-advancing outcome; only positively proven absence of a supported Pump
+    migrate instruction may ever be treated as covered.
+    """
+    failure = str(failure_type or "")
+    if not failure.startswith(_MIGRATION_REJECTION_PREFIX):
+        # Transport/provider level: never a statement about migration content.
+        return TRANSACTION_SOURCE_FAILURE, failure or "direct_pump_transaction_failed"
+    reason = failure[len(_MIGRATION_REJECTION_PREFIX) :] or "unknown"
+    digest = (
+        migration_rejection_digest
+        if isinstance(migration_rejection_digest, Mapping)
+        else {}
+    )
+    try:
+        match_count = int(digest.get("pump_migrate_match_count") or 0)
+    except (TypeError, ValueError):
+        match_count = 0
+    if match_count > 0 or reason in _CONTRACT_BLOCKING_REASONS:
+        return CONTRACT_BLOCKED, reason
+    if reason in _DEFINITIVE_NON_MIGRATION_REASONS:
+        return COVERED_NON_MIGRATION, reason
+    # Candidate-local, but not a proof that no supported migration was present.
+    # It stops the walk without ever being reported as a provider outage: F's
+    # failure-domain truth is preserved exactly.
+    return UNRESOLVED_CANDIDATE_LOCAL, reason
+
 
 # Forbidden-capability tables. This lane must never write any of these; the report
 # proves each stayed at zero (integrity guard, not just an assertion of intent).
@@ -146,6 +551,12 @@ def _merge_intakes(intakes: list[dict[str, Any]]) -> dict[str, Any]:
         "transaction_rejections": transaction_rejections,
         "transaction_source_failures": transaction_source_failures,
         "direct_pump_live_tail_failures": live_tail_failures,
+        # One bounded page per Scheduler claim, so the ordered walk of the last
+        # (and only) round is the attempt's walk.
+        "page_walk": list((intakes[-1].get("page_walk") if intakes else None) or ()),
+        "page_requested": bool(intakes[-1].get("page_requested")) if intakes else False,
+        "page_empty": bool(intakes[-1].get("page_empty")) if intakes else False,
+        "page_ok": bool(intakes[-1].get("page_ok")) if intakes else False,
     }
 
 
@@ -324,6 +735,7 @@ def run_direct_migration_discovery(
     cycle_id: str | None = None,
     stage_sequence: int = 1,
     max_transaction_lookups: int = MAX_TRANSACTION_LOOKUPS,
+    acquisition_mode: str = LIVE_TAIL_MODE,
 ) -> dict[str, Any]:
     """Run one bounded direct-migration discovery cycle (governed, fail-closed).
 
@@ -364,6 +776,8 @@ def run_direct_migration_discovery(
         or max_transaction_lookups > MAX_TRANSACTION_LOOKUPS
     ):
         raise ValueError("DIRECT_PUMP_TRANSACTION_LOOKUP_CAP_INVALID")
+    if acquisition_mode not in DIRECT_ACQUISITION_MODES:
+        raise ValueError("DIRECT_PUMP_ACQUISITION_MODE_INVALID")
     if verifier_transport_factory is None:
         verified_now_epoch = int(
             datetime.fromisoformat(now.replace("Z", "+00:00")).timestamp()
@@ -377,6 +791,18 @@ def run_direct_migration_discovery(
             )
 
     connection = connect_operational(db_path)
+    # Cursor reads/writes are local state: zero source requests, zero transports.
+    try:
+        cursor_state_before = ensure_direct_migration_cursor(connection, now=now)
+        connection.commit()
+    except BaseException:
+        connection.close()
+        raise
+    cursor_state_after = cursor_state_before
+    cursor_before: str | None = None
+    cursor_skip_reason: str | None = None
+    cursor_advanced = False
+    covered_prefix: list[dict[str, Any]] = []
     migration_request_count = 0
     pumpswap_request_count = 0
     stage_request_ids: list[int] = []
@@ -396,6 +822,7 @@ def run_direct_migration_discovery(
     accounting_block_reason: str | None = None
     elapsed_seconds = 0.0
     confirmed_this_cycle: list[str] = []
+    canonically_persisted_signatures: set[str] = set()
     verifications: list[dict[str, Any]] = []
     migration_validation_identities: list[LocalValidationIdentity] = []
     mix: list[dict[str, Any]] = []
@@ -510,6 +937,35 @@ def run_direct_migration_discovery(
         return execution.normalized_result
 
     def _governed_migration() -> dict[str, Any]:
+        """Execute exactly one bounded migration-targeted signature page.
+
+        One Scheduler claim performs at most one page: LIVE_TAIL (no cursor) or
+        BACKFILL (strictly ``before`` the durable position), never both.
+        """
+        nonlocal cursor_before, cursor_skip_reason
+        if acquisition_mode == BACKFILL_MODE and not (
+            cursor_state_before is not None and cursor_state_before.backfill_permitted
+        ):
+            # UNINITIALIZED / EXHAUSTED / BLOCKED_CONTRACT: zero source requests.
+            observed = (
+                CONTINUITY_UNINITIALIZED
+                if cursor_state_before is None
+                else cursor_state_before.continuity_state
+            )
+            cursor_skip_reason = f"BACKFILL_NOT_PERMITTED_{observed}"
+            one = intake_migration_events(None)
+            one["transaction_rejections"] = []
+            one["transaction_source_failures"] = []
+            one["transport_operation_count"] = 0
+            one["cursor_used"] = False
+            one["page_walk"] = []
+            one["page_requested"] = False
+            one["page_empty"] = False
+            one["page_ok"] = True
+            return one
+        if acquisition_mode == BACKFILL_MODE:
+            cursor_before = cursor_state_before.next_before_signature
+
         page = _execute_direct_request(
             request_kind=SIGNATURE_PAGE_REQUEST_KIND,
             request_key=f"{request_key_prefix}-migration-page",
@@ -517,7 +973,13 @@ def run_direct_migration_discovery(
                 "request_kind": SIGNATURE_PAGE_REQUEST_KIND,
                 "chain": "solana",
                 "commitment": "finalized",
-                "cursor": None,
+                "indexed_address": DIRECT_MIGRATION_INDEXED_ADDRESS,
+                # Solana ``until`` semantics are never used.
+                "cursor_before": cursor_before,
+                # The page may never be larger than this quantum's transaction
+                # lookup allowance, or the cursor could advance past signatures
+                # that were returned but never inspected.
+                "signature_limit": int(max_transaction_lookups),
             },
         )
         page_ok = (
@@ -526,9 +988,15 @@ def run_direct_migration_discovery(
         )
         if not page_ok:
             # Transports already measured in _execute_direct_request coverage path.
+            # There is no generic Pump-program fallback and no alternate source.
             one = intake_migration_events(None)
             one["direct_pump_live_tail_failure"] = page.failure_type
             one["transport_operation_count"] = 1
+            one["cursor_used"] = cursor_before is not None
+            one["page_walk"] = []
+            one["page_requested"] = True
+            one["page_empty"] = False
+            one["page_ok"] = False
             return one
 
         # Transports for the page request are measured in _execute_direct_request.
@@ -538,14 +1006,58 @@ def run_direct_migration_discovery(
         tokens: list[Mapping[str, Any]] = []
         failures: list[str] = []
         source_failures: list[str] = []
+        page_walk: list[dict[str, Any]] = []
         operation_count = 1
+        stopped = False
         for index, row in enumerate(signatures[:max_transaction_lookups]):
             if not isinstance(row, Mapping):
                 failures.append("direct_pump_signature_row_malformed")
+                page_walk.append(
+                    {
+                        "signature": None,
+                        "slot": None,
+                        "outcome": TRANSACTION_SOURCE_FAILURE,
+                        "reason": "direct_pump_signature_row_malformed",
+                    }
+                )
+                stopped = True
                 continue
             signature = row.get("signature")
+            slot = row.get("slot")
             if not isinstance(signature, str) or not signature:
                 failures.append("direct_pump_signature_identity_missing")
+                page_walk.append(
+                    {
+                        "signature": None,
+                        "slot": None,
+                        "outcome": TRANSACTION_SOURCE_FAILURE,
+                        "reason": "direct_pump_signature_identity_missing",
+                    }
+                )
+                stopped = True
+                continue
+            if stopped:
+                # Never inspected: strictly older than an unresolved member.
+                page_walk.append(
+                    {
+                        "signature": signature,
+                        "slot": None if not isinstance(slot, int) else slot,
+                        "outcome": NOT_INSPECTED,
+                        "reason": None,
+                    }
+                )
+                continue
+            if row.get("err_present"):
+                # A finalized transaction that failed on chain cannot carry a
+                # successful migration. Definitive, and costs no lookup.
+                page_walk.append(
+                    {
+                        "signature": signature,
+                        "slot": None if not isinstance(slot, int) else slot,
+                        "outcome": COVERED_NON_MIGRATION,
+                        "reason": "finalized_transaction_error",
+                    }
+                )
                 continue
             tx = _execute_direct_request(
                 request_kind=TRANSACTION_REQUEST_KIND,
@@ -564,27 +1076,57 @@ def run_direct_migration_discovery(
                 tx.source_status not in {SourceStatus.COMPLETE, SourceStatus.PARTIAL}
                 or tx.failure_type
             ):
-                # Most finalized Pump-program transactions are not migrations.
-                # Rejections are recorded fail-closed and never admitted.
+                # Most transactions touching the withdraw authority still are not
+                # supported migrations. Rejections are recorded fail-closed and
+                # never admitted.
                 failure = str(
                     tx.failure_type or "direct_pump_transaction_rejected"
                 )
                 failures.append(failure)
                 if not failure.startswith("direct_pump_migration_rejected_"):
                     source_failures.append(failure)
+                outcome, reason = classify_direct_migration_transaction_failure(
+                    failure,
+                    (tx.normalized_payload or {}).get("migration_rejection_digest"),
+                )
+                page_walk.append(
+                    {
+                        "signature": signature,
+                        "slot": None if not isinstance(slot, int) else slot,
+                        "outcome": outcome,
+                        "reason": reason,
+                    }
+                )
+                if outcome in _WALK_STOPPING_OUTCOMES:
+                    stopped = True
                 continue
             tokens.extend(
                 item
                 for item in (tx.normalized_payload or {}).get("tokens") or ()
                 if isinstance(item, Mapping)
             )
+            page_walk.append(
+                {
+                    "signature": signature,
+                    "slot": None if not isinstance(slot, int) else slot,
+                    "outcome": MIGRATION_LOCATED,
+                    "reason": "supported_pump_migration",
+                }
+            )
             if len(tokens) >= max_candidates:
-                break
+                # Quantum candidate cap reached. Older page members stay
+                # reachable: the next BACKFILL starts strictly before the last
+                # covered signature.
+                stopped = True
         one = intake_migration_events({"tokens": tokens})
         one["transaction_rejections"] = failures
         one["transaction_source_failures"] = source_failures
         one["transport_operation_count"] = operation_count
-        one["cursor_used"] = False
+        one["cursor_used"] = cursor_before is not None
+        one["page_walk"] = page_walk
+        one["page_requested"] = True
+        one["page_empty"] = not signatures
+        one["page_ok"] = True
         return one
 
     def _governed_verify(mint: str, signature: str, attempt: int):
@@ -893,7 +1435,101 @@ def run_direct_migration_discovery(
                 record["newly_persisted"] = newly
                 record["verified"] = True
                 confirmed_this_cycle.append(str(record["mint"]))
+                canonically_persisted_signatures.add(str(record["signature"]))
 
+        connection.commit()
+
+        # --- Contiguous cursor advancement (local state only) ---------------
+        # Walk the page in returned RPC order (newest -> oldest) and stop at the
+        # first member that is not fully resolved. Partial advancement through a
+        # safe prefix is required; all-or-nothing page advancement is forbidden.
+        block_reason: str | None = None
+        for entry in intake.get("page_walk") or ():
+            outcome = str(entry.get("outcome") or "")
+            if outcome == COVERED_NON_MIGRATION:
+                covered_prefix.append(dict(entry))
+                continue
+            if outcome == MIGRATION_LOCATED:
+                if str(entry.get("signature") or "") in canonically_persisted_signatures:
+                    # Covered only AFTER canonical persistence succeeded.
+                    covered_prefix.append(dict(entry))
+                    continue
+                # A genuine migration whose PumpSwap/canonical confirmation did
+                # not complete is never skipped.
+                break
+            if outcome == CONTRACT_BLOCKED:
+                block_reason = str(entry.get("reason") or "") or None
+                break
+            # TRANSACTION_SOURCE_FAILURE / UNRESOLVED_CANDIDATE_LOCAL /
+            # NOT_INSPECTED: stop, never advance over it.
+            break
+
+        anchor = next(
+            (
+                item
+                for item in reversed(covered_prefix)
+                if isinstance(item.get("signature"), str)
+                and isinstance(item.get("slot"), int)
+            ),
+            None,
+        )
+        covered_count = len(covered_prefix)
+        if block_reason is not None:
+            # BLOCKED_CONTRACT stops automatic backfill under this exact
+            # contract hash + decoder version. A revision creates a new row.
+            position_signature = None
+            position_slot = None
+            if anchor is not None and (
+                acquisition_mode == BACKFILL_MODE
+                or cursor_state_before.continuity_state == CONTINUITY_UNINITIALIZED
+            ):
+                position_signature = str(anchor["signature"])
+                position_slot = int(anchor["slot"])
+            cursor_state_after = mark_direct_migration_cursor_contract_blocked(
+                connection,
+                reason=block_reason,
+                now=now,
+                signature=position_signature,
+                slot=position_slot,
+                covered_count=covered_count,
+            )
+            cursor_advanced = position_signature is not None
+        elif (
+            acquisition_mode == BACKFILL_MODE
+            and intake.get("page_requested")
+            and intake.get("page_ok")
+            and intake.get("page_empty")
+        ):
+            # A successful finalized empty backfill page ends backward traversal
+            # for this contract identity. Live tail stays active.
+            cursor_state_after = mark_direct_migration_cursor_exhausted(
+                connection, now=now
+            )
+        elif anchor is not None and (
+            acquisition_mode == BACKFILL_MODE
+            or cursor_state_before.continuity_state == CONTINUITY_UNINITIALIZED
+        ):
+            # BACKFILL always advances through its covered prefix. LIVE_TAIL may
+            # only *bootstrap* a cursor that has no position yet; an established
+            # CONTIGUOUS position is historical progress and is never dragged
+            # back to the top of the chain by newer live-tail activity.
+            cursor_state_after = advance_direct_migration_cursor(
+                connection,
+                signature=str(anchor["signature"]),
+                slot=int(anchor["slot"]),
+                covered_count=covered_count,
+                now=now,
+                mode=acquisition_mode,
+            )
+            cursor_advanced = True
+        elif acquisition_mode == LIVE_TAIL_MODE and intake.get("page_requested"):
+            cursor_state_after = touch_direct_migration_cursor_live_tail(
+                connection, now=now
+            )
+        else:
+            cursor_state_after = load_direct_migration_cursor(connection) or (
+                cursor_state_before
+            )
         connection.commit()
 
         # --- Candidate mix (fresh vs previously confirmed) ------------------
@@ -1114,5 +1750,19 @@ def run_direct_migration_discovery(
         "accounting_block_reason": accounting_block_reason,
         "forbidden_capability_deltas": forbidden,
         "forbidden_delta_total": sum(forbidden.values()),
+        # --- Slice B bounded migration-targeted acquisition facts ------------
+        "direct_acquisition_mode": acquisition_mode,
+        "indexed_address": DIRECT_MIGRATION_INDEXED_ADDRESS,
+        "cursor_before": cursor_before,
+        "cursor_used": cursor_before is not None,
+        "cursor_skip_reason": cursor_skip_reason,
+        "signature_page_limit": int(max_transaction_lookups),
+        "signature_pages_requested": 1 if intake.get("page_requested") else 0,
+        "page_walk": list(intake.get("page_walk") or ()),
+        "cursor_advanced": cursor_advanced,
+        "cursor_covered_signatures": len(covered_prefix),
+        "cursor_state_before": cursor_state_before.as_dict(),
+        "cursor_state_after": cursor_state_after.as_dict(),
+        "canonically_persisted_signatures": sorted(canonically_persisted_signatures),
     }
     return report

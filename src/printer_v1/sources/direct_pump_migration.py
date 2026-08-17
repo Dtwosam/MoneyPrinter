@@ -1,8 +1,19 @@
-"""Narrow Source-Governed direct Pump migration live-tail adapter.
+"""Narrow Source-Governed direct Pump migration signature/transaction adapter.
+
+Signature history is indexed on the fixed Pump migration **withdraw authority**,
+never on generic Pump-program activity: both supported migration variants
+(legacy ``migrate`` and ``migrate_v2``) require that exact account at role index
+1 under the frozen Slice A contract, so it is the migration-targeted locator for
+the supported Pump migration universe. It remains ONLY a locator: every returned
+signature must still pass finalized ``getTransaction`` + the exact Pump migrate
+decoder + PumpSwap verification before anything becomes canonical.
 
 The adapter owns no cursor, backfill, recovery, candidate admission, selection,
-tracking or persistence.  Each execution performs exactly one finalized Solana
-JSON-RPC operation through an injected transport.
+tracking or persistence. It transports one bounded page (optionally strictly
+``before`` a caller-supplied signature) or one transaction. Cursor ownership and
+the contiguous-advancement law live with the direct migration discovery owner.
+Each execution performs exactly one finalized Solana JSON-RPC operation through
+an injected transport.
 """
 
 from __future__ import annotations
@@ -27,7 +38,8 @@ from printer_v1.sources.operational_source_contracts import (
     resolve_solana_rpc_configuration,
 )
 from printer_v1.sources.pump_contracts import (
-    PUMP_PROGRAM_ID,
+    PUMP_IDL_SHA256,
+    PUMP_WITHDRAW_AUTHORITY_ID,
     decode_supported_pump_migration_transaction,
 )
 
@@ -39,6 +51,19 @@ ALLOWED_REQUEST_KINDS = frozenset(
     {SIGNATURE_PAGE_REQUEST_KIND, TRANSACTION_REQUEST_KIND}
 )
 FINALIZED_COMMITMENT = "finalized"
+
+#: The single migration-targeted signature-history address. Both supported Pump
+#: migration variants pin this exact withdraw authority at account role 1, so
+#: indexing it selects the supported migration universe instead of ordinary
+#: Pump buy/sell traffic. Never duplicate the literal address anywhere else.
+DIRECT_MIGRATION_INDEXED_ADDRESS = PUMP_WITHDRAW_AUTHORITY_ID
+
+#: Explicit, non-derived identity of the adopted direct migration decoder. It
+#: pairs with ``PUMP_IDL_SHA256`` to scope the durable traversal cursor: a new
+#: contract or decoder identity must never continue an older decoder's position.
+DIRECT_PUMP_MIGRATION_DECODER_VERSION = "DIRECT_PUMP_MIGRATION_DECODER_V2_MIGRATE_V2"
+DIRECT_PUMP_MIGRATION_CONTRACT_HASH = PUMP_IDL_SHA256
+
 SIGNATURE_PAGE_LIMIT = 12
 MAX_TRANSACTION_LOOKUPS = 12
 RPC_TIMEOUT_SECONDS = 12.0
@@ -77,10 +102,15 @@ class DirectPumpMigrationAdapter:
                 "direct_pump_migration_transport_error",
                 str(exc),
             )
+        request_payload = context.request.payload or {}
         return normalize_direct_pump_migration_response(
             payload,
             request_kind=context.request.request_kind,
-            expected_signature=context.request.payload.get("signature"),
+            expected_signature=request_payload.get("signature"),
+            cursor_before=request_payload.get("cursor_before"),
+            signature_limit=request_payload.get(
+                "signature_limit", MAX_TRANSACTION_LOOKUPS
+            ),
         )
 
 
@@ -117,13 +147,57 @@ def build_direct_pump_migration_transport(
     def transport(context: SourceAdapterContext) -> Mapping[str, Any]:
         kind = context.request.request_kind
         if kind == SIGNATURE_PAGE_REQUEST_KIND:
-            params: list[Any] = [
-                PUMP_PROGRAM_ID,
-                {
-                    "commitment": FINALIZED_COMMITMENT,
-                    "limit": SIGNATURE_PAGE_LIMIT,
-                },
-            ]
+            payload = context.request.payload or {}
+            indexed_address = payload.get("indexed_address")
+            if indexed_address != DIRECT_MIGRATION_INDEXED_ADDRESS:
+                # Fail closed BEFORE any RPC. There is no generic Pump-program
+                # fallback and no alternate indexed address.
+                return MappingProxyType(
+                    {
+                        "fixture_status": "failure",
+                        "failure_type": "direct_pump_indexed_address_not_allowed",
+                        "failure_message": (
+                            "direct migration signature history is indexed only on "
+                            "the pinned Pump migration withdraw authority"
+                        ),
+                    }
+                )
+            signature_limit = payload.get("signature_limit")
+            if (
+                type(signature_limit) is not int
+                or signature_limit < 1
+                or signature_limit > SIGNATURE_PAGE_LIMIT
+            ):
+                return MappingProxyType(
+                    {
+                        "fixture_status": "failure",
+                        "failure_type": "direct_pump_signature_limit_invalid",
+                        "failure_message": (
+                            "signature page limit must be a bounded positive int "
+                            f"no greater than {SIGNATURE_PAGE_LIMIT}"
+                        ),
+                    }
+                )
+            cursor_before = payload.get("cursor_before")
+            if cursor_before is not None and (
+                not isinstance(cursor_before, str) or not cursor_before.strip()
+            ):
+                return MappingProxyType(
+                    {
+                        "fixture_status": "failure",
+                        "failure_type": "direct_pump_cursor_before_invalid",
+                        "failure_message": "cursor_before must be a signature or None",
+                    }
+                )
+            options: dict[str, Any] = {
+                "commitment": FINALIZED_COMMITMENT,
+                "limit": signature_limit,
+            }
+            # Solana ``until`` semantics are never used: only strict backward
+            # ``before`` traversal can preserve the contiguous cursor law.
+            if cursor_before is not None:
+                options["before"] = cursor_before
+            params: list[Any] = [DIRECT_MIGRATION_INDEXED_ADDRESS, options]
             return _rpc_post(
                 endpoint,
                 "getSignaturesForAddress",
@@ -169,6 +243,8 @@ def normalize_direct_pump_migration_response(
     *,
     request_kind: str,
     expected_signature: object = None,
+    cursor_before: object = None,
+    signature_limit: int = MAX_TRANSACTION_LOOKUPS,
 ) -> NormalizedSourceResult:
     if request_kind not in ALLOWED_REQUEST_KINDS:
         return _failure(
@@ -176,6 +252,19 @@ def normalize_direct_pump_migration_response(
             "direct_pump_request_kind_not_allowed",
             "direct Pump request kind is not allowed",
         )
+    normalized_cursor_before = (
+        cursor_before
+        if isinstance(cursor_before, str) and cursor_before.strip()
+        else None
+    )
+    # The page may never be larger than the caller can actually inspect: a
+    # cursor must never advance past a signature that was returned but never
+    # resolved.
+    page_limit = (
+        signature_limit
+        if type(signature_limit) is int and 1 <= signature_limit <= SIGNATURE_PAGE_LIMIT
+        else MAX_TRANSACTION_LOOKUPS
+    )
     if not isinstance(payload, Mapping):
         return _failure(
             request_kind,
@@ -225,13 +314,22 @@ def normalize_direct_pump_migration_response(
                     "direct_pump_signature_row_not_finalized",
                     "signature row lacks exact finalized identity",
                 )
-            if row.get("err") is not None:
-                continue
             if signature in seen:
                 continue
             seen.add(signature)
-            rows.append({"signature": signature, "slot": slot})
-            if len(rows) >= MAX_TRANSACTION_LOOKUPS:
+            # ``err`` is preserved, never dropped. A failed finalized transaction
+            # cannot carry a successful migration, so the cursor owner may treat
+            # it as a definitive non-migration without spending a transaction
+            # lookup — but only the cursor owner may make that judgement, and it
+            # can only do so if the row keeps its exact place in page order.
+            rows.append(
+                {
+                    "signature": signature,
+                    "slot": slot,
+                    "err_present": row.get("err") is not None,
+                }
+            )
+            if len(rows) >= page_limit:
                 break
         response_bytes = int(payload.get("response_bytes") or 0)
         identity = {
@@ -241,8 +339,8 @@ def normalize_direct_pump_migration_response(
             "governed_request_kind": request_kind,
             "method_or_endpoint": "getSignaturesForAddress",
             "within_request_ordinal": 1,
-            "target_category": "pump_program",
-            "target_identity": PUMP_PROGRAM_ID,
+            "target_category": "pump_migration_withdraw_authority",
+            "target_identity": DIRECT_MIGRATION_INDEXED_ADDRESS,
             "response_bytes": response_bytes,
             "normalized_rows": len(rows),
             "result": "OK",
@@ -257,7 +355,10 @@ def normalize_direct_pump_migration_response(
                     "signatures": rows,
                     "signature_count": len(rows),
                     "commitment": FINALIZED_COMMITMENT,
-                    "cursor_used": False,
+                    "indexed_address": DIRECT_MIGRATION_INDEXED_ADDRESS,
+                    "cursor_before": normalized_cursor_before,
+                    "cursor_used": normalized_cursor_before is not None,
+                    "signature_page_limit": page_limit,
                     "transport_operation_count": 1,
                     "transport_operations_used": 1,
                     "response_bytes": response_bytes,
@@ -397,12 +498,14 @@ def _failure(
         "method_or_endpoint": method,
         "within_request_ordinal": 1,
         "target_category": (
-            "pump_program"
+            "pump_migration_withdraw_authority"
             if request_kind == SIGNATURE_PAGE_REQUEST_KIND
             else "migration_signature"
         ),
         "target_identity": target_identity or (
-            PUMP_PROGRAM_ID if request_kind == SIGNATURE_PAGE_REQUEST_KIND else None
+            DIRECT_MIGRATION_INDEXED_ADDRESS
+            if request_kind == SIGNATURE_PAGE_REQUEST_KIND
+            else None
         ),
         "response_bytes": int(response_bytes),
         "normalized_rows": 0,
@@ -515,6 +618,9 @@ __all__ = [
     "FINALIZED_COMMITMENT",
     "SIGNATURE_PAGE_LIMIT",
     "MAX_TRANSACTION_LOOKUPS",
+    "DIRECT_MIGRATION_INDEXED_ADDRESS",
+    "DIRECT_PUMP_MIGRATION_DECODER_VERSION",
+    "DIRECT_PUMP_MIGRATION_CONTRACT_HASH",
     "DirectPumpMigrationAdapter",
     "build_direct_pump_migration_adapter",
     "build_direct_pump_migration_transport",

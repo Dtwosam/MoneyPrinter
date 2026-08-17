@@ -21,7 +21,10 @@ def test_migration_057_upgrades_previous_head_additively(tmp_path):
     """Prove the 056 -> 057 upgrade preserves the legacy discovery-work schema."""
     db_path = tmp_path / "upgrade.sqlite3"
     names = canonical_migration_names()
-    assert names[-1] == MIGRATION_057
+    # 057 is no longer the catalogue head (Slice B added 058), so the
+    # pre-state is built strictly up to but excluding 057.
+    boundary = names.index(MIGRATION_057)
+    assert boundary > 0
 
     connection = sqlite3.connect(db_path)
     try:
@@ -34,7 +37,7 @@ def test_migration_057_upgrades_previous_head_additively(tmp_path):
             )
             """
         )
-        for name in names[:-1]:
+        for name in names[:boundary]:
             connection.executescript((MIGRATIONS_DIR / name).read_text(encoding="utf-8"))
             connection.execute(
                 "INSERT INTO printer_schema_migrations (version) VALUES (?)",

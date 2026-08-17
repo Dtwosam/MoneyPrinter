@@ -14,6 +14,7 @@ from printer_v1.sources.campaign_six_unit_accounting import (
 )
 from printer_v1.sources.dexscreener import build_dexscreener_pair_snapshot_transport
 from printer_v1.sources.direct_pump_migration import (
+    DIRECT_MIGRATION_INDEXED_ADDRESS,
     SIGNATURE_PAGE_REQUEST_KIND,
     build_direct_pump_migration_transport,
     normalize_direct_pump_migration_response,
@@ -98,16 +99,30 @@ class MeasuredFrozenTransportTests(unittest.TestCase):
             raw = transport(
                 _ctx(
                     SIGNATURE_PAGE_REQUEST_KIND,
-                    {"program_id": "pump"},
+                    # Slice B: signature history is migration-targeted and the
+                    # page may never be larger than the caller can inspect.
+                    {
+                        "indexed_address": DIRECT_MIGRATION_INDEXED_ADDRESS,
+                        "cursor_before": None,
+                        "signature_limit": 12,
+                    },
                 )
             )
         result = normalize_direct_pump_migration_response(
-            raw, request_kind=SIGNATURE_PAGE_REQUEST_KIND
+            raw,
+            request_kind=SIGNATURE_PAGE_REQUEST_KIND,
+            cursor_before=None,
+            signature_limit=12,
         )
         ids = identities_from_payload(result.normalized_payload)
         self.assertEqual(1, len(ids))
         self.assertEqual(4, result.normalized_payload["signature_count"])
         self.assertEqual("getSignaturesForAddress", ids[0].method_or_endpoint)
+        self.assertEqual(
+            DIRECT_MIGRATION_INDEXED_ADDRESS,
+            result.normalized_payload["indexed_address"],
+        )
+        self.assertIs(False, result.normalized_payload["cursor_used"])
 
     def test_plain_unmeasured_payload_fails_stage_seal(self) -> None:
         ledger = MeasuredTransportLedger(

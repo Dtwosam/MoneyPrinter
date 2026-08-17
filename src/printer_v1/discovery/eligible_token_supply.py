@@ -33,6 +33,10 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from printer_v1.discovery.direct_migration_discovery import (
+    BACKFILL_MODE,
+    CONTINUITY_CONTIGUOUS,
+    DIRECT_ACQUISITION_MODES,
+    LIVE_TAIL_MODE,
     run_direct_migration_discovery,
 )
 from printer_v1.discovery.graduated_liquidity_front_door import (
@@ -891,6 +895,7 @@ def run_persistent_eligible_token_supply(
     cooperative_quantum: bool = False,
     cooperative_phase: str | None = None,
     cooperative_stage_budget: StageBudget | None = None,
+    cooperative_direct_mode: str | None = None,
 ) -> PersistentSupplyResult:
     """Run persistent multi-round eligible discovery inside one campaign.
 
@@ -929,6 +934,9 @@ def run_persistent_eligible_token_supply(
             raise EligibleTokenSupplyError("COOPERATIVE_STAGE_BUDGET_REQUIRED")
         if not isinstance(cooperative_stage_budget, StageBudget):
             raise EligibleTokenSupplyError("COOPERATIVE_STAGE_BUDGET_INVALID")
+    direct_acquisition_mode = str(cooperative_direct_mode or LIVE_TAIL_MODE)
+    if direct_acquisition_mode not in DIRECT_ACQUISITION_MODES:
+        raise EligibleTokenSupplyError("DIRECT_ACQUISITION_MODE_INVALID")
     if permanent_availability:
         # Two selected plus one fully eligible alternate per slot. This is a
         # reserve capacity, never a ranking or permission to consume four slots.
@@ -1042,6 +1050,8 @@ def run_persistent_eligible_token_supply(
             request_key_prefix=discovery_request_key_prefix,
             max_candidates=(1 if cooperative_quantum else max_candidates),
             max_transaction_lookups=(6 if cooperative_quantum else MAX_TRANSACTION_LOOKUPS),
+            # One page per Scheduler claim, in exactly one categorical mode.
+            acquisition_mode=direct_acquisition_mode,
             collection_rounds=collection_rounds,
             settle_seconds=settle_seconds,
             reverify_on_transient=reverify_on_transient,
@@ -1123,6 +1133,7 @@ def run_persistent_eligible_token_supply(
     liquidity_backup_work_remaining = False
     protocol_confirmation_work_remaining = False
     protocol_resume_market_work_remaining = False
+    direct_backfill_due = False
     work_queues: dict[str, list[dict[str, str]]] = {
         "MARKET_BATCHING_DUE": [],
         "RECONCILIATION_DUE": [],
@@ -1225,6 +1236,38 @@ def run_persistent_eligible_token_supply(
                     "protocol_confirmation", direct_protocol_confirmation_calls
                 )
             protocol_stage_charged = True
+
+        # --- Slice B: does this attempt still owe ONE backfill page? --------
+        # A backfill is a separate Scheduler claim, never work inside this one.
+        # It is offered only when the live tail completed cleanly, produced no
+        # canonical candidate, left a CONTIGUOUS cursor, and the SAME cumulative
+        # StageBudget can still legally pay for it. B creates no new capacity.
+        if (
+            cooperative_quantum
+            and cooperative_phase == "DIRECT_MIGRATION"
+            and run_direct_this_quantum
+            and direct_acquisition_mode == LIVE_TAIL_MODE
+        ):
+            direct_status = str(discovery.get("status") or "")
+            live_tail_clean = (
+                direct_status not in {"PROVIDER_FAILURE", "ACCOUNTING_BLOCKED"}
+                and not (discovery.get("migration_intake") or {}).get(
+                    "direct_pump_live_tail_failures"
+                )
+                and not (discovery.get("migration_intake") or {}).get(
+                    "transaction_source_failures"
+                )
+            )
+            cursor_after = discovery.get("cursor_state_after") or {}
+            direct_backfill_due = bool(
+                live_tail_clean
+                # A canonical candidate was already supplied: do not backfill
+                # merely to collect more.
+                and int(discovery.get("confirmed_count") or 0) == 0
+                and str(cursor_after.get("continuity_state") or "")
+                == CONTINUITY_CONTIGUOUS
+                and stage_budget.available("intake") >= 1
+            )
 
         if permanent_availability and (
             not cooperative_quantum
@@ -2852,6 +2895,12 @@ def run_persistent_eligible_token_supply(
                 else "DIRECT_MIGRATION"
                 if cooperative_quantum
                 and cooperative_phase == "AUXILIARY_PROTOCOL_CONFIRMATION"
+                # One attempt performs at most one LIVE_TAIL page and one
+                # BACKFILL page, always in separate Scheduler claims.
+                else "DIRECT_MIGRATION"
+                if cooperative_quantum
+                and cooperative_phase == "DIRECT_MIGRATION"
+                and direct_backfill_due
                 else "MARKET_DISCOVERY"
                 if cooperative_quantum and cooperative_phase == "DIRECT_MIGRATION"
                 else "PROTOCOL_CONFIRMATION"
@@ -2877,6 +2926,31 @@ def run_persistent_eligible_token_supply(
                 else "MARKET_DISCOVERY"
                 if cooperative_quantum
                 else None
+            ),
+            # --- Slice B direct acquisition mode state -----------------------
+            "direct_acquisition_mode": (
+                direct_acquisition_mode if run_direct_this_quantum else None
+            ),
+            "next_direct_acquisition_mode": (
+                BACKFILL_MODE
+                if direct_backfill_due
+                # The next attempt always restarts at the live tail.
+                else LIVE_TAIL_MODE
+            ),
+            "direct_live_tail_completed": bool(
+                run_direct_this_quantum
+                and direct_acquisition_mode == LIVE_TAIL_MODE
+            ),
+            "direct_backfill_completed": bool(
+                run_direct_this_quantum
+                and direct_acquisition_mode == BACKFILL_MODE
+            ),
+            "direct_migration_cursor": dict(
+                discovery.get("cursor_state_after") or {}
+            ),
+            "direct_migration_indexed_address": discovery.get("indexed_address"),
+            "direct_signature_pages_requested": int(
+                discovery.get("signature_pages_requested") or 0
             ),
             "confirmed_this_cycle": int(discovery.get("confirmed_count") or 0),
             "latest_graduated_count": int(discovery.get("latest_graduated_count") or 0),

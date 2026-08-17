@@ -1121,6 +1121,15 @@ class TestNoSchemaChange:
                 "SELECT version FROM printer_schema_migrations ORDER BY version"
             )
         ]
-        assert not any(version.startswith("058") for version in applied)
+        # Slice D still owns no schema change. Slice B later added 058 for its
+        # own direct Pump migration cursor, so the honest D proof is that no
+        # migration past the pre-D head touches the negative-history table.
+        from printer_v1.db.migrate import MIGRATIONS_DIR
+
+        for version in applied:
+            if version < "058":
+                continue
+            sql = (MIGRATIONS_DIR / version).read_text(encoding="utf-8")
+            assert "printer_exact_market_states" not in sql
         assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
