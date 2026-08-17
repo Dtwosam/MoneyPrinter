@@ -444,6 +444,48 @@ def test_g2_boundary_selects_lifecycle_without_starting_acquisition() -> None:
     assert result.disposition.at == NOW + timedelta(seconds=30)
 
 
+def test_g2_protocol_resume_exact_five_second_deadline_guard_blocks_source() -> None:
+    callback_calls = 0
+    bound = acquisition_quantum_bound(
+        AcquisitionQuantumKind.PROTOCOL_RESUME_MARKET
+    ).worst_case_seconds
+
+    def forbidden_callback(**_kwargs):
+        nonlocal callback_calls
+        callback_calls += 1
+        raise AssertionError("resume market crossed an imminent lifecycle deadline")
+
+    result = _run_four_token_admission_boundary(
+        connection=object(),
+        controller=object(),
+        binding=_Binding(),
+        first_cycle_id="cycle-g-1",
+        now=NOW,
+        next_due_work_at=NOW + timedelta(seconds=bound),
+        proof_deadline=NOW + timedelta(hours=1),
+        project_health=lambda: _Projection(),
+        evaluate=lambda _projection: _admission_disposition(),
+        later_cycle_callback=forbidden_callback,
+        admit=lambda **_kwargs: None,
+        materialize=lambda **_kwargs: None,
+        plan_opening=lambda **_kwargs: None,
+        source_governor=GOVERNOR,
+        central_scheduler=SCHEDULER,
+        clock=lambda: NOW,
+        acquisition_quantum_worst_case_seconds=lambda: bound,
+    )
+
+    assert bound == 5.0
+    assert callback_calls == 0
+    assert result.disposition.kind is FourTokenAdmissionDispositionKind.LIFECYCLE_WORK
+    assert result.disposition.at == NOW + timedelta(seconds=5)
+    assert _later_cycle_acquisition_deadline_conflict(
+        now=NOW,
+        earliest_lifecycle_deadline=NOW + timedelta(seconds=bound + 1),
+        worst_case_quantum_seconds=bound,
+    ) is False
+
+
 def test_g1_g5_two_token_heavy_supply_never_breaks_240_second_cadence() -> None:
     now = NOW
     next_due = {"token-1": NOW + timedelta(seconds=120), "token-2": NOW + timedelta(seconds=120)}

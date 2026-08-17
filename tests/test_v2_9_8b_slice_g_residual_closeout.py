@@ -11,6 +11,7 @@ from printer_v1.discovery import pre_lifecycle_refresh_composition as refresh_co
 from printer_v1.discovery.eligible_token_supply import (
     ACQUISITION_QUANTUM_YIELDED,
     AcquisitionQuantumKind,
+    BLOCKED_INSUFFICIENT_ELIGIBLE_GRADUATED_POOL,
     acquisition_quantum_bound,
     run_persistent_eligible_token_supply,
 )
@@ -28,8 +29,13 @@ from printer_v1.discovery.permanent_discovery_availability import (
     upsert_reserve_layer,
     validate_cooperative_resume_source_request_scope,
 )
-from printer_v1.sources.dexscreener import DEXSCREENER_SMOKE_TIMEOUT_SECONDS
+from printer_v1.sources.dexscreener import (
+    DEXSCREENER_SMOKE_TIMEOUT_SECONDS,
+    fixture_success_transport,
+)
+from printer_v1.sources.measured_transport import build_transport_identity
 from printer_v1.sources.pumpswap import PUMPSWAP_AMM_PROGRAM_ID
+from printer_v1.sources.pumpswap_graduated_registry import record_graduated_candidate
 from printer_v1.operator_cli.one_command_15m_factory import (
     _later_cycle_acquisition_deadline_conflict,
 )
@@ -81,6 +87,141 @@ def _empty_market_report() -> dict[str, object]:
         "source_request_ids": [1],
         "calls_by_stage": {"market_batching": 1, "reconciliation": 0},
     }
+
+
+def _seed_protocol_resume_due(path, count: int) -> dict[str, str]:
+    pools_by_mint: dict[str, str] = {}
+    connection = sqlite3.connect(path)
+    connection.row_factory = sqlite3.Row
+    for index in range(count):
+        mint = f"MintResume{index:03d}"
+        pool = f"PoolResume{index:03d}"
+        pools_by_mint[mint] = pool
+        record_graduated_candidate(
+            connection,
+            mint=mint,
+            migration_signature=f"SignatureResume{index:03d}",
+            pumpswap_pool=pool,
+            graduation_block_time=1_700_000_000 + index,
+            graduation_slot=index,
+            now=NOW,
+        )
+        record_exact_market_transition(
+            connection,
+            ExactMarketObservation(
+                network="solana-mainnet",
+                mint=mint,
+                pool=pool,
+                token_program=SPL_TOKEN_PROGRAM_ID,
+                pool_program=PUMPSWAP_AMM_PROGRAM_ID,
+                base_mint=mint,
+                quote_mint=WSOL,
+                venue="pumpswap",
+                state=CURRENT_POOL_CONFIRMED,
+                reason="EXACT_PUMPSWAP_OWNER_AND_BASE_MINT",
+                observed_at=(
+                    datetime.fromisoformat(NOW) + timedelta(microseconds=index)
+                ).isoformat(),
+                next_lawful_action_at=None,
+                source_provenance={"stage": "protocol_confirmation"},
+                contract_version="TEST_V1",
+            ),
+            now=NOW,
+        )
+    connection.commit()
+    connection.close()
+    return pools_by_mint
+
+
+def _install_real_resume_market_harness(
+    monkeypatch,
+    *,
+    pools_by_mint: dict[str, str],
+    resolver_inputs: list[tuple[str, ...]],
+):
+    real_resolver = availability.run_dexscreener_batch_market_resolution
+
+    def resolver(connection, **kwargs):
+        report = real_resolver(connection, **kwargs)
+        for candidate in report.get("candidates") or ():
+            if not candidate.get("eligible"):
+                continue
+            mint = str(candidate["mint"])
+            upsert_reserve_layer(
+                connection,
+                network="solana-mainnet",
+                mint=mint,
+                pool=str(candidate["pumpswap_pool"]),
+                layer=MEMORY_OBSERVATION_ELIGIBLE,
+                reserve_state="ACTIVE",
+                reason="EXACT_MARKET_REVALIDATED",
+                observed_at=NOW,
+                next_lawful_action_at=None,
+                evidence_expires_at=(
+                    datetime.fromisoformat(NOW) + timedelta(minutes=30)
+                ).isoformat(),
+                source_provenance={"stage": "protocol_resume_market"},
+                evidence={"liquidity_usd": 5_000.0},
+                campaign_id="campaign-g-residual",
+            )
+        connection.commit()
+        return report
+
+    monkeypatch.setattr(
+        "printer_v1.discovery.eligible_token_supply.run_dexscreener_batch_market_resolution",
+        resolver,
+    )
+
+    def transport_factory(mints):
+        ordered = tuple(mints)
+        resolver_inputs.append(ordered)
+        pairs = [
+            {
+                "chainId": "solana",
+                "pairAddress": pools_by_mint[mint],
+                "dexId": "pumpswap",
+                "baseToken": {"address": mint},
+                "quoteToken": {"address": WSOL},
+                "liquidity": {"usd": 5_000.0},
+            }
+            for mint in ordered
+        ]
+        identity = build_transport_identity(
+            stage="MINT_MARKET_BATCH",
+            source_name="dexscreener_pair",
+            endpoint_owner="dexscreener",
+            governed_request_kind="candidate_market_batch",
+            method_or_endpoint="GET /tokens/v1/solana/{mints}",
+            within_request_ordinal=1,
+            target_category="due_mints",
+            target_identity=",".join(ordered),
+            response_bytes=1_200,
+            normalized_rows=len(pairs),
+            result="OK",
+        )
+        return fixture_success_transport(
+            {
+                "pairs": pairs,
+                "transport_operations_used": 1,
+                "response_bytes": 1_200,
+                "normalized_rows": len(pairs),
+                "transport_operation_identities": (identity.as_dict(),),
+            }
+        )
+
+    return transport_factory
+
+
+def _protocol_resume_requests(path) -> list[sqlite3.Row]:
+    connection = sqlite3.connect(path)
+    connection.row_factory = sqlite3.Row
+    rows = connection.execute(
+        """SELECT source_name,request_kind,request_key
+           FROM printer_source_requests
+           ORDER BY id ASC"""
+    ).fetchall()
+    connection.close()
+    return rows
 
 
 def test_market_quantum_yields_before_residual_protocol(monkeypatch, tmp_path) -> None:
@@ -339,6 +480,185 @@ def test_protocol_resume_market_is_one_dex_quantum_and_charges_shared_budget(
     assert [item.name for item in bound.components] == [
         "dexscreener_protocol_resume_market_http"
     ]
+
+
+def test_protocol_resume_market_caps_each_claim_and_never_resets_shared_budget(
+    monkeypatch, tmp_path
+) -> None:
+    path = tmp_path / "protocol-resume-market-61.sqlite3"
+    apply_migrations(path)
+    pools_by_mint = _seed_protocol_resume_due(path, 61)
+    resolver_inputs: list[tuple[str, ...]] = []
+    transport_factory = _install_real_resume_market_harness(
+        monkeypatch,
+        pools_by_mint=pools_by_mint,
+        resolver_inputs=resolver_inputs,
+    )
+    budget = StageBudget.permanent_discovery_default()
+    budget_snapshots = [budget.snapshot()]
+    stage_evidence: list[dict[str, object]] = []
+
+    first = run_persistent_eligible_token_supply(
+        path,
+        **_kwargs(path, budget, "PROTOCOL_RESUME_MARKET"),
+        dexscreener_batch_transport_factory=transport_factory,
+        stage_evidence_sink=stage_evidence.append,
+    )
+    budget_snapshots.append(budget.snapshot())
+    first_rows = _protocol_resume_requests(path)
+    connection = sqlite3.connect(path)
+    connection.row_factory = sqlite3.Row
+    first_remaining = availability.load_protocol_resume_market_due(connection)
+    connection.close()
+
+    assert first.terminal == ACQUISITION_QUANTUM_YIELDED
+    assert len(resolver_inputs) == 1
+    assert len(resolver_inputs[0]) == 30
+    assert len(first_rows) == 1
+    assert {
+        (row["source_name"], row["request_kind"]) for row in first_rows
+    } == {("dexscreener", "candidate_market_batch")}
+    assert len(first_remaining) == 31
+    assert first.diagnostics["next_cooperative_phase"] == "PROTOCOL_RESUME_MARKET"
+    assert first.diagnostics["provider_failures"] == 0
+    assert first.diagnostics["shortage_classification"] is None
+    assert budget.used_by_stage["market_batching"] == 1
+    assert budget.available("market_batching") == 1
+
+    second = run_persistent_eligible_token_supply(
+        path,
+        **_kwargs(path, budget, first.diagnostics["next_cooperative_phase"]),
+        dexscreener_batch_transport_factory=transport_factory,
+        stage_evidence_sink=stage_evidence.append,
+    )
+    budget_snapshots.append(budget.snapshot())
+    second_rows = _protocol_resume_requests(path)
+    connection = sqlite3.connect(path)
+    connection.row_factory = sqlite3.Row
+    second_remaining = availability.load_protocol_resume_market_due(connection)
+    connection.close()
+
+    assert second.terminal == ACQUISITION_QUANTUM_YIELDED
+    assert [len(batch) for batch in resolver_inputs] == [30, 30]
+    assert len(second_rows) == 2
+    assert len(second_remaining) == 1
+    assert budget.used_by_stage["market_batching"] == 2
+    assert budget.available("market_batching") == 0
+
+    third = run_persistent_eligible_token_supply(
+        path,
+        **_kwargs(path, budget, second.diagnostics["next_cooperative_phase"]),
+        dexscreener_batch_transport_factory=transport_factory,
+        stage_evidence_sink=stage_evidence.append,
+    )
+    budget_snapshots.append(budget.snapshot())
+    third_rows = _protocol_resume_requests(path)
+    connection = sqlite3.connect(path)
+    connection.row_factory = sqlite3.Row
+    third_remaining = availability.load_protocol_resume_market_due(connection)
+    connection.close()
+
+    assert third.terminal == BLOCKED_INSUFFICIENT_ELIGIBLE_GRADUATED_POOL
+    assert [len(batch) for batch in resolver_inputs] == [30, 30]
+    assert len(third_rows) == 2
+    assert len(third_remaining) == 1
+    assert third_remaining[0]["mint"] == "MintResume060"
+    assert budget.used_by_stage["market_batching"] == 2
+    assert budget.available("market_batching") == 0
+
+    request_keys = [str(row["request_key"]) for row in third_rows]
+    stage_sequences = [
+        availability.parse_mint_market_batch_stage_sequence(key)
+        for key in request_keys
+    ]
+    assert request_keys == [
+        f"{ROOT}-protocol-resume-mb1",
+        f"{ROOT}-protocol-resume-mb2",
+    ]
+    assert stage_sequences == [1, 2]
+    assert len(set(request_keys)) == 2
+    stage_ids = [str(item["stage_id"]) for item in stage_evidence]
+    assert stage_ids == [
+        "campaign-g-residual|run-g-residual|cycle-g-residual|MINT_MARKET_BATCH|1",
+        "campaign-g-residual|run-g-residual|cycle-g-residual|MINT_MARKET_BATCH|2",
+    ]
+    assert len(set(stage_ids)) == 2
+    assert all(
+        later["remaining_by_stage"][stage]
+        <= earlier["remaining_by_stage"][stage]
+        for earlier, later in zip(
+            budget_snapshots, budget_snapshots[1:], strict=False
+        )
+        for stage in earlier["remaining_by_stage"]
+    )
+    assert budget.used_by_stage["reconciliation"] <= 6
+    assert budget.used_by_stage["protocol_confirmation"] <= 7
+    assert budget.used_by_stage["intake"] <= 3
+
+
+@pytest.mark.parametrize(
+    ("due_count", "expected_batch_sizes"),
+    ((30, [30]), (31, [30, 1])),
+)
+def test_protocol_resume_market_obeys_exact_canonical_batch_boundaries(
+    monkeypatch, tmp_path, due_count, expected_batch_sizes
+) -> None:
+    path = tmp_path / f"protocol-resume-market-{due_count}.sqlite3"
+    apply_migrations(path)
+    pools_by_mint = _seed_protocol_resume_due(path, due_count)
+    resolver_inputs: list[tuple[str, ...]] = []
+    transport_factory = _install_real_resume_market_harness(
+        monkeypatch,
+        pools_by_mint=pools_by_mint,
+        resolver_inputs=resolver_inputs,
+    )
+    budget = StageBudget.permanent_discovery_default()
+    phase = "PROTOCOL_RESUME_MARKET"
+
+    for _ in expected_batch_sizes:
+        result = run_persistent_eligible_token_supply(
+            path,
+            **_kwargs(path, budget, phase),
+            dexscreener_batch_transport_factory=transport_factory,
+        )
+        assert result.terminal == ACQUISITION_QUANTUM_YIELDED
+        phase = result.diagnostics["next_cooperative_phase"]
+
+    assert [len(batch) for batch in resolver_inputs] == expected_batch_sizes
+    rows = _protocol_resume_requests(path)
+    assert len(rows) == len(expected_batch_sizes)
+    assert all(
+        row["source_name"] == "dexscreener"
+        and row["request_kind"] == "candidate_market_batch"
+        for row in rows
+    )
+    assert budget.used_by_stage["market_batching"] == len(expected_batch_sizes)
+    bound = acquisition_quantum_bound(AcquisitionQuantumKind.PROTOCOL_RESUME_MARKET)
+    assert bound.worst_case_seconds == DEXSCREENER_SMOKE_TIMEOUT_SECONDS == 5.0
+
+
+def test_protocol_resume_market_empty_queue_advances_without_source_or_budget(
+    monkeypatch, tmp_path
+) -> None:
+    path = tmp_path / "protocol-resume-market-empty.sqlite3"
+    apply_migrations(path)
+    budget = StageBudget.permanent_discovery_default()
+    monkeypatch.setattr(
+        "printer_v1.discovery.eligible_token_supply.run_dexscreener_batch_market_resolution",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("empty resume queue must not create a provider operation")
+        ),
+    )
+
+    result = run_persistent_eligible_token_supply(
+        path, **_kwargs(path, budget, "PROTOCOL_RESUME_MARKET")
+    )
+
+    assert result.terminal == ACQUISITION_QUANTUM_YIELDED
+    assert result.diagnostics["next_cooperative_phase"] == "MARKET_DISCOVERY"
+    assert result.diagnostics["stage_local_source_requests"] == 0
+    assert budget.used_by_stage["market_batching"] == 0
+    assert _protocol_resume_requests(path) == []
 
 
 def test_completed_market_evidence_is_not_requeued_for_protocol_resume(

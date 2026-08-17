@@ -66,6 +66,7 @@ from printer_v1.discovery.pre_lifecycle_temporal_acquisition import (
     TemporalRefreshOutcome,
 )
 from printer_v1.discovery.permanent_discovery_availability import (
+    MAX_DEXSCREENER_MARKET_BATCH_MINTS,
     StageBudget,
     order_canonical_inventory_fairly,
     record_fresh_pool_nominations,
@@ -1823,6 +1824,9 @@ def run_persistent_eligible_token_supply(
             resume_due = load_protocol_resume_market_due(connection)
             work_queues["PROTOCOL_RESUME_MARKET_DUE"] = list(resume_due)
             if resume_due and stage_budget.available("market_batching") >= 1:
+                current_resume_batch = resume_due[
+                    :MAX_DEXSCREENER_MARKET_BATCH_MINTS
+                ]
                 stage_budget.consume("market_batching", 1)
                 resume_stage_sequence = next_mint_market_batch_stage_sequence(
                     connection,
@@ -1847,7 +1851,7 @@ def run_persistent_eligible_token_supply(
                             "pumpswap_program_id": _PAM,
                             "latest_channel": "PROTOCOL_CONFIRMED",
                         }
-                        for item in resume_due
+                        for item in current_resume_batch
                     ],
                     transport_factory=dexscreener_batch_transport_factory,
                     geckoterminal_transport_factory=None,

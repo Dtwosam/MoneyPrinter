@@ -80,6 +80,7 @@ PROTOCOL_DUE_REASONS = frozenset(
 MINIMUM_FREEZE_DEPTH = 4
 OBSERVATION_SURPLUS_TARGET = 8
 SELECTION_FLOOR_USD = 3000.0
+MAX_DEXSCREENER_MARKET_BATCH_MINTS = 30
 
 TRAVERSAL_CATEGORIES = (
     "FRESH_NOMINATION",
@@ -1229,8 +1230,12 @@ def run_dexscreener_batch_market_resolution(
     }
     due_boundary = (_parse_iso(now) + timedelta(seconds=EXACT_POOL_RECONCILIATION_SECONDS)).isoformat()
 
-    for batch_index in range(0, len(due), 30):
-        batch = due[batch_index : batch_index + 30]
+    for batch_index in range(
+        0, len(due), MAX_DEXSCREENER_MARKET_BATCH_MINTS
+    ):
+        batch = due[
+            batch_index : batch_index + MAX_DEXSCREENER_MARKET_BATCH_MINTS
+        ]
         mints = tuple(sorted({str(row["mint_identity"]) for row in batch}))
         if not mints:
             continue
@@ -1249,7 +1254,11 @@ def run_dexscreener_batch_market_resolution(
         request = build_governed_source_request(
             DEXSCREENER_SOURCE_NAME,
             "candidate_market_batch",
-            request_key=f"{request_key}-{batch_index // 30 + 1}" if len(due) > 30 else request_key,
+            request_key=(
+                f"{request_key}-{batch_index // MAX_DEXSCREENER_MARKET_BATCH_MINTS + 1}"
+                if len(due) > MAX_DEXSCREENER_MARKET_BATCH_MINTS
+                else request_key
+            ),
             tracking_priority=0,
             payload={
                 "request_kind": "candidate_market_batch",
@@ -1306,7 +1315,7 @@ def run_dexscreener_batch_market_resolution(
                 )
         pairs = list(payload.get("pairs") or ()) if isinstance(payload, Mapping) else []
         failed = result.source_status != SourceStatus.COMPLETE or bool(result.failure_type)
-        batch_seq = batch_index // 30 + 1
+        batch_seq = batch_index // MAX_DEXSCREENER_MARKET_BATCH_MINTS + 1
         report["source_request_coverage"].append(
             {
                 "source_request_id": batch_request_id,
@@ -5799,6 +5808,7 @@ __all__ = [
     "CAMPAIGN_SOURCE_REQUEST_RECONCILIATION_MISMATCH",
     "PRINTER_V1_CAMPAIGN_SOURCE_REQUEST_SCOPE_V1",
     "LEGACY_STATIC_REQUEST_KEY_ROOT",
+    "MAX_DEXSCREENER_MARKET_BATCH_MINTS",
     "CAMPAIGN_SOURCE_REQUEST_SCOPE_REQUIRED",
     "CAMPAIGN_SOURCE_REQUEST_SCOPE_INVALID",
     "CAMPAIGN_SOURCE_REQUEST_SCOPE_IDENTITY_MISMATCH",
