@@ -103,6 +103,8 @@ class AcquisitionQuantumKind(str, Enum):
     AUXILIARY_PROTOCOL_CONFIRMATION = "AUXILIARY_PROTOCOL_CONFIRMATION"
     DIRECT_MIGRATION = "DIRECT_MIGRATION"
     MARKET_DISCOVERY = "MARKET_DISCOVERY"
+    PROTOCOL_CONFIRMATION = "PROTOCOL_CONFIRMATION"
+    PROTOCOL_RESUME_MARKET = "PROTOCOL_RESUME_MARKET"
     PERSISTED_REFRESH = "PERSISTED_REFRESH"
     PERSISTED_REFRESH_DEXSCREENER = "PERSISTED_REFRESH_DEXSCREENER"
     PERSISTED_REFRESH_GECKOTERMINAL = "PERSISTED_REFRESH_GECKOTERMINAL"
@@ -193,6 +195,20 @@ _ACQUISITION_QUANTUM_BOUNDS = {
             ),
             AcquisitionQuantumComponent(
                 "geckoterminal_inter_request_pacing", 5, 6.0, transport=False
+            ),
+        ),
+    ),
+    AcquisitionQuantumKind.PROTOCOL_CONFIRMATION: AcquisitionQuantumBound(
+        AcquisitionQuantumKind.PROTOCOL_CONFIRMATION,
+        _AUXILIARY_PROTOCOL_CONFIRMATION_COMPONENTS,
+    ),
+    AcquisitionQuantumKind.PROTOCOL_RESUME_MARKET: AcquisitionQuantumBound(
+        AcquisitionQuantumKind.PROTOCOL_RESUME_MARKET,
+        (
+            AcquisitionQuantumComponent(
+                "dexscreener_protocol_resume_market_http",
+                1,
+                DEXSCREENER_SMOKE_TIMEOUT_SECONDS,
             ),
         ),
     ),
@@ -904,6 +920,8 @@ def run_persistent_eligible_token_supply(
             "AUXILIARY_PROTOCOL_CONFIRMATION",
             "DIRECT_MIGRATION",
             "MARKET_DISCOVERY",
+            "PROTOCOL_CONFIRMATION",
+            "PROTOCOL_RESUME_MARKET",
         }:
             raise EligibleTokenSupplyError("COOPERATIVE_QUANTUM_PHASE_INVALID")
         if cooperative_stage_budget is None:
@@ -1103,10 +1121,12 @@ def run_persistent_eligible_token_supply(
     protocol_report: dict[str, Any] = {}
     liquidity_backup_work_remaining = False
     protocol_confirmation_work_remaining = False
+    protocol_resume_market_work_remaining = False
     work_queues: dict[str, list[dict[str, str]]] = {
         "MARKET_BATCHING_DUE": [],
         "RECONCILIATION_DUE": [],
         "PROTOCOL_CONFIRMATION_DUE": [],
+        "PROTOCOL_RESUME_MARKET_DUE": [],
         "HOLDER_SAFETY_DUE": [],
     }
     geckoterminal_nomination_report: dict[str, Any] = {
@@ -1281,11 +1301,15 @@ def run_persistent_eligible_token_supply(
             )
             if auxiliary_protocol_capacity >= 1:
                 from printer_v1.discovery.permanent_discovery_availability import (
+                    next_protocol_confirmation_stage_sequence,
                     process_protocol_confirmation_queue as _early_protocol,
                 )
 
                 protocol_claim_sequence = (
-                    int(stage_budget.used_by_stage["protocol_confirmation"]) + 1
+                    next_protocol_confirmation_stage_sequence(
+                        connection,
+                        request_key_prefix=str(discovery_request_key_prefix),
+                    )
                     if cooperative_quantum
                     else 1
                 )
@@ -1331,6 +1355,62 @@ def run_persistent_eligible_token_supply(
                     early_protocol.get("remaining_due")
                     and stage_budget.available("protocol_confirmation") > 1
                 )
+
+        if cooperative_quantum and cooperative_phase == "PROTOCOL_CONFIRMATION":
+            from printer_v1.discovery.permanent_discovery_availability import (
+                next_protocol_confirmation_stage_sequence,
+                process_protocol_confirmation_queue as _residual_protocol,
+            )
+
+            protocol_claim_sequence = next_protocol_confirmation_stage_sequence(
+                connection,
+                request_key_prefix=str(discovery_request_key_prefix),
+            )
+            protocol_report = _residual_protocol(
+                connection,
+                stage_budget=stage_budget,
+                now=now,
+                campaign_id=campaign_id,
+                run_id=run_id,
+                cycle_id=cycle_id,
+                account_batch_transport=protocol_account_batch_transport,
+                account_batch_transport_factory=(
+                    protocol_account_batch_transport_factory
+                ),
+                stage_evidence_sink=stage_evidence_sink,
+                transport_identity_observer=transport_identity_observer,
+                local_validation_identity_observer=(
+                    local_validation_identity_observer
+                ),
+                stage_sequence=protocol_claim_sequence,
+                request_key_prefix=(
+                    f"{discovery_request_key_prefix}-protocol-residual-q"
+                    f"{protocol_claim_sequence}"
+                ),
+                max_confirmations=1,
+            )
+            protocol_confirmation_outcomes = list(
+                protocol_report.get("outcomes") or ()
+            )
+            ops_used += int(protocol_report.get("source_requests") or 0)
+            work_queues["PROTOCOL_CONFIRMATION_DUE"] = list(
+                protocol_report.get("remaining_due") or ()
+            )
+            work_queues["PROTOCOL_RESUME_MARKET_DUE"] = list(
+                protocol_report.get("requires_market_revalidation") or ()
+            )
+            for promo in protocol_report.get("promoted_observation_eligible") or ():
+                mint = str(promo.get("mint") or "")
+                if not mint or mint in campaign_eligible:
+                    continue
+                candidate = _protocol_promotion_candidate(promo)
+                campaign_eligible[mint] = candidate
+                evaluated_mints.add(mint)
+                all_candidates.append(candidate)
+            protocol_confirmation_work_remaining = bool(
+                work_queues["PROTOCOL_CONFIRMATION_DUE"]
+                and stage_budget.available("protocol_confirmation") >= 1
+            )
 
         # Count locator and direct migration/verification failures only through
         # the exact Source-Governor request/failure lineage exposed by those
@@ -1731,6 +1811,113 @@ def run_persistent_eligible_token_supply(
             )
             return True
 
+        if cooperative_quantum and cooperative_phase == "PROTOCOL_RESUME_MARKET":
+            from printer_v1.discovery.permanent_discovery_availability import (
+                build_mint_market_batch_request_key,
+                load_protocol_confirmation_due,
+                load_protocol_resume_market_due,
+                next_mint_market_batch_stage_sequence,
+            )
+            from printer_v1.sources.pumpswap import PUMPSWAP_AMM_PROGRAM_ID as _PAM
+
+            resume_due = load_protocol_resume_market_due(connection)
+            work_queues["PROTOCOL_RESUME_MARKET_DUE"] = list(resume_due)
+            if resume_due and stage_budget.available("market_batching") >= 1:
+                stage_budget.consume("market_batching", 1)
+                resume_stage_sequence = next_mint_market_batch_stage_sequence(
+                    connection,
+                    request_key_prefix=str(front_door_request_key_prefix),
+                )
+                resume_request_key = build_mint_market_batch_request_key(
+                    request_key_prefix=str(front_door_request_key_prefix),
+                    stage_sequence=resume_stage_sequence,
+                    kind="protocol_resume",
+                )
+                resume_report = run_dexscreener_batch_market_resolution(
+                    connection,
+                    inventory_rows=[
+                        {
+                            "mint_identity": str(item["mint"]),
+                            "pumpswap_pool": str(item["pool"]),
+                            "market_identity": (
+                                f"solana-mainnet:pumpswap:{item['pool']}"
+                            ),
+                            "lifecycle_state": "PUMPSWAP_PROTOCOL_CONFIRMED",
+                            "graduation_block_time": None,
+                            "pumpswap_program_id": _PAM,
+                            "latest_channel": "PROTOCOL_CONFIRMED",
+                        }
+                        for item in resume_due
+                    ],
+                    transport_factory=dexscreener_batch_transport_factory,
+                    geckoterminal_transport_factory=None,
+                    enable_geckoterminal_fallback=False,
+                    request_key=resume_request_key,
+                    now=now,
+                    campaign_id=campaign_id,
+                    recent_request_count=fresh_market_checks,
+                    run_id=run_id,
+                    cycle_id=cycle_id,
+                    stage_evidence_sink=stage_evidence_sink,
+                    transport_identity_observer=transport_identity_observer,
+                    stage_sequence=resume_stage_sequence,
+                )
+                permanent_market_reports.append(resume_report)
+                resume_market_calls = int(
+                    resume_report.get("source_request_count")
+                    or len(resume_report.get("source_request_ids") or ())
+                )
+                fresh_market_checks += resume_market_calls
+                ops_used += resume_market_calls
+                for candidate in resume_report.get("candidates") or ():
+                    if not candidate.get("eligible"):
+                        continue
+                    mint = str(candidate.get("mint") or "")
+                    if not mint or mint in campaign_eligible:
+                        continue
+                    normalized = _candidate_from_front_door_item(candidate)
+                    campaign_eligible[mint] = normalized
+                    evaluated_mints.add(mint)
+                    all_candidates.append(normalized)
+                    upsert_eligible_reserve(
+                        connection,
+                        mint=mint,
+                        pumpswap_pool=str(
+                            candidate.get("pumpswap_pool")
+                            or candidate.get("pool")
+                            or ""
+                        ),
+                        market_identity=str(
+                            candidate.get("market_identity") or ""
+                        ),
+                        provenance=str(
+                            candidate.get("provenance")
+                            or "PROTOCOL_CONFIRMED"
+                        ),
+                        liquidity_usd=(
+                            None
+                            if candidate.get("liquidity_usd") is None
+                            else float(candidate["liquidity_usd"])
+                        ),
+                        liquidity_status=str(
+                            candidate.get("liquidity_status")
+                            or LIQUIDITY_PROVEN
+                        ),
+                        eligibility_status=ELIGIBLE_FRESH,
+                        last_validated_at=now,
+                        source_provenance="protocol_confirmed_market_resume",
+                        last_campaign_id=campaign_id,
+                    )
+                connection.commit()
+            remaining_resume = load_protocol_resume_market_due(connection)
+            work_queues["PROTOCOL_RESUME_MARKET_DUE"] = list(remaining_resume)
+            work_queues["PROTOCOL_CONFIRMATION_DUE"] = (
+                load_protocol_confirmation_due(connection)
+            )
+            protocol_resume_market_work_remaining = bool(
+                remaining_resume and stage_budget.available("market_batching") >= 1
+            )
+
         cooperative_startup_only = bool(
             cooperative_quantum
             and cooperative_phase
@@ -1739,6 +1926,8 @@ def run_persistent_eligible_token_supply(
                 "AUXILIARY_LIQUIDITY_BACKUP",
                 "AUXILIARY_PROTOCOL_CONFIRMATION",
                 "DIRECT_MIGRATION",
+                "PROTOCOL_CONFIRMATION",
+                "PROTOCOL_RESUME_MARKET",
             }
         )
         if cooperative_startup_only:
@@ -2105,6 +2294,13 @@ def run_persistent_eligible_token_supply(
 
             connection.commit()
 
+            # A cooperative claim owns exactly this market quantum. Even when
+            # it fills the reserve, return control before holder/safety source
+            # work or any later acquisition stage can run in the same claim.
+            if cooperative_quantum:
+                last_stop_reason = ACQUISITION_QUANTUM_YIELDED
+                break
+
             if len(campaign_eligible) >= required_token_capacity:
                 last_stop_reason = "ELIGIBLE_CAPACITY_MET"
                 break
@@ -2140,6 +2336,15 @@ def run_persistent_eligible_token_supply(
         inventory_mints = {str(r["mint_identity"]) for r in inventory_rows}
         pools_confirmed = len(inventory_mints)
         unexplored_remaining = len(inventory_mints - evaluated_mints)
+
+        if cooperative_quantum and cooperative_phase == "MARKET_DISCOVERY":
+            from printer_v1.discovery.permanent_discovery_availability import (
+                load_protocol_confirmation_due,
+            )
+
+            work_queues["PROTOCOL_CONFIRMATION_DUE"] = (
+                load_protocol_confirmation_due(connection)
+            )
 
         if permanent_availability and not cooperative_quantum:
             from printer_v1.discovery.permanent_discovery_availability import (
@@ -2348,7 +2553,13 @@ def run_persistent_eligible_token_supply(
                 for mint in sorted(inventory_mints - evaluated_mints)
             ]
 
-        ready = len(eligible_list) >= required_token_capacity
+        ready = (
+            len(eligible_list) >= required_token_capacity
+            and not (
+                cooperative_quantum
+                and last_stop_reason == ACQUISITION_QUANTUM_YIELDED
+            )
+        )
         certificate: ExhaustionCertificate | None = None
         shortage: str | None = None
 
@@ -2639,6 +2850,26 @@ def run_persistent_eligible_token_supply(
                 and cooperative_phase == "AUXILIARY_PROTOCOL_CONFIRMATION"
                 else "MARKET_DISCOVERY"
                 if cooperative_quantum and cooperative_phase == "DIRECT_MIGRATION"
+                else "PROTOCOL_CONFIRMATION"
+                if cooperative_quantum
+                and cooperative_phase == "MARKET_DISCOVERY"
+                and bool(work_queues["PROTOCOL_CONFIRMATION_DUE"])
+                else "PROTOCOL_RESUME_MARKET"
+                if cooperative_quantum
+                and cooperative_phase == "PROTOCOL_CONFIRMATION"
+                and bool(work_queues["PROTOCOL_RESUME_MARKET_DUE"])
+                else "PROTOCOL_CONFIRMATION"
+                if cooperative_quantum
+                and cooperative_phase == "PROTOCOL_CONFIRMATION"
+                and protocol_confirmation_work_remaining
+                else "PROTOCOL_RESUME_MARKET"
+                if cooperative_quantum
+                and cooperative_phase == "PROTOCOL_RESUME_MARKET"
+                and protocol_resume_market_work_remaining
+                else "PROTOCOL_CONFIRMATION"
+                if cooperative_quantum
+                and cooperative_phase == "PROTOCOL_RESUME_MARKET"
+                and bool(work_queues["PROTOCOL_CONFIRMATION_DUE"])
                 else "MARKET_DISCOVERY"
                 if cooperative_quantum
                 else None

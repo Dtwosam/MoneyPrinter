@@ -942,6 +942,97 @@ def next_mint_market_batch_stage_sequence(
     return highest + 1
 
 
+def parse_protocol_confirmation_stage_sequence(request_key: str) -> int | None:
+    """Reconstruct a cooperative protocol stage sequence from its request key."""
+    match = re.search(
+        r"(?:^|-)protocol(?:-residual)?-q([1-9][0-9]*)-[1-9][0-9]*$",
+        str(request_key or ""),
+    )
+    return None if match is None else int(match.group(1))
+
+
+def next_protocol_confirmation_stage_sequence(
+    connection: sqlite3.Connection | None,
+    *,
+    request_key_prefix: str,
+) -> int:
+    """Allocate one monotonic cooperative PROTOCOL_CONFIRMATION sequence.
+
+    Every source-bearing cooperative protocol producer embeds this sequence in
+    its governed request key. Durable request truth therefore survives each
+    Scheduler yield without adding another table or weakening duplicate-stage
+    detection in the six-unit owner.
+    """
+    prefix = str(request_key_prefix or "").strip()
+    highest = 0
+    if connection is not None and prefix:
+        rows = connection.execute(
+            """SELECT request_key FROM printer_source_requests
+               WHERE source_name='solana_rpc'
+                 AND request_kind='pumpswap_pool_account_batch'
+                 AND request_key LIKE ?
+               ORDER BY id ASC""",
+            (f"{prefix}-%",),
+        ).fetchall()
+        for row in rows:
+            key = row[0] if not isinstance(row, Mapping) else row["request_key"]
+            parsed = parse_protocol_confirmation_stage_sequence(str(key))
+            if parsed is not None:
+                highest = max(highest, parsed)
+    return highest + 1
+
+
+def load_protocol_confirmation_due(
+    connection: sqlite3.Connection,
+) -> list[dict[str, str]]:
+    """Read the exact durable protocol queue without executing its owner."""
+    placeholders = ",".join("?" * len(PROTOCOL_DUE_REASONS))
+    rows = connection.execute(
+        f"""SELECT mint_identity,pool_address,venue
+            FROM printer_exact_market_states
+            WHERE current_state=? AND current_reason IN ({placeholders})
+            ORDER BY last_observed_at ASC,mint_identity ASC,pool_address ASC""",
+        (CONTRACT_BLOCKED, *sorted(PROTOCOL_DUE_REASONS)),
+    ).fetchall()
+    return [
+        {
+            "mint": str(row[0]),
+            "pool": str(row[1]),
+            "venue": str(row[2] or ""),
+        }
+        for row in rows
+    ]
+
+
+def load_protocol_resume_market_due(
+    connection: sqlite3.Connection,
+) -> list[dict[str, str]]:
+    """Read protocol-confirmed identities still lacking current market proof."""
+    rows = connection.execute(
+        """SELECT mint_identity,pool_address,venue
+           FROM printer_exact_market_states
+           WHERE current_state=?
+             AND NOT EXISTS (
+                 SELECT 1 FROM printer_discovery_reserve_layers AS layer
+                 WHERE layer.network=printer_exact_market_states.network
+                   AND layer.mint_identity=printer_exact_market_states.mint_identity
+                   AND layer.pool_address=printer_exact_market_states.pool_address
+                   AND layer.reserve_layer=?
+                   AND layer.reserve_state='ACTIVE'
+             )
+           ORDER BY last_observed_at ASC,mint_identity ASC,pool_address ASC""",
+        (CURRENT_POOL_CONFIRMED, MEMORY_OBSERVATION_ELIGIBLE),
+    ).fetchall()
+    return [
+        {
+            "mint": str(row[0]),
+            "pool": str(row[1]),
+            "venue": str(row[2] or "pumpswap"),
+        }
+        for row in rows
+    ]
+
+
 def build_mint_market_batch_request_key(
     *,
     request_key_prefix: str,
@@ -3818,6 +3909,7 @@ def validate_cooperative_resume_source_request_scope(
             (r"-verify-.+-a[1-9][0-9]*", "pumpswap", "pumpswap_signature_pool_resolution"),
             (r"-protocol(?:-residual)?-[1-9][0-9]*", "solana_rpc", "pumpswap_pool_account_batch"),
             (r"-protocol-q[1-9][0-9]*-[1-9][0-9]*", "solana_rpc", "pumpswap_pool_account_batch"),
+            (r"-protocol-residual-q[1-9][0-9]*-[1-9][0-9]*", "solana_rpc", "pumpswap_pool_account_batch"),
             (r"-mint-batch-r[1-9][0-9]*", "dexscreener", "candidate_market_batch"),
             (r"-protocol-resume-mb[1-9][0-9]*", "dexscreener", "candidate_market_batch"),
             (r"-(?:mint-batch-r|protocol-resume-mb)[1-9][0-9]*-gt-[1-6]-.+", "geckoterminal", "candidate_market_batch"),
@@ -3827,6 +3919,7 @@ def validate_cooperative_resume_source_request_scope(
             (r"-refresh-[1-9][0-9]*-pump-migration-tx-[1-9][0-9]*", "solana_rpc", "restored_pump_migration_transaction"),
             (r"-refresh-[1-9][0-9]*-pump-verify-.+-a[1-9][0-9]*", "pumpswap", "pumpswap_signature_pool_resolution"),
             (r"-refresh-[1-9][0-9]*-protocol-[1-9][0-9]*", "solana_rpc", "pumpswap_pool_account_batch"),
+            (r"-refresh-[1-9][0-9]*-protocol-q[1-9][0-9]*-[1-9][0-9]*", "solana_rpc", "pumpswap_pool_account_batch"),
         )
         if any(
             re.fullmatch(pattern, suffix)
@@ -5741,6 +5834,8 @@ __all__ = [
     "interleave_candidate_observations",
     "load_durable_campaign_source_request_ids",
     "load_exact_market_states",
+    "load_protocol_confirmation_due",
+    "load_protocol_resume_market_due",
     "load_liquidity_unknown_candidates",
     "load_prefix_lookup_request_ids",
     "load_retained_market_evidence",
@@ -5769,6 +5864,8 @@ __all__ = [
     "mint_set_digest",
     "parse_mint_market_batch_stage_sequence",
     "next_mint_market_batch_stage_sequence",
+    "parse_protocol_confirmation_stage_sequence",
+    "next_protocol_confirmation_stage_sequence",
     "build_mint_market_batch_request_key",
     "build_mint_market_batch_logical_identity",
 ]

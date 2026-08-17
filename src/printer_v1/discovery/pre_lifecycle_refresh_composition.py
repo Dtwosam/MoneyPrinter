@@ -28,6 +28,7 @@ from typing import Any, Callable, Mapping
 from printer_v1.discovery.combined_executor import ensure_cycle_discovery_batch
 from printer_v1.discovery.permanent_discovery_availability import (
     StageBudget,
+    next_protocol_confirmation_stage_sequence,
     process_protocol_confirmation_queue,
     record_fresh_pool_nominations,
     run_bounded_unknown_liquidity_backup,
@@ -448,6 +449,14 @@ def build_pre_lifecycle_refresh_stage(
             and stage_budget.available("protocol_confirmation") >= 1
         ):
             channels_attempted.append(PROTOCOL_CONFIRMATION_CHANNEL)
+            protocol_stage_sequence = (
+                next_protocol_confirmation_stage_sequence(
+                    connection,
+                    request_key_prefix=request_key_prefix,
+                )
+                if cooperative_yield
+                else refresh_stage_sequence
+            )
             report = dict(
                 process_protocol_confirmation_queue(
                     connection,
@@ -466,9 +475,14 @@ def build_pre_lifecycle_refresh_stage(
                     local_validation_identity_observer=(
                         local_validation_identity_observer
                     ),
-                    stage_sequence=refresh_stage_sequence,
+                    stage_sequence=protocol_stage_sequence,
                     request_key_prefix=(
                         f"{request_key_prefix}-refresh-{refresh_ordinal}-protocol"
+                        + (
+                            f"-q{protocol_stage_sequence}"
+                            if cooperative_yield
+                            else ""
+                        )
                     ),
                 )
             )

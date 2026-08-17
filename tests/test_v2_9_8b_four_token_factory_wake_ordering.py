@@ -452,7 +452,8 @@ def test_real_factory_controlled_clock_interleaves_scheduler_yields_and_snapshot
         AcquisitionQuantumKind.AUXILIARY_PROTOCOL_CONFIRMATION,
         AcquisitionQuantumKind.DIRECT_MIGRATION,
         AcquisitionQuantumKind.MARKET_DISCOVERY,
-        AcquisitionQuantumKind.MARKET_DISCOVERY,
+        AcquisitionQuantumKind.PROTOCOL_CONFIRMATION,
+        AcquisitionQuantumKind.PROTOCOL_RESUME_MARKET,
     )
     quantum_calls: list[AcquisitionQuantumKind] = []
     bound_resolutions: list[AcquisitionQuantumKind] = []
@@ -473,6 +474,10 @@ def test_real_factory_controlled_clock_interleaves_scheduler_yields_and_snapshot
         elif phase is AcquisitionQuantumKind.MARKET_DISCOVERY:
             stage_budget.consume("market_batching", 1)
             stage_budget.consume("reconciliation", 2)
+        elif phase is AcquisitionQuantumKind.PROTOCOL_CONFIRMATION:
+            stage_budget.consume("protocol_confirmation", 1)
+        elif phase is AcquisitionQuantumKind.PROTOCOL_RESUME_MARKET:
+            stage_budget.consume("market_batching", 1)
         quantum_calls.append(phase)
         stage_snapshots.append(stage_budget.snapshot())
         clock.sleep(acquisition_quantum_bound(phase).worst_case_seconds)
@@ -621,7 +626,7 @@ def test_real_factory_controlled_clock_interleaves_scheduler_yields_and_snapshot
         _sleep=clock.sleep,
         _monotonic=clock.monotonic,
         cancellation_probe=lambda: (
-            "FOCUSED_CADENCE_COMPLETE" if clock.elapsed >= 1_100 else None
+            "FOCUSED_CADENCE_COMPLETE" if clock.elapsed >= 1_600 else None
         ),
     )
 
@@ -637,7 +642,7 @@ def test_real_factory_controlled_clock_interleaves_scheduler_yields_and_snapshot
         assert max_gaps[mint] <= 240.0, (mint, gaps)
     assert abs(len(snapshot_times["mint-1"]) - len(snapshot_times["mint-2"])) <= 1
     assert max_gaps == {"mint-1": 225.0, "mint-2": 225.0}
-    assert quantum_calls[:4] == list(quantum_phases[:4])
+    assert quantum_calls[:7] == list(quantum_phases)
     assert len(bound_resolutions) > len(quantum_calls)
     assert all(
         later["remaining_by_stage"][stage]

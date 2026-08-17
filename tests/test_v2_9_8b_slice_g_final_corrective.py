@@ -43,6 +43,8 @@ def test_quantum_bounds_are_derived_from_canonical_transport_contracts() -> None
         AcquisitionQuantumKind.AUXILIARY_PROTOCOL_CONFIRMATION: protocol,
         AcquisitionQuantumKind.DIRECT_MIGRATION: 7 * pump + 4 * verifier,
         AcquisitionQuantumKind.MARKET_DISCOVERY: dex + 6 * gecko + 5 * 6.0,
+        AcquisitionQuantumKind.PROTOCOL_CONFIRMATION: protocol,
+        AcquisitionQuantumKind.PROTOCOL_RESUME_MARKET: dex,
         AcquisitionQuantumKind.PERSISTED_REFRESH: 7 * pump + 4 * verifier,
         AcquisitionQuantumKind.PERSISTED_REFRESH_DEXSCREENER: (
             2 * dex + max(dex, gecko) + protocol
@@ -61,6 +63,8 @@ def test_quantum_bounds_are_derived_from_canonical_transport_contracts() -> None
         AcquisitionQuantumKind.AUXILIARY_PROTOCOL_CONFIRMATION: 20.0,
         AcquisitionQuantumKind.DIRECT_MIGRATION: 115.0,
         AcquisitionQuantumKind.MARKET_DISCOVERY: 83.0,
+        AcquisitionQuantumKind.PROTOCOL_CONFIRMATION: 20.0,
+        AcquisitionQuantumKind.PROTOCOL_RESUME_MARKET: 5.0,
         AcquisitionQuantumKind.PERSISTED_REFRESH: 115.0,
         AcquisitionQuantumKind.PERSISTED_REFRESH_DEXSCREENER: 38.0,
         AcquisitionQuantumKind.PERSISTED_REFRESH_GECKOTERMINAL: 36.0,

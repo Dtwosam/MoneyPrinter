@@ -190,6 +190,12 @@ def test_g2_imminent_lifecycle_deadline_blocks_acquisition_quantum() -> None:
         AcquisitionQuantumKind.MARKET_DISCOVERY
     ).worst_case_seconds == 83.0
     assert acquisition_quantum_bound(
+        AcquisitionQuantumKind.PROTOCOL_CONFIRMATION
+    ).worst_case_seconds == 20.0
+    assert acquisition_quantum_bound(
+        AcquisitionQuantumKind.PROTOCOL_RESUME_MARKET
+    ).worst_case_seconds == 5.0
+    assert acquisition_quantum_bound(
         AcquisitionQuantumKind.PERSISTED_REFRESH
     ).worst_case_seconds == 115.0
     assert acquisition_quantum_bound(
@@ -204,6 +210,12 @@ def test_g2_imminent_lifecycle_deadline_blocks_acquisition_quantum() -> None:
     assert _next_later_cycle_quantum_kind(
         {"cycle": {"cooperative_phase": "DIRECT_MIGRATION"}}
     ) is AcquisitionQuantumKind.DIRECT_MIGRATION
+    assert _next_later_cycle_quantum_kind(
+        {"cycle": {"cooperative_phase": "PROTOCOL_CONFIRMATION"}}
+    ) is AcquisitionQuantumKind.PROTOCOL_CONFIRMATION
+    assert _next_later_cycle_quantum_kind(
+        {"cycle": {"cooperative_phase": "PROTOCOL_RESUME_MARKET"}}
+    ) is AcquisitionQuantumKind.PROTOCOL_RESUME_MARKET
     for ordinal, expected in (
         (1, AcquisitionQuantumKind.PERSISTED_REFRESH),
         (2, AcquisitionQuantumKind.PERSISTED_REFRESH_DEXSCREENER),
