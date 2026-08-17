@@ -51,6 +51,8 @@ NO_LAWFUL_REFRESH_WINDOW = "NO_LAWFUL_REFRESH_WINDOW"
 ACQUISITION_DEADLINE_EXHAUSTED = "ACQUISITION_DEADLINE_EXHAUSTED"
 SOURCE_BUDGET_EXHAUSTED = "SOURCE_BUDGET_EXHAUSTED"
 REFRESH_SOURCE_FAILURE = "REFRESH_SOURCE_FAILURE"
+INTERNAL_INVARIANT = "INTERNAL_INVARIANT"
+INTERNAL_RUNTIME_ERROR = "INTERNAL_RUNTIME_ERROR"
 CANCELLED = "CANCELLED"
 SUPERVISION_FAILED = "SUPERVISION_FAILED"
 UNSAFE_SCHEDULER_STATE = "UNSAFE_SCHEDULER_STATE"
@@ -63,6 +65,8 @@ TERMINAL_PRECEDENCE = (
     SUPERVISION_FAILED,
     CANCELLED,
     UNSAFE_SCHEDULER_STATE,
+    INTERNAL_INVARIANT,
+    INTERNAL_RUNTIME_ERROR,
     REFRESH_SOURCE_FAILURE,
     SOURCE_BUDGET_EXHAUSTED,
     ACQUISITION_DEADLINE_EXHAUSTED,
@@ -119,6 +123,7 @@ class TemporalRefreshOutcome:
     reserve_depth_before: int = 0
     reserve_depth_after: int = 0
     detail: str = ""
+    failure_domain: str | None = None
 
     @property
     def waiting(self) -> bool:
@@ -153,6 +158,7 @@ class TemporalRefreshOutcome:
             "reserve_depth_before": self.reserve_depth_before,
             "reserve_depth_after": self.reserve_depth_after,
             "detail": self.detail,
+            "failure_domain": self.failure_domain,
         }
 
 
@@ -471,6 +477,8 @@ __all__ = [
     "PreLifecycleTemporalAcquisitionError",
     "REFRESH_COMPLETED",
     "REFRESH_SOURCE_FAILURE",
+    "INTERNAL_INVARIANT",
+    "INTERNAL_RUNTIME_ERROR",
     "SOURCE_BUDGET_EXHAUSTED",
     "SUPERVISION_FAILED",
     "TERMINAL_PRECEDENCE",

@@ -55,6 +55,8 @@ from printer_v1.discovery.pre_lifecycle_temporal_acquisition import (
     PRE_LIFECYCLE_ACQUISITION_DURATION_SECONDS,
     REFRESH_COMPLETED,
     REFRESH_SOURCE_FAILURE,
+    INTERNAL_INVARIANT,
+    INTERNAL_RUNTIME_ERROR,
     SOURCE_BUDGET_EXHAUSTED as TEMPORAL_SOURCE_BUDGET_EXHAUSTED,
     SUPERVISION_FAILED as TEMPORAL_SUPERVISION_FAILED,
     UNSAFE_SCHEDULER_STATE,
@@ -1256,6 +1258,8 @@ def run_persistent_eligible_token_supply(
                 TEMPORAL_SUPERVISION_FAILED: "CAMPAIGN_SUPERVISION_FAILED",
                 TEMPORAL_CANCELLED: "OPERATOR_SAFE_STOP_REQUESTED",
                 UNSAFE_SCHEDULER_STATE: "UNSAFE_SCHEDULER_OWNERSHIP_STATE",
+                INTERNAL_INVARIANT: DISCOVERY_ARCHITECTURE_FALSE_SHORTAGE,
+                INTERNAL_RUNTIME_ERROR: DISCOVERY_ARCHITECTURE_FALSE_SHORTAGE,
                 REFRESH_SOURCE_FAILURE: "SOURCE_AVAILABILITY_FAILURE_DURING_REFRESH",
                 TEMPORAL_SOURCE_BUDGET_EXHAUSTED: (
                     "DISCOVERY_OPERATION_BUDGET_EXHAUSTED"
@@ -2106,6 +2110,12 @@ def run_persistent_eligible_token_supply(
                     shortage = DURATION_EXHAUSTION
                 elif last_stop_reason == "SOURCE_AVAILABILITY_FAILURE_DURING_REFRESH":
                     shortage = SOURCE_AVAILABILITY_FAILURE
+                elif last_stop_reason in {
+                    DISCOVERY_ARCHITECTURE_FALSE_SHORTAGE,
+                    INTERNAL_INVARIANT,
+                    INTERNAL_RUNTIME_ERROR,
+                }:
+                    shortage = DISCOVERY_ARCHITECTURE_FALSE_SHORTAGE
                 elif (
                     shortage == TRUE_MARKET_SUPPLY_SHORTAGE
                     and acquisition_ledger.remaining_seconds(_utc_now_iso()) > 0

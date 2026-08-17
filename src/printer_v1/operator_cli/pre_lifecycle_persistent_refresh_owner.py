@@ -8,11 +8,13 @@ from typing import Any, Callable, Mapping
 from printer_v1.discovery.pre_lifecycle_refresh_work import insert_refresh_work, terminalize_refresh_work
 from printer_v1.discovery.pre_lifecycle_temporal_acquisition import (
  ACQUISITION_DEADLINE_EXHAUSTED, ALREADY_PENDING_REFRESH, CANCELLED,
- REFRESH_COMPLETED, REFRESH_SOURCE_FAILURE, SOURCE_BUDGET_EXHAUSTED,
- SUPERVISION_FAILED, UNSAFE_SCHEDULER_STATE, WAITING_FOR_ELIGIBLE_SUPPLY,
- TemporalRefreshOutcome, active_refresh_waits, evaluate_wait_eligibility,
- insert_refresh_wait, iso, mark_refresh_wait_claimed, next_refresh_ordinal,
- parse_iso, refresh_window_fits, terminalize_refresh_wait,
+ INTERNAL_INVARIANT, INTERNAL_RUNTIME_ERROR, REFRESH_COMPLETED,
+ REFRESH_SOURCE_FAILURE, SOURCE_BUDGET_EXHAUSTED, SUPERVISION_FAILED,
+ UNSAFE_SCHEDULER_STATE, WAITING_FOR_ELIGIBLE_SUPPLY,
+ PreLifecycleTemporalAcquisitionError, TemporalRefreshOutcome,
+ active_refresh_waits, evaluate_wait_eligibility, insert_refresh_wait, iso,
+ mark_refresh_wait_claimed, next_refresh_ordinal, parse_iso,
+ refresh_window_fits, terminalize_refresh_wait,
 )
 from printer_v1.scheduler.contracts import JobKind, JobStatus, LockResult
 from printer_v1.scheduler.resource_governor import next_check_interval_seconds
@@ -21,8 +23,89 @@ from printer_v1.scheduler.scheduler import cancel_job, claim_due_job, complete_j
 REFRESH_WORK_TYPE = "PRE_LIFECYCLE_DISCOVERY_REFRESH"
 WAIT_ABORT_SUPERVISION = "SUPERVISION_FAILED"
 WAIT_ABORT_CANCELLED = "CANCELLATION_REQUESTED"
+FAILURE_DOMAIN_INTERNAL = "INTERNAL"
+FAILURE_DOMAIN_SOURCE = "SOURCE"
 
-class PreLifecycleTemporalRefreshError(RuntimeError): pass
+
+class PreLifecycleTemporalRefreshError(RuntimeError):
+    pass
+
+
+def _as_refresh_stage_mapping(raw: Any) -> dict[str, Any]:
+    if raw is None:
+        return {}
+    if not isinstance(raw, Mapping):
+        raise TypeError("refresh stage payload is not a mapping")
+    return dict(raw)
+
+
+def _nonneg_int(value: Any, name: str) -> int:
+    if value is None:
+        return 0
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"malformed refresh stage field: {name}")
+    if value < 0:
+        raise ValueError(f"malformed refresh stage field: {name}")
+    return value
+
+
+def classify_refresh_stage_exception(
+    exc: BaseException,
+) -> tuple[str, str, str]:
+    """Return (status, failure_domain, terminal_cause) for one stage exception."""
+    from printer_v1.discovery.pre_lifecycle_refresh_composition import (
+        PreLifecycleRefreshCompositionError,
+    )
+    from printer_v1.discovery.pre_lifecycle_refresh_work import (
+        PreLifecycleRefreshWorkError,
+    )
+    from printer_v1.operator_cli.authoritative_live_operational_campaign import (
+        LiveTransportError,
+    )
+    from printer_v1.operator_cli.later_cycle_graduated_supply import (
+        LaterCycleGraduatedSupplyError,
+    )
+
+    if isinstance(exc, LiveTransportError):
+        code = str(getattr(exc, "code", "") or type(exc).__name__)
+        return (
+            REFRESH_SOURCE_FAILURE,
+            FAILURE_DOMAIN_SOURCE,
+            f"PRE_LIFECYCLE_REFRESH_SOURCE_FAILURE:{code}",
+        )
+    code = str(getattr(exc, "code", "") or "")
+    if code.startswith(("SOURCE_", "PROVIDER_", "HTTP_", "TRANSPORT_", "RPC_")) or (
+        "RATE" in code
+    ):
+        return (
+            REFRESH_SOURCE_FAILURE,
+            FAILURE_DOMAIN_SOURCE,
+            f"PRE_LIFECYCLE_REFRESH_SOURCE_FAILURE:{code}",
+        )
+    if isinstance(
+        exc,
+        (
+            PreLifecycleTemporalRefreshError,
+            PreLifecycleTemporalAcquisitionError,
+            PreLifecycleRefreshCompositionError,
+            PreLifecycleRefreshWorkError,
+            LaterCycleGraduatedSupplyError,
+            TypeError,
+            ValueError,
+        ),
+    ):
+        detail = str(exc) or type(exc).__name__
+        return (
+            INTERNAL_INVARIANT,
+            FAILURE_DOMAIN_INTERNAL,
+            f"PRE_LIFECYCLE_REFRESH_INTERNAL_INVARIANT:{detail}"[:160],
+        )
+    return (
+        INTERNAL_RUNTIME_ERROR,
+        FAILURE_DOMAIN_INTERNAL,
+        f"PRE_LIFECYCLE_REFRESH_INTERNAL_RUNTIME:{type(exc).__name__}",
+    )
+
 
 def bounded_interruptible_wait(seconds: float, abort_event: threading.Event | None) -> bool:
     if seconds <= 0:
@@ -143,11 +226,26 @@ class PreLifecycleTemporalRefreshOwner:
             terminalize_refresh_wait(c,wait_id=wait_id,wait_state='FAILED',first_terminal_cause='PRE_LIFECYCLE_REFRESH_WORK_OWNERSHIP_FAILED',now=woke); c.commit()
             return TemporalRefreshOutcome(status=UNSAFE_SCHEDULER_STATE,wait_id=wait_id,scheduler_job_id=int(job_id),refresh_ordinal=ordinal,scheduled_for=scheduled,claimed=True,reserve_depth_before=reserve_depth,reserve_depth_after=reserve_depth,detail=f'refresh work ownership failed: {type(exc).__name__}')
         try:
-            stage=dict(self._refresh_stage(c,campaign_id=self.campaign_id,run_id=self.run_id,cycle_id=self.cycle_id,refresh_work_id=refresh_work_id,discovery_work_id=refresh_work_id,scheduler_job_id=int(job_id),refresh_ordinal=ordinal,source_operations_remaining=source_operations_remaining,now=woke) or {})
+            raw_stage=self._refresh_stage(c,campaign_id=self.campaign_id,run_id=self.run_id,cycle_id=self.cycle_id,refresh_work_id=refresh_work_id,discovery_work_id=refresh_work_id,scheduler_job_id=int(job_id),refresh_ordinal=ordinal,source_operations_remaining=source_operations_remaining,now=woke)
         except Exception as exc:
-            self._terminalize(c,wait_id,refresh_work_id,int(job_id),False,'PRE_LIFECYCLE_REFRESH_STAGE_FAILED',woke)
-            return TemporalRefreshOutcome(status=REFRESH_SOURCE_FAILURE,wait_id=wait_id,scheduler_job_id=int(job_id),refresh_ordinal=ordinal,scheduled_for=scheduled,claimed=True,reserve_depth_before=reserve_depth,reserve_depth_after=reserve_depth,detail=f'refresh stage failed: {type(exc).__name__}')
-        ops=int(stage.get('source_operations') or 0); failures=int(stage.get('provider_failures') or 0); unavailable=tuple(str(x) for x in stage.get('channels_unavailable',()))
+            status,domain,cause=classify_refresh_stage_exception(exc)
+            self._terminalize(c,wait_id,refresh_work_id,int(job_id),False,cause,woke)
+            return TemporalRefreshOutcome(status=status,wait_id=wait_id,scheduler_job_id=int(job_id),refresh_ordinal=ordinal,scheduled_for=scheduled,claimed=True,source_operations=0,provider_failures=(1 if domain==FAILURE_DOMAIN_SOURCE else 0),reserve_depth_before=reserve_depth,reserve_depth_after=reserve_depth,detail=f'refresh stage failed: {type(exc).__name__}',failure_domain=domain)
+        ops=0; failures=0
+        try:
+            stage=_as_refresh_stage_mapping(raw_stage)
+            ops=_nonneg_int(stage.get('source_operations'),'source_operations')
+            failures=_nonneg_int(stage.get('provider_failures'),'provider_failures')
+            unavailable=tuple(str(x) for x in stage.get('channels_unavailable',()))
+            for key,expected in (('campaign_id',self.campaign_id),('run_id',self.run_id),('cycle_id',self.cycle_id)):
+                if key in stage and str(stage[key])!=str(expected):
+                    raise PreLifecycleTemporalRefreshError(f'PRE_LIFECYCLE_REFRESH_STAGE_IDENTITY_MISMATCH:{key}')
+        except Exception as exc:
+            status,domain,cause=classify_refresh_stage_exception(exc)
+            if domain==FAILURE_DOMAIN_SOURCE:
+                status,domain,cause=INTERNAL_INVARIANT,FAILURE_DOMAIN_INTERNAL,f'PRE_LIFECYCLE_REFRESH_INTERNAL_INVARIANT:{type(exc).__name__}'
+            self._terminalize(c,wait_id,refresh_work_id,int(job_id),False,cause,woke)
+            return TemporalRefreshOutcome(status=status,wait_id=wait_id,scheduler_job_id=int(job_id),refresh_ordinal=ordinal,scheduled_for=scheduled,claimed=True,source_operations=ops,provider_failures=failures,reserve_depth_before=reserve_depth,reserve_depth_after=reserve_depth,detail=f'refresh stage local accounting failed: {type(exc).__name__}',failure_domain=domain)
         if ops>source_operations_remaining:
             self._terminalize(c,wait_id,refresh_work_id,int(job_id),False,'PRE_LIFECYCLE_REFRESH_BUDGET_OVERRUN',woke)
             return TemporalRefreshOutcome(status=SOURCE_BUDGET_EXHAUSTED,wait_id=wait_id,scheduler_job_id=int(job_id),refresh_ordinal=ordinal,scheduled_for=scheduled,claimed=True,source_operations=source_operations_remaining,reserve_depth_before=reserve_depth,reserve_depth_after=reserve_depth,detail='refresh stage exceeded cumulative discovery budget')
@@ -170,4 +268,4 @@ class PreLifecycleTemporalRefreshOwner:
         else: fail_job(c,job_id=job_id,error=cause,max_retries=0)
         terminalize_refresh_wait(c,wait_id=wait_id,wait_state='SUCCEEDED' if succeeded else 'FAILED',first_terminal_cause=cause,now=now); c.commit()
 
-__all__=['PreLifecycleTemporalRefreshError','PreLifecycleTemporalRefreshOwner','REFRESH_WORK_TYPE','bounded_interruptible_wait']
+__all__=['PreLifecycleTemporalRefreshError','PreLifecycleTemporalRefreshOwner','REFRESH_WORK_TYPE','bounded_interruptible_wait','classify_refresh_stage_exception']
