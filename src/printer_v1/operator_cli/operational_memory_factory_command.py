@@ -1832,8 +1832,8 @@ def _build_pre_lifecycle_temporal_refresh_owner(
                 owner_evaluated_at,
                 acquisition_duration_seconds=int(acquisition_seconds),
             ),
-            # Every later acquisition remains inside the original authorization's
-            # shared work envelope; it cannot extend the proof/lifecycle deadline.
+            # Later acquisition cannot extend the original authorization's
+            # shared work/lifecycle envelope.
             work_deadline_at=shared_work_deadline_at,
             refresh_stage=build_pre_lifecycle_refresh_stage(
                 db_path=command.db_path,
