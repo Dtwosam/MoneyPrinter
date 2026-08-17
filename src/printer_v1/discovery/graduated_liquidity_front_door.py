@@ -112,6 +112,10 @@ LIQUIDITY_HISTORICAL_BELOW_FLOOR_COOLDOWN = (
     "LIQUIDITY_HISTORICAL_BELOW_FLOOR_COOLDOWN"
 )
 LIQUIDITY_IDENTITY_UNCONFIRMED = "LIQUIDITY_IDENTITY_UNCONFIRMED"
+# Categorical current-liquidity truth when a trustworthy response proves the
+# historical exact pool absent. Absence is never zero liquidity: the evidence
+# carries liquidity_usd=None and retires any stale LIQUIDITY_PROVEN projection.
+LIQUIDITY_NO_EXACT_PAIR = "LIQUIDITY_NO_EXACT_PAIR"
 # Front-door skip reason when durable below-floor cooldown is still active.
 # No DexScreener call is made; last measured liquidity is retained for reporting.
 LIQUIDITY_BELOW_SELECTION_FLOOR_COOLDOWN = "LIQUIDITY_BELOW_SELECTION_FLOOR_COOLDOWN"
@@ -286,7 +290,7 @@ def _extract_exact_pair_liquidity(
 
 
 _EXACT_PAIR_IDENTITY_REASONS = frozenset({
-    "LIQUIDITY_NO_EXACT_PAIR",
+    LIQUIDITY_NO_EXACT_PAIR,
     "LIQUIDITY_AMBIGUOUS_EXACT_PAIR",
     "LIQUIDITY_MINT_MISMATCH",
     "LIQUIDITY_POOL_MISMATCH_TOKEN_LEVEL",

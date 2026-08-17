@@ -113,6 +113,26 @@ SUPPORTED_PUMPSWAP_PROVIDER_VENUES = frozenset(
     {"pumpswap", "pumpfun", "pump-amm"}
 )
 
+# Exact mint+pool negative-history backoff. This is a literal categorical
+# mapping from the consecutive no-match streak to a temporary source
+# suppression window, not a score, rank, confidence or probability. Nothing
+# here blacklists an identity: the longest window is one day and the exact pair
+# is always reconsidered afterwards.
+EXACT_POOL_NO_MATCH_BACKOFF_SECONDS: Mapping[int, int] = {
+    1: EXACT_POOL_RECONCILIATION_SECONDS,
+    2: 7_200,
+    3: 14_400,
+    4: 28_800,
+    5: 57_600,
+}
+EXACT_POOL_NO_MATCH_BACKOFF_CAP_SECONDS = 86_400
+
+# Categorical exact-pair poll decision labels. Never numbers.
+EXACT_POOL_POLL_NOT_NO_MATCH = "NOT_EXACT_POOL_NO_MATCH"
+EXACT_POOL_POLL_BACKOFF_ACTIVE = "NEGATIVE_HISTORY_BACKOFF_ACTIVE"
+EXACT_POOL_POLL_RECONCILIATION_DUE = "NEGATIVE_HISTORY_RECONCILIATION_DUE"
+EXACT_POOL_POLL_HISTORY_INCOMPLETE = "NEGATIVE_HISTORY_INCOMPLETE"
+
 
 def _liquidity_evidence_expiry(observed_at: str) -> str:
     return (
@@ -290,10 +310,23 @@ def record_exact_market_transition(
     no_match_streak = 0 if prior_map is None else int(prior_map["no_match_streak"])
     last_visible_at = None if prior_map is None else prior_map["last_visible_at"]
     last_no_match_at = None if prior_map is None else prior_map["last_no_match_at"]
+    stored_next_lawful_action_at = observation.next_lawful_action_at
     if observation.state == EXACT_POOL_NO_MATCH:
         no_match_count += 1
         no_match_streak += 1
         last_no_match_at = observation.observed_at
+        # The exact-market state owner — never its callers — derives the next
+        # lawful exact-pair boundary from the NEW consecutive streak, anchored
+        # on the evidence time being stored as last_no_match_at. A caller may
+        # only make that boundary stricter, never shorter.
+        history_due = _parse_iso(observation.observed_at) + timedelta(
+            seconds=exact_pool_no_match_backoff_seconds(no_match_streak)
+        )
+        stored_next_lawful_action_at = history_due.isoformat()
+        if observation.next_lawful_action_at is not None:
+            caller_due = _parse_iso(observation.next_lawful_action_at)
+            if caller_due > history_due:
+                stored_next_lawful_action_at = observation.next_lawful_action_at
     elif observation.state in {
         CURRENT_VISIBLE,
         SAME_POOL_REOBSERVED,
@@ -345,7 +378,7 @@ def record_exact_market_transition(
             last_no_match_at,
             no_match_count,
             no_match_streak,
-            observation.next_lawful_action_at,
+            stored_next_lawful_action_at,
             provenance_json,
             observation.contract_version,
             now,
@@ -366,7 +399,7 @@ def record_exact_market_transition(
             observation.state,
             observation.reason,
             observation.observed_at,
-            observation.next_lawful_action_at,
+            stored_next_lawful_action_at,
             provenance_json,
             observation.contract_version,
             now,
@@ -395,14 +428,119 @@ def load_exact_market_states(
     return [dict(row) for row in rows]
 
 
-def should_poll_exact_pool(state: Mapping[str, Any], *, at: str) -> bool:
-    """Suppress exact-pair repeats after a lawful no-match until its boundary."""
+def exact_pool_no_match_backoff_seconds(no_match_streak: int) -> int:
+    """Return the temporary suppression window for one consecutive no-match run.
+
+    Invalid history is never silently converted into a long cooldown; it raises
+    so the caller must treat it as incomplete history instead.
+    """
+    if isinstance(no_match_streak, bool) or not isinstance(no_match_streak, int):
+        raise ValueError("INVALID_NO_MATCH_STREAK")
+    if no_match_streak < 1:
+        raise ValueError("INVALID_NO_MATCH_STREAK")
+    return EXACT_POOL_NO_MATCH_BACKOFF_SECONDS.get(
+        no_match_streak, EXACT_POOL_NO_MATCH_BACKOFF_CAP_SECONDS
+    )
+
+
+@dataclass(frozen=True)
+class ExactPoolPollDecision:
+    """One categorical exact mint+pool source-poll decision."""
+
+    should_poll: bool
+    reason: str
+    no_match_streak: int
+    last_no_match_at: str | None
+    effective_next_lawful_action_at: str | None
+
+
+def _valid_no_match_streak(raw: Any) -> int | None:
+    """Coerce durable streak history, or None when it cannot be trusted."""
+    if raw is None or isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        value = raw
+    elif isinstance(raw, str) and raw.strip().lstrip("-").isdigit():
+        value = int(raw.strip())
+    else:
+        return None
+    return value if value >= 1 else None
+
+
+def _optional_iso(raw: Any) -> datetime | None:
+    if raw is None or not str(raw).strip():
+        return None
+    try:
+        return _parse_iso(str(raw))
+    except (TypeError, ValueError):
+        return None
+
+
+def decide_exact_pool_poll(
+    state: Mapping[str, Any],
+    *,
+    at: str,
+) -> ExactPoolPollDecision:
+    """Decide whether one exact mint+pool identity may consume a source request.
+
+    Negative history applies only to a current ``EXACT_POOL_NO_MATCH``. It never
+    shortens an already stricter stored boundary, never invents suppression from
+    incomplete history, and never trusts a malformed stored boundary.
+    """
+    parsed_at = _parse_iso(at)
     if str(state.get("current_state")) != EXACT_POOL_NO_MATCH:
-        return True
-    due = state.get("next_lawful_action_at")
-    if not due:
-        return False
-    return _parse_iso(at) >= _parse_iso(str(due))
+        return ExactPoolPollDecision(
+            should_poll=True,
+            reason=EXACT_POOL_POLL_NOT_NO_MATCH,
+            no_match_streak=0,
+            last_no_match_at=None,
+            effective_next_lawful_action_at=None,
+        )
+
+    streak = _valid_no_match_streak(state.get("no_match_streak"))
+    raw_last = state.get("last_no_match_at")
+    last_no_match_at = (
+        None if raw_last is None or not str(raw_last).strip() else str(raw_last)
+    )
+    parsed_last = _optional_iso(raw_last)
+    if streak is None or parsed_last is None:
+        return ExactPoolPollDecision(
+            should_poll=True,
+            reason=EXACT_POOL_POLL_HISTORY_INCOMPLETE,
+            no_match_streak=streak or 0,
+            last_no_match_at=last_no_match_at,
+            effective_next_lawful_action_at=None,
+        )
+
+    derived_due = parsed_last + timedelta(
+        seconds=exact_pool_no_match_backoff_seconds(streak)
+    )
+    effective_due = derived_due
+    existing_due = _optional_iso(state.get("next_lawful_action_at"))
+    if existing_due is not None and existing_due > derived_due:
+        effective_due = existing_due
+
+    effective = effective_due.isoformat()
+    if parsed_at < effective_due:
+        return ExactPoolPollDecision(
+            should_poll=False,
+            reason=EXACT_POOL_POLL_BACKOFF_ACTIVE,
+            no_match_streak=streak,
+            last_no_match_at=last_no_match_at,
+            effective_next_lawful_action_at=effective,
+        )
+    return ExactPoolPollDecision(
+        should_poll=True,
+        reason=EXACT_POOL_POLL_RECONCILIATION_DUE,
+        no_match_streak=streak,
+        last_no_match_at=last_no_match_at,
+        effective_next_lawful_action_at=effective,
+    )
+
+
+def should_poll_exact_pool(state: Mapping[str, Any], *, at: str) -> bool:
+    """Compatibility wrapper. ``decide_exact_pool_poll`` owns the whole law."""
+    return decide_exact_pool_poll(state, at=at).should_poll
 
 
 def upsert_reserve_layer(
@@ -1126,6 +1264,7 @@ def run_dexscreener_batch_market_resolution(
     from printer_v1.contracts.enums import SourceStatus
     from printer_v1.discovery.graduated_liquidity_front_door import (
         LIQUIDITY_BELOW_SELECTION_FLOOR,
+        LIQUIDITY_NO_EXACT_PAIR,
         LIQUIDITY_PROVEN,
         LIQUIDITY_UNPROVEN,
         _cooldown_ok,
@@ -1160,6 +1299,7 @@ def run_dexscreener_batch_market_resolution(
 
     due: list[Mapping[str, Any]] = []
     suppressed: list[Mapping[str, Any]] = []
+    negative_history_suppressed: list[dict[str, Any]] = []
     preflight_transition_ids: list[int] = []
     reconciliation_mints: set[str] = set()
     for row in sorted(
@@ -1179,10 +1319,30 @@ def run_dexscreener_batch_market_resolution(
         ).fetchone()
         if prior is not None:
             prior_map = dict(prior)
-            if not should_poll_exact_pool(prior_map, at=now):
+            # Durable exact-pair negative history decides whether this identity
+            # may consume a current market-source request at all. A suppressed
+            # row never reaches the provider, the Source Governor or a
+            # transport identity: it is local truth only.
+            decision = decide_exact_pool_poll(prior_map, at=now)
+            if not decision.should_poll:
                 suppressed.append(row)
+                negative_history_suppressed.append(
+                    {
+                        "mint": mint,
+                        "pool": pool,
+                        "no_match_streak": decision.no_match_streak,
+                        "last_no_match_at": decision.last_no_match_at,
+                        "effective_next_lawful_action_at": (
+                            decision.effective_next_lawful_action_at
+                        ),
+                        "reason": decision.reason,
+                    }
+                )
                 continue
-            if str(prior_map.get("current_state")) == EXACT_POOL_NO_MATCH:
+            if (
+                str(prior_map.get("current_state")) == EXACT_POOL_NO_MATCH
+                and decision.reason == EXACT_POOL_POLL_RECONCILIATION_DUE
+            ):
                 preflight_transition_ids.append(
                     record_exact_market_transition(
                         connection,
@@ -1221,6 +1381,8 @@ def run_dexscreener_batch_market_resolution(
         "accounting_blocker_reason": None,
         "local_zero_source_exclusions": [],
         "suppressed_exact_pool_count": len(suppressed),
+        "negative_history_suppressed_count": 0,
+        "negative_history_suppressed": [],
         "reconciliation_due_count": 0,
         "reconciliation_outcomes": [],
         "state_transition_ids": preflight_transition_ids,
@@ -1228,6 +1390,10 @@ def run_dexscreener_batch_market_resolution(
         "market_ready_count": 0,
         "exact_pools_by_mint": {},
     }
+    # Negative-history suppression is local truth, never provider failure and
+    # never source shortage. Its count always equals its diagnostic records.
+    report["negative_history_suppressed"] = list(negative_history_suppressed)
+    report["negative_history_suppressed_count"] = len(negative_history_suppressed)
     due_boundary = (_parse_iso(now) + timedelta(seconds=EXACT_POOL_RECONCILIATION_SECONDS)).isoformat()
 
     for batch_index in range(
@@ -1599,10 +1765,23 @@ def run_dexscreener_batch_market_resolution(
                         None,
                         mint=mint,
                         pool=historical_pool,
-                        reason="LIQUIDITY_NO_EXACT_PAIR",
+                        reason=LIQUIDITY_NO_EXACT_PAIR,
                         source_status="COMPLETE",
                         source_request_id=int(execution.request_record.id),
                         source_response_id=(None if execution.response_record is None else int(execution.response_record.id)),
+                    )
+                    # A trustworthy response proving the historical exact pool
+                    # absent retires any stale current LIQUIDITY_PROVEN. Absence
+                    # is not proof of zero liquidity, so the current projection
+                    # carries liquidity_usd=None, never 0. Prior measured
+                    # evidence stays inspectable in its source and transition
+                    # history; only the current projection is overwritten.
+                    record_market_floor_state(
+                        connection,
+                        mint=mint,
+                        pool=historical_pool,
+                        liquidity=evidence,
+                        now=now,
                     )
                     rejection = LIQUIDITY_UNPROVEN
                 else:
@@ -5869,6 +6048,15 @@ __all__ = [
     "run_dexscreener_batch_market_resolution",
     "run_geckoterminal_fresh_nomination",
     "should_poll_exact_pool",
+    "decide_exact_pool_poll",
+    "exact_pool_no_match_backoff_seconds",
+    "ExactPoolPollDecision",
+    "EXACT_POOL_NO_MATCH_BACKOFF_SECONDS",
+    "EXACT_POOL_NO_MATCH_BACKOFF_CAP_SECONDS",
+    "EXACT_POOL_POLL_NOT_NO_MATCH",
+    "EXACT_POOL_POLL_BACKOFF_ACTIVE",
+    "EXACT_POOL_POLL_RECONCILIATION_DUE",
+    "EXACT_POOL_POLL_HISTORY_INCOMPLETE",
     "union_market_revalidation_candidates",
     "upsert_reserve_layer",
     "mint_set_digest",
