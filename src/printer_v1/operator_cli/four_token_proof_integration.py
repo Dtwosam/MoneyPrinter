@@ -148,6 +148,7 @@ class LaterCycleCandidateSupply:
     source_evidence: tuple[LaterCycleSourceEvidence, ...]
     terminal_cause: str | None
     diagnostics: Mapping[str, Any] = field(default_factory=dict)
+    failure_domain: str | None = None
 
 
 @dataclass(frozen=True)
@@ -156,6 +157,7 @@ class LaterCycleDiscoveryAttemptResult:
     state: str
     first_terminal_cause: str
     selected_count: int
+    failure_domain: str | None = None
 
 
 @dataclass(frozen=True)

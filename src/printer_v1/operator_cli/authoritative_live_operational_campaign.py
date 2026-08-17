@@ -1808,6 +1808,9 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 LaterCycleCandidateSupply,
                 LaterCycleDiscoveryAttemptResult,
             )
+            from printer_v1.operator_cli.later_cycle_graduated_supply import (
+                classify_later_cycle_failure,
+            )
             from printer_v1.db.sqlite_write_contracts import connect_operational
             from printer_v1.operator_cli.pre_admission_discovery_attempt import (
                 PreAdmissionAttemptError,
@@ -1851,6 +1854,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
             )
             connection = connect_operational(db_path)
             attempt = None
+            blocked_domain = None
             try:
                 try:
                     existing = load_pre_admission_attempt(
@@ -1869,6 +1873,15 @@ class AuthoritativeLiveOperationalCampaignOwner:
                             PreAdmissionAttemptState.PAIR_READY,
                             PreAdmissionAttemptState.CONSUMED,
                         } else 0),
+                        failure_domain=classify_later_cycle_failure(
+                            terminal_cause=str(existing.first_terminal_cause or "")
+                        )
+                        if existing.state
+                        not in {
+                            PreAdmissionAttemptState.PAIR_READY,
+                            PreAdmissionAttemptState.CONSUMED,
+                        }
+                        else None,
                     )
                 owner = connection.execute(
                     """SELECT 1 FROM printer_memory_factory_campaign_runs
@@ -1995,6 +2008,12 @@ class AuthoritativeLiveOperationalCampaignOwner:
                                     final.first_terminal_cause or ""
                                 ),
                                 selected_count=0,
+                                failure_domain=classify_later_cycle_failure(
+                                    exception=supply_exc,
+                                    terminal_cause=str(
+                                        final.first_terminal_cause or failure_cause
+                                    ),
+                                ),
                             )
 
                         connection = connect_operational(db_path)
@@ -2068,6 +2087,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                         )
                         by_mint = {item.mint_identity: item for item in supply.candidates}
                         selected = [by_mint[item.mint] for item in selected_outcome.selected]
+                        blocked_domain = None
                         if len(selected) == 2:
                             persist_pre_admission_pair(
                                 connection,
@@ -2111,6 +2131,16 @@ class AuthoritativeLiveOperationalCampaignOwner:
                                 blocked_cause = (
                                     supply.terminal_cause or "NO_EXACT_PAIR"
                                 )
+                            blocked_domain = classify_later_cycle_failure(
+                                shortage_classification=str(
+                                    supply_diagnostics.get("shortage_classification")
+                                    or ""
+                                )
+                                or None,
+                                terminal_cause=blocked_cause,
+                            )
+                            if getattr(supply, "failure_domain", None):
+                                blocked_domain = str(supply.failure_domain)
                             terminalize_pre_admission_attempt(
                                 connection,
                                 attempt_id=attempt_id,
@@ -2130,6 +2160,14 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     state=final.state.value,
                     first_terminal_cause=str(final.first_terminal_cause or ""),
                     selected_count=(2 if final.state is PreAdmissionAttemptState.PAIR_READY else 0),
+                    failure_domain=(
+                        None
+                        if final.state is PreAdmissionAttemptState.PAIR_READY
+                        else blocked_domain
+                        or classify_later_cycle_failure(
+                            terminal_cause=str(final.first_terminal_cause or "")
+                        )
+                    ),
                 )
             except PreAdmissionAttemptError as exc:
                 if attempt is not None:
@@ -2160,6 +2198,10 @@ class AuthoritativeLiveOperationalCampaignOwner:
                             state=final.state.value,
                             first_terminal_cause=str(final.first_terminal_cause or ""),
                             selected_count=0,
+                            failure_domain=classify_later_cycle_failure(
+                                exception=exc,
+                                terminal_cause=str(final.first_terminal_cause or ""),
+                            ),
                         )
                 connection.rollback()
                 raise LiveOperationalError(str(exc)) from exc
@@ -2199,6 +2241,10 @@ class AuthoritativeLiveOperationalCampaignOwner:
                             state=final.state.value,
                             first_terminal_cause=str(final.first_terminal_cause or ""),
                             selected_count=0,
+                            failure_domain=classify_later_cycle_failure(
+                                exception=exc,
+                                terminal_cause=str(final.first_terminal_cause or ""),
+                            ),
                         )
                 connection.rollback()
                 raise

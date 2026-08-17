@@ -37,6 +37,90 @@ class LaterCycleGraduatedSupplyError(ValueError):
 
 HolderEvidenceOwner = Callable[[GraduatedSupply], Mapping[str, Mapping[str, Any]]]
 
+FAILURE_DOMAIN_INTERNAL = "INTERNAL"
+FAILURE_DOMAIN_SOURCE = "SOURCE"
+FAILURE_DOMAIN_ELIGIBILITY = "ELIGIBILITY"
+
+_SOURCE_SHORTAGE_CLASSIFICATIONS = frozenset(
+    {
+        "SOURCE_AVAILABILITY_FAILURE",
+        "SOURCE_VISIBILITY_SHORTAGE",
+        "BUDGET_EXHAUSTION",
+        "DURATION_EXHAUSTION",
+        "TRUE_MARKET_SUPPLY_SHORTAGE",
+        "STALE_EVIDENCE_SHORTAGE",
+    }
+)
+_INTERNAL_SHORTAGE_CLASSIFICATIONS = frozenset(
+    {
+        "DISCOVERY_ARCHITECTURE_FALSE_SHORTAGE",
+    }
+)
+_ELIGIBILITY_SHORTAGE_CLASSIFICATIONS = frozenset(
+    {
+        "TRACKING_STATE_CAPACITY_BLOCKED",
+    }
+)
+_ELIGIBILITY_TERMINAL_CAUSES = frozenset(
+    {
+        "BLOCKED_INSUFFICIENT_GRADUATED_POOL",
+        "BLOCKED_INSUFFICIENT_ELIGIBLE_CANDIDATE_POOL",
+        "COOLDOWN_REOPEN_REQUIRED",
+        "NO_EXACT_PAIR",
+        "NO_PAIR",
+    }
+)
+
+
+def classify_later_cycle_failure(
+    *,
+    exception: BaseException | None = None,
+    shortage_classification: str | None = None,
+    terminal_cause: str | None = None,
+) -> str:
+    """Classify a later-cycle failure as INTERNAL, SOURCE, or ELIGIBILITY.
+
+    Source means a governed provider/budget/visibility/market outcome.
+    Internal means wiring, identity, lineage, or architecture. Eligibility
+    means a truthful non-source candidate/tracking conclusion. Unknown
+    outcomes fail closed as INTERNAL so they cannot be blamed on a source.
+    """
+    classification = str(shortage_classification or "").strip()
+    if classification in _SOURCE_SHORTAGE_CLASSIFICATIONS:
+        return FAILURE_DOMAIN_SOURCE
+    if classification in _INTERNAL_SHORTAGE_CLASSIFICATIONS:
+        return FAILURE_DOMAIN_INTERNAL
+    if classification in _ELIGIBILITY_SHORTAGE_CLASSIFICATIONS:
+        return FAILURE_DOMAIN_ELIGIBILITY
+    if exception is not None:
+        from printer_v1.operator_cli.authoritative_live_operational_campaign import (
+            LiveOperationalError,
+            LiveTransportError,
+        )
+
+        if isinstance(exception, LiveTransportError):
+            return FAILURE_DOMAIN_SOURCE
+        if isinstance(exception, (LaterCycleGraduatedSupplyError, LiveOperationalError)):
+            return FAILURE_DOMAIN_INTERNAL
+    cause = str(terminal_cause or "").strip()
+    if cause in _SOURCE_SHORTAGE_CLASSIFICATIONS or cause.startswith(
+        ("SOURCE_", "PROVIDER_")
+    ):
+        return FAILURE_DOMAIN_SOURCE
+    if cause in _INTERNAL_SHORTAGE_CLASSIFICATIONS or cause.startswith(
+        (
+            "LATER_CYCLE_",
+            "CYCLE_SOURCE_LINEAGE_",
+            "HOLDER_EVIDENCE_",
+            "TEMPORAL_",
+            "GRADUATED_SUPPLY_",
+        )
+    ):
+        return FAILURE_DOMAIN_INTERNAL
+    if cause in _ELIGIBILITY_TERMINAL_CAUSES or cause in _ELIGIBILITY_SHORTAGE_CLASSIFICATIONS:
+        return FAILURE_DOMAIN_ELIGIBILITY
+    return FAILURE_DOMAIN_INTERNAL
+
 
 def _utc(value: datetime) -> datetime:
     if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
@@ -45,7 +129,10 @@ def _utc(value: datetime) -> datetime:
 
 
 def _source_lineage(
-    connection: sqlite3.Connection, *, request_key_root: str
+    connection: sqlite3.Connection,
+    *,
+    request_key_root: str,
+    required: bool = True,
 ) -> tuple[LaterCycleSourceEvidence, ...]:
     requests = [
         row
@@ -55,7 +142,9 @@ def _source_lineage(
         if request_key_belongs_to_root(str(row[2] or ""), request_key_root)
     ]
     if not requests:
-        raise LaterCycleGraduatedSupplyError("CYCLE_SOURCE_LINEAGE_MISSING")
+        if required:
+            raise LaterCycleGraduatedSupplyError("CYCLE_SOURCE_LINEAGE_MISSING")
+        return ()
     evidence: list[LaterCycleSourceEvidence] = []
     for request_id, request_kind, _ in requests:
         responses = connection.execute(
@@ -166,8 +255,27 @@ def build_later_cycle_graduated_supply(
     # the exhaustion certificate and shortage classification cannot reach the
     # existing authoritative campaign mapping and reporting.
     diagnostics = dict(supply.diagnostics)
+    failure_domain = classify_later_cycle_failure(
+        shortage_classification=(
+            None
+            if diagnostics.get("shortage_classification") is None
+            else str(diagnostics.get("shortage_classification"))
+        ),
+        terminal_cause=supply.terminal,
+    )
     if not supply.ready or len(supply.graduated_supply) != 2:
-        return LaterCycleCandidateSupply((), (), supply.terminal, diagnostics)
+        connection = connect_operational(db_path)
+        try:
+            lineage = _source_lineage(
+                connection,
+                request_key_root=scope.request_key_root,
+                required=False,
+            )
+        finally:
+            connection.close()
+        return LaterCycleCandidateSupply(
+            (), lineage, supply.terminal, diagnostics, failure_domain
+        )
     if holder_evidence_owner is None:
         raise LaterCycleGraduatedSupplyError("HOLDER_EVIDENCE_OWNER_REQUIRED")
     holder_facts = holder_evidence_owner(supply)
@@ -243,7 +351,7 @@ def build_later_cycle_graduated_supply(
             ))
         lineage = _source_lineage(connection, request_key_root=scope.request_key_root)
         return LaterCycleCandidateSupply(
-            tuple(candidates), lineage, None, diagnostics
+            tuple(candidates), lineage, None, diagnostics, None
         )
     finally:
         connection.close()

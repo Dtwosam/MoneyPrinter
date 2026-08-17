@@ -167,6 +167,7 @@ def blocked_supply_capture(monkeypatch, tmp_path):
 
 
 def _build(db_path, **overrides: Any) -> LaterCycleCandidateSupply:
+    apply_migrations(db_path)
     kwargs: dict[str, Any] = {
         "campaign_id": CAMPAIGN_ID,
         "campaign_run_id": CAMPAIGN_RUN_ID,
