@@ -323,6 +323,7 @@ def run_direct_migration_discovery(
     run_id: str | None = None,
     cycle_id: str | None = None,
     stage_sequence: int = 1,
+    max_transaction_lookups: int = MAX_TRANSACTION_LOOKUPS,
 ) -> dict[str, Any]:
     """Run one bounded direct-migration discovery cycle (governed, fail-closed).
 
@@ -357,6 +358,12 @@ def run_direct_migration_discovery(
         raise ValueError("FINALIZED_DIRECT_PUMP_LIVE_TAIL_FORBIDS_SETTLE_SLEEP")
     if reverify_on_transient or reverify_settle_seconds != 0.0:
         raise ValueError("DIRECT_PUMP_LIVE_TAIL_FORBIDS_AUTOMATIC_REVERIFY")
+    if (
+        type(max_transaction_lookups) is not int
+        or max_transaction_lookups < 1
+        or max_transaction_lookups > MAX_TRANSACTION_LOOKUPS
+    ):
+        raise ValueError("DIRECT_PUMP_TRANSACTION_LOOKUP_CAP_INVALID")
     if verifier_transport_factory is None:
         verified_now_epoch = int(
             datetime.fromisoformat(now.replace("Z", "+00:00")).timestamp()
@@ -532,7 +539,7 @@ def run_direct_migration_discovery(
         failures: list[str] = []
         source_failures: list[str] = []
         operation_count = 1
-        for index, row in enumerate(signatures[:MAX_TRANSACTION_LOOKUPS]):
+        for index, row in enumerate(signatures[:max_transaction_lookups]):
             if not isinstance(row, Mapping):
                 failures.append("direct_pump_signature_row_malformed")
                 continue

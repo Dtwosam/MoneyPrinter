@@ -4,13 +4,15 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import sqlite3
 import threading
+from types import SimpleNamespace
 
 import pytest
 
 from printer_v1.db import apply_migrations
 from printer_v1.discovery.eligible_token_supply import (
     ACQUISITION_QUANTUM_YIELDED,
-    COOPERATIVE_QUANTUM_MAX_SOURCE_OPERATIONS,
+    acquisition_quantum_bound,
+    AcquisitionQuantumKind,
 )
 from printer_v1.discovery.pre_lifecycle_temporal_acquisition import (
     WAITING_FOR_ELIGIBLE_SUPPLY,
@@ -22,6 +24,8 @@ from printer_v1.operator_cli.abstract_campaign_command import (
 )
 from printer_v1.operator_cli.authoritative_live_operational_campaign import (
     AuthoritativeLiveOperationalCampaignOwner,
+    _next_later_cycle_quantum_kind,
+    _persist_completed_later_cycle_refresh_progress,
 )
 from printer_v1.operator_cli.four_token_proof_integration import (
     FourTokenAdmissionDisposition,
@@ -37,6 +41,7 @@ from printer_v1.operator_cli.pre_lifecycle_persistent_refresh_owner import (
     PreLifecycleTemporalRefreshOwner,
 )
 from printer_v1.operator_cli.graduated_supply_front_door import GraduatedSupply
+from printer_v1.operator_cli.graduated_supply_front_door import build_graduated_supply
 from printer_v1.operator_cli.later_cycle_graduated_supply import (
     build_later_cycle_graduated_supply,
 )
@@ -51,13 +56,17 @@ from printer_v1.scheduler.scheduler import (
     enqueue_job,
     yield_job,
 )
+from printer_v1.discovery.permanent_discovery_availability import (
+    build_campaign_source_request_scope,
+)
+from printer_v1.sources.pump_migration import build_graduation_verifier_transport
 
 
 NOW = datetime(2026, 8, 17, 12, 0, tzinfo=timezone.utc)
 GOVERNOR = OwnerPort(SOURCE_GOVERNOR_OWNER, True)
 SCHEDULER = OwnerPort(CENTRAL_SCHEDULER_OWNER, True)
 HEALTH = MultiCycleAdmissionHealth()
-QUANTUM_SECONDS = 110.0
+QUANTUM_SECONDS = 115.0
 
 
 def _candidate(slot: int) -> LaterCycleDiscoveryCandidate:
@@ -155,8 +164,46 @@ def _invoke(callback, *, evaluated_at: datetime = NOW):
 
 
 def test_g2_imminent_lifecycle_deadline_blocks_acquisition_quantum() -> None:
-    assert COOPERATIVE_QUANTUM_MAX_SOURCE_OPERATIONS == 22
-    assert QUANTUM_SECONDS == 22 * 5.0
+    startup = acquisition_quantum_bound(AcquisitionQuantumKind.STARTUP)
+    assert startup.transport_count == 5
+    assert startup.worst_case_seconds == 25.0
+    assert [(item.name, item.count, item.timeout_seconds) for item in startup.components] == [
+        ("dexscreener_fresh_profiles_http", 2, 5.0),
+        ("geckoterminal_nomination_http", 1, 5.0),
+        ("opposite_source_backup_http", 1, 5.0),
+        ("protocol_confirmation_rpc", 1, 5.0),
+    ]
+    direct = acquisition_quantum_bound(AcquisitionQuantumKind.DIRECT_MIGRATION)
+    assert direct.transport_count == 11
+    assert direct.worst_case_seconds == QUANTUM_SECONDS
+    assert [(item.name, item.count, item.timeout_seconds) for item in direct.components] == [
+        ("direct_pump_page_and_transactions_rpc", 7, 5.0),
+        ("pumpswap_exact_verifier_rpc", 4, 20.0),
+    ]
+    assert acquisition_quantum_bound(
+        AcquisitionQuantumKind.MARKET_DISCOVERY
+    ).worst_case_seconds == 65.0
+    assert acquisition_quantum_bound(
+        AcquisitionQuantumKind.PERSISTED_REFRESH
+    ).worst_case_seconds == 115.0
+    assert acquisition_quantum_bound(
+        AcquisitionQuantumKind.PERSISTED_REFRESH_DEXSCREENER
+    ).worst_case_seconds == 20.0
+    assert acquisition_quantum_bound(
+        AcquisitionQuantumKind.PERSISTED_REFRESH_GECKOTERMINAL
+    ).worst_case_seconds == 15.0
+    assert _next_later_cycle_quantum_kind({}) is AcquisitionQuantumKind.STARTUP
+    assert _next_later_cycle_quantum_kind(
+        {"cycle": {"cooperative_phase": "DIRECT_MIGRATION"}}
+    ) is AcquisitionQuantumKind.DIRECT_MIGRATION
+    for ordinal, expected in (
+        (1, AcquisitionQuantumKind.PERSISTED_REFRESH),
+        (2, AcquisitionQuantumKind.PERSISTED_REFRESH_DEXSCREENER),
+        (3, AcquisitionQuantumKind.PERSISTED_REFRESH_GECKOTERMINAL),
+    ):
+        assert _next_later_cycle_quantum_kind(
+            {"cycle": {"waiting_for_refresh": True, "refresh_ordinal": ordinal}}
+        ) is expected
     assert _later_cycle_acquisition_deadline_conflict(
         now=NOW,
         earliest_lifecycle_deadline=NOW + timedelta(seconds=30),
@@ -164,7 +211,7 @@ def test_g2_imminent_lifecycle_deadline_blocks_acquisition_quantum() -> None:
     ) is True
     assert _later_cycle_acquisition_deadline_conflict(
         now=NOW,
-        earliest_lifecycle_deadline=NOW + timedelta(seconds=111),
+        earliest_lifecycle_deadline=NOW + timedelta(seconds=116),
         worst_case_quantum_seconds=QUANTUM_SECONDS,
     ) is False
 
@@ -211,15 +258,43 @@ def test_g3_g4_g6_g8_callback_runs_one_quantum_per_claim_and_resumes_cumulativel
     path, request_id, response_id = callback_database
     calls: list[int] = []
     cumulative_operations = 0
+    second_evidence: LaterCycleSourceEvidence | None = None
 
     def supply(**_context):
-        nonlocal cumulative_operations
+        nonlocal cumulative_operations, second_evidence
         cumulative_operations += 1
         calls.append(cumulative_operations)
         if cumulative_operations < 3:
+            if cumulative_operations == 2:
+                connection = sqlite3.connect(path)
+                second_request_id = int(connection.execute(
+                    "INSERT INTO printer_source_requests("
+                    "source_name,request_kind,requested_at,source_status,data_quality_label) "
+                    "VALUES ('geckoterminal','new_pools',?,'COMPLETE','CLEAN_DATA')",
+                    (NOW.isoformat(),),
+                ).lastrowid)
+                second_response_id = int(connection.execute(
+                    "INSERT INTO printer_source_responses("
+                    "source_request_id,source_name,received_at,source_status,data_quality_label) "
+                    "VALUES (?,'geckoterminal',?,'COMPLETE','CLEAN_DATA')",
+                    (second_request_id, NOW.isoformat()),
+                ).lastrowid)
+                connection.commit()
+                connection.close()
+                second_evidence = LaterCycleSourceEvidence(
+                    logical_stage="ELIGIBLE_SUPPLY",
+                    source_request_id=second_request_id,
+                    source_response_id=second_response_id,
+                )
             return LaterCycleCandidateSupply(
                 (),
-                (),
+                (
+                    LaterCycleSourceEvidence(
+                        logical_stage="ELIGIBLE_SUPPLY",
+                        source_request_id=request_id,
+                        source_response_id=response_id,
+                    ),
+                ) if cumulative_operations == 1 else (second_evidence,),
                 (
                     ACQUISITION_QUANTUM_YIELDED
                     if cumulative_operations == 1
@@ -239,6 +314,7 @@ def test_g3_g4_g6_g8_callback_runs_one_quantum_per_claim_and_resumes_cumulativel
                     source_request_id=request_id,
                     source_response_id=response_id,
                 ),
+                second_evidence,
             ),
             None,
             {
@@ -259,6 +335,11 @@ def test_g3_g4_g6_g8_callback_runs_one_quantum_per_claim_and_resumes_cumulativel
     assert first.state == "RUNNING"
     assert first.first_terminal_cause == ""
     assert calls == [1]
+    connection = sqlite3.connect(path)
+    assert connection.execute(
+        "SELECT COUNT(*) FROM printer_pre_admission_discovery_attempt_source_links"
+    ).fetchone()[0] == 0
+    connection.close()
     second = _invoke(callback, evaluated_at=NOW + timedelta(seconds=1))
     assert second.state == "RUNNING"
     assert calls == [1, 2]
@@ -277,10 +358,14 @@ def test_g3_g4_g6_g8_callback_runs_one_quantum_per_claim_and_resumes_cumulativel
     failure_count = connection.execute(
         "SELECT COUNT(*) FROM printer_source_failures"
     ).fetchone()[0]
+    source_link_count = connection.execute(
+        "SELECT COUNT(*) FROM printer_pre_admission_discovery_attempt_source_links"
+    ).fetchone()[0]
     connection.close()
     assert row == ("PAIR_READY", "EXACT_PAIR_FROZEN")
     assert job == ("PRE_ADMISSION_DISCOVERY_SELECTION", "SUCCEEDED", 0, None)
     assert failure_count == 0
+    assert source_link_count == 2
     assert cumulative_operations == 3
 
 
@@ -446,6 +531,71 @@ def test_g3_persisted_temporal_refresh_resumes_without_sleep_or_new_wait(tmp_pat
     assert resumed.refresh_ordinal == waiting.refresh_ordinal == 1
     assert resumed.source_operations == 1
     assert stage_calls == [1]
+
+
+def test_g_c2_production_progress_transition_resumes_market_after_refresh() -> None:
+    owner = object()
+    progress_by_cycle = {
+        "cycle-g-2": {
+            "refresh_owner": owner,
+            "source_operations_used": 9,
+            "reserve_depth": 1,
+            "waiting_for_refresh": True,
+            "refresh_ordinal": 1,
+            "cooperative_phase": "MARKET_DISCOVERY",
+        }
+    }
+
+    updated = _persist_completed_later_cycle_refresh_progress(
+        progress_by_cycle,
+        progress_key="cycle-g-2",
+        progress=progress_by_cycle["cycle-g-2"],
+        refresh_owner=owner,
+        completed_source_operations=2,
+    )
+
+    assert progress_by_cycle["cycle-g-2"] is updated
+    assert updated["waiting_for_refresh"] is False
+    assert updated["source_operations_used"] == 11
+    assert updated["reserve_depth"] == 1
+    assert updated["cooperative_phase"] == "MARKET_DISCOVERY"
+    assert (
+        _next_later_cycle_quantum_kind(progress_by_cycle)
+        is AcquisitionQuantumKind.MARKET_DISCOVERY
+    )
+
+
+def test_g_c3_pumpswap_verifier_fails_before_a_fourth_account_batch(
+    monkeypatch,
+) -> None:
+    calls: list[str] = []
+    account_keys = [f"account-{ordinal}" for ordinal in range(301)]
+
+    def rpc_post(_endpoint, method, _params, *, timeout_seconds):
+        assert timeout_seconds == 20.0
+        calls.append(method)
+        if method != "getTransaction":
+            raise AssertionError("account transport must not start above the ceiling")
+        return {
+            "result": {
+                "transaction": {"message": {"accountKeys": account_keys}},
+                "meta": {},
+            },
+            "response_bytes": 1,
+        }
+
+    monkeypatch.setattr("printer_v1.sources.pump_migration._rpc_post", rpc_post)
+    transport = build_graduation_verifier_transport(
+        migration_signature="signature-g-c3",
+        expected_mint="mint-g-c3",
+    )
+
+    result = transport(None)
+
+    assert result["fixture_status"] == "failure"
+    assert result["failure_type"] == "pumpswap_account_batch_ceiling"
+    assert result["transport_operations_used"] == 1
+    assert calls == ["getTransaction"]
 
 
 def test_g4_later_cycle_rebind_disables_private_wait(tmp_path) -> None:
@@ -631,3 +781,189 @@ def test_g8_supply_adapter_does_not_assign_failure_domain_to_yield(
 
     assert result.terminal_cause == terminal
     assert result.failure_domain is None
+
+
+def test_g_c1_real_later_supply_adapter_preserves_governed_yield_evidence(
+    callback_database, monkeypatch
+) -> None:
+    path, _, _ = callback_database
+    created: dict[str, int] = {}
+    supply_calls = 0
+
+    def yielding_builder(db_path, **kwargs):
+        root = kwargs["campaign_source_request_scope"].request_key_root
+        connection = sqlite3.connect(db_path)
+        request_id = int(connection.execute(
+            "INSERT INTO printer_source_requests("
+            "source_name,request_kind,request_key,requested_at,source_status,data_quality_label) "
+            "VALUES ('dexscreener','fresh_profiles',?,?,'COMPLETE','CLEAN_DATA')",
+            (f"{root}-locator", NOW.isoformat()),
+        ).lastrowid)
+        response_id = int(connection.execute(
+            "INSERT INTO printer_source_responses("
+            "source_request_id,source_name,received_at,source_status,data_quality_label) "
+            "VALUES (?,'dexscreener',?,'COMPLETE','CLEAN_DATA')",
+            (request_id, NOW.isoformat()),
+        ).lastrowid)
+        connection.commit()
+        connection.close()
+        created.update(request_id=request_id, response_id=response_id)
+        return GraduatedSupply(
+            ready=False,
+            terminal=ACQUISITION_QUANTUM_YIELDED,
+            graduated_supply=(),
+            graduation_proofs={},
+            candidate_a=None,
+            candidate_b=None,
+            two_candidate_selection={},
+            handoff_readiness={},
+            discovery_report={},
+            front_door_report={},
+            diagnostics={
+                "stage_local_source_requests": 1,
+                "provider_failures": 0,
+                "shortage_classification": None,
+            },
+            holder_reserve_supply=(),
+            holder_reserve_candidates={},
+        )
+
+    monkeypatch.setattr(
+        "printer_v1.operator_cli.later_cycle_graduated_supply.build_graduated_supply",
+        yielding_builder,
+    )
+
+    def real_supply(**context):
+        nonlocal supply_calls
+        supply_calls += 1
+        return build_later_cycle_graduated_supply(
+            path,
+            campaign_id=context["campaign_id"],
+            campaign_run_id=context["campaign_run_id"],
+            authoritative_factory_run_id=context["authoritative_factory_run_id"],
+            proposed_cycle_id=context["proposed_cycle_id"],
+            proposed_cycle_ordinal=context["proposed_cycle_ordinal"],
+            evaluated_at=context["evaluated_at"],
+            execution_id="exec-g-c1",
+            selection_seed=context["selection_seed"],
+            migration_transport=object(),
+            graduated_supply_kwargs={},
+            cooperative_resume=supply_calls > 1,
+            prior_source_operations_used=supply_calls - 1,
+            cooperative_quantum=True,
+            cooperative_phase="AUXILIARY_INTAKE",
+        )
+
+    callback = AuthoritativeLiveOperationalCampaignOwner(
+        later_cycle_candidate_supply=real_supply
+    )._build_later_cycle_discovery_callback(
+        db_path=path, configuration_id="configuration-g"
+    )
+    result = _invoke(callback)
+    assert result.state == "RUNNING"
+    resumed = _invoke(callback, evaluated_at=NOW + timedelta(seconds=1))
+    assert resumed.attempt_id == result.attempt_id
+    assert resumed.state == "RUNNING"
+    assert supply_calls == 2
+    connection = sqlite3.connect(path)
+    assert connection.execute(
+        "SELECT status FROM printer_scheduler_jobs"
+    ).fetchone()[0] == "PENDING"
+    assert connection.execute(
+        "SELECT COUNT(*) FROM printer_scheduler_jobs"
+    ).fetchone()[0] == 1
+    assert connection.execute(
+        "SELECT COUNT(*) FROM printer_source_failures"
+    ).fetchone()[0] == 0
+    assert connection.execute(
+        "SELECT COUNT(*) FROM printer_pre_admission_discovery_attempt_source_links"
+    ).fetchone()[0] == 0
+    assert connection.execute(
+        "SELECT COUNT(*) FROM printer_source_responses WHERE id=?",
+        (created["response_id"],),
+    ).fetchone()[0] == 1
+    connection.close()
+
+
+def test_g_c5_resume_accepts_only_exact_lawful_scope(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "resume-scope.sqlite3"
+    apply_migrations(path)
+    scope = build_campaign_source_request_scope(
+        execution_id="exec-g-c5",
+        campaign_id="campaign-g",
+        run_id="campaign-run-g",
+        cycle_id="cycle-g-2",
+    )
+    connection = sqlite3.connect(path)
+    request_id = int(connection.execute(
+        "INSERT INTO printer_source_requests("
+        "source_name,request_kind,request_key,requested_at,source_status,data_quality_label) "
+        "VALUES ('dexscreener','fresh_profiles',?,?,'COMPLETE','CLEAN_DATA')",
+        (f"{scope.request_key_root}-locator", NOW.isoformat()),
+    ).lastrowid)
+    connection.execute(
+        "INSERT INTO printer_source_responses("
+        "source_request_id,source_name,received_at,source_status,data_quality_label) "
+        "VALUES (?,'dexscreener',?,'COMPLETE','CLEAN_DATA')",
+        (request_id, NOW.isoformat()),
+    )
+    connection.commit()
+    connection.close()
+
+    monkeypatch.setattr(
+        "printer_v1.discovery.eligible_token_supply.run_persistent_eligible_token_supply",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            discovery_report={},
+            front_door_report={},
+            locator_report={},
+            eligible_reserve=(),
+            diagnostics={},
+            exhaustion_certificate=None,
+            shortage_classification=None,
+            discovery_rounds=0,
+            ready=False,
+            terminal=ACQUISITION_QUANTUM_YIELDED,
+        ),
+    )
+    lawful = build_graduated_supply(
+        path,
+        cycle_seed="seed-g-c5",
+        migration_transport=object(),
+        permanent_availability=True,
+        campaign_source_request_scope=scope,
+        discovery_request_key_prefix=scope.request_key_root,
+        front_door_request_key_prefix=scope.request_key_root,
+        campaign_id=scope.campaign_id,
+        execution_id=scope.execution_id,
+        run_id=scope.run_id,
+        cycle_id=scope.cycle_id,
+        cooperative_resume=True,
+        cooperative_quantum=True,
+        cooperative_phase="MARKET_DISCOVERY",
+    )
+    assert lawful.terminal == ACQUISITION_QUANTUM_YIELDED
+
+    connection = sqlite3.connect(path)
+    connection.execute(
+        "UPDATE printer_source_requests SET request_key=? WHERE id=?",
+        (f"{scope.request_key_root}foreign", request_id),
+    )
+    connection.commit()
+    connection.close()
+    with pytest.raises(Exception, match="CAMPAIGN_SOURCE_REQUEST_SCOPE_ALREADY_EXISTS"):
+        build_graduated_supply(
+            path,
+            cycle_seed="seed-g-c5",
+            migration_transport=object(),
+            permanent_availability=True,
+            campaign_source_request_scope=scope,
+            discovery_request_key_prefix=scope.request_key_root,
+            front_door_request_key_prefix=scope.request_key_root,
+            campaign_id=scope.campaign_id,
+            execution_id=scope.execution_id,
+            run_id=scope.run_id,
+            cycle_id=scope.cycle_id,
+            cooperative_resume=True,
+            cooperative_quantum=True,
+            cooperative_phase="MARKET_DISCOVERY",
+        )

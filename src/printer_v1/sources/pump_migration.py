@@ -34,6 +34,7 @@ from printer_v1.sources.operational_source_contracts import (
 from printer_v1.sources.pump_contracts import verify_pinned_pump_migration
 from printer_v1.sources.pumpfun_direct import PUMP_PROGRAM_ID
 from printer_v1.sources.measured_transport import (
+    MeasuredTransportError,
     build_transport_identity,
     measured_payload_fields,
     pumpswap_verification_transport_count,
@@ -288,6 +289,18 @@ def build_graduation_verifier_transport(
             return MappingProxyType(payload)
 
         keys = collect_transaction_account_keys(tx_result)
+        try:
+            expected_transport_operations = pumpswap_verification_transport_count(
+                len(keys)
+            )
+        except MeasuredTransportError as exc:
+            payload = {
+                "fixture_status": "failure",
+                "failure_type": "pumpswap_account_batch_ceiling",
+                "failure_message": str(exc),
+            }
+            payload.update(measured_payload_fields(identities))
+            return MappingProxyType(payload)
         account_infos: dict[str, Any] = {}
         for i in range(0, len(keys), 100):
             chunk = keys[i : i + 100]
@@ -301,9 +314,7 @@ def build_graduation_verifier_transport(
             if res.get("fixture_status") == "failure":
                 failed = dict(res)
                 failed.update(measured_payload_fields(identities))
-                failed["expected_transport_operations"] = (
-                    pumpswap_verification_transport_count(len(keys))
-                )
+                failed["expected_transport_operations"] = expected_transport_operations
                 return MappingProxyType(failed)
             values = (res.get("result") or {}).get("value") or []
             for k, v in zip(chunk, values):
@@ -313,9 +324,7 @@ def build_graduation_verifier_transport(
             tx_result, account_infos, expected_mint=expected_mint, now_epoch=now_epoch
         )
         measured = measured_payload_fields(identities)
-        measured["expected_transport_operations"] = pumpswap_verification_transport_count(
-            len(keys)
-        )
+        measured["expected_transport_operations"] = expected_transport_operations
         if not verification["verified"]:
             return MappingProxyType({
                 "fixture_status": "failure",

@@ -117,6 +117,69 @@ READINESS_DURATION_CEILING_SECONDS = 360.0
 # admission; it does not alter any provider transport or source budget.
 LATER_CYCLE_SOURCE_OPERATION_TIMEOUT_SECONDS = 5.0
 
+
+def _persist_completed_later_cycle_refresh_progress(
+    progress_by_cycle: dict[str, dict[str, Any]],
+    *,
+    progress_key: str,
+    progress: Mapping[str, Any],
+    refresh_owner: Any,
+    completed_source_operations: int,
+) -> dict[str, Any]:
+    """Commit the cooperative refresh transition before yielding its claim."""
+    prior_operations = int(progress.get("source_operations_used") or 0)
+    completed_operations = int(completed_source_operations)
+    if completed_operations < 0:
+        raise LiveOperationalError("LATER_CYCLE_CUMULATIVE_BUDGET_REGRESSION")
+    updated = {
+        **dict(progress),
+        "refresh_owner": refresh_owner,
+        "source_operations_used": prior_operations + completed_operations,
+        # The refresh owner reports the pre-revalidation reserve depth. Preserve
+        # that truthful value until the resumed canonical market traversal owns
+        # and persists a new one.
+        "reserve_depth": int(progress.get("reserve_depth") or 0),
+        "waiting_for_refresh": False,
+        "cooperative_phase": "MARKET_DISCOVERY",
+    }
+    progress_by_cycle[progress_key] = updated
+    return updated
+
+
+def _next_later_cycle_quantum_kind(
+    progress_by_cycle: Mapping[str, Mapping[str, Any]],
+) -> Any:
+    """Select the exact next cooperative unit from persisted production state."""
+    from printer_v1.discovery.eligible_token_supply import AcquisitionQuantumKind
+
+    if not progress_by_cycle:
+        return AcquisitionQuantumKind.STARTUP
+    waiting = next(
+        (
+            item
+            for item in progress_by_cycle.values()
+            if bool(item.get("waiting_for_refresh"))
+        ),
+        None,
+    )
+    if waiting is not None:
+        refresh_offset = (
+            max(1, int(waiting.get("refresh_ordinal") or 1)) - 1
+        ) % 3
+        return (
+            AcquisitionQuantumKind.PERSISTED_REFRESH
+            if refresh_offset == 0
+            else AcquisitionQuantumKind.PERSISTED_REFRESH_DEXSCREENER
+            if refresh_offset == 1
+            else AcquisitionQuantumKind.PERSISTED_REFRESH_GECKOTERMINAL
+        )
+    if any(
+        str(item.get("cooperative_phase")) == "DIRECT_MIGRATION"
+        for item in progress_by_cycle.values()
+    ):
+        return AcquisitionQuantumKind.DIRECT_MIGRATION
+    return AcquisitionQuantumKind.MARKET_DISCOVERY
+
 # Secondary per-cycle request ceilings (frozen design).
 GECKO_TRENDING_MAX = 1
 GECKO_ACTIVE_MAX = 1
@@ -2150,13 +2213,62 @@ class AuthoritativeLiveOperationalCampaignOwner:
                         }:
                             if (
                                 supply.candidates
-                                or supply.source_evidence
                                 or diagnostics.get("shortage_classification")
                                 or int(diagnostics.get("provider_failures") or 0) != 0
+                                or supply.failure_domain is not None
                             ):
                                 raise LiveOperationalError(
                                     "LATER_CYCLE_SCHEDULER_YIELD_INVALID"
                                 )
+                            seen_yield_evidence: set[
+                                tuple[int, int | None, int | None]
+                            ] = set()
+                            for evidence in supply.source_evidence:
+                                identity = (
+                                    int(evidence.source_request_id),
+                                    evidence.source_response_id,
+                                    evidence.source_failure_id,
+                                )
+                                if identity in seen_yield_evidence:
+                                    raise LiveOperationalError(
+                                        "LATER_CYCLE_SCHEDULER_YIELD_INVALID"
+                                    )
+                                seen_yield_evidence.add(identity)
+                                durable = connection.execute(
+                                    """SELECT r.id,
+                                              EXISTS(SELECT 1 FROM printer_source_responses s
+                                                     WHERE s.id=? AND s.source_request_id=r.id),
+                                              EXISTS(SELECT 1 FROM printer_source_failures f
+                                                     WHERE f.id=? AND f.source_request_id=r.id)
+                                       FROM printer_source_requests r WHERE r.id=?""",
+                                    (
+                                        evidence.source_response_id,
+                                        evidence.source_failure_id,
+                                        evidence.source_request_id,
+                                    ),
+                                ).fetchone()
+                                if (
+                                    durable is None
+                                    or (
+                                        evidence.source_response_id is None
+                                        and evidence.source_failure_id is None
+                                    )
+                                    or (
+                                        evidence.source_response_id is not None
+                                        and evidence.source_failure_id is not None
+                                    )
+                                    or (
+                                        evidence.source_response_id is not None
+                                        and not durable[1]
+                                    )
+                                    or (
+                                        evidence.source_failure_id is not None
+                                        and not durable[2]
+                                    )
+                                ):
+                                    raise LiveOperationalError(
+                                        "LATER_CYCLE_SCHEDULER_YIELD_INVALID"
+                                    )
                             yielded_source_operations[attempt_id] = int(
                                 reported_operations or 0
                             )
@@ -3264,7 +3376,20 @@ class AuthoritativeLiveOperationalCampaignOwner:
                                     shortage_classification=terminal,
                                 ),
                             )
-                        prior_operations += int(outcome.source_operations)
+                        updated_progress = (
+                            _persist_completed_later_cycle_refresh_progress(
+                                later_cycle_progress,
+                                progress_key=progress_key,
+                                progress=progress,
+                                refresh_owner=later_cycle_refresh_owner,
+                                completed_source_operations=int(
+                                    outcome.source_operations
+                                ),
+                            )
+                        )
+                        prior_operations = int(
+                            updated_progress["source_operations_used"]
+                        )
                         # The claimed DISCOVERY_REFRESH opportunity is this
                         # Scheduler claim's single acquisition quantum. Persist
                         # its cumulative accounting and return before any market
@@ -3309,6 +3434,10 @@ class AuthoritativeLiveOperationalCampaignOwner:
                         cooperative_resume=progress is not None,
                         prior_source_operations_used=prior_operations,
                         cooperative_quantum=True,
+                        cooperative_phase=str(
+                            (progress or {}).get("cooperative_phase")
+                            or "AUXILIARY_INTAKE"
+                        ),
                     )
                     if result.terminal_cause in {
                         "WAITING_FOR_ELIGIBLE_SUPPLY",
@@ -3327,6 +3456,16 @@ class AuthoritativeLiveOperationalCampaignOwner:
                                 result.terminal_cause
                                 == "WAITING_FOR_ELIGIBLE_SUPPLY"
                             ),
+                            "refresh_ordinal": int(
+                                (
+                                    diagnostics.get("scheduler_yield") or {}
+                                ).get("refresh_ordinal")
+                                or 0
+                            ),
+                            "cooperative_phase": str(
+                                diagnostics.get("next_cooperative_phase")
+                                or "MARKET_DISCOVERY"
+                            ),
                         }
                     else:
                         later_cycle_progress.pop(progress_key, None)
@@ -3340,17 +3479,18 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 )
             )
             from printer_v1.discovery.eligible_token_supply import (
-                COOPERATIVE_QUANTUM_MAX_SOURCE_OPERATIONS,
+                acquisition_quantum_bound,
             )
 
-            # The largest cooperative unit is the production startup quantum's
-            # exact 22-operation ceiling. One resumed market batch (including
-            # existing Gecko pacing) and one temporal refresh are both smaller.
-            # The configured hard per-operation transport timeout supplies the
-            # duration bound; observed average latency is never used.
-            lk["later_cycle_acquisition_quantum_seconds"] = float(
-                COOPERATIVE_QUANTUM_MAX_SOURCE_OPERATIONS
-            ) * float(later_cycle_source_operation_timeout_seconds)
+            def next_later_cycle_quantum_seconds() -> float:
+                kind = _next_later_cycle_quantum_kind(later_cycle_progress)
+                return acquisition_quantum_bound(kind).worst_case_seconds
+
+            # Resolve on every factory boundary so deadline protection uses the
+            # actual next state-machine unit, never a global guessed duration.
+            lk["later_cycle_acquisition_quantum_seconds"] = (
+                next_later_cycle_quantum_seconds
+            )
             if "four_token_health_projector" in lk:
                 raise LiveOperationalError(
                     "FOUR_TOKEN_HEALTH_PROJECTOR_OVERRIDE_FORBIDDEN"

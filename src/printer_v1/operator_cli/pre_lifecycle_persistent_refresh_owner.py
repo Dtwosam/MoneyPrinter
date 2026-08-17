@@ -130,6 +130,7 @@ class PreLifecycleTemporalRefreshOwner:
         self._supervision_probe=supervision_probe; self._waiter=waiter; self._clock=clock
         self._publisher=publisher; self._abort_event=abort_event
         self._cycle_rebinder=cycle_rebinder
+        self._cooperative_yield=False
         self.refresh_interval_seconds=int(next_check_interval_seconds(JobKind.DISCOVERY_REFRESH) if refresh_interval_seconds is None else refresh_interval_seconds)
         self.published_states=[]; self._acquisition_mark=None
     def for_cycle(self, *, cycle_id:str, cycle_cutoff:str, evaluated_at:str,
@@ -169,6 +170,7 @@ class PreLifecycleTemporalRefreshOwner:
             raise PreLifecycleTemporalRefreshError('TEMPORAL_CYCLE_REBINDER_DEADLINE_DRIFT')
         if cooperative_yield:
             rebound._waiter=None
+            rebound._cooperative_yield=True
         return rebound
     def _connect(self):
         c=sqlite3.connect(self.db_path); c.row_factory=sqlite3.Row; c.execute('PRAGMA foreign_keys=ON'); return c
@@ -249,7 +251,7 @@ class PreLifecycleTemporalRefreshOwner:
             terminalize_refresh_wait(c,wait_id=wait_id,wait_state='FAILED',first_terminal_cause='PRE_LIFECYCLE_REFRESH_WORK_OWNERSHIP_FAILED',now=woke); c.commit()
             return TemporalRefreshOutcome(status=UNSAFE_SCHEDULER_STATE,wait_id=wait_id,scheduler_job_id=int(job_id),refresh_ordinal=ordinal,scheduled_for=scheduled,claimed=True,reserve_depth_before=reserve_depth,reserve_depth_after=reserve_depth,detail=f'refresh work ownership failed: {type(exc).__name__}')
         try:
-            raw_stage=self._refresh_stage(c,campaign_id=self.campaign_id,run_id=self.run_id,cycle_id=self.cycle_id,refresh_work_id=refresh_work_id,discovery_work_id=refresh_work_id,scheduler_job_id=int(job_id),refresh_ordinal=ordinal,source_operations_remaining=source_operations_remaining,now=woke)
+            raw_stage=self._refresh_stage(c,campaign_id=self.campaign_id,run_id=self.run_id,cycle_id=self.cycle_id,refresh_work_id=refresh_work_id,discovery_work_id=refresh_work_id,scheduler_job_id=int(job_id),refresh_ordinal=ordinal,source_operations_remaining=source_operations_remaining,now=woke,cooperative_yield=self._cooperative_yield)
         except Exception as exc:
             status,domain,cause=classify_refresh_stage_exception(exc)
             self._terminalize(c,wait_id,refresh_work_id,int(job_id),False,cause,woke)

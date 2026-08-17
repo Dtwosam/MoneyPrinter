@@ -170,6 +170,16 @@ def _later_cycle_acquisition_deadline_conflict(
     return current + timedelta(seconds=worst_case_quantum_seconds) >= deadline
 
 
+def _resolve_acquisition_quantum_bound(
+    bound: float | Callable[[], float],
+) -> float:
+    value = bound() if callable(bound) else bound
+    seconds = float(value)
+    if seconds <= 0:
+        raise ValueError("acquisition quantum duration must be positive")
+    return seconds
+
+
 def _later_cycle_attempt_is_terminal(state: str | None) -> bool:
     value = str(state or "")
     return bool(value) and value != "RUNNING"
@@ -193,7 +203,7 @@ def _run_four_token_admission_boundary(
     source_governor: Any | None = None,
     central_scheduler: Any | None = None,
     clock: Callable[[], datetime] | None = None,
-    acquisition_quantum_worst_case_seconds: float = 60.0,
+    acquisition_quantum_worst_case_seconds: float | Callable[[], float] = 60.0,
 ) -> FourTokenAdmissionBoundaryResult:
     """Consume at most one due admission inside the canonical factory loop."""
     from printer_v1.operator_cli.four_token_proof_integration import (
@@ -207,7 +217,9 @@ def _run_four_token_admission_boundary(
     if _later_cycle_acquisition_deadline_conflict(
         now=now,
         earliest_lifecycle_deadline=next_due_work_at,
-        worst_case_quantum_seconds=acquisition_quantum_worst_case_seconds,
+        worst_case_quantum_seconds=_resolve_acquisition_quantum_bound(
+            acquisition_quantum_worst_case_seconds
+        ),
     ):
         from printer_v1.operator_cli.four_token_proof_integration import (
             FourTokenAdmissionDisposition,
@@ -6447,7 +6459,7 @@ def run_one_command_15m_factory(
     selective_1h_continuation: bool = False,
     four_token_proof_controller: Any | None = None,
     later_cycle_discovery_callback: Callable[..., Any] | None = None,
-    later_cycle_acquisition_quantum_seconds: float = 60.0,
+    later_cycle_acquisition_quantum_seconds: float | Callable[[], float] = 60.0,
     four_token_health_projector: Callable[[sqlite3.Connection, datetime], Any]
     | None = None,
     four_token_shared_terminalizer: Callable[..., Mapping[str, Any]]
@@ -6515,7 +6527,11 @@ def run_one_command_15m_factory(
             reasons.append(
                 "four-token proof controller requires authoritative shared terminal owner"
             )
-        if later_cycle_acquisition_quantum_seconds <= 0:
+        try:
+            _resolve_acquisition_quantum_bound(
+                later_cycle_acquisition_quantum_seconds
+            )
+        except (TypeError, ValueError):
             reasons.append("later-cycle acquisition quantum duration must be positive")
     elif later_cycle_discovery_callback is not None:
         reasons.append(

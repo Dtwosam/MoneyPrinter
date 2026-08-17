@@ -28,6 +28,7 @@ import sqlite3
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -83,19 +84,109 @@ LIFECYCLE_OPERATION_CEILING = 45
 CERTIFICATE_VERSION = "V2_9_8B_LIQUIDITY_EVIDENCE_EXHAUSTION_V2"
 ACQUISITION_QUANTUM_YIELDED = "ACQUISITION_QUANTUM_YIELDED"
 COOPERATIVE_QUANTUM_MAX_DIRECT_CANDIDATES = 5
-# Existing production startup unit: one fresh-profile request; one direct Pump
-# page, at most twelve transaction reads, and at most five exact verifications;
-# one GeckoTerminal nomination; one opposite-source backup; and one batched
-# protocol confirmation request. Later market and temporal-refresh quanta have
-# smaller source-operation/time ceilings.
-COOPERATIVE_QUANTUM_MAX_SOURCE_OPERATIONS = (
-    1  # fresh-profile locator
-    + 1  # direct Pump signature page
-    + int(MAX_TRANSACTION_LOOKUPS)
-    + COOPERATIVE_QUANTUM_MAX_DIRECT_CANDIDATES
-    + 1  # GeckoTerminal nomination
-    + 1  # opposite-source backup
-    + 1  # batched protocol confirmation
+
+
+class AcquisitionQuantumKind(str, Enum):
+    """Synchronous acquisition units eligible for one Scheduler claim."""
+
+    STARTUP = "STARTUP"
+    DIRECT_MIGRATION = "DIRECT_MIGRATION"
+    MARKET_DISCOVERY = "MARKET_DISCOVERY"
+    PERSISTED_REFRESH = "PERSISTED_REFRESH"
+    PERSISTED_REFRESH_DEXSCREENER = "PERSISTED_REFRESH_DEXSCREENER"
+    PERSISTED_REFRESH_GECKOTERMINAL = "PERSISTED_REFRESH_GECKOTERMINAL"
+
+
+@dataclass(frozen=True)
+class AcquisitionQuantumComponent:
+    name: str
+    count: int
+    timeout_seconds: float
+    transport: bool = True
+
+
+@dataclass(frozen=True)
+class AcquisitionQuantumBound:
+    kind: AcquisitionQuantumKind
+    components: tuple[AcquisitionQuantumComponent, ...]
+
+    @property
+    def transport_count(self) -> int:
+        return sum(item.count for item in self.components if item.transport)
+
+    @property
+    def worst_case_seconds(self) -> float:
+        return sum(item.count * item.timeout_seconds for item in self.components)
+
+
+_AUXILIARY_INTAKE_COMPONENTS = (
+    AcquisitionQuantumComponent("dexscreener_fresh_profiles_http", 2, 5.0),
+    AcquisitionQuantumComponent("geckoterminal_nomination_http", 1, 5.0),
+    AcquisitionQuantumComponent("opposite_source_backup_http", 1, 5.0),
+    AcquisitionQuantumComponent("protocol_confirmation_rpc", 1, 5.0),
+)
+
+_DIRECT_MIGRATION_COMPONENTS = (
+    AcquisitionQuantumComponent(
+        "direct_pump_page_and_transactions_rpc",
+        7,
+        5.0,
+    ),
+    # One candidate per cooperative direct-migration opportunity. The pinned
+    # verifier is one getTransaction plus at most three account batches.
+    AcquisitionQuantumComponent("pumpswap_exact_verifier_rpc", 4, 20.0),
+)
+
+_ACQUISITION_QUANTUM_BOUNDS = {
+    AcquisitionQuantumKind.STARTUP: AcquisitionQuantumBound(
+        AcquisitionQuantumKind.STARTUP, _AUXILIARY_INTAKE_COMPONENTS
+    ),
+    AcquisitionQuantumKind.DIRECT_MIGRATION: AcquisitionQuantumBound(
+        AcquisitionQuantumKind.DIRECT_MIGRATION, _DIRECT_MIGRATION_COMPONENTS
+    ),
+    AcquisitionQuantumKind.MARKET_DISCOVERY: AcquisitionQuantumBound(
+        AcquisitionQuantumKind.MARKET_DISCOVERY,
+        (
+            AcquisitionQuantumComponent("dexscreener_market_batch_http", 1, 5.0),
+            AcquisitionQuantumComponent("geckoterminal_reconciliation_http", 6, 5.0),
+            AcquisitionQuantumComponent(
+                "geckoterminal_inter_request_pacing", 5, 6.0, transport=False
+            ),
+        ),
+    ),
+    AcquisitionQuantumKind.PERSISTED_REFRESH: AcquisitionQuantumBound(
+        AcquisitionQuantumKind.PERSISTED_REFRESH, _DIRECT_MIGRATION_COMPONENTS
+    ),
+    AcquisitionQuantumKind.PERSISTED_REFRESH_DEXSCREENER: AcquisitionQuantumBound(
+        AcquisitionQuantumKind.PERSISTED_REFRESH_DEXSCREENER,
+        (
+            AcquisitionQuantumComponent("dexscreener_fresh_profiles_http", 2, 5.0),
+            AcquisitionQuantumComponent("opposite_source_backup_http", 1, 5.0),
+            AcquisitionQuantumComponent("protocol_confirmation_rpc", 1, 5.0),
+        ),
+    ),
+    AcquisitionQuantumKind.PERSISTED_REFRESH_GECKOTERMINAL: AcquisitionQuantumBound(
+        AcquisitionQuantumKind.PERSISTED_REFRESH_GECKOTERMINAL,
+        (
+            AcquisitionQuantumComponent("geckoterminal_nomination_http", 1, 5.0),
+            AcquisitionQuantumComponent("opposite_source_backup_http", 1, 5.0),
+            AcquisitionQuantumComponent("protocol_confirmation_rpc", 1, 5.0),
+        ),
+    ),
+}
+
+
+def acquisition_quantum_bound(
+    kind: AcquisitionQuantumKind | str,
+) -> AcquisitionQuantumBound:
+    """Return the configured transport-derived bound for the actual next unit."""
+    return _ACQUISITION_QUANTUM_BOUNDS[AcquisitionQuantumKind(kind)]
+
+
+# Compatibility export only. It now denotes the largest *transport* count, not
+# governed source requests, and must never be multiplied by one global timeout.
+COOPERATIVE_QUANTUM_MAX_SOURCE_OPERATIONS = max(
+    bound.transport_count for bound in _ACQUISITION_QUANTUM_BOUNDS.values()
 )
 
 # Eligibility reserve statuses.
@@ -735,6 +826,7 @@ def run_persistent_eligible_token_supply(
     cooperative_resume: bool = False,
     prior_source_operations_used: int = 0,
     cooperative_quantum: bool = False,
+    cooperative_phase: str | None = None,
 ) -> PersistentSupplyResult:
     """Run persistent multi-round eligible discovery inside one campaign.
 
@@ -757,6 +849,14 @@ def run_persistent_eligible_token_supply(
         and max_candidates > COOPERATIVE_QUANTUM_MAX_DIRECT_CANDIDATES
     ):
         raise EligibleTokenSupplyError("COOPERATIVE_QUANTUM_CANDIDATE_CAP_EXCEEDED")
+    if cooperative_quantum:
+        cooperative_phase = str(cooperative_phase or "AUXILIARY_INTAKE")
+        if cooperative_phase not in {
+            "AUXILIARY_INTAKE",
+            "DIRECT_MIGRATION",
+            "MARKET_DISCOVERY",
+        }:
+            raise EligibleTokenSupplyError("COOPERATIVE_QUANTUM_PHASE_INVALID")
     if permanent_availability:
         # Two selected plus one fully eligible alternate per slot. This is a
         # reserve capacity, never a ranking or permission to consume four slots.
@@ -782,7 +882,13 @@ def run_persistent_eligible_token_supply(
             locator_stage_kwargs["transport_identity_observer"] = (
                 transport_identity_observer
             )
-    if cooperative_resume:
+    run_locator_this_quantum = (
+        not cooperative_quantum or cooperative_phase == "AUXILIARY_INTAKE"
+    )
+    run_direct_this_quantum = (
+        not cooperative_quantum or cooperative_phase == "DIRECT_MIGRATION"
+    )
+    if cooperative_resume or not run_locator_this_quantum:
         locator = {
             "status": "COOPERATIVE_RESUME_EXISTING_INVENTORY",
             "matched_count": 0,
@@ -842,7 +948,7 @@ def run_persistent_eligible_token_supply(
             discovery_stage_kwargs["local_validation_identity_observer"] = (
                 local_validation_identity_observer
             )
-    if cooperative_resume:
+    if cooperative_resume and not run_direct_this_quantum:
         discovery = {
             "status": "COOPERATIVE_RESUME_EXISTING_INVENTORY",
             "confirmed_this_cycle": (),
@@ -855,20 +961,34 @@ def run_persistent_eligible_token_supply(
             "campaign_safe_stop": False,
             "accounting_blocker": False,
         }
-    else:
+    elif run_direct_this_quantum:
         discovery = run_direct_migration_discovery(
             db_path,
             migration_transport=migration_transport,
             verifier_transport_factory=verifier_transport_factory,
             now=now,
             request_key_prefix=discovery_request_key_prefix,
-            max_candidates=max_candidates,
+            max_candidates=(1 if cooperative_quantum else max_candidates),
+            max_transaction_lookups=(6 if cooperative_quantum else MAX_TRANSACTION_LOOKUPS),
             collection_rounds=collection_rounds,
             settle_seconds=settle_seconds,
             reverify_on_transient=reverify_on_transient,
             reverify_settle_seconds=reverify_settle_seconds,
             **discovery_stage_kwargs,
         )
+    else:
+        discovery = {
+            "status": "COOPERATIVE_PHASE_NOT_DUE",
+            "confirmed_this_cycle": (),
+            "candidate_mix": (),
+            "source_request_coverage": (),
+            "source_operation_ledger": {
+                "source_requests": 0,
+                "source_request_coverage": (),
+            },
+            "campaign_safe_stop": False,
+            "accounting_blocker": False,
+        }
     latest_mints = set(discovery.get("confirmed_this_cycle") or ())
 
     ops_used = int(prior_source_operations_used) + int(locator.get("source_requests") or 0) + int(
@@ -955,7 +1075,10 @@ def run_persistent_eligible_token_supply(
 
     connection = _connect(db_path)
     try:
-        if permanent_availability and not cooperative_resume:
+        if permanent_availability and (
+            not cooperative_quantum
+            or cooperative_phase == "AUXILIARY_INTAKE"
+        ):
             intake_before_gecko = int(locator.get("source_requests") or 0) + 1
             stage_budget.consume("intake", min(3, intake_before_gecko))
             locator_request_id = locator.get("request_id")
@@ -1464,7 +1587,17 @@ def run_persistent_eligible_token_supply(
             )
             return True
 
-        while len(campaign_eligible) < required_token_capacity:
+        cooperative_startup_only = bool(
+            cooperative_quantum
+            and cooperative_phase in {"AUXILIARY_INTAKE", "DIRECT_MIGRATION"}
+        )
+        if cooperative_startup_only:
+            last_stop_reason = ACQUISITION_QUANTUM_YIELDED
+
+        while (
+            len(campaign_eligible) < required_token_capacity
+            and not cooperative_startup_only
+        ):
             if cooperative_quantum and not cooperative_resume and quantum_rounds == 0:
                 last_stop_reason = ACQUISITION_QUANTUM_YIELDED
                 break
@@ -2335,6 +2468,16 @@ def run_persistent_eligible_token_supply(
         fk = connection.execute("PRAGMA foreign_key_check").fetchall()
 
         diagnostics = {
+            "cooperative_phase": cooperative_phase,
+            "next_cooperative_phase": (
+                "DIRECT_MIGRATION"
+                if cooperative_quantum and cooperative_phase == "AUXILIARY_INTAKE"
+                else "MARKET_DISCOVERY"
+                if cooperative_quantum and cooperative_phase == "DIRECT_MIGRATION"
+                else "MARKET_DISCOVERY"
+                if cooperative_quantum
+                else None
+            ),
             "confirmed_this_cycle": int(discovery.get("confirmed_count") or 0),
             "latest_graduated_count": int(discovery.get("latest_graduated_count") or 0),
             "persisted_graduated_count": int(
@@ -2696,6 +2839,10 @@ __all__ = [
     "DEFAULT_DISCOVERY_OPERATION_BUDGET",
     "LIFECYCLE_OPERATION_CEILING",
     "ACQUISITION_QUANTUM_YIELDED",
+    "AcquisitionQuantumKind",
+    "AcquisitionQuantumComponent",
+    "AcquisitionQuantumBound",
+    "acquisition_quantum_bound",
     "COOPERATIVE_QUANTUM_MAX_DIRECT_CANDIDATES",
     "COOPERATIVE_QUANTUM_MAX_SOURCE_OPERATIONS",
     "ELIGIBLE_FRESH",

@@ -3762,6 +3762,74 @@ def inspect_preexisting_source_request_scope_collision(
     }
 
 
+def validate_cooperative_resume_source_request_scope(
+    connection: sqlite3.Connection,
+    *,
+    scope: CampaignSourceRequestScope | Mapping[str, Any],
+    execution_id: str,
+    campaign_id: str,
+    run_id: str,
+    cycle_id: str,
+) -> dict[str, Any]:
+    """Validate that a resume root contains only lawful completed prior work.
+
+    The typed scope binds execution/campaign/run/cycle. Every durable request
+    found by the deliberately broad collision query must then belong to the
+    canonical root delimiter and have exactly one terminal response-or-failure
+    artifact. This turns cooperative resume into a narrow continuation rule,
+    not a collision bypass.
+    """
+    owned = validate_campaign_source_request_scope(
+        scope,
+        execution_id=execution_id,
+        campaign_id=campaign_id,
+        run_id=run_id,
+        cycle_id=cycle_id,
+    )
+    rows = connection.execute(
+        """SELECT r.id,r.request_key,r.source_name,r.request_kind,
+                  (SELECT COUNT(*) FROM printer_source_responses s
+                   WHERE s.source_request_id=r.id) AS response_count,
+                  (SELECT COUNT(*) FROM printer_source_failures f
+                   WHERE f.source_request_id=r.id) AS failure_count
+           FROM printer_source_requests r
+           WHERE r.request_key=? OR r.request_key LIKE ?
+           ORDER BY r.id""",
+        (owned.request_key_root, f"{owned.request_key_root}%"),
+    ).fetchall()
+    if not rows:
+        raise ValueError(CAMPAIGN_SOURCE_REQUEST_SCOPE_ALREADY_EXISTS)
+    request_ids: list[int] = []
+    for row in rows:
+        values = dict(row) if hasattr(row, "keys") else {
+            "id": row[0],
+            "request_key": row[1],
+            "source_name": row[2],
+            "request_kind": row[3],
+            "response_count": row[4],
+            "failure_count": row[5],
+        }
+        response_count = int(values["response_count"] or 0)
+        failure_count = int(values["failure_count"] or 0)
+        if (
+            not request_key_belongs_to_root(
+                str(values["request_key"] or ""), owned.request_key_root
+            )
+            or not str(values["source_name"] or "").strip()
+            or not str(values["request_kind"] or "").strip()
+            or response_count + failure_count != 1
+        ):
+            raise ValueError(CAMPAIGN_SOURCE_REQUEST_SCOPE_ALREADY_EXISTS)
+        request_ids.append(int(values["id"]))
+    return {
+        "status": "RESUME_SCOPE_VALID",
+        "request_key_root": owned.request_key_root,
+        "request_ids": request_ids,
+        "count": len(request_ids),
+        "scope": owned.as_dict(),
+    }
+
+
 def _bounded_id_token(ids: Sequence[int], *, max_ids: int = MAX_RECONCILIATION_DETAIL_IDS) -> str:
     ordered = sorted({int(x) for x in ids})
     truncated = len(ordered) > max_ids
@@ -5617,6 +5685,7 @@ __all__ = [
     "format_source_request_reconciliation_detail",
     "freeze_eligible_reserve",
     "inspect_preexisting_source_request_scope_collision",
+    "validate_cooperative_resume_source_request_scope",
     "interleave_candidate_observations",
     "load_durable_campaign_source_request_ids",
     "load_exact_market_states",

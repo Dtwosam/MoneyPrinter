@@ -811,6 +811,7 @@ def build_graduated_supply(
     cooperative_resume: bool = False,
     prior_source_operations_used: int = 0,
     cooperative_quantum: bool = False,
+    cooperative_phase: str | None = None,
 ) -> GraduatedSupply:
     """Compose discovery + front door via persistent multi-round supply loop.
 
@@ -839,6 +840,7 @@ def build_graduated_supply(
     from printer_v1.discovery.permanent_discovery_availability import (
         CAMPAIGN_SOURCE_REQUEST_SCOPE_REQUIRED,
         inspect_preexisting_source_request_scope_collision,
+        validate_cooperative_resume_source_request_scope,
         validate_campaign_source_request_scope,
         validate_permanent_operational_request_prefixes,
     )
@@ -876,10 +878,26 @@ def build_graduated_supply(
             )
         finally:
             collision_connection.close()
-        if collision.get("status") != "OK" and not cooperative_resume:
-            raise GraduatedSupplyError(
-                str(collision.get("detail") or collision.get("blocker"))
-            )
+        if collision.get("status") != "OK":
+            if not cooperative_resume:
+                raise GraduatedSupplyError(
+                    str(collision.get("detail") or collision.get("blocker"))
+                )
+            resume_connection = sqlite3.connect(str(db_path))
+            resume_connection.row_factory = sqlite3.Row
+            try:
+                validate_cooperative_resume_source_request_scope(
+                    resume_connection,
+                    scope=scope_obj,
+                    execution_id=str(execution_id),
+                    campaign_id=str(campaign_id),
+                    run_id=str(run_id),
+                    cycle_id=str(cycle_id),
+                )
+            except ValueError as exc:
+                raise GraduatedSupplyError(str(exc)) from exc
+            finally:
+                resume_connection.close()
         active_discovery_prefix = scope_obj.request_key_root
         active_front_door_prefix = scope_obj.request_key_root
 
@@ -938,6 +956,7 @@ def build_graduated_supply(
         cooperative_resume=cooperative_resume,
         prior_source_operations_used=prior_source_operations_used,
         cooperative_quantum=cooperative_quantum,
+        cooperative_phase=cooperative_phase,
     )
 
     discovery = dict(persistent.discovery_report)

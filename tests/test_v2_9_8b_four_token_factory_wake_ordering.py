@@ -38,6 +38,23 @@ from printer_v1.operator_cli.window_15m_disposable_public_composition_proof impo
     build_disposable_public_composition_proof_binding,
     build_disposable_public_composition_proof_plan,
 )
+from printer_v1.operator_cli.authoritative_live_operational_campaign import (
+    AuthoritativeLiveOperationalCampaignOwner,
+)
+from printer_v1.operator_cli.abstract_campaign_command import (
+    CENTRAL_SCHEDULER_OWNER,
+    SOURCE_GOVERNOR_OWNER,
+    OwnerPort,
+)
+from printer_v1.operator_cli.four_token_proof_integration import (
+    LaterCycleCandidateSupply,
+)
+from printer_v1.discovery.eligible_token_supply import ACQUISITION_QUANTUM_YIELDED
+from printer_v1.sources.governed_execution import (
+    FIXTURE_FAILURE,
+    build_fixture_source_adapter,
+)
+from printer_v1.sources import contracts as source_contracts
 
 
 START = datetime(2026, 8, 13, 12, 0, tzinfo=timezone.utc)
@@ -340,11 +357,257 @@ def test_real_factory_loop_wakes_future_lifecycle_before_spacing_boundary(
             "clean_terminal": True,
             "lease_released": True,
         },
-        source_governor_owner=object(),
-        central_scheduler_owner=object(),
+        source_governor_owner=OwnerPort(SOURCE_GOVERNOR_OWNER, True),
+        central_scheduler_owner=OwnerPort(CENTRAL_SCHEDULER_OWNER, True),
         _sleep=lambda _seconds: None,
         _monotonic=lambda: 0.0,
     )
 
     assert waits == [100], json.dumps(report, sort_keys=True, default=str)
     assert report["stop_reason"] == "FOCUSED_WAKE_OBSERVED"
+
+
+@dataclass
+class _CadenceReadyController:
+    policy: object = POLICY
+
+    def evaluate_factory_wake(
+        self, connection, *, binding, now, next_due_work_at, proof_deadline,
+        admission_health,
+    ) -> FourTokenControllerReadiness:
+        del connection, binding, admission_health
+        session = MultiCycleSessionSnapshot(
+            intake_started_at=START,
+            intake_deadline=proof_deadline,
+            configured_through_4h_token_ceiling=4,
+            configured_active_cycle_ceiling=2,
+            total_cycle_admission_ceiling=2,
+            active_through_4h_tokens=2,
+            active_cycles=1,
+            admissions_completed=1,
+            last_cycle_admitted_at=START,
+            phase=MultiCycleSessionPhase.ACTIVE_INTAKE,
+        )
+        return FourTokenControllerReadiness(
+            snapshot=MultiCycleCampaignSnapshot(
+                campaign_id=CAMPAIGN_ID,
+                campaign_run_id=CAMPAIGN_RUN_ID,
+                configuration_id=CONFIGURATION_ID,
+                authoritative_factory_run_id=FACTORY_RUN_ID,
+                cycle_ids=(CYCLE_ID,),
+                active_cycle_ids=(CYCLE_ID,),
+                active_token_slot_ids=("t1_c0001_slot", "t2_c0001_slot"),
+                first_cycle_id=CYCLE_ID,
+                session=session,
+                admission_evaluation=AdmissionEvaluation(
+                    AdmissionDecision.ADMIT_TWO_TOKEN_CYCLE,
+                    "capacity_available",
+                ),
+            ),
+            wake=next_four_token_factory_wake(
+                now=now,
+                next_due_work_at=next_due_work_at,
+                next_admission_at=now,
+                proof_deadline=proof_deadline,
+            ),
+        )
+
+
+def test_real_factory_controlled_clock_interleaves_scheduler_yields_and_snapshots(
+    tmp_path, monkeypatch
+) -> None:
+    db, backup, disposable_binding = _prepare(tmp_path)
+
+    class Clock:
+        def __init__(self):
+            self.instant = START
+            self.elapsed = 0.0
+
+        def now(self):
+            return self.instant
+
+        def monotonic(self):
+            return self.elapsed
+
+        def sleep(self, seconds):
+            self.elapsed += float(seconds)
+            self.instant += timedelta(seconds=float(seconds))
+
+    clock = Clock()
+
+    class ClockDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            value = clock.now()
+            return value if tz is None else value.astimezone(tz)
+    snapshot_times = {"mint-1": [], "mint-2": []}
+    quantum_bounds = (25.0, 115.0, 65.0, 65.0, 65.0)
+    quantum_calls: list[float] = []
+
+    def supply(**_context):
+        bound = quantum_bounds[min(len(quantum_calls), len(quantum_bounds) - 1)]
+        quantum_calls.append(bound)
+        clock.sleep(bound)
+        return LaterCycleCandidateSupply(
+            (),
+            (),
+            ACQUISITION_QUANTUM_YIELDED,
+            {
+                "stage_local_source_requests": len(quantum_calls),
+                "provider_failures": 0,
+                "shortage_classification": None,
+            },
+        )
+
+    callback = AuthoritativeLiveOperationalCampaignOwner(
+        later_cycle_candidate_supply=supply
+    )._build_later_cycle_discovery_callback(
+        db_path=db, configuration_id=CONFIGURATION_ID
+    )
+
+    def snapshot_factory(*, token_mint, timeout_seconds):
+        del timeout_seconds
+        snapshot_times[token_mint].append(clock.now())
+        pool = "pool-1" if token_mint == "mint-1" else "pool-2"
+        return build_fixture_source_adapter(
+            "dexscreener",
+            fixture_payload={"pairs": [{
+                "chain": "solana",
+                "token_mint": token_mint,
+                "pair_address": pool,
+                "price_usd": 1.0,
+                "liquidity_usd": 10_000.0,
+                "volume_5m": 10.0,
+                "volume_1h": 20.0,
+                "volume_24h": 30.0,
+                "txns_5m": 2,
+                "txns_1h": 4,
+                "txns_24h": 6,
+                "buys_5m": 1,
+                "sells_5m": 1,
+                "buys_1h": 2,
+                "sells_1h": 2,
+                "buys_24h": 3,
+                "sells_24h": 3,
+                "price_change_5m": 0.0,
+                "price_change_1h": 0.0,
+                "price_change_24h": 0.0,
+            }]},
+        )
+
+    context_factories = {
+        name: (lambda _name=name, **_kwargs: build_fixture_source_adapter(
+            _name, fixture_kind=FIXTURE_FAILURE
+        ))
+        for name in ("coingecko", "goplus", "jupiter_quote")
+    } | {
+        "solana_rpc_holder": lambda **_kwargs: build_fixture_source_adapter(
+            "solana_rpc", fixture_kind=FIXTURE_FAILURE
+        )
+    }
+
+    monkeypatch.setattr(factory, "_now", clock.now)
+    monkeypatch.setattr(source_contracts, "datetime", ClockDateTime)
+    monkeypatch.setattr(
+        four_token_adapter,
+        "finalize_four_token_shared_terminal",
+        lambda *args, **kwargs: {
+            "shared_terminalized": True,
+            "shared_cleanup_count": 1,
+        },
+    )
+
+    def discovery(_args):
+        connection = sqlite3.connect(db)
+        connection.execute(
+            "INSERT INTO printer_selection_batches("
+            "batch_id,batch_status,window_kind,candidate_pool_total,selected_count,"
+            "operator_approved) VALUES ('cadence-batch','ASSEMBLED','WINDOW_15M',2,2,1)"
+        )
+        for row_id in (1, 2):
+            connection.execute(
+                "INSERT INTO printer_selection_batch_items("
+                "batch_id,item_status,token_id,pair_id,token_mint,pair_address,"
+                "tracking_lane,operator_approved) VALUES "
+                "('cadence-batch','SELECTED',?,?,?,?, 'TRACK_NORMAL',1)",
+                (row_id, 100 + row_id, f"mint-{row_id}", f"pool-{row_id}"),
+            )
+        connection.commit()
+        connection.close()
+        return {
+            "selection_handoff_report": {
+                "batch_id": "cadence-batch",
+                "selection_seed": "cadence-seed",
+                "eligible_pool_size": 2,
+            },
+            "discovery_results": [],
+        }
+
+    report = factory.run_one_command_15m_factory(
+        db,
+        backup,
+        operator_approved=True,
+        proof_mode=False,
+        operational_persistent_mode=True,
+        disposable_public_composition_proof_binding=disposable_binding,
+        discovery_runner=discovery,
+        launch_provenance={
+            "git_head": "c" * 40,
+            "git_tracked_tree_clean": True,
+            "git_staged_changes_present": False,
+            "git_unstaged_changes_present": False,
+            "git_untracked_present": True,
+            "git_provenance_captured_at": START.isoformat(),
+        },
+        standard_four_hour_campaign=True,
+        selective_1h_continuation=True,
+        continuous_first_hour=True,
+        continuous_four_hour=True,
+        total_duration_seconds=20_000,
+        _window_seconds=1_800,
+        _continuation_seconds=3_600,
+        max_selected_tokens=2,
+        campaign_id=CAMPAIGN_ID,
+        campaign_run_id=CAMPAIGN_RUN_ID,
+        cycle_id=CYCLE_ID,
+        configuration_id=CONFIGURATION_ID,
+        factory_run_id=FACTORY_RUN_ID,
+        four_token_proof_controller=_CadenceReadyController(),
+        later_cycle_discovery_callback=callback,
+        later_cycle_acquisition_quantum_seconds=lambda: quantum_bounds[
+            min(len(quantum_calls), len(quantum_bounds) - 1)
+        ],
+        four_token_health_projector=lambda _connection, _now: _healthy_projection(),
+        four_token_shared_terminalizer=lambda **_: {
+            "clean_terminal": True,
+            "lease_released": True,
+        },
+        source_governor_owner=OwnerPort(SOURCE_GOVERNOR_OWNER, True),
+        central_scheduler_owner=OwnerPort(CENTRAL_SCHEDULER_OWNER, True),
+        snapshot_adapter_factory=snapshot_factory,
+        context_adapter_factories=context_factories,
+        _sleep=clock.sleep,
+        _monotonic=clock.monotonic,
+        cancellation_probe=lambda: (
+            "FOCUSED_CADENCE_COMPLETE" if clock.elapsed >= 620 else None
+        ),
+    )
+
+    assert len(quantum_calls) >= 3, json.dumps(report, sort_keys=True, default=str)
+    max_gaps: dict[str, float] = {}
+    for mint, observed in snapshot_times.items():
+        assert len(observed) >= 2, (mint, observed, report)
+        gaps = [
+            (right - left).total_seconds()
+            for left, right in zip(observed, observed[1:], strict=False)
+        ]
+        max_gaps[mint] = max(gaps)
+        assert max_gaps[mint] <= 240.0, (mint, gaps)
+    assert max_gaps == {"mint-1": 225.0, "mint-2": 225.0}
+    assert abs(len(snapshot_times["mint-1"]) - len(snapshot_times["mint-2"])) <= 1
+    connection = sqlite3.connect(db)
+    assert connection.execute(
+        "SELECT COUNT(*) FROM printer_scheduler_jobs "
+        "WHERE job_kind='PRE_ADMISSION_DISCOVERY_SELECTION'"
+    ).fetchone()[0] == 1
+    connection.close()

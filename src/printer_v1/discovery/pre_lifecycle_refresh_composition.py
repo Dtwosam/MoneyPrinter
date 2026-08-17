@@ -163,6 +163,7 @@ def build_pre_lifecycle_refresh_stage(
         refresh_ordinal: int,
         source_operations_remaining: int,
         now: str,
+        cooperative_yield: bool = False,
         **_ignored: Any,
     ) -> Mapping[str, Any]:
         del discovery_work_id, scheduler_job_id
@@ -215,7 +216,11 @@ def build_pre_lifecycle_refresh_stage(
             source_operations += used
             return used
 
-        for channel in _rotated_fresh_channels(refresh_ordinal):
+        rotated_channels = _rotated_fresh_channels(refresh_ordinal)
+        selected_channels = (
+            rotated_channels[:1] if cooperative_yield else rotated_channels
+        )
+        for channel in selected_channels:
             if channel == PUMP_FRESH_CHANNEL:
                 if migration_transport is None:
                     channels_skipped.append(
@@ -243,6 +248,9 @@ def build_pre_lifecycle_refresh_stage(
                             f"{request_key_prefix}-refresh-{refresh_ordinal}-pump"
                         ),
                         max_candidates=_PUMP_MAX_CANDIDATES_PER_REFRESH,
+                        max_transaction_lookups=(
+                            6 if cooperative_yield else MAX_TRANSACTION_LOOKUPS
+                        ),
                         collection_rounds=1,
                         settle_seconds=0.0,
                         reverify_on_transient=False,
@@ -372,7 +380,14 @@ def build_pre_lifecycle_refresh_stage(
 
         # Conversion/reconciliation owners run after all fresh source channels.
         # Candidate-local absence/failure in one source never suppresses peers.
-        if budget_left() >= 1 and stage_budget.available("reconciliation") >= 1:
+        conversion_allowed = not (
+            cooperative_yield and selected_channels == (PUMP_FRESH_CHANNEL,)
+        )
+        if (
+            conversion_allowed
+            and budget_left() >= 1
+            and stage_budget.available("reconciliation") >= 1
+        ):
             channels_attempted.append(UNKNOWN_LIQUIDITY_BACKUP_CHANNEL)
             report = dict(
                 run_bounded_unknown_liquidity_backup(
@@ -411,7 +426,11 @@ def build_pre_lifecycle_refresh_stage(
                 }
             )
 
-        if budget_left() >= 1 and stage_budget.available("protocol_confirmation") >= 1:
+        if (
+            conversion_allowed
+            and budget_left() >= 1
+            and stage_budget.available("protocol_confirmation") >= 1
+        ):
             channels_attempted.append(PROTOCOL_CONFIRMATION_CHANNEL)
             report = dict(
                 process_protocol_confirmation_queue(
