@@ -49,7 +49,12 @@ from printer_v1.operator_cli.abstract_campaign_command import (
 from printer_v1.operator_cli.four_token_proof_integration import (
     LaterCycleCandidateSupply,
 )
-from printer_v1.discovery.eligible_token_supply import ACQUISITION_QUANTUM_YIELDED
+from printer_v1.discovery.eligible_token_supply import (
+    ACQUISITION_QUANTUM_YIELDED,
+    AcquisitionQuantumKind,
+    acquisition_quantum_bound,
+)
+from printer_v1.discovery.permanent_discovery_availability import StageBudget
 from printer_v1.sources.governed_execution import (
     FIXTURE_FAILURE,
     build_fixture_source_adapter,
@@ -441,23 +446,52 @@ def test_real_factory_controlled_clock_interleaves_scheduler_yields_and_snapshot
             value = clock.now()
             return value if tz is None else value.astimezone(tz)
     snapshot_times = {"mint-1": [], "mint-2": []}
-    quantum_bounds = (25.0, 115.0, 65.0, 65.0, 65.0)
-    quantum_calls: list[float] = []
+    quantum_phases = (
+        AcquisitionQuantumKind.AUXILIARY_FRESH_INTAKE,
+        AcquisitionQuantumKind.AUXILIARY_LIQUIDITY_BACKUP,
+        AcquisitionQuantumKind.AUXILIARY_PROTOCOL_CONFIRMATION,
+        AcquisitionQuantumKind.DIRECT_MIGRATION,
+        AcquisitionQuantumKind.MARKET_DISCOVERY,
+        AcquisitionQuantumKind.MARKET_DISCOVERY,
+    )
+    quantum_calls: list[AcquisitionQuantumKind] = []
+    bound_resolutions: list[AcquisitionQuantumKind] = []
+    stage_budget = StageBudget.permanent_discovery_default()
+    stage_snapshots = [stage_budget.snapshot()]
 
     def supply(**_context):
-        bound = quantum_bounds[min(len(quantum_calls), len(quantum_bounds) - 1)]
-        quantum_calls.append(bound)
-        clock.sleep(bound)
+        phase = quantum_phases[min(len(quantum_calls), len(quantum_phases) - 1)]
+        if phase is AcquisitionQuantumKind.AUXILIARY_FRESH_INTAKE:
+            stage_budget.consume("intake", 2)
+        elif phase is AcquisitionQuantumKind.AUXILIARY_LIQUIDITY_BACKUP:
+            stage_budget.consume("reconciliation", 1)
+        elif phase is AcquisitionQuantumKind.AUXILIARY_PROTOCOL_CONFIRMATION:
+            stage_budget.consume("protocol_confirmation", 1)
+        elif phase is AcquisitionQuantumKind.DIRECT_MIGRATION:
+            stage_budget.consume("intake", 1)
+            stage_budget.consume("protocol_confirmation", 1)
+        elif phase is AcquisitionQuantumKind.MARKET_DISCOVERY:
+            stage_budget.consume("market_batching", 1)
+            stage_budget.consume("reconciliation", 2)
+        quantum_calls.append(phase)
+        stage_snapshots.append(stage_budget.snapshot())
+        clock.sleep(acquisition_quantum_bound(phase).worst_case_seconds)
         return LaterCycleCandidateSupply(
             (),
             (),
             ACQUISITION_QUANTUM_YIELDED,
             {
-                "stage_local_source_requests": len(quantum_calls),
+                "stage_local_source_requests": stage_budget.snapshot()["total_used"],
                 "provider_failures": 0,
                 "shortage_classification": None,
+                "stage_capacity": stage_budget.snapshot(),
             },
         )
+
+    def next_quantum_seconds() -> float:
+        phase = quantum_phases[min(len(quantum_calls), len(quantum_phases) - 1)]
+        bound_resolutions.append(phase)
+        return acquisition_quantum_bound(phase).worst_case_seconds
 
     callback = AuthoritativeLiveOperationalCampaignOwner(
         later_cycle_candidate_supply=supply
@@ -574,9 +608,7 @@ def test_real_factory_controlled_clock_interleaves_scheduler_yields_and_snapshot
         factory_run_id=FACTORY_RUN_ID,
         four_token_proof_controller=_CadenceReadyController(),
         later_cycle_discovery_callback=callback,
-        later_cycle_acquisition_quantum_seconds=lambda: quantum_bounds[
-            min(len(quantum_calls), len(quantum_bounds) - 1)
-        ],
+        later_cycle_acquisition_quantum_seconds=next_quantum_seconds,
         four_token_health_projector=lambda _connection, _now: _healthy_projection(),
         four_token_shared_terminalizer=lambda **_: {
             "clean_terminal": True,
@@ -589,7 +621,7 @@ def test_real_factory_controlled_clock_interleaves_scheduler_yields_and_snapshot
         _sleep=clock.sleep,
         _monotonic=clock.monotonic,
         cancellation_probe=lambda: (
-            "FOCUSED_CADENCE_COMPLETE" if clock.elapsed >= 620 else None
+            "FOCUSED_CADENCE_COMPLETE" if clock.elapsed >= 1_100 else None
         ),
     )
 
@@ -603,8 +635,19 @@ def test_real_factory_controlled_clock_interleaves_scheduler_yields_and_snapshot
         ]
         max_gaps[mint] = max(gaps)
         assert max_gaps[mint] <= 240.0, (mint, gaps)
-    assert max_gaps == {"mint-1": 225.0, "mint-2": 225.0}
     assert abs(len(snapshot_times["mint-1"]) - len(snapshot_times["mint-2"])) <= 1
+    assert max_gaps == {"mint-1": 225.0, "mint-2": 225.0}
+    assert quantum_calls[:4] == list(quantum_phases[:4])
+    assert len(bound_resolutions) > len(quantum_calls)
+    assert all(
+        later["remaining_by_stage"][stage]
+        <= earlier["remaining_by_stage"][stage]
+        for earlier, later in zip(stage_snapshots, stage_snapshots[1:])
+        for stage in earlier["remaining_by_stage"]
+    )
+    assert stage_budget.used_by_stage["market_batching"] <= 2
+    assert stage_budget.used_by_stage["reconciliation"] <= 6
+    assert stage_budget.used_by_stage["protocol_confirmation"] <= 7
     connection = sqlite3.connect(db)
     assert connection.execute(
         "SELECT COUNT(*) FROM printer_scheduler_jobs "

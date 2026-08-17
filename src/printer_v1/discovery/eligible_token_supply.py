@@ -73,6 +73,15 @@ from printer_v1.discovery.permanent_discovery_availability import (
     run_geckoterminal_fresh_nomination,
 )
 from printer_v1.sources.direct_pump_migration import MAX_TRANSACTION_LOOKUPS
+from printer_v1.operator_cli.window_15m_concrete_composition import (
+    ORDINARY_WINDOW_15M_TRANSPORT_TIMEOUT_SECONDS,
+)
+from printer_v1.sources.dexscreener import DEXSCREENER_SMOKE_TIMEOUT_SECONDS
+from printer_v1.sources.geckoterminal import GECKOTERMINAL_TIMEOUT_SECONDS
+from printer_v1.sources.pump_migration import GRADUATION_VERIFIER_TIMEOUT_SECONDS
+from printer_v1.sources.pumpswap_pool_account_batch import (
+    RPC_TIMEOUT_SECONDS as PUMPSWAP_ACCOUNT_BATCH_TIMEOUT_SECONDS,
+)
 from printer_v1.sources.pumpswap_graduated_registry import (
     export_graduated_candidates,
 )
@@ -89,7 +98,9 @@ COOPERATIVE_QUANTUM_MAX_DIRECT_CANDIDATES = 5
 class AcquisitionQuantumKind(str, Enum):
     """Synchronous acquisition units eligible for one Scheduler claim."""
 
-    STARTUP = "STARTUP"
+    AUXILIARY_FRESH_INTAKE = "AUXILIARY_FRESH_INTAKE"
+    AUXILIARY_LIQUIDITY_BACKUP = "AUXILIARY_LIQUIDITY_BACKUP"
+    AUXILIARY_PROTOCOL_CONFIRMATION = "AUXILIARY_PROTOCOL_CONFIRMATION"
     DIRECT_MIGRATION = "DIRECT_MIGRATION"
     MARKET_DISCOVERY = "MARKET_DISCOVERY"
     PERSISTED_REFRESH = "PERSISTED_REFRESH"
@@ -120,26 +131,53 @@ class AcquisitionQuantumBound:
 
 
 _AUXILIARY_INTAKE_COMPONENTS = (
-    AcquisitionQuantumComponent("dexscreener_fresh_profiles_http", 2, 5.0),
-    AcquisitionQuantumComponent("geckoterminal_nomination_http", 1, 5.0),
-    AcquisitionQuantumComponent("opposite_source_backup_http", 1, 5.0),
-    AcquisitionQuantumComponent("protocol_confirmation_rpc", 1, 5.0),
+    AcquisitionQuantumComponent(
+        "dexscreener_fresh_profiles_http", 2, DEXSCREENER_SMOKE_TIMEOUT_SECONDS
+    ),
+    AcquisitionQuantumComponent(
+        "geckoterminal_nomination_http", 1, GECKOTERMINAL_TIMEOUT_SECONDS
+    ),
+)
+
+_AUXILIARY_LIQUIDITY_BACKUP_COMPONENTS = (
+    AcquisitionQuantumComponent(
+        "opposite_source_backup_http",
+        1,
+        max(DEXSCREENER_SMOKE_TIMEOUT_SECONDS, GECKOTERMINAL_TIMEOUT_SECONDS),
+    ),
+)
+
+_AUXILIARY_PROTOCOL_CONFIRMATION_COMPONENTS = (
+    AcquisitionQuantumComponent(
+        "protocol_confirmation_rpc", 1, PUMPSWAP_ACCOUNT_BATCH_TIMEOUT_SECONDS
+    ),
 )
 
 _DIRECT_MIGRATION_COMPONENTS = (
     AcquisitionQuantumComponent(
         "direct_pump_page_and_transactions_rpc",
         7,
-        5.0,
+        ORDINARY_WINDOW_15M_TRANSPORT_TIMEOUT_SECONDS,
     ),
     # One candidate per cooperative direct-migration opportunity. The pinned
     # verifier is one getTransaction plus at most three account batches.
-    AcquisitionQuantumComponent("pumpswap_exact_verifier_rpc", 4, 20.0),
+    AcquisitionQuantumComponent(
+        "pumpswap_exact_verifier_rpc", 4, GRADUATION_VERIFIER_TIMEOUT_SECONDS
+    ),
 )
 
 _ACQUISITION_QUANTUM_BOUNDS = {
-    AcquisitionQuantumKind.STARTUP: AcquisitionQuantumBound(
-        AcquisitionQuantumKind.STARTUP, _AUXILIARY_INTAKE_COMPONENTS
+    AcquisitionQuantumKind.AUXILIARY_FRESH_INTAKE: AcquisitionQuantumBound(
+        AcquisitionQuantumKind.AUXILIARY_FRESH_INTAKE,
+        _AUXILIARY_INTAKE_COMPONENTS,
+    ),
+    AcquisitionQuantumKind.AUXILIARY_LIQUIDITY_BACKUP: AcquisitionQuantumBound(
+        AcquisitionQuantumKind.AUXILIARY_LIQUIDITY_BACKUP,
+        _AUXILIARY_LIQUIDITY_BACKUP_COMPONENTS,
+    ),
+    AcquisitionQuantumKind.AUXILIARY_PROTOCOL_CONFIRMATION: AcquisitionQuantumBound(
+        AcquisitionQuantumKind.AUXILIARY_PROTOCOL_CONFIRMATION,
+        _AUXILIARY_PROTOCOL_CONFIRMATION_COMPONENTS,
     ),
     AcquisitionQuantumKind.DIRECT_MIGRATION: AcquisitionQuantumBound(
         AcquisitionQuantumKind.DIRECT_MIGRATION, _DIRECT_MIGRATION_COMPONENTS
@@ -147,8 +185,12 @@ _ACQUISITION_QUANTUM_BOUNDS = {
     AcquisitionQuantumKind.MARKET_DISCOVERY: AcquisitionQuantumBound(
         AcquisitionQuantumKind.MARKET_DISCOVERY,
         (
-            AcquisitionQuantumComponent("dexscreener_market_batch_http", 1, 5.0),
-            AcquisitionQuantumComponent("geckoterminal_reconciliation_http", 6, 5.0),
+            AcquisitionQuantumComponent(
+                "dexscreener_market_batch_http", 1, DEXSCREENER_SMOKE_TIMEOUT_SECONDS
+            ),
+            AcquisitionQuantumComponent(
+                "geckoterminal_reconciliation_http", 6, GECKOTERMINAL_TIMEOUT_SECONDS
+            ),
             AcquisitionQuantumComponent(
                 "geckoterminal_inter_request_pacing", 5, 6.0, transport=False
             ),
@@ -160,17 +202,21 @@ _ACQUISITION_QUANTUM_BOUNDS = {
     AcquisitionQuantumKind.PERSISTED_REFRESH_DEXSCREENER: AcquisitionQuantumBound(
         AcquisitionQuantumKind.PERSISTED_REFRESH_DEXSCREENER,
         (
-            AcquisitionQuantumComponent("dexscreener_fresh_profiles_http", 2, 5.0),
-            AcquisitionQuantumComponent("opposite_source_backup_http", 1, 5.0),
-            AcquisitionQuantumComponent("protocol_confirmation_rpc", 1, 5.0),
+            AcquisitionQuantumComponent(
+                "dexscreener_fresh_profiles_http", 2, DEXSCREENER_SMOKE_TIMEOUT_SECONDS
+            ),
+            *_AUXILIARY_LIQUIDITY_BACKUP_COMPONENTS,
+            *_AUXILIARY_PROTOCOL_CONFIRMATION_COMPONENTS,
         ),
     ),
     AcquisitionQuantumKind.PERSISTED_REFRESH_GECKOTERMINAL: AcquisitionQuantumBound(
         AcquisitionQuantumKind.PERSISTED_REFRESH_GECKOTERMINAL,
         (
-            AcquisitionQuantumComponent("geckoterminal_nomination_http", 1, 5.0),
-            AcquisitionQuantumComponent("opposite_source_backup_http", 1, 5.0),
-            AcquisitionQuantumComponent("protocol_confirmation_rpc", 1, 5.0),
+            AcquisitionQuantumComponent(
+                "geckoterminal_nomination_http", 1, GECKOTERMINAL_TIMEOUT_SECONDS
+            ),
+            *_AUXILIARY_LIQUIDITY_BACKUP_COMPONENTS,
+            *_AUXILIARY_PROTOCOL_CONFIRMATION_COMPONENTS,
         ),
     ),
 }
@@ -827,6 +873,7 @@ def run_persistent_eligible_token_supply(
     prior_source_operations_used: int = 0,
     cooperative_quantum: bool = False,
     cooperative_phase: str | None = None,
+    cooperative_stage_budget: StageBudget | None = None,
 ) -> PersistentSupplyResult:
     """Run persistent multi-round eligible discovery inside one campaign.
 
@@ -850,13 +897,19 @@ def run_persistent_eligible_token_supply(
     ):
         raise EligibleTokenSupplyError("COOPERATIVE_QUANTUM_CANDIDATE_CAP_EXCEEDED")
     if cooperative_quantum:
-        cooperative_phase = str(cooperative_phase or "AUXILIARY_INTAKE")
+        cooperative_phase = str(cooperative_phase or "AUXILIARY_FRESH_INTAKE")
         if cooperative_phase not in {
-            "AUXILIARY_INTAKE",
+            "AUXILIARY_FRESH_INTAKE",
+            "AUXILIARY_LIQUIDITY_BACKUP",
+            "AUXILIARY_PROTOCOL_CONFIRMATION",
             "DIRECT_MIGRATION",
             "MARKET_DISCOVERY",
         }:
             raise EligibleTokenSupplyError("COOPERATIVE_QUANTUM_PHASE_INVALID")
+        if cooperative_stage_budget is None:
+            raise EligibleTokenSupplyError("COOPERATIVE_STAGE_BUDGET_REQUIRED")
+        if not isinstance(cooperative_stage_budget, StageBudget):
+            raise EligibleTokenSupplyError("COOPERATIVE_STAGE_BUDGET_INVALID")
     if permanent_availability:
         # Two selected plus one fully eligible alternate per slot. This is a
         # reserve capacity, never a ranking or permission to consume four slots.
@@ -883,7 +936,7 @@ def run_persistent_eligible_token_supply(
                 transport_identity_observer
             )
     run_locator_this_quantum = (
-        not cooperative_quantum or cooperative_phase == "AUXILIARY_INTAKE"
+        not cooperative_quantum or cooperative_phase == "AUXILIARY_FRESH_INTAKE"
     )
     run_direct_this_quantum = (
         not cooperative_quantum or cooperative_phase == "DIRECT_MIGRATION"
@@ -1039,11 +1092,17 @@ def run_persistent_eligible_token_supply(
     inventory_known_at_start = 0
     tracking_dispositions: dict[str, dict[str, Any]] = {}
     permanent_market_reports: list[dict[str, Any]] = []
-    stage_budget = StageBudget.permanent_discovery_default()
+    stage_budget = (
+        cooperative_stage_budget
+        if cooperative_quantum
+        else StageBudget.permanent_discovery_default()
+    )
     protocol_stage_charged = False
     direct_protocol_confirmation_calls = 0
     protocol_confirmation_outcomes: list[dict[str, Any]] = []
     protocol_report: dict[str, Any] = {}
+    liquidity_backup_work_remaining = False
+    protocol_confirmation_work_remaining = False
     work_queues: dict[str, list[dict[str, str]]] = {
         "MARKET_BATCHING_DUE": [],
         "RECONCILIATION_DUE": [],
@@ -1077,10 +1136,11 @@ def run_persistent_eligible_token_supply(
     try:
         if permanent_availability and (
             not cooperative_quantum
-            or cooperative_phase == "AUXILIARY_INTAKE"
+            or cooperative_phase == "AUXILIARY_FRESH_INTAKE"
         ):
-            intake_before_gecko = int(locator.get("source_requests") or 0) + 1
-            stage_budget.consume("intake", min(3, intake_before_gecko))
+            locator_intake = int(locator.get("source_requests") or 0)
+            if locator_intake:
+                stage_budget.consume("intake", locator_intake)
             locator_request_id = locator.get("request_id")
             if locator_request_id is not None:
                 record_fresh_pool_nominations(
@@ -1116,6 +1176,40 @@ def run_persistent_eligible_token_supply(
                 if geckoterminal_nomination_transport is None:
                     live_geckoterminal_requests += 1
 
+        # Direct migration remains one intake opportunity even though its
+        # governed request/transport lineage has finer-grained accounting.
+        if permanent_availability and run_direct_this_quantum and int(
+            (discovery.get("source_operation_ledger") or {}).get("source_requests")
+            or 0
+        ):
+            stage_budget.consume("intake", 1)
+
+        # Exact direct-verifier governed requests belong to the same cumulative
+        # protocol-confirmation budget. Charge them before any other protocol
+        # owner in this invocation and, critically, before a cooperative yield.
+        if permanent_availability and run_direct_this_quantum:
+            coverage = discovery.get("source_request_coverage") or ()
+            direct_protocol_confirmation_calls = sum(
+                1
+                for row in coverage
+                if isinstance(row, Mapping)
+                and str(row.get("source_name") or "") == "pumpswap"
+                and str(row.get("request_kind") or "")
+                == "pumpswap_signature_pool_resolution"
+                and "DIRECT_MIGRATION_VERIFY"
+                in str(row.get("logical_stage_id") or "")
+            )
+            if direct_protocol_confirmation_calls:
+                stage_budget.consume(
+                    "protocol_confirmation", direct_protocol_confirmation_calls
+                )
+            protocol_stage_charged = True
+
+        if permanent_availability and (
+            not cooperative_quantum
+            or cooperative_phase == "AUXILIARY_LIQUIDITY_BACKUP"
+        ):
+
             # One bounded opposite-source backup for fresh LIQUIDITY_UNKNOWN
             # before protocol confirmation (no protocol without proven liquidity).
             if stage_budget.available("reconciliation") >= 1:
@@ -1140,6 +1234,11 @@ def run_persistent_eligible_token_supply(
                     transport_identity_observer=transport_identity_observer,
                     stage_evidence_sink=stage_evidence_sink,
                     max_backups=(1 if cooperative_quantum else None),
+                    stage_sequence_base=(
+                        int(stage_budget.used_by_stage["reconciliation"])
+                        if cooperative_quantum
+                        else 0
+                    ),
                 )
                 ops_used += int(liquidity_backup_report.get("source_requests") or 0)
             else:
@@ -1150,14 +1249,46 @@ def run_persistent_eligible_token_supply(
                     "source_request_coverage": [],
                 }
 
+            if cooperative_quantum:
+                from printer_v1.discovery.permanent_discovery_availability import (
+                    load_liquidity_unknown_candidates,
+                )
+
+                liquidity_backup_work_remaining = bool(
+                    stage_budget.available("reconciliation") >= 1
+                    and any(
+                        not bool(item.get("liquidity_backup_attempted"))
+                        for item in load_liquidity_unknown_candidates(connection)
+                    )
+                )
+
+        if permanent_availability and (
+            not cooperative_quantum
+            or cooperative_phase == "AUXILIARY_PROTOCOL_CONFIRMATION"
+        ):
             # V2-9.8B: process above-floor protocol confirmation before market
             # batches consume residual promotion capacity. Confirmed rows promote
             # via retained unexpired liquidity without a second market request.
-            if stage_budget.available("protocol_confirmation") >= 1:
+            protocol_capacity = stage_budget.available("protocol_confirmation")
+            # Cooperative auxiliary work leaves one existing stage-budget unit
+            # available for the later direct verifier quantum. This is not new
+            # capacity; it prevents the earlier phase from spending the shared
+            # ceiling before the direct owner can account for actual work.
+            auxiliary_protocol_capacity = (
+                max(0, protocol_capacity - 1)
+                if cooperative_quantum
+                else protocol_capacity
+            )
+            if auxiliary_protocol_capacity >= 1:
                 from printer_v1.discovery.permanent_discovery_availability import (
                     process_protocol_confirmation_queue as _early_protocol,
                 )
 
+                protocol_claim_sequence = (
+                    int(stage_budget.used_by_stage["protocol_confirmation"]) + 1
+                    if cooperative_quantum
+                    else 1
+                )
                 early_protocol = _early_protocol(
                     connection,
                     stage_budget=stage_budget,
@@ -1174,8 +1305,14 @@ def run_persistent_eligible_token_supply(
                     local_validation_identity_observer=(
                         local_validation_identity_observer
                     ),
-                    stage_sequence=1,
-                    request_key_prefix=f"{discovery_request_key_prefix}-protocol",
+                    stage_sequence=protocol_claim_sequence,
+                    request_key_prefix=(
+                        f"{discovery_request_key_prefix}-protocol-q"
+                        f"{protocol_claim_sequence}"
+                        if cooperative_quantum
+                        else f"{discovery_request_key_prefix}-protocol"
+                    ),
+                    max_confirmations=(1 if cooperative_quantum else None),
                 )
                 protocol_report = early_protocol
                 protocol_confirmation_outcomes = list(
@@ -1190,6 +1327,10 @@ def run_persistent_eligible_token_supply(
                     campaign_eligible[mint] = cand
                     evaluated_mints.add(mint)
                     all_candidates.append(cand)
+                protocol_confirmation_work_remaining = bool(
+                    early_protocol.get("remaining_due")
+                    and stage_budget.available("protocol_confirmation") > 1
+                )
 
         # Count locator and direct migration/verification failures only through
         # the exact Source-Governor request/failure lineage exposed by those
@@ -1487,6 +1628,9 @@ def run_persistent_eligible_token_supply(
                 source_operations_remaining=_ops_remaining(),
                 provider_terminal_failure=False,
                 now=_utc_now_iso(),
+                cooperative_stage_budget=(
+                    stage_budget if cooperative_quantum else None
+                ),
             )
             if not isinstance(outcome, TemporalRefreshOutcome):
                 last_stop_reason = UNSAFE_SCHEDULER_STATE
@@ -1589,7 +1733,13 @@ def run_persistent_eligible_token_supply(
 
         cooperative_startup_only = bool(
             cooperative_quantum
-            and cooperative_phase in {"AUXILIARY_INTAKE", "DIRECT_MIGRATION"}
+            and cooperative_phase
+            in {
+                "AUXILIARY_FRESH_INTAKE",
+                "AUXILIARY_LIQUIDITY_BACKUP",
+                "AUXILIARY_PROTOCOL_CONFIRMATION",
+                "DIRECT_MIGRATION",
+            }
         )
         if cooperative_startup_only:
             last_stop_reason = ACQUISITION_QUANTUM_YIELDED
@@ -1679,9 +1829,9 @@ def run_persistent_eligible_token_supply(
                     ):
                         continue
                     break
-                # Charge migration protocol ops once, without sealing market.
-                # Protocol and market stages may both be open; residual market
-                # capacity is not stranded by protocol accounting.
+                # Direct-verifier protocol work was charged in its own quantum
+                # before yielding. Ordinary monolithic callers are charged by
+                # the same earlier block, so this guard is now only defensive.
                 if not protocol_stage_charged:
                     coverage = discovery.get("source_request_coverage") or ()
                     protocol_calls = sum(
@@ -2470,8 +2620,23 @@ def run_persistent_eligible_token_supply(
         diagnostics = {
             "cooperative_phase": cooperative_phase,
             "next_cooperative_phase": (
-                "DIRECT_MIGRATION"
-                if cooperative_quantum and cooperative_phase == "AUXILIARY_INTAKE"
+                "AUXILIARY_LIQUIDITY_BACKUP"
+                if cooperative_quantum
+                and cooperative_phase == "AUXILIARY_FRESH_INTAKE"
+                else "AUXILIARY_LIQUIDITY_BACKUP"
+                if cooperative_quantum
+                and cooperative_phase == "AUXILIARY_LIQUIDITY_BACKUP"
+                and liquidity_backup_work_remaining
+                else "AUXILIARY_PROTOCOL_CONFIRMATION"
+                if cooperative_quantum
+                and cooperative_phase == "AUXILIARY_LIQUIDITY_BACKUP"
+                else "AUXILIARY_PROTOCOL_CONFIRMATION"
+                if cooperative_quantum
+                and cooperative_phase == "AUXILIARY_PROTOCOL_CONFIRMATION"
+                and protocol_confirmation_work_remaining
+                else "DIRECT_MIGRATION"
+                if cooperative_quantum
+                and cooperative_phase == "AUXILIARY_PROTOCOL_CONFIRMATION"
                 else "MARKET_DISCOVERY"
                 if cooperative_quantum and cooperative_phase == "DIRECT_MIGRATION"
                 else "MARKET_DISCOVERY"

@@ -206,12 +206,15 @@ def verify_graduation_from_transaction(
     }
 
 
+GRADUATION_VERIFIER_TIMEOUT_SECONDS = 20.0
+
+
 def build_graduation_verifier_transport(
     *,
     migration_signature: str,
     expected_mint: str,
     rpc_url: str | None = None,
-    timeout_seconds: float = 20.0,
+    timeout_seconds: float = GRADUATION_VERIFIER_TIMEOUT_SECONDS,
     now_epoch: int | None = None,
 ) -> Callable[[SourceAdapterContext], Mapping[str, Any]]:
     """Bounded governed transport: verify a Pump graduation from a migration sig.

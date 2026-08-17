@@ -17,6 +17,8 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+ORDINARY_WINDOW_15M_TRANSPORT_TIMEOUT_SECONDS = 5.0
+
 from printer_v1.operator_cli.unified_terminal_closure import (
     DependencyPreflight,
     assert_runtime_dependency_preflight,
@@ -787,7 +789,7 @@ def _build_composition_callables(
 
 def window_15m_preflight_builders(
     *,
-    timeout_seconds: float = 5.0,
+    timeout_seconds: float = ORDINARY_WINDOW_15M_TRANSPORT_TIMEOUT_SECONDS,
     environment: Mapping[str, str] | None = None,
 ) -> tuple[tuple[str, Callable[[], object]], ...]:
     """Return labeled zero-I/O builders for assert_runtime_dependency_preflight."""
@@ -800,7 +802,7 @@ def window_15m_preflight_builders(
 def run_window_15m_concrete_composition_preflight(
     *,
     repository_root: str | None = None,
-    timeout_seconds: float = 5.0,
+    timeout_seconds: float = ORDINARY_WINDOW_15M_TRANSPORT_TIMEOUT_SECONDS,
     adapter_builders: Iterable[tuple[str, Any]] | None = None,
     environment: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
@@ -916,7 +918,7 @@ def ordinary_window_15m_builder_identities() -> tuple[str, ...]:
 def construct_ordinary_window_15m_dependency(
     label: str,
     *,
-    timeout_seconds: float = 5.0,
+    timeout_seconds: float = ORDINARY_WINDOW_15M_TRANSPORT_TIMEOUT_SECONDS,
     environment: Mapping[str, str] | None = None,
 ) -> object:
     """Construct one registered ordinary-path dependency from the shared owner.
@@ -938,7 +940,7 @@ def construct_ordinary_window_15m_dependency(
 
 def production_runtime_default_constructors(
     *,
-    timeout_seconds: float = 5.0,
+    timeout_seconds: float = ORDINARY_WINDOW_15M_TRANSPORT_TIMEOUT_SECONDS,
     environment: Mapping[str, str] | None = None,
 ) -> dict[str, Callable[[], object]]:
     """Return labeled zero-I/O constructors production uses for ordinary defaults.
@@ -956,7 +958,7 @@ def production_runtime_default_constructors(
 
 def production_runtime_constructor_identities(
     *,
-    timeout_seconds: float = 5.0,
+    timeout_seconds: float = ORDINARY_WINDOW_15M_TRANSPORT_TIMEOUT_SECONDS,
     environment: Mapping[str, str] | None = None,
 ) -> tuple[str, ...]:
     """Ordered constructor identities production runtime receives from the owner."""
@@ -969,6 +971,7 @@ def production_runtime_constructor_identities(
 
 
 __all__ = [
+    "ORDINARY_WINDOW_15M_TRANSPORT_TIMEOUT_SECONDS",
     "COMPOSITION_MATRIX",
     "PREFLIGHT_MINT",
     "PREFLIGHT_MINT_B",

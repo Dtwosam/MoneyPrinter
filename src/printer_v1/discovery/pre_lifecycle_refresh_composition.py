@@ -164,6 +164,7 @@ def build_pre_lifecycle_refresh_stage(
         source_operations_remaining: int,
         now: str,
         cooperative_yield: bool = False,
+        cooperative_stage_budget: StageBudget | None = None,
         **_ignored: Any,
     ) -> Mapping[str, Any]:
         del discovery_work_id, scheduler_job_id
@@ -201,7 +202,22 @@ def build_pre_lifecycle_refresh_stage(
                 "budget_exhausted_before_refresh": True,
             }
 
-        stage_budget = StageBudget.permanent_discovery_default()
+        if cooperative_yield and cooperative_stage_budget is None:
+            raise PreLifecycleRefreshCompositionError(
+                "COOPERATIVE_STAGE_BUDGET_REQUIRED"
+            )
+        stage_budget = (
+            cooperative_stage_budget
+            if cooperative_yield
+            else StageBudget.permanent_discovery_default()
+        )
+        if not isinstance(stage_budget, StageBudget):
+            raise PreLifecycleRefreshCompositionError(
+                "COOPERATIVE_STAGE_BUDGET_INVALID"
+            )
+        fresh_budget_stage = (
+            "final_refresh_handoff" if cooperative_yield else "intake"
+        )
 
         def budget_left() -> int:
             return remaining - source_operations
@@ -232,7 +248,7 @@ def build_pre_lifecycle_refresh_stage(
                         {"channel": channel, "reason": "INSUFFICIENT_WORST_CASE_SOURCE_BUDGET"}
                     )
                     continue
-                stage_budget.consume("intake", 1)
+                stage_budget.consume(fresh_budget_stage, 1)
                 channels_attempted.append(channel)
                 from printer_v1.discovery.direct_migration_discovery import (
                     run_direct_migration_discovery,
@@ -286,7 +302,7 @@ def build_pre_lifecycle_refresh_stage(
                         {"channel": channel, "reason": "SOURCE_BUDGET_EXHAUSTED"}
                     )
                     continue
-                stage_budget.consume("intake", 1)
+                stage_budget.consume(fresh_budget_stage, 1)
                 channels_attempted.append(channel)
                 from printer_v1.operator_cli.graduated_supply_front_door import (
                     run_fresh_profile_locator,
@@ -345,7 +361,7 @@ def build_pre_lifecycle_refresh_stage(
                         {"channel": channel, "reason": "SOURCE_BUDGET_EXHAUSTED"}
                     )
                     continue
-                stage_budget.consume("intake", 1)
+                stage_budget.consume(fresh_budget_stage, 1)
                 channels_attempted.append(channel)
                 report = dict(
                     run_geckoterminal_fresh_nomination(

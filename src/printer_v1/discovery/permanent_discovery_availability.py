@@ -3800,6 +3800,52 @@ def validate_cooperative_resume_source_request_scope(
     if not rows:
         raise ValueError(CAMPAIGN_SOURCE_REQUEST_SCOPE_ALREADY_EXISTS)
     request_ids: list[int] = []
+    from printer_v1.sources.registry import SOURCE_REGISTRY
+
+    def lawful_stage_contract(
+        request_key: str, source_name: str, request_kind: str
+    ) -> bool:
+        import re
+
+        if not request_key_belongs_to_root(request_key, owned.request_key_root):
+            return False
+        suffix = request_key[len(owned.request_key_root) :]
+        exact_contracts = (
+            (r"-locator", "dexscreener", "dexscreener_fresh_profiles"),
+            (r"-gt-new-pools", "geckoterminal", "geckoterminal_new_pool_discovery"),
+            (r"-migration-page", "solana_rpc", "restored_pump_migration_signature_page"),
+            (r"-migration-tx-[1-9][0-9]*", "solana_rpc", "restored_pump_migration_transaction"),
+            (r"-verify-.+-a[1-9][0-9]*", "pumpswap", "pumpswap_signature_pool_resolution"),
+            (r"-protocol(?:-residual)?-[1-9][0-9]*", "solana_rpc", "pumpswap_pool_account_batch"),
+            (r"-protocol-q[1-9][0-9]*-[1-9][0-9]*", "solana_rpc", "pumpswap_pool_account_batch"),
+            (r"-mint-batch-r[1-9][0-9]*", "dexscreener", "candidate_market_batch"),
+            (r"-protocol-resume-mb[1-9][0-9]*", "dexscreener", "candidate_market_batch"),
+            (r"-(?:mint-batch-r|protocol-resume-mb)[1-9][0-9]*-gt-[1-6]-.+", "geckoterminal", "candidate_market_batch"),
+            (r"-refresh-[1-9][0-9]*-dex-fresh", "dexscreener", "dexscreener_fresh_profiles"),
+            (r"-refresh-[1-9][0-9]*-gt-new-pools", "geckoterminal", "geckoterminal_new_pool_discovery"),
+            (r"-refresh-[1-9][0-9]*-pump-migration-page", "solana_rpc", "restored_pump_migration_signature_page"),
+            (r"-refresh-[1-9][0-9]*-pump-migration-tx-[1-9][0-9]*", "solana_rpc", "restored_pump_migration_transaction"),
+            (r"-refresh-[1-9][0-9]*-pump-verify-.+-a[1-9][0-9]*", "pumpswap", "pumpswap_signature_pool_resolution"),
+            (r"-refresh-[1-9][0-9]*-protocol-[1-9][0-9]*", "solana_rpc", "pumpswap_pool_account_batch"),
+        )
+        if any(
+            re.fullmatch(pattern, suffix)
+            and source_name == expected_source
+            and request_kind == expected_kind
+            for pattern, expected_source, expected_kind in exact_contracts
+        ):
+            return True
+        backup = re.fullmatch(
+            r"-(?:refresh-[1-9][0-9]*-)?liq-backup-"
+            r"(dexscreener|geckoterminal)-[^-]+-[^-]+",
+            suffix,
+        )
+        return bool(
+            backup
+            and source_name == backup.group(1)
+            and request_kind == "candidate_market_batch"
+        )
+
     for row in rows:
         values = dict(row) if hasattr(row, "keys") else {
             "id": row[0],
@@ -3811,13 +3857,19 @@ def validate_cooperative_resume_source_request_scope(
         }
         response_count = int(values["response_count"] or 0)
         failure_count = int(values["failure_count"] or 0)
+        source_name = str(values["source_name"] or "").strip()
+        request_kind = str(values["request_kind"] or "").strip()
+        source_definition = SOURCE_REGISTRY.get(source_name)
         if (
             not request_key_belongs_to_root(
                 str(values["request_key"] or ""), owned.request_key_root
             )
-            or not str(values["source_name"] or "").strip()
-            or not str(values["request_kind"] or "").strip()
+            or source_definition is None
+            or request_kind not in source_definition.allowed_request_kinds
             or response_count + failure_count != 1
+            or not lawful_stage_contract(
+                str(values["request_key"] or ""), source_name, request_kind
+            )
         ):
             raise ValueError(CAMPAIGN_SOURCE_REQUEST_SCOPE_ALREADY_EXISTS)
         request_ids.append(int(values["id"]))

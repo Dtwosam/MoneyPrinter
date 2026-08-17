@@ -192,6 +192,7 @@ def build_later_cycle_graduated_supply(
     prior_source_operations_used: int = 0,
     cooperative_quantum: bool = False,
     cooperative_phase: str | None = None,
+    cooperative_stage_budget: Any | None = None,
 ) -> LaterCycleCandidateSupply:
     """Run the canonical permanent supply once and adapt its exact durable facts.
 
@@ -254,6 +255,7 @@ def build_later_cycle_graduated_supply(
     kwargs["prior_source_operations_used"] = int(prior_source_operations_used)
     kwargs["cooperative_quantum"] = bool(cooperative_quantum)
     kwargs["cooperative_phase"] = cooperative_phase
+    kwargs["cooperative_stage_budget"] = cooperative_stage_budget
     supply = build_graduated_supply(
         db_path,
         cycle_seed=selection_seed,

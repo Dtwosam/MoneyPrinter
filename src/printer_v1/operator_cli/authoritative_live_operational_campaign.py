@@ -153,7 +153,7 @@ def _next_later_cycle_quantum_kind(
     from printer_v1.discovery.eligible_token_supply import AcquisitionQuantumKind
 
     if not progress_by_cycle:
-        return AcquisitionQuantumKind.STARTUP
+        return AcquisitionQuantumKind.AUXILIARY_FRESH_INTAKE
     waiting = next(
         (
             item
@@ -173,12 +173,10 @@ def _next_later_cycle_quantum_kind(
             if refresh_offset == 1
             else AcquisitionQuantumKind.PERSISTED_REFRESH_GECKOTERMINAL
         )
-    if any(
-        str(item.get("cooperative_phase")) == "DIRECT_MIGRATION"
-        for item in progress_by_cycle.values()
-    ):
-        return AcquisitionQuantumKind.DIRECT_MIGRATION
-    return AcquisitionQuantumKind.MARKET_DISCOVERY
+    phase = str(next(iter(progress_by_cycle.values())).get("cooperative_phase") or "")
+    return AcquisitionQuantumKind(
+        phase or AcquisitionQuantumKind.MARKET_DISCOVERY.value
+    )
 
 # Secondary per-cycle request ceilings (frozen design).
 GECKO_TRENDING_MAX = 1
@@ -3153,6 +3151,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     "front_door_request_key_prefix", "stage_evidence_sink",
                     "transport_identity_observer", "local_validation_identity_observer",
                     "deadline_at", "temporal_refresh_owner",
+                    "cooperative_stage_budget",
                 ):
                     later_supply_kwargs.pop(locally_owned, None)
 
@@ -3162,6 +3161,19 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     evaluated = context["evaluated_at"]
                     progress_key = str(context["proposed_cycle_id"])
                     progress = later_cycle_progress.get(progress_key)
+                    from printer_v1.discovery.permanent_discovery_availability import (
+                        StageBudget,
+                    )
+
+                    cooperative_stage_budget = (
+                        progress.get("stage_budget")
+                        if progress is not None
+                        else StageBudget.permanent_discovery_default()
+                    )
+                    if not isinstance(cooperative_stage_budget, StageBudget):
+                        raise LiveOperationalError(
+                            "LATER_CYCLE_STAGE_BUDGET_STATE_INVALID"
+                        )
                     later_cycle_refresh_owner = None
                     later_cycle_deadline = None
                     later_cycle_stage_evidence_sink = None
@@ -3344,6 +3356,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                             ),
                             provider_terminal_failure=False,
                             now=evaluated.isoformat(),
+                            cooperative_stage_budget=cooperative_stage_budget,
                         )
                         if outcome.status == WAITING_FOR_ELIGIBLE_SUPPLY:
                             return LaterCycleCandidateSupply(
@@ -3436,8 +3449,9 @@ class AuthoritativeLiveOperationalCampaignOwner:
                         cooperative_quantum=True,
                         cooperative_phase=str(
                             (progress or {}).get("cooperative_phase")
-                            or "AUXILIARY_INTAKE"
+                            or "AUXILIARY_FRESH_INTAKE"
                         ),
+                        cooperative_stage_budget=cooperative_stage_budget,
                     )
                     if result.terminal_cause in {
                         "WAITING_FOR_ELIGIBLE_SUPPLY",
@@ -3446,6 +3460,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                         diagnostics = dict(result.diagnostics or {})
                         later_cycle_progress[progress_key] = {
                             "refresh_owner": later_cycle_refresh_owner,
+                            "stage_budget": cooperative_stage_budget,
                             "source_operations_used": int(
                                 diagnostics.get("stage_local_source_requests") or 0
                             ),

@@ -812,6 +812,7 @@ def build_graduated_supply(
     prior_source_operations_used: int = 0,
     cooperative_quantum: bool = False,
     cooperative_phase: str | None = None,
+    cooperative_stage_budget: Any | None = None,
 ) -> GraduatedSupply:
     """Compose discovery + front door via persistent multi-round supply loop.
 
@@ -957,6 +958,7 @@ def build_graduated_supply(
         prior_source_operations_used=prior_source_operations_used,
         cooperative_quantum=cooperative_quantum,
         cooperative_phase=cooperative_phase,
+        cooperative_stage_budget=cooperative_stage_budget,
     )
 
     discovery = dict(persistent.discovery_report)

@@ -164,15 +164,21 @@ def _invoke(callback, *, evaluated_at: datetime = NOW):
 
 
 def test_g2_imminent_lifecycle_deadline_blocks_acquisition_quantum() -> None:
-    startup = acquisition_quantum_bound(AcquisitionQuantumKind.STARTUP)
-    assert startup.transport_count == 5
-    assert startup.worst_case_seconds == 25.0
+    startup = acquisition_quantum_bound(
+        AcquisitionQuantumKind.AUXILIARY_FRESH_INTAKE
+    )
+    assert startup.transport_count == 3
+    assert startup.worst_case_seconds == 18.0
     assert [(item.name, item.count, item.timeout_seconds) for item in startup.components] == [
         ("dexscreener_fresh_profiles_http", 2, 5.0),
-        ("geckoterminal_nomination_http", 1, 5.0),
-        ("opposite_source_backup_http", 1, 5.0),
-        ("protocol_confirmation_rpc", 1, 5.0),
+        ("geckoterminal_nomination_http", 1, 8.0),
     ]
+    assert acquisition_quantum_bound(
+        AcquisitionQuantumKind.AUXILIARY_LIQUIDITY_BACKUP
+    ).worst_case_seconds == 8.0
+    assert acquisition_quantum_bound(
+        AcquisitionQuantumKind.AUXILIARY_PROTOCOL_CONFIRMATION
+    ).worst_case_seconds == 20.0
     direct = acquisition_quantum_bound(AcquisitionQuantumKind.DIRECT_MIGRATION)
     assert direct.transport_count == 11
     assert direct.worst_case_seconds == QUANTUM_SECONDS
@@ -182,17 +188,19 @@ def test_g2_imminent_lifecycle_deadline_blocks_acquisition_quantum() -> None:
     ]
     assert acquisition_quantum_bound(
         AcquisitionQuantumKind.MARKET_DISCOVERY
-    ).worst_case_seconds == 65.0
+    ).worst_case_seconds == 83.0
     assert acquisition_quantum_bound(
         AcquisitionQuantumKind.PERSISTED_REFRESH
     ).worst_case_seconds == 115.0
     assert acquisition_quantum_bound(
         AcquisitionQuantumKind.PERSISTED_REFRESH_DEXSCREENER
-    ).worst_case_seconds == 20.0
+    ).worst_case_seconds == 38.0
     assert acquisition_quantum_bound(
         AcquisitionQuantumKind.PERSISTED_REFRESH_GECKOTERMINAL
-    ).worst_case_seconds == 15.0
-    assert _next_later_cycle_quantum_kind({}) is AcquisitionQuantumKind.STARTUP
+    ).worst_case_seconds == 36.0
+    assert _next_later_cycle_quantum_kind({}) is (
+        AcquisitionQuantumKind.AUXILIARY_FRESH_INTAKE
+    )
     assert _next_later_cycle_quantum_kind(
         {"cycle": {"cooperative_phase": "DIRECT_MIGRATION"}}
     ) is AcquisitionQuantumKind.DIRECT_MIGRATION
@@ -851,7 +859,7 @@ def test_g_c1_real_later_supply_adapter_preserves_governed_yield_evidence(
             cooperative_resume=supply_calls > 1,
             prior_source_operations_used=supply_calls - 1,
             cooperative_quantum=True,
-            cooperative_phase="AUXILIARY_INTAKE",
+            cooperative_phase="AUXILIARY_FRESH_INTAKE",
         )
 
     callback = AuthoritativeLiveOperationalCampaignOwner(
@@ -898,7 +906,7 @@ def test_g_c5_resume_accepts_only_exact_lawful_scope(tmp_path, monkeypatch) -> N
     request_id = int(connection.execute(
         "INSERT INTO printer_source_requests("
         "source_name,request_kind,request_key,requested_at,source_status,data_quality_label) "
-        "VALUES ('dexscreener','fresh_profiles',?,?,'COMPLETE','CLEAN_DATA')",
+        "VALUES ('dexscreener','dexscreener_fresh_profiles',?,?,'COMPLETE','CLEAN_DATA')",
         (f"{scope.request_key_root}-locator", NOW.isoformat()),
     ).lastrowid)
     connection.execute(

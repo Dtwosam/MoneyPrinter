@@ -1080,6 +1080,7 @@ def build_activation_preflight(
     source = build_readiness_source_contract_preflight()
     from printer_v1.operator_cli.window_15m_concrete_composition import (
         ConcreteCompositionError,
+        ORDINARY_WINDOW_15M_TRANSPORT_TIMEOUT_SECONDS,
         run_window_15m_concrete_composition_preflight,
         window_15m_preflight_builders,
     )
@@ -1089,13 +1090,15 @@ def build_activation_preflight(
     try:
         concrete_composition = run_window_15m_concrete_composition_preflight(
             repository_root=str(root),
-            timeout_seconds=5.0,
+            timeout_seconds=ORDINARY_WINDOW_15M_TRANSPORT_TIMEOUT_SECONDS,
         )
     except ConcreteCompositionError as exc:
         _preflight_fail("concrete_composition", str(exc))
     dependency = assert_runtime_dependency_preflight(
         repository_root=root,
-        adapter_builders=window_15m_preflight_builders(timeout_seconds=5.0),
+        adapter_builders=window_15m_preflight_builders(
+            timeout_seconds=ORDINARY_WINDOW_15M_TRANSPORT_TIMEOUT_SECONDS
+        ),
     )
     budget = build_operational_budget_preflight(
         admission_operation_ceiling=ADMISSION_OPERATION_CEILING,
@@ -3637,6 +3640,7 @@ def _run_operational_campaign(
         # Default constructors come from the same ordinary WINDOW_15M composition
         # registry used by concrete preflight — not a parallel builder list.
         from printer_v1.operator_cli.window_15m_concrete_composition import (
+            ORDINARY_WINDOW_15M_TRANSPORT_TIMEOUT_SECONDS,
             construct_ordinary_window_15m_dependency,
             production_runtime_default_constructors,
         )
@@ -3644,7 +3648,7 @@ def _run_operational_campaign(
         if owner_bridge is None:
             solana_rpc = resolve_solana_rpc_configuration()
             runtime_constructors = production_runtime_default_constructors(
-                timeout_seconds=5.0,
+                timeout_seconds=ORDINARY_WINDOW_15M_TRANSPORT_TIMEOUT_SECONDS,
                 environment=os.environ,
             )
             if pump_transport is not None:
@@ -3662,7 +3666,7 @@ def _run_operational_campaign(
             if migration_transport is None:
                 active_migration = construct_ordinary_window_15m_dependency(
                     "direct_pump_finalized_migration_transport",
-                    timeout_seconds=5.0,
+                    timeout_seconds=ORDINARY_WINDOW_15M_TRANSPORT_TIMEOUT_SECONDS,
                     environment=os.environ,
                 )
             else:

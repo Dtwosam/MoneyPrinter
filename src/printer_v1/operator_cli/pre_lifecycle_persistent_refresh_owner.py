@@ -189,12 +189,13 @@ class PreLifecycleTemporalRefreshOwner:
         active=bool(s.get('supervision_active',s.get('supervision_state','ACTIVE')=='ACTIVE' and not s.get('lease_expired',False)))
         return active,cancelled
     def request_temporal_refresh(self, *, reserve_depth:int, required_capacity:int, universe_state:str,
-        source_operations_remaining:int, provider_terminal_failure:bool=False, now:str) -> TemporalRefreshOutcome:
+        source_operations_remaining:int, provider_terminal_failure:bool=False, now:str,
+        cooperative_stage_budget: Any | None = None) -> TemporalRefreshOutcome:
         c=self._connect()
-        try: return self._request(c,reserve_depth=int(reserve_depth),required_capacity=int(required_capacity),universe_state=str(universe_state),source_operations_remaining=int(source_operations_remaining),provider_terminal_failure=bool(provider_terminal_failure),now=str(now))
+        try: return self._request(c,reserve_depth=int(reserve_depth),required_capacity=int(required_capacity),universe_state=str(universe_state),source_operations_remaining=int(source_operations_remaining),provider_terminal_failure=bool(provider_terminal_failure),now=str(now),cooperative_stage_budget=cooperative_stage_budget)
         finally: c.close()
     __call__=request_temporal_refresh
-    def _request(self,c,*,reserve_depth,required_capacity,universe_state,source_operations_remaining,provider_terminal_failure,now):
+    def _request(self,c,*,reserve_depth,required_capacity,universe_state,source_operations_remaining,provider_terminal_failure,now,cooperative_stage_budget=None):
         now=self._acquisition_now(now)
         if not self._owners_available(): return TemporalRefreshOutcome(status=UNSAFE_SCHEDULER_STATE,reserve_depth_before=reserve_depth,reserve_depth_after=reserve_depth,detail='source governor or central scheduler owner unavailable')
         if c.in_transaction: return TemporalRefreshOutcome(status=UNSAFE_SCHEDULER_STATE,reserve_depth_before=reserve_depth,reserve_depth_after=reserve_depth,detail='open sqlite write transaction held at wait boundary')
@@ -251,7 +252,7 @@ class PreLifecycleTemporalRefreshOwner:
             terminalize_refresh_wait(c,wait_id=wait_id,wait_state='FAILED',first_terminal_cause='PRE_LIFECYCLE_REFRESH_WORK_OWNERSHIP_FAILED',now=woke); c.commit()
             return TemporalRefreshOutcome(status=UNSAFE_SCHEDULER_STATE,wait_id=wait_id,scheduler_job_id=int(job_id),refresh_ordinal=ordinal,scheduled_for=scheduled,claimed=True,reserve_depth_before=reserve_depth,reserve_depth_after=reserve_depth,detail=f'refresh work ownership failed: {type(exc).__name__}')
         try:
-            raw_stage=self._refresh_stage(c,campaign_id=self.campaign_id,run_id=self.run_id,cycle_id=self.cycle_id,refresh_work_id=refresh_work_id,discovery_work_id=refresh_work_id,scheduler_job_id=int(job_id),refresh_ordinal=ordinal,source_operations_remaining=source_operations_remaining,now=woke,cooperative_yield=self._cooperative_yield)
+            raw_stage=self._refresh_stage(c,campaign_id=self.campaign_id,run_id=self.run_id,cycle_id=self.cycle_id,refresh_work_id=refresh_work_id,discovery_work_id=refresh_work_id,scheduler_job_id=int(job_id),refresh_ordinal=ordinal,source_operations_remaining=source_operations_remaining,now=woke,cooperative_yield=self._cooperative_yield,cooperative_stage_budget=cooperative_stage_budget)
         except Exception as exc:
             status,domain,cause=classify_refresh_stage_exception(exc)
             self._terminalize(c,wait_id,refresh_work_id,int(job_id),False,cause,woke)
