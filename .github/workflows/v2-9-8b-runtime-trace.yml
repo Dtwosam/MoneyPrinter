@@ -1,0 +1,23 @@
+name: V2-9.8B Runtime Trace
+on:
+  push:
+    branches: [agent/v2-9-8b-baseline-suite-verification]
+permissions:
+  contents: read
+jobs:
+  trace:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 1d0903c7ecb68dc9738f18ee0e5aafcca09c781e
+      - name: Trace temporal owner and four-token paths
+        run: |
+          echo '=== temporal owner construction/calls ==='
+          rg -n "PreLifecycleTemporalRefreshOwner|pre_lifecycle_temporal_refresh_owner|temporal_refresh_owner" src tests || true
+          echo '=== four-token admission boundary/cause ==='
+          rg -n "_run_four_token_admission_boundary|four_token_attempt_terminal_cause|TERMINAL_TRACKING_STATE|LaterCycleCandidateSupply" src tests || true
+          echo '=== later supply / acquisition tests ==='
+          rg -n "later_cycle_graduated_supply|later cycle|LaterCycle" tests | head -n 300 || true
+          echo '=== safety continuation tests ==='
+          rg -n "SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY|SAFETY_CONTEXT_BLOCKED|build_4a_authority_facts|ONE_CONTINUATION_ONE_BLOCK" tests | head -n 300 || true
