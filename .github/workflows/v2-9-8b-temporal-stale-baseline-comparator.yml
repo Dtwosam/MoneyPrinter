@@ -1,0 +1,31 @@
+name: V2-9.8B Temporal Stale Baseline Comparator
+on:
+  push:
+    branches: [agent/v2-9-8b-baseline-suite-verification]
+permissions:
+  contents: read
+jobs:
+  baseline:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 1d0903c7ecb68dc9738f18ee0e5aafcca09c781e
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -e . pytest
+      - name: Run exact historical failures
+        run: |
+          python -m pytest -q \
+            tests/test_v2_9_8b_post_dtw98_temporal_persistence_bounded_proof.py::ProofCase01MigrationAndDatabaseIdentity::test_proof_01_migration_054_applies_cleanly_with_clean_integrity \
+            tests/test_v2_9_8b_post_dtw98_temporal_persistence_bounded_proof.py::ProofOrderedSchedulerLineage::test_proof_06_ordered_claim_wait_slot_work_then_governed_work \
+            tests/test_v2_9_8b_post_dtw98_temporal_persistence_bounded_proof.py::ProofOrderedSchedulerLineage::test_proof_12_occupied_slot_fails_closed_after_claim \
+            tests/test_v2_9_8b_post_dtw98_temporal_persistence_bounded_proof.py::ProofHorizonAndAccounting::test_proof_07_to_10_full_scenario_accounting_record \
+            tests/test_v2_9_8b_post_dtw98_temporal_persistence_bounded_proof.py::ProofHorizonAndAccounting::test_proof_11_one_refresh_then_horizon_exhausts_honestly \
+            tests/test_v2_9_8b_post_dtw98_temporal_persistence_completion.py::ProductionRefreshStageTests::test_proof_03_before_due_the_production_stage_issues_no_request \
+            tests/test_v2_9_8b_post_dtw98_temporal_persistence_completion.py::ProductionRefreshStageTests::test_proof_04_and_09_due_refresh_claims_then_records_governed_requests \
+            tests/test_v2_9_8b_post_dtw98_temporal_persistence_completion.py::ProductionRefreshStageTests::test_work_slot_collision_fails_closed_without_stealing \
+            tests/test_v2_9_8b_post_dtw98_temporal_persistence_completion.py::ProductionSupplyIntegrationTests::test_proof_02_three_of_four_exhaustion_reaches_waiting \
+            tests/test_v2_9_8b_post_dtw98_temporal_persistence_completion.py::ProductionSupplyIntegrationTests::test_proof_05_06_07_10_refresh_exposes_fourth_and_freezes_two_plus_two \
+            tests/test_v2_9_8b_post_dtw98_temporal_persistence_completion.py::ProductionSupplyIntegrationTests::test_proof_08_cancellation_leaves_zero_residue_through_production_owner
