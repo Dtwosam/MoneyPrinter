@@ -23,6 +23,70 @@ Selective1hFixture = _FIXTURE_MODULE.Selective1hFixture
 T0 = _FIXTURE_MODULE.T0
 NOW = _FIXTURE_MODULE.NOW
 _iso = _FIXTURE_MODULE._iso
+create_clean_memory_from_window = _FIXTURE_MODULE.create_clean_memory_from_window
+persist_15m_campaign_window = _FIXTURE_MODULE.persist_15m_campaign_window
+E2Z_STATUS_ALREADY_EXISTS = _FIXTURE_MODULE.E2Z_STATUS_ALREADY_EXISTS
+E2Z_STATUS_CREATED = _FIXTURE_MODULE.E2Z_STATUS_CREATED
+
+
+def _prepare_eligible_with_checkpoint(
+    fx: Selective1hFixture,
+    *,
+    token_id: int,
+    window_id: int,
+    outcome: str,
+    checkpoint_cutoff: str,
+) -> int | None:
+    """Lawfully persist one eligible 15m predecessor at first insert.
+
+    Campaign-window identity, including checkpoint_cutoff, is immutable after
+    persist. A stale checkpoint must therefore be supplied at initial insert
+    rather than rewritten afterward.
+    """
+    safety_id = fx.insert_safety(
+        window_id=None,
+        token_id=token_id,
+        pair_id=token_id,
+        suffix=token_id,
+    )
+    fx.insert_15m_window(
+        window_id=window_id,
+        token_id=token_id,
+        pair_id=token_id,
+        outcome=outcome,
+        safety_composite_id=safety_id,
+        closing_snapshot_id=5000 + token_id,
+    )
+    promotion = create_clean_memory_from_window(
+        fx.db,
+        window_id,
+        operator_approved=True,
+        individual_promotion=True,
+    )
+    if promotion["e2z_status"] not in {E2Z_STATUS_CREATED, E2Z_STATUS_ALREADY_EXISTS}:
+        raise AssertionError(f"canonical fixture promotion failed: {promotion}")
+    episode_id = int(promotion["episode_id"])
+    fx.insert_close_step(
+        window_id=window_id,
+        token_id=token_id,
+        pair_id=token_id,
+        episode_id=episode_id,
+    )
+    persist_15m_campaign_window(
+        fx.connection,
+        campaign_id="campaign-1h",
+        run_id="run-1h",
+        cycle_id="cycle-1h",
+        token_slot_id=f"slot-{token_id}",
+        token_row_id=token_id,
+        pair_row_id=token_id,
+        lifecycle_identity=f"lifecycle-{token_id}",
+        memory_window_row_id=window_id,
+        checkpoint_cutoff=checkpoint_cutoff,
+        window_state="AUDITING",
+        now=NOW,
+    )
+    return episode_id
 
 
 class HContinuationCutoffTests(unittest.TestCase):
@@ -33,23 +97,29 @@ class HContinuationCutoffTests(unittest.TestCase):
         self.fx.close()
 
     def test_exact_predecessor_close_beats_stale_campaign_checkpoint(self) -> None:
-        self.fx.prepare_eligible(token_id=1, window_id=201, outcome="CONSOLIDATION")
+        # Token 1: lawful stale campaign checkpoint at first persist (T0),
+        # while the linked physical closing snapshot and safety evidence stay
+        # at the exact T15 close. Do not UPDATE checkpoint_cutoff afterward.
+        _prepare_eligible_with_checkpoint(
+            self.fx,
+            token_id=1,
+            window_id=201,
+            outcome="CONSOLIDATION",
+            checkpoint_cutoff=_iso(T0),
+        )
         self.fx.prepare_eligible(token_id=2, window_id=202, outcome="NO_PUMP")
 
-        # Reproduce the historical defect: the campaign checkpoint predates
-        # slot-1's exact close-time safety evidence, while its linked physical
-        # closing snapshot remains the authoritative T15 close.
-        with self.fx.connection:
-            self.fx.connection.execute(
-                """
-                UPDATE printer_memory_factory_campaign_windows
-                SET checkpoint_cutoff=?
-                WHERE campaign_id='campaign-1h' AND run_id='run-1h'
-                  AND cycle_id='cycle-1h' AND token_slot_id='slot-1'
-                  AND window_kind='WINDOW_15M'
-                """,
-                (_iso(T0),),
-            )
+        persisted = self.fx.connection.execute(
+            """
+            SELECT checkpoint_cutoff
+            FROM printer_memory_factory_campaign_windows
+            WHERE campaign_id='campaign-1h' AND run_id='run-1h'
+              AND cycle_id='cycle-1h' AND token_slot_id='slot-1'
+              AND window_kind='WINDOW_15M'
+            """
+        ).fetchone()
+        self.assertIsNotNone(persisted)
+        self.assertEqual(persisted[0], _iso(T0))
 
         safety = self.fx.safety(token_id=1, window_id=201)
         self.assertTrue(safety["gate_accepted"])
