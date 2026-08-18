@@ -4,13 +4,13 @@ Date: 2026-08-18
 
 ## Current lane
 
-`V2-9.8B Post-Repair Standard 15m-to-1h-to-4h Bounded Campaign Design`
+`V2-9.8B Post-Repair Fresh Standard-4H One-Use Authorization Preparation`
 
-Status: `CLOSED_PASS`
+Status: `BLOCKED_READINESS`
 
-Verdict: `V2_9_8B_POST_REPAIR_STANDARD_15M_TO_1H_TO_4H_BOUNDED_CAMPAIGN_DESIGN_PASS`
+Verdict:
 
-Implementation disposition: `IMPLEMENTATION_NOT_REQUIRED`
+`V2_9_8B_POST_REPAIR_FRESH_STANDARD_4H_ONE_USE_AUTHORIZATION_PREPARATION_BLOCKED_HOST_DB_IDENTITY_UNAVAILABLE`
 
 ## Current code baseline
 
@@ -18,80 +18,88 @@ Repaired operational product-code baseline:
 
 `df1aced491d01d1a6d25ae38ca2da4eab72665c6`
 
-Design documentation branch:
+Authorization-preparation branch:
 
-`agent/v2-9-8b-post-repair-standard-campaign-design`
+`agent/v2-9-8b-post-repair-standard-4h-authorization-preparation`
 
-Design closeout commit before this handoff update:
+Preparation findings commit before this handoff update:
 
-`6632ac72f170e2db21feb23681a474e632710163`
+`551234684dff2c291bf44bad9d3cdcc97b6aa176`
 
-The design adds no product source or migration. Master remains untouched by this lane.
+The preparation lane adds no product source, test or migration. Master remains untouched.
 
 ## Latest completed work
 
-The post-repair bounded standard campaign design is closed PASS. It binds the existing repaired runtime to one fresh, operator-approved, exactly-two-slot standard observation campaign using the canonical `standard-four-hour-run` path.
+The post-repair standard campaign design remains CLOSED PASS with `IMPLEMENTATION_NOT_REQUIRED`.
 
-The designed observation law is `WINDOW_15M -> WINDOW_1H -> eligible WINDOW_4H`, with `WINDOW_5M_MICRO_EVENT` support-only and `WINDOW_12H` / `WINDOW_24H` locked.
+Authorization preparation completed every repository/environment check this execution context can truthfully perform:
 
-The design preserves:
+- the design branch has no product-source or migration delta from repaired baseline `df1aced...`; only rereadiness/design/handoff documentation was added;
+- the committed migration package ends at `058_direct_pump_migration_cursor.sql` and contains no `059_*` migration;
+- the standard campaign remains bound to the existing `standard-four-hour-run` one-use protocol, exactly two slots, 15m -> 1h -> eligible 4h, zero automatic retries, no endpoint rotation, and locked 12h/24h;
+- master remains untouched;
+- no authorization was created or consumed and no campaign/provider work ran.
 
-- source-specific candidate authority, including direct Pump migration + exact PumpSwap and repaired `MARKET_PRESENT_POOL` admission;
-- exact mint+pair/current-pool identity;
-- the exact `$3,000` liquidity floor with no score/rank/weight;
-- Source Governor and Central Scheduler ownership;
-- repaired later-cycle fresh acquisition if a later cycle is lawfully reached inside the same invocation;
-- exact H predecessor cutoff and fresh first-hour safety authority;
-- selected-slot holder ownership, holder concentration as descriptive rather than an automatic veto, and honest UNKNOWN for unsupported optional evidence;
-- promotion/safety reporting separation;
-- evidence-derived accounting, unified terminal closure and zero-work read-only replay;
-- no retry/rerun/resume/restart/successor;
-- migration head 058 and no migration 059; and
-- all retrieval/financial/live/12h/24h capability locks.
+The active execution filesystem was also inspected read-only. It does not contain a MoneyPrinter checkout or the authoritative `data/printer_v1.sqlite3`; the available `/mnt/data` mount contains only reference documents.
 
-No new implementation is required because these behaviors are already present at `df1aced...` and were covered by the immediately preceding integrated proof and independent closeout.
+Because the existing one-use authorization schema requires the actual host database path, SHA-256, size, inode, mtime_ns, migration count and migration head, this environment cannot lawfully construct a fresh `final_authorization.json`.
 
-## Blockers
+## Blocker
 
-No proven product-code blocker for the next authorization-preparation/readiness step.
+Classification:
 
-The actual host authoritative DB identity is not proven by GitHub and must be read-only bound during authorization preparation. A DB identity/ledger/integrity problem is therefore a preparation/readiness blocker unless evidence proves a code defect.
+`HOST_ENVIRONMENT_READINESS_BLOCK`
 
-Future provider/source scarcity, insufficient eligible supply, exact-pair failure, liquidity below `$3,000` or unproven liquidity, honest UNKNOWN evidence, continuity/freshness/provenance failure, authorization mismatch, or bounded budget/duration/cancellation stop must be classified truthfully before reopening code.
+Specific cause:
+
+`AUTHORITATIVE_DB_IDENTITY_UNAVAILABLE_IN_EXECUTION_ENVIRONMENT`
+
+This is not a proven product-code defect and does not reopen any repair lane.
+
+Do not substitute GitHub blob metadata, placeholder values, copied historical DB identity, or a historical authorization.
+
+## Authorization state
+
+Fresh authorization created: `NO`
+
+Authorization consumed: `NO`
+
+Historical authorization reused: `NO`
+
+Campaign started: `NO`
+
+Provider/RPC/WebSocket campaign calls: `0`
+
+Authoritative campaign DB mutation: `0`
+
+Migration 059: `NO`
 
 ## Exact next permitted action
 
-`V2-9.8B Post-Repair Fresh Standard-4H One-Use Authorization Preparation`
+Resume this same lane on the actual Printer host, or in an execution environment with the exact MoneyPrinter checkout and authoritative `data/printer_v1.sqlite3` mounted:
 
-Preparation/readiness only.
+`V2-9.8B Post-Repair Fresh Standard-4H One-Use Authorization Preparation — Host-Local Completion`
 
-Allowed:
+The host-local completion must:
 
-- host-local read-only preflight;
-- bind exact repository/launch identity;
-- bind exact authoritative DB filesystem/hash identity;
-- verify migration head 058 and DB integrity/ledger readiness;
-- derive the current standard capacity from committed code;
-- construct one fresh temporally bounded standard-4h authorization package;
-- record historical authorization non-reuse evidence; and
-- stop for independent review.
+1. bind exact launch branch/HEAD and prove no unapproved product-source delta from `df1aced...`;
+2. bind authoritative DB path/SHA-256/size/inode/mtime_ns;
+3. run read-only SQLite integrity and foreign-key checks;
+4. validate the canonical migration ledger exactly through `058_direct_pump_migration_cursor.sql`, rejecting 059/unknown/missing entries;
+5. run the existing interpreter/package/dependency preflight before mutable campaign state;
+6. derive the standard-four-hour capacity from the exact launch checkout and stop on drift rather than hand-editing values;
+7. enumerate prior authorization evidence and prove non-reuse;
+8. create exactly one fresh temporally bounded standard-4h authorization package through the existing schema; and
+9. stop without consuming it.
 
-Not allowed:
-
-- consume the authorization;
-- start providers/RPC/WebSockets for campaign execution;
-- mutate the authoritative DB as campaign work;
-- run a Memory Factory campaign;
-- reuse any historical authorization;
-- change product source or migrations;
-- create migration 059;
-- activate 12h/24h, retrieval, decisions, positions, trades, audits or PnL; or
-- unlock wallets/private keys/signing/real funds, paid APIs, scoring/ranking/confidence/weighted logic, embeddings or vectors.
-
-After preparation, the next required gate is:
+Only after that preparation PASS may the next gate become:
 
 `V2-9.8B Post-Repair Fresh Standard-4H One-Use Authorization Independent Review`
 
-Only an independent review PASS may authorize at most one bounded campaign invocation while the fresh authorization remains temporally valid.
+Do not advance to independent review while no fresh authorization package exists.
+
+## Locks
+
+Migration head remains 058 in committed code; no 059 is permitted. 12h/24h, retrieval, paper decisions, BUY/SELL/HOLD, positions, trades, audits, PnL, live wallet/private-key/signing execution, paid APIs, scoring/ranking/confidence/weighted logic, embeddings/vectors remain locked.
 
 The active authority stack wins any conflict with this handoff.
