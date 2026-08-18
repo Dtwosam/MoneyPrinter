@@ -21,6 +21,12 @@ from printer_v1.discovery.memory_observation_activation import AdmissionAuthorit
 from printer_v1.discovery.token_pair_identity import (
     ensure_neutral_token_pair_identity,
 )
+from printer_v1.lifecycle.tracking_queue import (
+    HANDOFF_ACTIVE_CONFLICT,
+    HANDOFF_COOLDOWN_REOPEN_REQUIRED,
+    HANDOFF_TERMINAL_REOPEN_REQUIRED,
+    HANDOFF_UNSUPPORTED_STATE,
+)
 from printer_v1.operator_cli.four_token_proof_integration import (
     LaterCycleCandidateSupply,
     LaterCycleDiscoveryCandidate,
@@ -75,6 +81,57 @@ _ELIGIBILITY_TERMINAL_CAUSES = frozenset(
         "NO_PAIR",
     }
 )
+_SELECTED_SLOT_TRACKING_BLOCK_REASONS = frozenset(
+    {
+        HANDOFF_ACTIVE_CONFLICT,
+        HANDOFF_COOLDOWN_REOPEN_REQUIRED,
+        HANDOFF_TERMINAL_REOPEN_REQUIRED,
+        HANDOFF_UNSUPPORTED_STATE,
+    }
+)
+_SELECTED_SLOT_IDENTITY_REASON_MARKERS = (
+    "TARGET_MISMATCH",
+    "CROSS_TOKEN",
+    "IDENTITY_MISMATCH",
+    "IDENTITY_INVALID",
+    "PROVENANCE_INVALID",
+    "INVALID_SOURCE_TRACE",
+)
+
+
+def selected_slot_holder_candidates(supply: Any) -> tuple[Any, ...]:
+    """Return the already-frozen selected pair for holder context I/O.
+
+    Holder work belongs to the canonical two selected slots only. Unselected
+    reserve inventory must not receive holder transports and cannot reshape
+    the selected pair.
+    """
+    return tuple(getattr(supply, "graduated_supply", ()) or ())
+
+
+def holder_fact_blocks_selected_admission(
+    fact: Mapping[str, Any] | None,
+) -> tuple[bool, str]:
+    """True only for genuine identity, provenance, or tracking failures.
+
+    Descriptive concentration labels and holder-source unavailability stay
+    attached as context. They do not reject an already-selected token.
+    """
+    if not isinstance(fact, Mapping):
+        return False, "HOLDER_CONTEXT_UNRESOLVED"
+    reason = str(fact.get("reason") or "").strip()
+    tracking_reason = str(
+        fact.get("tracking_handoff_reason") or fact.get("reason") or ""
+    ).strip()
+    if (
+        tracking_reason in _SELECTED_SLOT_TRACKING_BLOCK_REASONS
+        or reason in _SELECTED_SLOT_TRACKING_BLOCK_REASONS
+    ):
+        return True, tracking_reason or reason
+    upper = reason.upper()
+    if any(marker in upper for marker in _SELECTED_SLOT_IDENTITY_REASON_MARKERS):
+        return True, reason
+    return False, reason or "HOLDER_CONTEXT_DESCRIPTIVE"
 
 
 def classify_later_cycle_failure(
@@ -312,9 +369,18 @@ def build_later_cycle_graduated_supply(
         pool = str(admission.pool_address)
         raw = dict(supply.holder_reserve_candidates.get(mint.lower()) or {})
         fact = holder_facts.get(mint.lower()) or holder_facts.get(mint)
-        if not isinstance(fact, Mapping) or fact.get("eligible") is not True:
+        if not isinstance(fact, Mapping):
+            fact = {
+                "eligible": False,
+                "reason": "HOLDER_CONTEXT_UNRESOLVED",
+                "holder_condition": "UNKNOWN",
+                "holder_concentration_label": "HOLDER_CONCENTRATION_UNKNOWN",
+                "holder_evidence_status": "SOURCE_UNAVAILABLE_OR_INCOMPLETE",
+            }
+        blocked, block_reason = holder_fact_blocks_selected_admission(fact)
+        if blocked:
             raise LaterCycleGraduatedSupplyError(
-                f"HOLDER_EVIDENCE_INELIGIBLE:{mint}"
+                f"HOLDER_EVIDENCE_INELIGIBLE:{mint}:{block_reason}"
             )
         canonical = {
             "candidate": raw,

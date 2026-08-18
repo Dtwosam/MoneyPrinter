@@ -3287,6 +3287,9 @@ class AuthoritativeLiveOperationalCampaignOwner:
                         from printer_v1.operator_cli.holder_reliability_budget_control import (
                             build_ledger,
                         )
+                        from printer_v1.operator_cli.later_cycle_graduated_supply import (
+                            selected_slot_holder_candidates,
+                        )
 
                         source_operations = int(
                             supply.diagnostics.get("stage_local_source_requests")
@@ -3295,6 +3298,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                         deadline = evaluated + timedelta(
                             seconds=command.ceilings.duration_seconds
                         )
+                        holder_targets = selected_slot_holder_candidates(supply)
                         holder_connection = connect_operational(command.db_path)
                         try:
                             release_write_transaction(holder_connection)
@@ -3302,10 +3306,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                                 holder_connection,
                                 command=command,
                                 cycle_id=str(context["proposed_cycle_id"]),
-                                bounded_candidates=tuple(
-                                    supply.holder_reserve_supply
-                                    or supply.graduated_supply
-                                ),
+                                bounded_candidates=holder_targets,
                                 evaluated=evaluated,
                                 deadline=deadline,
                                 ledger=build_ledger(
@@ -3318,8 +3319,11 @@ class AuthoritativeLiveOperationalCampaignOwner:
                                 request_pacer=None,
                                 partition_by_mint=None,
                                 tracking_pair_by_mint={
-                                    item.mint.lower(): item.pool_address
-                                    for item in supply.holder_reserve_supply
+                                    item.mint.lower(): getattr(
+                                        item, "pool_address", None
+                                    )
+                                    or getattr(item, "bonding_curve", "")
+                                    for item in holder_targets
                                 },
                                 eligible_target=2,
                                 permanent_memory_observation=True,
@@ -4122,11 +4126,22 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 }
             release_write_transaction(connection)
             holder_transport_before = int(ledger.underlying_transport_operations)
+            from printer_v1.operator_cli.later_cycle_graduated_supply import (
+                selected_slot_holder_candidates,
+            )
+
+            selected_holder_targets = (
+                selected_slot_holder_candidates(supply)
+                if supply is not None
+                else ()
+            )
             holder_result = self._evaluate_holder_eligibility(
                 connection,
                 command=command,
                 cycle_id=cycle_id,
-                bounded_candidates=graduated_candidates,
+                bounded_candidates=(
+                    selected_holder_targets or graduated_candidates
+                ),
                 evaluated=evaluated,
                 deadline=deadline,
                 ledger=ledger,

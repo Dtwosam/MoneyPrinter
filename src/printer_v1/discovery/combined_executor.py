@@ -3776,10 +3776,15 @@ class CombinedPumpfunCampaignExecutor:
         holder_fact = dict(
             fixtures.holder_evidence_eligibility.get(mint.lower()) or {}
         )
+        from printer_v1.operator_cli.later_cycle_graduated_supply import (
+            holder_fact_blocks_selected_admission,
+        )
+
+        holder_blocks_admission, _holder_block_reason = (
+            holder_fact_blocks_selected_admission(holder_fact)
+        )
         fresh_requalification = bool(
-            handoff.requalification_eligible
-            and holder_fact.get("eligible") is True
-            and holder_fact.get("tracking_requalification_required") is True
+            handoff.requalification_eligible and not holder_blocks_admission
         )
         if (
             fixtures.memory_activation_set is not None
