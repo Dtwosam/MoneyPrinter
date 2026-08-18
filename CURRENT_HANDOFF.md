@@ -4,147 +4,125 @@ Date: 2026-08-18
 
 ## Current lane
 
-`V2-9.8B Post-Repair Two-Cycle Four-Token Operational Authorization Alignment Independent Closeout`
+`V2-9.8B Post-Repair Two-Cycle Four-Token Operational 4/2/2 Host-Local Authorization Preparation`
 
 Status: `CLOSED_PASS`
 
 Verdict:
 
-`V2_9_8B_POST_REPAIR_TWO_CYCLE_FOUR_TOKEN_OPERATIONAL_AUTHORIZATION_ALIGNMENT_INDEPENDENT_CLOSEOUT_PASS`
+`V2_9_8B_POST_REPAIR_TWO_CYCLE_FOUR_TOKEN_OPERATIONAL_4_2_2_HOST_LOCAL_AUTHORIZATION_PREPARATION_PASS`
 
 ## Current code baseline
 
-Approved design baseline:
+Implementation commit: `25daf4fd993fbea4142b16d02820b577fba6e300`
 
-`babc8a3b2dfd4ddca1307e140a378e0d3279e113`
+Independent closeout commit: `799cb896955ebe9525d9057f1df408c189244d26`
 
-Repaired operational product-code baseline:
-
-`df1aced491d01d1a6d25ae38ca2da4eab72665c6`
-
-Reviewed implementation commit:
-
-`25daf4fd993fbea4142b16d02820b577fba6e300`
-
-Implementation branch:
+Branch:
 
 `agent/v2-9-8b-post-repair-two-cycle-four-token-operational-authorization-alignment-implementation`
 
-This review adds documentation only. Product source, tests and migrations are
-unchanged by it. Master was not modified.
+The local checkout is authoritative. The remote branch is stale and was not used
+as a source of truth. Master remains untouched.
 
-## What the independent review established
+## Launch HEAD binding
 
-Every claim was re-derived from the repository rather than accepted from the
-implementation closeout.
+The provenance validator rejects a detached checkout and requires manifest
+branch/HEAD to equal live Git state, so the bound HEAD must be the final branch
+tip. This handoff and the preparation document are committed **before** the
+authorization is created, and the resulting commit is the exact launch HEAD the
+authorization binds. No further commit is made on this branch afterwards.
 
-- Diff from the design baseline is exactly the approved scope. No migration,
-  provider adapter, Source Governor, Central Scheduler, discovery, coordinator,
-  factory-runner or selection-algorithm file was changed.
-- Three authorities remain distinct. Fourteen adversarial cross-authority reuse
-  attempts were executed and all were rejected, in both directions, including
-  mode substitution, schema substitution and one-shot policy loosening.
-- Reusing the repaired `FourTokenProofController` imports no proof-only
-  authorization, application, terminal, retry or execution semantics. The
-  controller holds only a capacity policy; `standard_four_hour_campaign=True`
-  hard-requires operational-persistent mode and rejects proof modes; and the
-  proof acceptance verdict function is test-only, never called from `src/`.
-- Capacity is live-derived: reloading the facade against a deliberately
-  perturbed canonical contract moved every value and restored cleanly. Derived
-  4 / 2 / 2 / 117 / 472 / 420, 300s spacing, zero retries, no rotation, no long
-  windows.
-- Migration-058 is current for both four-token profiles; 050, 055, 056 and 057
-  are preserved history. The 057 identity was reproduced independently, and the
-  method was validated by reproducing the two previously-committed 055 and 056
-  digests exactly. No fabrication; no weakened validation; the 058 execution
-  identity remains preparation-time bound.
-- The zero-state gate is one shared implementation with two thin entry points,
-  pinned to 58 / `058_direct_pump_migration_cursor.sql`, and it failed closed on
-  every probe including a cross-authority document.
-- The bounded proof was re-executed independently and audited with raw SQL: all
-  20 checks passed, including four distinct mint and exact-pair identities, one
-  campaign run, zero source requests, no 12h/24h, one terminal cleanup and no
-  third cycle.
+The authorization ID, SHA-256 and validity window are recorded in the untracked
+authorization package (`preparation-evidence.json`) under:
 
-## Residual finding (non-blocking)
+`operator-runs/v2-9-8b-four-token-standard-four-hour-final-authorization`
 
-The authorization-binding policy derives from
-`scaled_standard_four_hour_capacity_contract(4)`, but the runtime controller's
-structural policy is built from separate literals in
-`four_token_proof_integration.py`. They agree exactly today and a focused test
-pins the agreement, and reusing that repaired builder was mandated by scope.
+The independent review must re-derive them from the package rather than trusting
+any summary.
 
-The host-local preparation lane should re-derive both on the exact launch
-checkout and stop on any disagreement rather than assuming today's agreement.
+## Operator decision: abandoned two-token authorization
 
-## Disposition of the pre-existing baseline failures
+Preparation required restoring the Migration 055/056/057/058 evidence packages
+into `operator-runs/`. That necessarily invalidates the previously prepared
+two-token authorization, whose profile declares no historical migration packages.
 
-Investigated against a read-only extracted copy of the design baseline, not
-auto-dismissed.
+The operator decided to proceed and abandon it.
 
-`tests/test_v2_9_8b_window_15m_git_provenance_authorization_manifest.py` fails
-31 / passes 17 on both trees, with **identical failing test identities and
-identical failure signatures**. Every failing test exercises the ordinary `run`
-profile, which this lane did not change, and the file never references the new
-4/2/2 authority. The other six affected-set failures reproduce byte-identically
-on the baseline with signatures naming Migration-050.
+- ID: `V2_9_8B_STANDARD_4H_AUTH_20260818T183446Z`
+- SHA-256: `a56235b74d7aac7fb75466dc0529307683557725745eae4153bc1128613db645`
+- size: `2899`; mode: `standard-four-hour-run`
+- application marker: ABSENT; invocation count: `0`
 
-Critically, every one of these is a validator **rejection**, not a wrongful
-acceptance — they fail closed, so none can authorize anything unsafely.
+Classification:
 
-Classification: `PRESERVED_SEPARATE_PRE_EXISTING_DEBT`. Zero new relevant
-regressions. Not repaired here; they require their own lane.
+`UNCONSUMED_OPERATOR_ABANDONED_WRONG_SCOPE_AUTHORIZATION`
 
-## Git reconciliation
+It was not deleted, its bytes were not modified, no consumption marker was
+created, and it was not falsely classified as consumed or expired. After
+restoration it demonstrably fails non-consuming pre-marker validation on two
+independent grounds (HEAD drift, and 19 visible-untracked plus 9 ignored
+restored files its allowlist cannot cover). That is expected and must not be
+repaired. It is permanently a non-candidate for launch.
 
-Local HEAD `25daf4f` is local-only; the origin branch of the same name still
-points at the design baseline `babc8a3b`. Local master `19bcd23` is an ancestor
-of origin/master `a98e2da` — 21 behind, 0 ahead — a stale pointer, not a
-divergence. The implementation commit is on neither local master nor
-origin/master.
+## Evidence namespace restored
 
-Classification: `LOCAL_ONLY_VISIBILITY_STATE`, not a product defect. Nothing was
-pushed. A later launch lane must bind the actual local launch checkout, because
-remote visibility does not currently reflect it.
+Only the four exact required packages were restored from the preserved vault;
+`v2-9-8b-four-token-final-authorization` was deliberately not restored. Each
+verified against its committed immutable declaration:
+
+- 050 `V2_9_8B_AUTHORITATIVE_MIG050_20260801T202423Z_f697cc0f` — 12 files, digest MATCH
+- 055 `MIGRATION_055_20260813T220109Z` — 5 files, digest MATCH
+- 056 `MIGRATION_056_20260815T164802Z` — 6 files, digest MATCH
+- 057 `MIGRATION_057_20260816T191558Z` — 6 files, digest `9272f596e7…519535` MATCH
+
+CURRENT schema-transition evidence: Migration 058, execution
+`MIGRATION_058_20260818T082552Z`, resolved from real preserved host evidence and
+never invented.
+
+No symlinks or non-regular files; exactly one package per root.
+
+## Readiness result
+
+- Capacity re-derived live and authorization/runtime contracts agree **exactly**:
+  4 tokens / 2 cycles / 2 per cycle / 117 per token / 472 outer / 420 Scheduler,
+  300s spacing, 0 retries, no endpoint rotation, no 12h/24h.
+- Authoritative DB: 58 / `058_direct_pump_migration_cursor.sql`, integrity ok,
+  0 FK violations, no 059, no sidecars, byte-identical throughout the lane.
+- Zero-state gate: PASS — zero live Printer runtime and all twelve durable
+  ownership domains at zero.
+- No pre-existing application marker; operational application namespace absent.
+- 33 distinct prior authorization IDs enumerated and declared non-reusable; the
+  operational authorization root was previously absent, so the new ID is fresh.
 
 ## Authorization state
 
-Fresh authorization created: `NO`
+Fresh operational 4/2/2 authorization created: `YES`
 
 Authorization consumed: `NO`
 
-Historical authorization reused: `NO`
+Application marker created: `NO`
 
-Campaign started: `NO`
+Campaign invocation count: `0`
 
-Provider/RPC/WebSocket campaign calls: `0` (the bounded proof and the full new
-authority set also pass with outbound network hard-blocked)
+Provider/RPC/WebSocket calls: `0`
 
-Authoritative campaign DB mutation: `0` — identity unchanged: SHA-256
+Authoritative campaign DB mutation: `0` — SHA-256
 `a77141bce32468a2685007a276dbac91d1ed68671b5036c7bc24f54f60ad46d7`, size
 `100794368`, inode `1230526`, mtime_ns `1787043184343686970`, no sidecars.
 
-Migration added: `NO`. Migration head remains `058_direct_pump_migration_cursor.sql`.
+Migration added: `NO`. Head remains `058_direct_pump_migration_cursor.sql`.
 
 Migration 059: `NO`
 
-The eight pre-existing untracked `standard-four-hour-run` authorization packages
-remain unconsumed and cannot authorize the 4/2/2 mode.
-
 ## Exact next permitted action
 
-`V2-9.8B Post-Repair Two-Cycle Four-Token Operational 4/2/2 Host-Local Authorization Preparation`
+`V2-9.8B Post-Repair Two-Cycle Four-Token Operational 4/2/2 Fresh Authorization Independent Review`
 
-Derived from the approved design's sequence: implementation -> bounded
-proof/test -> closeout -> host-local authorization preparation -> independent
-authorization review -> operator-approved one-use run.
-
-That lane must bind the actual launch checkout and the actual
-`data/printer_v1.sqlite3` path, SHA-256, size, inode and mtime_ns. GitHub-only
-evidence cannot substitute. It must stop without consuming the authorization.
-
-Do not create or consume the operational authorization in this closeout. Do not
-run Printer.
+Independently re-derive the authorization from its package, then only after that
+review PASSes may the operator manually launch once through the dedicated
+one-shot wrapper. Preparation does not authorize execution. Do not run Printer
+from this lane.
 
 ## Locks
 
