@@ -2296,6 +2296,12 @@ class AuthoritativeLiveOperationalCampaignOwner:
                                 source_failure_id=evidence.source_failure_id,
                                 now=instant,
                             )
+                        market_authority_mints = frozenset(
+                            item.mint_identity
+                            for item in supply.candidates
+                            if item.admission_authority.value
+                            == "MARKET_PRESENT_POOL"
+                        )
                         gate_candidates = tuple(
                             DiscoverySelectionCandidate(
                                 merged_candidate_id=f"pre-admission:{item.mint_identity}",
@@ -2308,8 +2314,16 @@ class AuthoritativeLiveOperationalCampaignOwner:
                                 gaps=([] if item.holder_evidence_eligible else [
                                     {"kind": "HOLDER_EVIDENCE_INELIGIBLE"}
                                 ]),
-                                origin_state="CONFIRMED",
-                                pumpswap_state="CONFIRMED",
+                                origin_state=(
+                                    "NOT_CLAIMED"
+                                    if item.mint_identity in market_authority_mints
+                                    else "CONFIRMED"
+                                ),
+                                pumpswap_state=(
+                                    "NOT_CLAIMED"
+                                    if item.mint_identity in market_authority_mints
+                                    else "CONFIRMED"
+                                ),
                             )
                             for item in supply.candidates
                         )
@@ -2323,6 +2337,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                             batch_seq=2,
                             cycle_seed=selection_seed,
                             handoffs_used=0,
+                            market_authority_mints=market_authority_mints,
                         )
                         by_mint = {item.mint_identity: item for item in supply.candidates}
                         selected = [by_mint[item.mint] for item in selected_outcome.selected]

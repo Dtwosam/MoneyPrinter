@@ -18,6 +18,7 @@ import re
 import sqlite3
 from typing import Any, Mapping, Sequence
 
+from printer_v1.discovery.memory_observation_activation import AdmissionAuthority
 from printer_v1.operator_cli.authoritative_admission_health import (
     AdmissionHealthProjection,
 )
@@ -124,6 +125,11 @@ class LaterCycleDiscoveryCandidate:
     canonical_evidence_hash: str
     evidence_version: str
     observed_at: datetime
+    admission_authority: AdmissionAuthority = (
+        AdmissionAuthority.DIRECT_PUMP_PUMPSWAP
+    )
+    claims_pump_origin: bool = True
+    claims_pumpswap_graduation: bool = True
 
 
 @dataclass(frozen=True)

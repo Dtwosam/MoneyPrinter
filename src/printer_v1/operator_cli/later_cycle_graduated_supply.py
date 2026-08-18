@@ -17,6 +17,7 @@ from printer_v1.discovery.permanent_discovery_availability import (
     build_campaign_source_request_scope,
     request_key_belongs_to_root,
 )
+from printer_v1.discovery.memory_observation_activation import AdmissionAuthority
 from printer_v1.discovery.token_pair_identity import (
     ensure_neutral_token_pair_identity,
 )
@@ -356,13 +357,28 @@ def build_later_cycle_graduated_supply(
             mint = str(item["mint"])
             pool = str(item["pool"])
             canonical_json = str(item["canonical_json"])
+            admission_authority = AdmissionAuthority(
+                getattr(
+                    admission,
+                    "admission_authority",
+                    AdmissionAuthority.DIRECT_PUMP_PUMPSWAP,
+                )
+            )
+            claims_pump = (
+                admission_authority
+                is AdmissionAuthority.DIRECT_PUMP_PUMPSWAP
+            )
             candidates.append(LaterCycleDiscoveryCandidate(
                 token_identity=f"solana-mainnet:{mint}",
                 token_row_id=identity.token_row_id,
                 mint_identity=mint,
                 pair_identity=pool,
                 pair_row_id=identity.pair_row_id,
-                lifecycle_identity="PUMPSWAP_GRADUATED_CONFIRMED",
+                lifecycle_identity=(
+                    "PUMPSWAP_GRADUATED_CONFIRMED"
+                    if claims_pump
+                    else "PRESENT_POOL_CONFIRMED"
+                ),
                 canonical_market_identity=str(admission.market_identity),
                 canonical_pool_identity=pool,
                 channels=frozenset({str(item["provenance"])}),
@@ -371,6 +387,9 @@ def build_later_cycle_graduated_supply(
                 canonical_evidence_hash=hashlib.sha256(canonical_json.encode()).hexdigest(),
                 evidence_version="V2_9_8B_PERMANENT_GRADUATED_SUPPLY_V1",
                 observed_at=_utc(item["observed"]),
+                admission_authority=admission_authority,
+                claims_pump_origin=claims_pump,
+                claims_pumpswap_graduation=claims_pump,
             ))
         lineage = _source_lineage(connection, request_key_root=scope.request_key_root)
         return LaterCycleCandidateSupply(

@@ -67,6 +67,51 @@ def _channel_labels(value: str) -> tuple[str, ...]:
     return tuple(sorted(set(decoded)))
 
 
+def _admission_states_from_canonical_evidence(
+    canonical_evidence_json: str,
+    *,
+    lifecycle_identity: str,
+) -> tuple[str, str]:
+    """Project Pump claim states from the frozen source-specific authority.
+
+    Historical frozen items predate the authority carrier and are direct-Pump
+    items, so an absent authority remains compatible only with the established
+    Pump-graduated lifecycle.  A present-pool item must explicitly carry its
+    authority and neutral lifecycle; it can never be materialized as confirmed
+    Pump origin or PumpSwap graduation.
+    """
+    try:
+        decoded = json.loads(canonical_evidence_json)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise PreAdmissionMaterializationError(
+            "FROZEN_ITEM_EVIDENCE_DRIFT"
+        ) from exc
+    candidate = decoded.get("candidate") if isinstance(decoded, dict) else None
+    authority = (
+        candidate.get("admission_authority")
+        if isinstance(candidate, dict)
+        else None
+    )
+    authority = str(authority or "DIRECT_PUMP_PUMPSWAP")
+    if authority == "MARKET_PRESENT_POOL":
+        if (
+            lifecycle_identity != "PRESENT_POOL_CONFIRMED"
+            or str(candidate.get("lineage_state") or "UNKNOWN_ORIGIN")
+            not in {"UNKNOWN_ORIGIN", "NON_PUMP_POOL_CONFIRMED"}
+        ):
+            raise PreAdmissionMaterializationError(
+                "FROZEN_ADMISSION_AUTHORITY_DRIFT"
+            )
+        return "NOT_CLAIMED", "NOT_CLAIMED"
+    if authority == "DIRECT_PUMP_PUMPSWAP":
+        if lifecycle_identity != "PUMPSWAP_GRADUATED_CONFIRMED":
+            raise PreAdmissionMaterializationError(
+                "FROZEN_ADMISSION_AUTHORITY_DRIFT"
+            )
+        return "CONFIRMED", "CONFIRMED"
+    raise PreAdmissionMaterializationError("FROZEN_ADMISSION_AUTHORITY_DRIFT")
+
+
 def _validate_source_evidence(
     connection: sqlite3.Connection, *, attempt_id: str
 ) -> tuple[sqlite3.Row, ...]:
@@ -226,10 +271,10 @@ def materialize_consumed_pre_admission_pair(
         if actual != expected or item.canonical_pool_identity != item.pair_identity:
             raise PreAdmissionMaterializationError("FROZEN_PAIR_CYCLE_DRIFT")
         _channel_labels(json.dumps(item.channel_labels))
-        try:
-            json.loads(item.canonical_evidence_json)
-        except json.JSONDecodeError as exc:
-            raise PreAdmissionMaterializationError("FROZEN_ITEM_EVIDENCE_DRIFT") from exc
+        _admission_states_from_canonical_evidence(
+            item.canonical_evidence_json,
+            lifecycle_identity=item.lifecycle_identity,
+        )
 
     scheduler = connection.execute(
         "SELECT job_kind,status FROM printer_scheduler_jobs WHERE id=?",
@@ -308,6 +353,12 @@ def materialize_consumed_pre_admission_pair(
             )
         merged_ids: list[str] = []
         for item in items:
+            origin_state, pumpswap_state = (
+                _admission_states_from_canonical_evidence(
+                    item.canonical_evidence_json,
+                    lifecycle_identity=item.lifecycle_identity,
+                )
+            )
             merged_id = f"{discovery_batch_id}:candidate:{item.slot_ordinal}"
             insert_merged_candidate(
                 connection,
@@ -322,8 +373,8 @@ def materialize_consumed_pre_admission_pair(
                 channel_labels=item.channel_labels,
                 identity_conflicts=(),
                 evidence_gaps=(),
-                origin_verification_state="CONFIRMED",
-                pumpswap_confirmation_state="CONFIRMED",
+                origin_verification_state=origin_state,
+                pumpswap_confirmation_state=pumpswap_state,
                 now=timestamp,
             )
             merged_ids.append(merged_id)
