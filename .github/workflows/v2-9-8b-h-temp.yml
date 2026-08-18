@@ -1,12 +1,9 @@
 name: V2-9.8B H temporary verification
 
 on:
-  push:
-    branches:
-      - v2-9-8b-h-dev
   pull_request:
     branches:
-      - v2-9-8b-h-baseline
+      - v2-9-8b-h-ci-base
 
 permissions:
   contents: read
