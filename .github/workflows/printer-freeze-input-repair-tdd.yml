@@ -1,15 +1,15 @@
-name: Printer freeze-input repair TDD
+name: Printer freeze-input repair closeout
 
 on:
   pull_request:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  focused-test:
+  bounded-regression:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -20,60 +20,26 @@ jobs:
           python-version: '3.11'
       - name: Install package
         run: python -m pip install -e .
-      - name: Apply minimal product repair when absent
+      - name: Run bounded repair regressions
         run: |
           python - <<'PY'
-          from pathlib import Path
+          import pathlib
+          import sys
+          import unittest
 
-          path = Path('src/printer_v1/operator_cli/authoritative_live_operational_campaign.py')
-          text = path.read_text()
-          helper_name = '_permanent_observation_admission_inputs'
-          if f'def {helper_name}(' not in text:
-              anchor = '''def _graduated_admission_candidate_cap(
-              *,
-              permanent_memory_observation: bool,
-              ledger: Any,
-          ) -> int:
-          '''
-              if text.count(anchor) != 1:
-                  raise SystemExit('candidate-cap anchor drift')
-              helper = '''def _permanent_observation_admission_inputs(supply: Any) -> tuple[Any, ...]:
-              """Return the full lawful reserve used by permanent observation freeze."""
-              return tuple(supply.holder_reserve_supply)
-
-
-          '''
-              text = text.replace(anchor, helper + anchor, 1)
-
-              old = '''            admission_inputs = (
-                          tuple(supply.graduated_supply)
-                          if permanent_mode and supply is not None
-                          else tuple(acquisition.origin_proofs)
-                          + graduated_supply_proofs
-                      )
-          '''
-              new = '''            admission_inputs = (
-                          _permanent_observation_admission_inputs(supply)
-                          if permanent_mode and supply is not None
-                          else tuple(acquisition.origin_proofs)
-                          + graduated_supply_proofs
-                      )
-          '''
-              if text.count(old) != 1:
-                  raise SystemExit('admission-input anchor drift')
-              text = text.replace(old, new, 1)
-              path.write_text(text)
+          patterns = [
+              'test_v2_9_8b_four_token_freeze_input_truncation_repair.py',
+              'test_v2_9_8b_window_15m_holder_budget_decoupling.py',
+              'test_v2_9_8b_four_token_standard_four_hour_operational_authority.py',
+              'test_v2_9_8b_four_token_standard_four_hour_bounded_offline_proof.py',
+              'test_v2_9_8b_standard_four_hour_production_authority.py',
+          ]
+          loader = unittest.TestLoader()
+          suite = unittest.TestSuite()
+          for pattern in patterns:
+              if not pathlib.Path('tests', pattern).is_file():
+                  raise SystemExit(f'missing required regression file: {pattern}')
+              suite.addTests(loader.discover('tests', pattern=pattern))
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          raise SystemExit(0 if result.wasSuccessful() else 1)
           PY
-      - name: Run focused regression
-        run: python -m unittest discover -s tests -p 'test_v2_9_8b_four_token_freeze_input_truncation_repair.py' -v
-      - name: Commit product repair after GREEN
-        run: |
-          if git diff --quiet -- src/printer_v1/operator_cli/authoritative_live_operational_campaign.py; then
-            echo 'Product repair already committed.'
-            exit 0
-          fi
-          git config user.name 'Printer V1 TDD'
-          git config user.email 'noreply@openai.com'
-          git add src/printer_v1/operator_cli/authoritative_live_operational_campaign.py
-          git commit -m 'Repair permanent observation freeze input'
-          git push origin HEAD:${{ github.event.pull_request.head.ref }}
