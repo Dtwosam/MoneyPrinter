@@ -4,131 +4,109 @@ Date: 2026-08-18
 
 ## Current lane
 
-`V2-9.8B Post-Repair Two-Cycle Four-Token Operational 4/2/2 Host-Local Authorization Preparation`
+`V2-9.8B Four-Token 4/2/2 Freeze-Input Versus Two-Slot Truncation Repair Design`
 
 Status: `CLOSED_PASS`
 
 Verdict:
 
-`V2_9_8B_POST_REPAIR_TWO_CYCLE_FOUR_TOKEN_OPERATIONAL_4_2_2_HOST_LOCAL_AUTHORIZATION_PREPARATION_PASS`
+`V2_9_8B_FOUR_TOKEN_4_2_2_FREEZE_INPUT_VERSUS_TWO_SLOT_TRUNCATION_REPAIR_DESIGN_PASS`
 
-## Current code baseline
+Implementation disposition: `IMPLEMENTATION_REQUIRED`
 
-Implementation commit: `25daf4fd993fbea4142b16d02820b577fba6e300`
+## Current baseline
 
-Independent closeout commit: `799cb896955ebe9525d9057f1df408c189244d26`
+Consumed-attempt launch baseline:
 
-Branch:
+`2c8caf0b72136cc6eefbb114d4804175abc2097b`
 
-`agent/v2-9-8b-post-repair-two-cycle-four-token-operational-authorization-alignment-implementation`
+Design branch:
 
-The local checkout is authoritative. The remote branch is stale and was not used
-as a source of truth. Master remains untouched.
+`agent/v2-9-8b-four-token-4-2-2-freeze-input-versus-two-slot-truncation-repair-design`
 
-## Launch HEAD binding
+Design document commit:
 
-The provenance validator rejects a detached checkout and requires manifest
-branch/HEAD to equal live Git state, so the bound HEAD must be the final branch
-tip. This handoff and the preparation document are committed **before** the
-authorization is created, and the resulting commit is the exact launch HEAD the
-authorization binds. No further commit is made on this branch afterwards.
+`0bb8234f3ff396e72e7de3f6baf098538cb8717c`
 
-The authorization ID, SHA-256 and validity window are recorded in the untracked
-authorization package (`preparation-evidence.json`) under:
+Master remains untouched.
 
-`operator-runs/v2-9-8b-four-token-standard-four-hour-final-authorization`
+## Consumed incident
 
-The independent review must re-derive them from the package rather than trusting
-any summary.
+Authorization:
 
-## Operator decision: abandoned two-token authorization
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260818T205144Z`
 
-Preparation required restoring the Migration 055/056/057/058 evidence packages
-into `operator-runs/`. That necessarily invalidates the previously prepared
-two-token authorization, whose profile declares no historical migration packages.
+The authorization was consumed exactly once. The campaign ended pre-lifecycle with:
 
-The operator decided to proceed and abandon it.
+`PRE_LIFECYCLE_DISCOVERY_SELECTION_COVERAGE_INSUFFICIENT`
 
-- ID: `V2_9_8B_STANDARD_4H_AUTH_20260818T183446Z`
-- SHA-256: `a56235b74d7aac7fb75466dc0529307683557725745eae4153bc1128613db645`
-- size: `2899`; mode: `standard-four-hour-run`
-- application marker: ABSENT; invocation count: `0`
+`lifecycle_started = false`.
 
-Classification:
+The consumed authorization and failed-attempt DB/source/reserve/holder evidence are immutable history and are not reusable or deleted.
 
-`UNCONSUMED_OPERATOR_ABANDONED_WRONG_SCOPE_AUTHORIZATION`
+## Proven forensic cause
 
-It was not deleted, its bytes were not modified, no consumption marker was
-created, and it was not falsely classified as consumed or expired. After
-restoration it demonstrably fails non-consuming pre-marker validation on two
-independent grounds (HEAD drift, and 19 visible-untracked plus 9 ignored
-restored files its allowlist cannot cover). That is expected and must not be
-repaired. It is permanently a non-candidate for launch.
+Classification: `PROVEN_IMPLEMENTATION_DEFECT`.
 
-## Evidence namespace restored
+Printer produced eight lawful `MARKET_READY` / `MEMORY_OBSERVATION_ELIGIBLE` exact PumpSwap candidates at or above the $3,000 liquidity floor. The permanent front door retained that full reserve in `GraduatedSupply.holder_reserve_supply`, but also selected the two immediate slot candidates into `GraduatedSupply.graduated_supply`.
 
-Only the four exact required packages were restored from the preserved vault;
-`v2-9-8b-four-token-final-authorization` was deliberately not restored. Each
-verified against its committed immutable declaration:
+`authoritative_live_operational_campaign.py` incorrectly fed the two-slot `graduated_supply` into permanent `_graduated_admission()`. The post-filter freeze therefore saw only two candidates even though its correct minimum depth is four and eight lawful candidates existed.
 
-- 050 `V2_9_8B_AUTHORITATIVE_MIG050_20260801T202423Z_f697cc0f` — 12 files, digest MATCH
-- 055 `MIGRATION_055_20260813T220109Z` — 5 files, digest MATCH
-- 056 `MIGRATION_056_20260815T164802Z` — 6 files, digest MATCH
-- 057 `MIGRATION_057_20260816T191558Z` — 6 files, digest `9272f596e7…519535` MATCH
+This was not market scarcity, source scarcity, holder failure, tracking shortage, protocol shortage, Source Governor failure, Scheduler failure, or a freeze-depth defect.
 
-CURRENT schema-transition evidence: Migration 058, execution
-`MIGRATION_058_20260818T082552Z`, resolved from real preserved host evidence and
-never invented.
+## Approved repair design
 
-No symlinks or non-regular files; exactly one package per root.
+For permanent memory-observation mode only:
 
-## Readiness result
+```text
+holder_reserve_supply (full bounded lawful reserve)
+-> permanent graduated admission
+-> full valid MEMORY_OBSERVATION_ELIGIBLE rows
+-> freeze_eligible_reserve
+-> exactly 2 selected + 2 alternates
+-> exactly the selected 2 enter Cycle 1 slots
+```
 
-- Capacity re-derived live and authorization/runtime contracts agree **exactly**:
-  4 tokens / 2 cycles / 2 per cycle / 117 per token / 472 outer / 420 Scheduler,
-  300s spacing, 0 retries, no endpoint rotation, no 12h/24h.
-- Authoritative DB: 58 / `058_direct_pump_migration_cursor.sql`, integrity ok,
-  0 FK violations, no 059, no sidecars, byte-identical throughout the lane.
-- Zero-state gate: PASS — zero live Printer runtime and all twelve durable
-  ownership domains at zero.
-- No pre-existing application marker; operational application namespace absent.
-- 33 distinct prior authorization IDs enumerated and declared non-reusable; the
-  operational authorization root was previously absent, so the new ID is fresh.
+The existing `graduated_supply` remains the two-slot front-door handoff carrier; it is no longer used as the full pre-freeze observation universe.
 
-## Authorization state
+Primary future product file:
 
-Fresh operational 4/2/2 authorization created: `YES`
+- `src/printer_v1/operator_cli/authoritative_live_operational_campaign.py`
 
-Authorization consumed: `NO`
+No product change is designed in `graduated_supply_front_door.py`; it already exposes both semantic carriers correctly.
 
-Application marker created: `NO`
+## Invariants
 
-Campaign invocation count: `0`
+- `MINIMUM_FREEZE_DEPTH` remains 4.
+- Freeze remains exactly 2 selected + 2 alternates on success.
+- Holder work remains bounded to the existing selected-slot subset and is not a memory-observation gate.
+- $3,000 liquidity floor, exact mint/pair law, protocol confirmation and tracking exclusions remain unchanged.
+- Cycle 2 still requires fresh governed disjoint supply; Cycle-1 alternates are not automatically Cycle-2 supply.
+- `standard-four-hour-run` remains two-token operational.
+- `four-token-bounded-capacity-proof-run` remains proof-only.
+- `four-token-standard-four-hour-run` remains exact operational 4/2/2.
+- Source Governor and Central Scheduler remain sole owners.
+- Zero retries, no endpoint rotation, 300s minimum cycle spacing unchanged.
+- 5m support-only; 12h/24h locked.
+- Migration head remains 058; no 059.
+- Retrieval and all financial capabilities remain locked.
 
-Provider/RPC/WebSocket calls: `0`
+## Verification required by implementation
 
-Authoritative campaign DB mutation: `0` — SHA-256
-`a77141bce32468a2685007a276dbac91d1ed68671b5036c7bc24f54f60ad46d7`, size
-`100794368`, inode `1230526`, mtime_ns `1787043184343686970`, no sidecars.
+TDD red before product code, then minimum green scope.
 
-Migration added: `NO`. Head remains `058_direct_pump_migration_cursor.sql`.
+Positive proof must reproduce >=8 lawful reserve candidates while the immediate front-door pair is 2, prove freeze receives the full post-filter reserve and returns 2 selected + 2 alternates, and prove only selected 2 activate Cycle 1.
 
-Migration 059: `NO`
+Negative proof with only 3 lawful candidates must still coverage-block.
+
+Use frozen/no-network fixtures and a disposable DB only. No live providers, authoritative DB mutation, authorization, application marker, or Printer launch.
+
+The observed six-unit reporting mismatch and missing pre-lifecycle provenance row are `NON_CAUSAL_REPORTING_EVIDENCE_GAPS` and remain outside this repair.
 
 ## Exact next permitted action
 
-`V2-9.8B Post-Repair Two-Cycle Four-Token Operational 4/2/2 Fresh Authorization Independent Review`
+`V2-9.8B Four-Token 4/2/2 Freeze-Input Versus Two-Slot Truncation Repair Implementation`
 
-Independently re-derive the authorization from its package, then only after that
-review PASSes may the operator manually launch once through the dedicated
-one-shot wrapper. Preparation does not authorize execution. Do not run Printer
-from this lane.
-
-## Locks
-
-5m remains support-only. Migration head remains 058; no 059. 12h/24h, retrieval,
-paper decisions, BUY/SELL/HOLD, positions, trades, audits, PnL, live
-wallet/private-key/signing execution, real funds, paid APIs,
-scoring/ranking/confidence/weighted logic and embeddings/vectors remain locked.
+Implementation only, followed by bounded proof/test and closeout. Do not create another authorization and do not run Printer.
 
 The active authority stack wins any conflict with this handoff.
