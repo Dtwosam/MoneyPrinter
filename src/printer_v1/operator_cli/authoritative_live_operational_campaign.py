@@ -1060,6 +1060,11 @@ def _graduated_admission(
     return graduated, decisions
 
 
+def _permanent_observation_admission_inputs(supply: Any) -> tuple[Any, ...]:
+    """Return the full lawful reserve used by permanent observation freeze."""
+    return tuple(supply.holder_reserve_supply)
+
+
 def _graduated_admission_candidate_cap(
     *,
     permanent_memory_observation: bool,
@@ -3881,7 +3886,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 ledger=ledger,
             )
             admission_inputs = (
-                tuple(supply.graduated_supply)
+                _permanent_observation_admission_inputs(supply)
                 if permanent_mode and supply is not None
                 else tuple(acquisition.origin_proofs)
                 + graduated_supply_proofs
