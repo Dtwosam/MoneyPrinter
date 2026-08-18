@@ -1,0 +1,32 @@
+name: Slice J reporting truth verification
+
+on:
+  pull_request:
+    branches:
+      - agent/v2-9-8b-slice-j-reporting-truth
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install project
+        run: python -m pip install -e .
+      - name: Slice J focused truth regression
+        run: PYTHONPATH=src:tests python tests/test_v2_9_8b_slice_j_reporting_truth.py
+      - name: Zero-source replay regression
+        run: PYTHONPATH=src:tests python tests/test_v2_9_7d_6b_7_zero_source_read_only_replay.py
+      - name: Final campaign report regression
+        run: PYTHONPATH=src:tests python tests/test_v2_9_7d_6b_6_final_campaign_report.py
+      - name: Promotion reporting regression
+        run: PYTHONPATH=src:tests python tests/test_v2_9_7b_1_authoritative_promotion_reporting.py
+      - name: Safety reporting regression
+        run: PYTHONPATH=src:tests python tests/test_v2_9_7b_2_timeframe_aware_safety_reporting.py
+      - name: Compile focused modules
+        run: python -m py_compile src/printer_v1/operator_cli/operational_memory_factory_command.py src/printer_v1/operator_cli/final_campaign_report.py src/printer_v1/operator_cli/zero_source_campaign_replay.py
+      - name: Diff check
+        run: git diff --check fc4472cea6e37ac659fee2f55d066d183bd513f6..HEAD
