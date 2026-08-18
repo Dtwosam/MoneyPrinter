@@ -7,6 +7,7 @@ import unittest
 from printer_v1.scheduler.token_local_continuation import ContinuationVerdict
 
 
+# Slice H RED proof: this file exercises the real selective-1h production owner.
 def _load_selective_fixture_module():
     path = Path(__file__).with_name("test_v2_9_8b_operational_selective_1h.py")
     spec = importlib.util.spec_from_file_location("h_selective_fixture", path)
