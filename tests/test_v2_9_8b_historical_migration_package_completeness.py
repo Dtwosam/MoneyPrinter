@@ -79,7 +79,7 @@ class CompletenessFixture:
     """Disposable repo with three synthetic declared historical packages."""
 
     authorization_id = "V2_9_8B_FOUR_TOKEN_AUTH_COMPLETENESS_TESTONLY"
-    migration_id = "MIGRATION_057_COMPLETENESS_TESTONLY"
+    migration_id = "MIGRATION_058_COMPLETENESS_TESTONLY"
 
     def __init__(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -98,12 +98,12 @@ class CompletenessFixture:
 
         production = git_auth.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE
 
-        # M: current migration-057 evidence plus the current authorization.
+        # M: current migration-058 evidence plus the current authorization.
         self.migration_root = (
             self.repo / production.migration_package_root / self.migration_id
         )
         self.migration_root.mkdir(parents=True)
-        (self.migration_root / "migration_057_application_result.json").write_text(
+        (self.migration_root / "migration_058_application_result.json").write_text(
             json.dumps({"migration": self.migration_id}) + "\n", encoding="utf-8"
         )
         self.authorization_root = (
@@ -269,9 +269,9 @@ class CompletenessFixture:
 class HistoricalMigrationCompletenessPositiveTests(unittest.TestCase):
     """The production declaration and the accepted-inventory law."""
 
-    def test_production_profile_declares_050_055_056_with_exact_identities(self) -> None:
+    def test_production_profile_declares_050_055_056_057_exact_identities(self) -> None:
         profile = git_auth.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE
-        self.assertEqual(len(profile.historical_migration_packages), 3)
+        self.assertEqual(len(profile.historical_migration_packages), 4)
         by_root = {p.package_root: p for p in profile.historical_migration_packages}
 
         mig050 = by_root[HM_050_ROOT]
@@ -307,12 +307,27 @@ class HistoricalMigrationCompletenessPositiveTests(unittest.TestCase):
             "4918774b95998aab821d69d06854665697347664faf04a3340f2299db95868f3",
         )
 
-    def test_production_total_declared_hm_count_is_23(self) -> None:
+        mig057 = by_root[git_auth.MIGRATION_057_PACKAGE_ROOT]
+        self.assertEqual(
+            mig057.execution_id,
+            git_auth.FOUR_TOKEN_HISTORICAL_MIGRATION_057_EXECUTION_ID,
+        )
+        self.assertEqual(
+            mig057.evidence_class,
+            git_auth.HISTORICAL_MIGRATION_057_EVIDENCE_CLASS,
+        )
+        self.assertEqual(mig057.expected_file_count, 6)
+        self.assertEqual(
+            mig057.expected_inventory_sha256,
+            "9272f596e7a82c3cfe9d824595be74f34c7203dccab3bd541c187dc236519535",
+        )
+
+    def test_production_total_declared_hm_count_is_29(self) -> None:
         profile = git_auth.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE
         total = sum(
             p.expected_file_count for p in profile.historical_migration_packages
         )
-        self.assertEqual(total, 23)
+        self.assertEqual(total, 29)
 
     def test_completeness_fields_are_mandatory_with_no_defaults(self) -> None:
         """An optional path would leave mig050 under the old weak rule."""
@@ -321,13 +336,15 @@ class HistoricalMigrationCompletenessPositiveTests(unittest.TestCase):
                 package_root=HM_050_ROOT, execution_id=HM_050_EXEC
             )
 
-    def test_current_migration_057_is_never_a_historical_package(self) -> None:
+    def test_current_migration_058_is_never_a_historical_package(self) -> None:
         profile = git_auth.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE
         roots = {p.package_root for p in profile.historical_migration_packages}
         self.assertEqual(
-            profile.migration_package_root, git_auth.MIGRATION_057_PACKAGE_ROOT
+            profile.migration_package_root, git_auth.MIGRATION_058_PACKAGE_ROOT
         )
-        self.assertNotIn(git_auth.MIGRATION_057_PACKAGE_ROOT, roots)
+        self.assertNotIn(git_auth.MIGRATION_058_PACKAGE_ROOT, roots)
+        # 057 was demoted to preserved history when 058 became current.
+        self.assertIn(git_auth.MIGRATION_057_PACKAGE_ROOT, roots)
 
     def test_complete_packages_prepare_and_validate(self) -> None:
         fixture = CompletenessFixture()
@@ -387,7 +404,7 @@ class HistoricalMigrationCompletenessPositiveTests(unittest.TestCase):
             fixture.close()
         self.assertIs(git_auth.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE, before)
         self.assertIs(four_token.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE, before)
-        self.assertEqual(len(before.historical_migration_packages), 3)
+        self.assertEqual(len(before.historical_migration_packages), 4)
 
 
 class InventoryDigestTests(unittest.TestCase):
@@ -698,14 +715,14 @@ class FreshPreparationNegativeTests(unittest.TestCase):
 
 
 class CurrentPackageSeparationTests(unittest.TestCase):
-    """Current 057 evidence may never be tracked or satisfied by Hm."""
+    """Current 058 evidence may never be tracked or satisfied by Hm."""
 
-    def test_current_057_evidence_tracked_blocks_at_validation(self) -> None:
+    def test_current_058_evidence_tracked_blocks_at_validation(self) -> None:
         fixture = CompletenessFixture()
         try:
             relative = (
-                f"{git_auth.MIGRATION_057_PACKAGE_ROOT}/{fixture.migration_id}/"
-                "migration_057_application_result.json"
+                f"{git_auth.MIGRATION_058_PACKAGE_ROOT}/{fixture.migration_id}/"
+                "migration_058_application_result.json"
             )
             fixture._git("add", "-f", relative)
             fixture._git("commit", "-m", "wrongly track current evidence")
@@ -721,7 +738,7 @@ class CurrentPackageSeparationTests(unittest.TestCase):
         try:
             payload, _path, _digest = fixture.prepare()
             current_prefix = (
-                f"{git_auth.MIGRATION_057_PACKAGE_ROOT}/{fixture.migration_id}/"
+                f"{git_auth.MIGRATION_058_PACKAGE_ROOT}/{fixture.migration_id}/"
             )
             for item in payload[git_auth.HISTORICAL_MIGRATION_EVIDENCE_KEY]:
                 self.assertFalse(item["path"].startswith(current_prefix))

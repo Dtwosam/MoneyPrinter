@@ -38,6 +38,9 @@ from printer_v1.sources.operational_source_contracts import (
 
 
 ZERO_STATE_SCHEMA_VERSION = "PRINTER_V1_FOUR_TOKEN_PROOF_ZERO_STATE_GATE_V1"
+OPERATIONAL_ZERO_STATE_SCHEMA_VERSION = (
+    "PRINTER_V1_FOUR_TOKEN_STANDARD_4H_ZERO_STATE_GATE_V1"
+)
 # Exact authorized schema for a bounded four-token proof. Migration 056 owns the
 # immutable pre-lifecycle terminal provenance that
 # ``ONE_CYCLE_PRE_LIFECYCLE_ZERO_ATTEMPT`` requires. Migration 057 adds durable
@@ -170,6 +173,7 @@ PRINTER_OPERATIONAL_RUNTIME_MODES = (
     "run",
     "standard-four-hour-run",
     "four-token-bounded-capacity-proof-run",
+    "four-token-standard-four-hour-run",
 )
 
 
@@ -297,18 +301,27 @@ def _read_only_connection(db_path: str | Path) -> sqlite3.Connection:
     return sqlite3.connect(f"{uri}?immutable=1", uri=True)
 
 
-def assert_four_token_proof_zero_state(
+def _assert_four_token_zero_state(
     *,
     db_path: str | Path,
     authorization_document: Mapping[str, Any],
     environment: Mapping[str, str],
     printer_process_probe: Callable[[], Iterable[int]],
-    migrations_dir: str | Path | None = None,
-    migration_ledger_guard: Callable[..., GuardResult | None] = (
-        assert_migration_ledger_ready
-    ),
+    migrations_dir: str | Path | None,
+    migration_ledger_guard: Callable[..., GuardResult | None],
+    document_validator: Callable[[Mapping[str, Any]], Mapping[str, Any]],
+    validator_error: type[Exception],
+    policy_key: str,
+    expected_policy: Callable[[], Mapping[str, Any]],
+    schema_version: str,
 ) -> dict[str, Any]:
-    """Prove the authoritative state is quiescent for this exact proof start.
+    """Prove the authoritative state is quiescent for one exact 4/2/2 start.
+
+    This is the single owner of every four-token zero-state check. The proof and
+    operational entry points differ only in which authorization authority
+    validates the document and which exact 4/2/2 policy must match; the database
+    identity checks, ownership SQL, host-process probe, migration-ledger guard
+    and source-configuration check are shared, never duplicated.
 
     Every reachable check runs before the caller may create an application
     marker, so the authorization is never consumed to discover a known blocker.
@@ -316,18 +329,19 @@ def assert_four_token_proof_zero_state(
     blockers: list[str] = []
 
     try:
-        document = validate_four_token_proof_authorization_document(
-            authorization_document
-        )
-    except FourTokenProofOneShotWrapperError as exc:
+        document = document_validator(authorization_document)
+    except validator_error as exc:
         raise FourTokenProofZeroStateError(
             _blocker("authorization_document_invalid", str(exc))
         ) from exc
 
-    policy = dict(document["proof_policy"])
-    if policy != exact_proof_policy():
+    policy = dict(document[policy_key])
+    if policy != dict(expected_policy()):
         blockers.append(
-            _blocker("proof_policy_not_exact", "proof policy is not the exact 4/2/2 policy")
+            _blocker(
+                f"{policy_key}_not_exact",
+                f"{policy_key} is not the exact 4/2/2 policy",
+            )
         )
     locked_windows = list(policy.get("locked_windows") or ())
     if tuple(locked_windows) != tuple(LOCKED_LONG_WINDOWS):
@@ -416,7 +430,7 @@ def assert_four_token_proof_zero_state(
         )
 
     return {
-        "schema_version": ZERO_STATE_SCHEMA_VERSION,
+        "schema_version": schema_version,
         "zero_state_ready": True,
         "blockers": [],
         "authorization_id": str(document["authorization_id"]),
@@ -431,15 +445,90 @@ def assert_four_token_proof_zero_state(
     }
 
 
+def assert_four_token_proof_zero_state(
+    *,
+    db_path: str | Path,
+    authorization_document: Mapping[str, Any],
+    environment: Mapping[str, str],
+    printer_process_probe: Callable[[], Iterable[int]],
+    migrations_dir: str | Path | None = None,
+    migration_ledger_guard: Callable[..., GuardResult | None] = (
+        assert_migration_ledger_ready
+    ),
+) -> dict[str, Any]:
+    """Prove quiescence for one exact bounded four-token PROOF start.
+
+    Proof-only authority. It accepts nothing but a proof authorization document
+    and the exact proof 4/2/2 policy.
+    """
+    return _assert_four_token_zero_state(
+        db_path=db_path,
+        authorization_document=authorization_document,
+        environment=environment,
+        printer_process_probe=printer_process_probe,
+        migrations_dir=migrations_dir,
+        migration_ledger_guard=migration_ledger_guard,
+        document_validator=validate_four_token_proof_authorization_document,
+        validator_error=FourTokenProofOneShotWrapperError,
+        policy_key="proof_policy",
+        expected_policy=exact_proof_policy,
+        schema_version=ZERO_STATE_SCHEMA_VERSION,
+    )
+
+
+def assert_four_token_standard_four_hour_zero_state(
+    *,
+    db_path: str | Path,
+    authorization_document: Mapping[str, Any],
+    environment: Mapping[str, str],
+    printer_process_probe: Callable[[], Iterable[int]],
+    migrations_dir: str | Path | None = None,
+    migration_ledger_guard: Callable[..., GuardResult | None] = (
+        assert_migration_ledger_ready
+    ),
+) -> dict[str, Any]:
+    """Prove quiescence for one exact bounded four-token OPERATIONAL start.
+
+    Operational 4/2/2 authority. It accepts nothing but an operational
+    authorization document and the exact operational 4/2/2 policy. The imports
+    are local because the operational wrapper imports this module for its own
+    default gate.
+    """
+    from printer_v1.operator_cli.four_token_operational_composition import (
+        exact_operational_policy,
+    )
+    from printer_v1.operator_cli.four_token_standard_four_hour_one_shot_wrapper import (
+        FourTokenStandardFourHourOneShotWrapperError,
+        validate_four_token_standard_four_hour_authorization_document,
+    )
+
+    return _assert_four_token_zero_state(
+        db_path=db_path,
+        authorization_document=authorization_document,
+        environment=environment,
+        printer_process_probe=printer_process_probe,
+        migrations_dir=migrations_dir,
+        migration_ledger_guard=migration_ledger_guard,
+        document_validator=(
+            validate_four_token_standard_four_hour_authorization_document
+        ),
+        validator_error=FourTokenStandardFourHourOneShotWrapperError,
+        policy_key="operational_policy",
+        expected_policy=exact_operational_policy,
+        schema_version=OPERATIONAL_ZERO_STATE_SCHEMA_VERSION,
+    )
+
 
 __all__ = [
     "FourTokenProofZeroStateError",
     "LOCKED_LONG_WINDOWS",
+    "OPERATIONAL_ZERO_STATE_SCHEMA_VERSION",
     "REQUIRED_MIGRATION_COUNT",
     "REQUIRED_MIGRATION_HEAD",
     "REQUIRED_ZERO_STATE_DOMAINS",
     "ZERO_STATE_SCHEMA_VERSION",
     "active_printer_runtime_processes",
     "assert_four_token_proof_zero_state",
+    "assert_four_token_standard_four_hour_zero_state",
     "project_four_token_proof_zero_state",
 ]

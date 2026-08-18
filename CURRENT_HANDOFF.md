@@ -4,93 +4,140 @@ Date: 2026-08-18
 
 ## Current lane
 
-`V2-9.8B Post-Repair Two-Cycle Four-Token Operational Authorization Alignment Design`
+`V2-9.8B Post-Repair Two-Cycle Four-Token Operational Authorization Alignment Implementation`
 
 Status: `CLOSED_PASS`
 
 Verdict:
 
-`V2_9_8B_POST_REPAIR_TWO_CYCLE_FOUR_TOKEN_OPERATIONAL_AUTHORIZATION_ALIGNMENT_DESIGN_PASS`
-
-Implementation disposition: `IMPLEMENTATION_REQUIRED`
+`V2_9_8B_POST_REPAIR_TWO_CYCLE_FOUR_TOKEN_OPERATIONAL_AUTHORIZATION_ALIGNMENT_IMPLEMENTATION_PASS`
 
 ## Current code baseline
+
+Approved design baseline:
+
+`babc8a3b2dfd4ddca1307e140a378e0d3279e113`
 
 Repaired operational product-code baseline:
 
 `df1aced491d01d1a6d25ae38ca2da4eab72665c6`
 
-Design branch:
+Implementation branch:
 
-`agent/v2-9-8b-post-repair-two-cycle-four-token-operational-authorization-alignment-design`
+`agent/v2-9-8b-post-repair-two-cycle-four-token-operational-authorization-alignment-implementation`
 
-Design commit before this handoff update:
-
-`d24853d8b6c2545a1d4031ecdf776e0de5ed0f8e`
-
-Parent audit handoff:
-
-`282066b2711b35e9a83117571fe278edf5e91dc5`
-
-The design lane changes documentation only. Master remains untouched.
+Master remains untouched at `19bcd23da1608e406e25f675532df193b65d038a`.
 
 ## Latest completed work
 
-The design establishes a distinct operational 4/2/2 authority while preserving both existing authorities:
+The already-repaired multi-cycle four-token machinery is now an explicitly
+authorized OPERATIONAL command boundary.
 
-- `standard-four-hour-run` remains the exact two-token Standard-4H operational authority;
-- `four-token-bounded-capacity-proof-run` remains proof-only;
-- new designed operational child mode: `four-token-standard-four-hour-run`;
-- one exact bounded invocation, four through-4h token slots, two cycles, two fresh distinct token/pair slots per cycle;
-- Cycle 2 is governed later-cycle fresh acquisition inside the same campaign/run and may overlap Cycle 1 only through existing multi-cycle admission/capacity gates;
-- no second Memory Factory runner, Scheduler, Source Governor, provider loop, schema owner or selection algorithm;
-- capacity remains derived from `scaled_standard_four_hour_capacity_contract(4)` rather than copied;
-- cycle-local 15m -> 1h -> eligible 4h continuation remains unchanged; 5m is support-only and 12h/24h remain locked;
-- one fresh operational authorization covers the exact whole 4/2/2 child; no per-cycle authorization, retry, rerun, resume, restart or successor.
+New operational mode: `four-token-standard-four-hour-run`.
 
-The design also requires post-repair provenance alignment:
+One bounded invocation; Cycle 1 two fresh governed slots (15m → eligible 1h →
+eligible 4h); Cycle 2 two NEW fresh governed slots inside the SAME campaign
+invocation; four token slots total; two active cycles; two tokens per cycle.
 
-- Migration 058 is current schema-transition evidence for both the repaired four-token proof profile and the new operational four-token profile;
-- Migration 057 becomes distinct preserved historical migration evidence alongside 050, 055 and 056;
-- exact Migration-057 historical execution/inventory values must come from preserved real evidence and must not be guessed;
-- exact Migration-058 current evidence must be reconciled with real repair evidence; inability to establish it is a readiness block, not permission to fabricate evidence;
-- ordinary and two-token Standard-4H profile semantics remain outside this repair scope.
+Existing meanings are unchanged:
 
-The preceding repository preparation lane created no fresh Standard-4H authorization. If additional authorization evidence exists only on the actual host, later preparation must enumerate and classify it by exact identity; it cannot be repurposed as 4/2/2 authority.
+- `standard-four-hour-run` remains the two-token operational Standard-4H
+  authority;
+- `four-token-bounded-capacity-proof-run` remains proof-only.
 
-## Designed implementation boundary
+Implementation is the minimum authority/wiring layer: a neutral 4/2/2
+composition facade, a distinct one-shot wrapper, a distinct Git authorization
+profile, command registration/routing, and a generalized (not duplicated)
+zero-state gate. No new Scheduler, Source Governor, provider loop, Memory Factory
+runner, selection algorithm, DB schema, migration or parallel lifecycle owner was
+created.
 
-Likely implementation changes are limited to:
+Capacity derives from `scaled_standard_four_hour_capacity_contract(4)` and
+matches the expected comparison values exactly: 4 slots / 2 cycles / 2 per cycle
+/ 117 requests per token / 472 request outer ceiling / 420 Scheduler rows, with
+300s minimum admission spacing, zero retries, no endpoint rotation and no long
+windows. Nothing was hard-coded to force those numbers.
 
-- public-command registration/policy for the new exact operational mode;
-- a distinct `four_token_standard_four_hour_one_shot_wrapper.py` authority;
-- a distinct Git authorization profile for that operational mode;
-- Migration-058 current / Migration-057 historical repair for four-token provenance;
-- reuse/generalization of the existing read-only four-token zero-state gate without duplicating its ownership SQL;
-- only the smallest neutral facade/helper needed to enter the already-repaired multi-cycle composition.
+## Provenance alignment
 
-No migration file, provider contract, broad runtime repair or future capability activation is designed.
+CURRENT: Migration 058, for both the repaired four-token proof profile and the
+new four-token operational profile.
 
-## Verification sequence after implementation
+HISTORICAL: Migrations 050, 055, 056 and 057.
 
-Implementation must use focused cross-cutting tests for wrapper one-use behavior, exact 4/2/2 derivation, command separation, Cycle-2 distinct identities/fresh supply, Source Governor/Scheduler ownership, 058-current/057-historical provenance, zero-state migration 58/058, locked long windows and existing standard/proof regressions.
+Migration 057 is no longer current four-token schema-transition evidence. Its
+historical identity came from real preserved operator evidence
+(`MIGRATION_057_20260816T191558Z`, 6 files, inventory SHA-256
+`9272f596e7a82c3cfe9d824595be74f34c7203dccab3bd541c187dc236519535`), derived with
+the committed enumeration/digest primitives and validated by reproducing the
+already-committed Migration-055 and Migration-056 constants exactly. No evidence
+was fabricated and no provenance validation was weakened.
 
-After implementation, a separate bounded offline/disposable proof must run with fake/frozen transports and deterministic time. No live provider/RPC/WebSocket campaign is authorized by implementation alone.
+Only the Migration-058 package root and kind are committed. The exact execution
+identity stays preparation-time bound through the authorization document, so
+host-local operator/DB evidence is never hard-coded source truth.
 
-Only after implementation -> bounded proof/test -> closeout PASS may host-local operational 4/2/2 authorization preparation begin.
+Ordinary and two-token Standard-4H profile semantics are unchanged.
+
+## Verification
+
+Focused new tests: PASS. Touched Standard-4H, four-token proof, multi-cycle,
+zero-state, migration/provenance and capability-lock tests: PASS. Compilation and
+import checks: PASS.
+
+Bounded offline/disposable proof: PASS. One invocation produced Cycle 1 two fresh
+slots, Cycle 2 two new fresh slots, four distinct mint/pair identities, exact per
+cycle Scheduler ownership, no 12h/24h planning, one terminal closure and no
+successor, retry, rerun, resume or restart — with fake/frozen transports,
+deterministic time, a disposable database and zero source calls.
+
+Regression was measured against the untouched baseline rather than asserted.
+Baseline: 1037 passed / 89 failed. This lane: 1093 passed / 90 failed. Exactly one
+test moved pass-to-fail — a stale `057-as-current` assertion — and it was updated
+along with two sibling assertions found by running every affected file in full.
+Those affected files now show 182 passed / 3 failed, and those 3 were confirmed
+byte-identical failures on the stashed baseline.
+
+The 89 pre-existing baseline failures across roughly 26 files (largest cluster: 31
+in `tests/test_v2_9_8b_window_15m_git_provenance_authorization_manifest.py`) are
+documented, not repaired. They are outside this lane's approved scope and need
+their own lane.
+
+## Authorization state
+
+Fresh authorization created: `NO`
+
+Authorization consumed: `NO`
+
+Historical authorization reused: `NO`
+
+Campaign started: `NO`
+
+Provider/RPC/WebSocket campaign calls: `0`
+
+Authoritative campaign DB mutation: `0` (byte-identical: SHA-256
+`a77141bce32468a2685007a276dbac91d1ed68671b5036c7bc24f54f60ad46d7`, size
+`100794368`, inode `1230526`, mtime_ns `1787043184343686970`, no sidecars)
+
+Migration added: `NO`. Migration head remains `058_direct_pump_migration_cursor.sql`.
+
+Migration 059: `NO`
 
 ## Exact next permitted action
 
-`V2-9.8B Post-Repair Two-Cycle Four-Token Operational Authorization Alignment Implementation`
+`V2-9.8B Post-Repair Two-Cycle Four-Token Operational Authorization Alignment Independent Closeout`
 
-Implementation only.
+Do not proceed automatically into independent closeout. Do not prepare or create
+the final operational 4/2/2 authorization. Do not run Printer.
 
-If exact preserved Migration-057 evidence needed for the immutable historical inventory cannot be established, stop as `BLOCKED_READINESS` before weakening provenance law.
-
-Do not create or consume the final operational authorization and do not run a live campaign in the implementation lane.
+The unconsumed two-token Standard-4H authorization from the earlier lane remains
+untouched and is not authority for the new operational mode.
 
 ## Locks
 
-5m remains support-only. Migration head remains 058; no 059 is permitted. 12h/24h, retrieval, paper decisions, BUY/SELL/HOLD, positions, trades, audits, PnL, live wallet/private-key/signing execution, real funds, paid APIs, scoring/ranking/confidence/weighted logic and embeddings/vectors remain locked.
+5m remains support-only. Migration head remains 058; no 059. 12h/24h, retrieval,
+paper decisions, BUY/SELL/HOLD, positions, trades, audits, PnL, live
+wallet/private-key/signing execution, real funds, paid APIs,
+scoring/ranking/confidence/weighted logic and embeddings/vectors remain locked.
 
 The active authority stack wins any conflict with this handoff.

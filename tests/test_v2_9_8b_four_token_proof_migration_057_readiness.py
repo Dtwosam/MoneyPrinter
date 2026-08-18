@@ -1,4 +1,4 @@
-"""Focused migration-057 re-readiness contract for the four-token terminal proof.
+"""Focused migration-058 re-readiness contract for the four-token terminal proof.
 
 Offline only. This file creates no authorization, consumes no authorization,
 starts no Printer runtime, performs no source request, and mutates no
@@ -9,14 +9,20 @@ from printer_v1.operator_cli import git_provenance_authorization_manifest as git
 from printer_v1.operator_cli import four_token_proof_zero_state_gate as zero_state
 
 
-def test_four_token_current_migration_evidence_is_exactly_057() -> None:
+def test_four_token_current_migration_evidence_is_exactly_058() -> None:
+    """058 took over current authority when the runtime pin advanced to 058.
+
+    Migration 057 is no longer current four-token schema-transition evidence.
+    """
     profile = git_auth.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE
-    assert profile.migration_package_root == git_auth.MIGRATION_057_PACKAGE_ROOT
-    assert profile.migration_package_kind == git_auth.MIGRATION_057_PACKAGE_KIND
+    assert profile.migration_package_root == git_auth.MIGRATION_058_PACKAGE_ROOT
+    assert profile.migration_package_kind == git_auth.MIGRATION_058_PACKAGE_KIND
     assert profile.migration_package_root == (
-        "operator-runs/v2-9-8b-migration-057-application"
+        "operator-runs/v2-9-8b-migration-058-application"
     )
-    assert profile.migration_package_kind == "MIGRATION_057_EVIDENCE"
+    assert profile.migration_package_kind == "MIGRATION_058_EVIDENCE"
+    assert profile.migration_package_root != git_auth.MIGRATION_057_PACKAGE_ROOT
+    assert profile.migration_package_kind != git_auth.MIGRATION_057_PACKAGE_KIND
 
 
 def test_four_token_zero_state_is_explicitly_pinned_to_the_current_head() -> None:
@@ -35,20 +41,21 @@ def test_four_token_zero_state_is_explicitly_pinned_to_the_current_head() -> Non
     )
 
 
-def test_migrations_050_055_056_are_the_required_historical_migrations() -> None:
-    """050, 055 and 056 are all required, immutable historical packages.
+def test_migrations_050_055_056_057_are_the_required_historical_migrations() -> None:
+    """050, 055, 056 and 057 are all required, immutable historical packages.
 
-    The earlier "050 only" contract is superseded: 055 and 056 were promoted so
-    their untracked evidence is explained without publishing SQLite database
-    images into the public Git remote. 057 remains the sole current transition.
+    The earlier "050, 055, 056" contract is superseded: 057 was demoted when 058
+    took over current schema-transition authority, exactly as 055 and 056 were
+    demoted before it. 058 is now the sole current transition.
     """
     profile = git_auth.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE
-    assert len(profile.historical_migration_packages) == 3
+    assert len(profile.historical_migration_packages) == 4
     by_root = {item.package_root: item for item in profile.historical_migration_packages}
     assert set(by_root) == {
         git_auth.MIGRATION_PACKAGE_ROOT,
         git_auth.MIGRATION_055_PACKAGE_ROOT,
         git_auth.MIGRATION_056_PACKAGE_ROOT,
+        git_auth.MIGRATION_057_PACKAGE_ROOT,
     }
 
     mig050 = by_root[git_auth.MIGRATION_PACKAGE_ROOT]
@@ -70,6 +77,13 @@ def test_migrations_050_055_056_are_the_required_historical_migrations() -> None
     assert mig056.evidence_class == git_auth.HISTORICAL_MIGRATION_056_EVIDENCE_CLASS
     assert mig056.expected_file_count == 6
 
+    mig057 = by_root[git_auth.MIGRATION_057_PACKAGE_ROOT]
+    assert mig057.execution_id == (
+        git_auth.FOUR_TOKEN_HISTORICAL_MIGRATION_057_EXECUTION_ID
+    )
+    assert mig057.evidence_class == git_auth.HISTORICAL_MIGRATION_057_EVIDENCE_CLASS
+    assert mig057.expected_file_count == 6
+
     # No historical package may be the current schema transition.
-    assert git_auth.MIGRATION_057_PACKAGE_ROOT not in by_root
-    assert profile.migration_package_root == git_auth.MIGRATION_057_PACKAGE_ROOT
+    assert git_auth.MIGRATION_058_PACKAGE_ROOT not in by_root
+    assert profile.migration_package_root == git_auth.MIGRATION_058_PACKAGE_ROOT

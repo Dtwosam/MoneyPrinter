@@ -75,6 +75,19 @@ MIGRATION_056_PACKAGE_ROOT = "operator-runs/v2-9-8b-migration-056-application"
 MIGRATION_057_PACKAGE_KIND = "MIGRATION_057_EVIDENCE"
 MIGRATION_057_PACKAGE_ROOT = "operator-runs/v2-9-8b-migration-057-application"
 
+# The controlled migration-058 application is the current schema transition for
+# every four-token authority after the durable direct Pump migration traversal
+# cursor was added. It matches the runtime zero-state pin and the canonical
+# database ledger head. It is its own current-evidence identity and never
+# renames or absorbs the migration-050, 055, 056 or 057 evidence contracts.
+#
+# Only the package root/kind are committed here. The exact execution identity is
+# supplied by the authorization document at preparation time and hashed through
+# the existing manifest mechanism, so host-local operator evidence stays
+# preparation-time binding rather than hard-coded source truth.
+MIGRATION_058_PACKAGE_KIND = "MIGRATION_058_EVIDENCE"
+MIGRATION_058_PACKAGE_ROOT = "operator-runs/v2-9-8b-migration-058-application"
+
 # Preserved historical schema-transition evidence. This class explains how the
 # current database evolved; it never becomes current schema-transition authority
 # and never carries authorization reuse authority.
@@ -95,6 +108,12 @@ FOUR_TOKEN_HISTORICAL_MIGRATION_055_EXECUTION_ID = "MIGRATION_055_20260813T22010
 HISTORICAL_MIGRATION_056_EVIDENCE_CLASS = "HISTORICAL_MIGRATION_056_EVIDENCE"
 FOUR_TOKEN_HISTORICAL_MIGRATION_056_EXECUTION_ID = "MIGRATION_056_20260815T164802Z"
 
+# Migration 057 became preserved historical evidence once migration 058 took over
+# current schema-transition authority. It keeps its own evidence class and
+# execution identity; it is demoted, never renamed or absorbed.
+HISTORICAL_MIGRATION_057_EVIDENCE_CLASS = "HISTORICAL_MIGRATION_057_EVIDENCE"
+FOUR_TOKEN_HISTORICAL_MIGRATION_057_EXECUTION_ID = "MIGRATION_057_20260816T191558Z"
+
 # Immutable COMPLETE inventory identity for every declared historical migration
 # package. These are committed constants bound by the authorization's Git HEAD.
 # Filesystem discovery may only prove equality against them or fail closed; it
@@ -110,6 +129,10 @@ FOUR_TOKEN_HISTORICAL_MIGRATION_055_EXPECTED_INVENTORY_SHA256 = (
 FOUR_TOKEN_HISTORICAL_MIGRATION_056_EXPECTED_FILE_COUNT = 6
 FOUR_TOKEN_HISTORICAL_MIGRATION_056_EXPECTED_INVENTORY_SHA256 = (
     "4918774b95998aab821d69d06854665697347664faf04a3340f2299db95868f3"
+)
+FOUR_TOKEN_HISTORICAL_MIGRATION_057_EXPECTED_FILE_COUNT = 6
+FOUR_TOKEN_HISTORICAL_MIGRATION_057_EXPECTED_INVENTORY_SHA256 = (
+    "9272f596e7a82c3cfe9d824595be74f34c7203dccab3bd541c187dc236519535"
 )
 
 REQUIRED_MAIN_WINDOW = "WINDOW_15M"
@@ -245,6 +268,68 @@ STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE = GitAuthorizationProfile(
 )
 
 
+# The preserved historical migration chain shared by every four-token authority.
+#
+# Migrations 050, 055, 056 and 057 are the declared *required* historical
+# packages. Each was demoted in turn when its successor took over current
+# schema-transition authority; none is renamed, absorbed, or promoted back to
+# current authority, which is migration 058 alone.
+#
+# Every entry is mandatory for every manifest build, so declaring them requires
+# their operator evidence to exist. That obligation is deliberate: it is the only
+# way to explain their untracked bytes without publishing SQLite database images
+# into the public Git remote.
+#
+# Every entry declares its COMPLETE inventory identity, so partial erosion, byte
+# modification, intrusion, and a member that quietly became tracked all fail
+# closed at fresh preparation rather than being silently re-bound into a new
+# manifest.
+FOUR_TOKEN_HISTORICAL_MIGRATION_PACKAGES: tuple[HistoricalMigrationPackage, ...] = (
+    HistoricalMigrationPackage(
+        package_root=MIGRATION_PACKAGE_ROOT,
+        execution_id=FOUR_TOKEN_HISTORICAL_MIGRATION_EXECUTION_ID,
+        evidence_class=HISTORICAL_MIGRATION_EVIDENCE_CLASS,
+        expected_file_count=FOUR_TOKEN_HISTORICAL_MIGRATION_EXPECTED_FILE_COUNT,
+        expected_inventory_sha256=(
+            FOUR_TOKEN_HISTORICAL_MIGRATION_EXPECTED_INVENTORY_SHA256
+        ),
+    ),
+    HistoricalMigrationPackage(
+        package_root=MIGRATION_055_PACKAGE_ROOT,
+        execution_id=FOUR_TOKEN_HISTORICAL_MIGRATION_055_EXECUTION_ID,
+        evidence_class=HISTORICAL_MIGRATION_055_EVIDENCE_CLASS,
+        expected_file_count=(
+            FOUR_TOKEN_HISTORICAL_MIGRATION_055_EXPECTED_FILE_COUNT
+        ),
+        expected_inventory_sha256=(
+            FOUR_TOKEN_HISTORICAL_MIGRATION_055_EXPECTED_INVENTORY_SHA256
+        ),
+    ),
+    HistoricalMigrationPackage(
+        package_root=MIGRATION_056_PACKAGE_ROOT,
+        execution_id=FOUR_TOKEN_HISTORICAL_MIGRATION_056_EXECUTION_ID,
+        evidence_class=HISTORICAL_MIGRATION_056_EVIDENCE_CLASS,
+        expected_file_count=(
+            FOUR_TOKEN_HISTORICAL_MIGRATION_056_EXPECTED_FILE_COUNT
+        ),
+        expected_inventory_sha256=(
+            FOUR_TOKEN_HISTORICAL_MIGRATION_056_EXPECTED_INVENTORY_SHA256
+        ),
+    ),
+    HistoricalMigrationPackage(
+        package_root=MIGRATION_057_PACKAGE_ROOT,
+        execution_id=FOUR_TOKEN_HISTORICAL_MIGRATION_057_EXECUTION_ID,
+        evidence_class=HISTORICAL_MIGRATION_057_EVIDENCE_CLASS,
+        expected_file_count=(
+            FOUR_TOKEN_HISTORICAL_MIGRATION_057_EXPECTED_FILE_COUNT
+        ),
+        expected_inventory_sha256=(
+            FOUR_TOKEN_HISTORICAL_MIGRATION_057_EXPECTED_INVENTORY_SHA256
+        ),
+    ),
+)
+
+
 FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE = GitAuthorizationProfile(
     command_mode="four-token-bounded-capacity-proof-run",
     authorization_package_root=(
@@ -257,60 +342,62 @@ FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE = GitAuthorizationProfile(
         "operator-runs/v2-9-8b-standard-four-hour-final-authorization",
         "operator-runs/v2-9-8b-four-token-final-authorization",
     ),
-    migration_package_root=MIGRATION_057_PACKAGE_ROOT,
-    migration_package_kind=MIGRATION_057_PACKAGE_KIND,
-    # Migrations 050, 055 and 056 are the declared *required* historical
-    # packages for this profile.
-    #
-    # Migrations 055 and 056 were previously deferred because every entry here is
-    # mandatory for every manifest build, so declaring them permanently requires
-    # their operator evidence to exist. That obligation is now accepted
-    # deliberately: it is the only way to explain their untracked bytes without
-    # publishing SQLite database images into the public Git remote. Each keeps its
-    # own distinct evidence class and execution identity; none is renamed,
-    # absorbed, or promoted to current schema-transition authority, which remains
-    # migration 057 alone.
-    #
-    # Every entry declares its COMPLETE inventory identity, so partial erosion,
-    # byte modification, intrusion, and a member that quietly became tracked all
-    # fail closed at fresh preparation rather than being silently re-bound into a
-    # new manifest.
-    historical_migration_packages=(
-        HistoricalMigrationPackage(
-            package_root=MIGRATION_PACKAGE_ROOT,
-            execution_id=FOUR_TOKEN_HISTORICAL_MIGRATION_EXECUTION_ID,
-            evidence_class=HISTORICAL_MIGRATION_EVIDENCE_CLASS,
-            expected_file_count=(
-                FOUR_TOKEN_HISTORICAL_MIGRATION_EXPECTED_FILE_COUNT
-            ),
-            expected_inventory_sha256=(
-                FOUR_TOKEN_HISTORICAL_MIGRATION_EXPECTED_INVENTORY_SHA256
-            ),
-        ),
-        HistoricalMigrationPackage(
-            package_root=MIGRATION_055_PACKAGE_ROOT,
-            execution_id=FOUR_TOKEN_HISTORICAL_MIGRATION_055_EXECUTION_ID,
-            evidence_class=HISTORICAL_MIGRATION_055_EVIDENCE_CLASS,
-            expected_file_count=(
-                FOUR_TOKEN_HISTORICAL_MIGRATION_055_EXPECTED_FILE_COUNT
-            ),
-            expected_inventory_sha256=(
-                FOUR_TOKEN_HISTORICAL_MIGRATION_055_EXPECTED_INVENTORY_SHA256
-            ),
-        ),
-        HistoricalMigrationPackage(
-            package_root=MIGRATION_056_PACKAGE_ROOT,
-            execution_id=FOUR_TOKEN_HISTORICAL_MIGRATION_056_EXECUTION_ID,
-            evidence_class=HISTORICAL_MIGRATION_056_EVIDENCE_CLASS,
-            expected_file_count=(
-                FOUR_TOKEN_HISTORICAL_MIGRATION_056_EXPECTED_FILE_COUNT
-            ),
-            expected_inventory_sha256=(
-                FOUR_TOKEN_HISTORICAL_MIGRATION_056_EXPECTED_INVENTORY_SHA256
-            ),
-        ),
-    ),
+    migration_package_root=MIGRATION_058_PACKAGE_ROOT,
+    migration_package_kind=MIGRATION_058_PACKAGE_KIND,
+    historical_migration_packages=FOUR_TOKEN_HISTORICAL_MIGRATION_PACKAGES,
 )
+
+
+# The fourth distinct Git authorization authority: one operator-approved bounded
+# operational campaign of exactly four through-4h token slots across exactly two
+# governed cycles of exactly two fresh slots each.
+#
+# It shares no authorization identity with the ordinary, two-token
+# standard-four-hour, or four-token proof authorities. Historical visibility over
+# their roots is enumeration only and never creates reuse authority: no ordinary,
+# Standard-4H or proof authorization can be reinterpreted as authority for this
+# mode.
+FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE = GitAuthorizationProfile(
+    command_mode="four-token-standard-four-hour-run",
+    authorization_package_root=(
+        "operator-runs/v2-9-8b-four-token-standard-four-hour-final-authorization"
+    ),
+    authorization_package_kind=(
+        "FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_EVIDENCE"
+    ),
+    manifest_schema_version=(
+        "PRINTER_V1_GIT_PROVENANCE_MANIFEST_FOUR_TOKEN_STANDARD_4H_V1"
+    ),
+    historical_authorization_package_roots=(
+        AUTHORIZATION_PACKAGE_ROOT,
+        "operator-runs/v2-9-8b-standard-four-hour-final-authorization",
+        "operator-runs/v2-9-8b-four-token-final-authorization",
+        "operator-runs/v2-9-8b-four-token-standard-four-hour-final-authorization",
+    ),
+    migration_package_root=MIGRATION_058_PACKAGE_ROOT,
+    migration_package_kind=MIGRATION_058_PACKAGE_KIND,
+    historical_migration_packages=FOUR_TOKEN_HISTORICAL_MIGRATION_PACKAGES,
+)
+
+
+#: Every Git authorization profile this validator will ever accept. Anything
+#: else fails closed. This name tuple is the single allowlist declaration.
+_SUPPORTED_PROFILE_NAMES: tuple[str, ...] = (
+    "ORDINARY_AUTHORIZATION_PROFILE",
+    "STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE",
+    "FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE",
+    "FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE",
+)
+
+
+def supported_profiles() -> tuple[GitAuthorizationProfile, ...]:
+    """Return the live supported profiles, resolved at call time.
+
+    Resolving through the module globals keeps the allowlist a single declared
+    name tuple while preserving the long-standing behaviour that a focused test
+    scoping a disposable fixture profile over a production name is accepted.
+    """
+    return tuple(globals()[name] for name in _SUPPORTED_PROFILE_NAMES)
 
 
 def _resolved_profile(
@@ -318,11 +405,7 @@ def _resolved_profile(
 ) -> GitAuthorizationProfile:
     if profile is None:
         return ORDINARY_AUTHORIZATION_PROFILE
-    if profile not in (
-        ORDINARY_AUTHORIZATION_PROFILE,
-        STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE,
-        FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE,
-    ):
+    if profile not in supported_profiles():
         raise GitProvenanceAuthorizationError("unsupported Git authorization profile")
     return profile
 
@@ -1877,9 +1960,13 @@ def _validate_authorization_document(
         package_binding_from_document,
     )
 
+    # Each wrapper-bound profile validates its document with its OWN authority.
+    # A document that satisfies one authority can never satisfy another: the
+    # schema version, authorized mode and exact policy key all differ.
     if profile in (
         STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE,
         FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE,
+        FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE,
     ):
         if profile == STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE:
             try:
@@ -1891,6 +1978,22 @@ def _validate_authorization_document(
             except StandardFourHourOneShotWrapperError as exc:
                 raise GitProvenanceAuthorizationError(
                     f"standard four-hour authorization document rejected: {exc}"
+                ) from exc
+        elif profile == FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE:
+            try:
+                from printer_v1.operator_cli.four_token_standard_four_hour_one_shot_wrapper import (
+                    FourTokenStandardFourHourOneShotWrapperError,
+                    validate_four_token_standard_four_hour_authorization_document,
+                )
+                validated_document = (
+                    validate_four_token_standard_four_hour_authorization_document(
+                        document
+                    )
+                )
+            except FourTokenStandardFourHourOneShotWrapperError as exc:
+                raise GitProvenanceAuthorizationError(
+                    "four-token standard four-hour authorization document "
+                    f"rejected: {exc}"
                 ) from exc
         else:
             try:
@@ -2601,6 +2704,8 @@ __all__ = [
     "MIGRATION_PACKAGE_KIND",
     "MIGRATION_PACKAGE_ROOT",
     "FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE",
+    "FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE",
+    "supported_profiles",
     "GitAuthorizationProfile",
     "HistoricalMigrationPackage",
     "ORDINARY_AUTHORIZATION_PROFILE",

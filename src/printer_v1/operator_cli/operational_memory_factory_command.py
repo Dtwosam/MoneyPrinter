@@ -145,10 +145,17 @@ STANDARD_FOUR_HOUR_PREFLIGHT_MODE = "standard-four-hour-preflight"
 # it constructs one fixed internal composition and is unreachable without the
 # dedicated four-token one-shot wrapper authorization.
 FOUR_TOKEN_PROOF_MODE = "four-token-bounded-capacity-proof-run"
+# Dedicated OPERATIONAL four-token mode. It is the explicit approved 4/2/2
+# command boundary: one bounded invocation, four through-4h token slots, two
+# governed cycles, two fresh distinct token/pair slots per cycle. It neither
+# widens ``standard-four-hour-run`` nor promotes the proof mode to production
+# authority, and it is unreachable without its own one-shot wrapper.
+FOUR_TOKEN_STANDARD_FOUR_HOUR_MODE = "four-token-standard-four-hour-run"
 _WRAPPER_BOUND_MODE_LABELS = {
     "run": "ordinary run",
     STANDARD_FOUR_HOUR_MODE: "standard four-hour run",
     FOUR_TOKEN_PROOF_MODE: "four-token bounded capacity proof run",
+    FOUR_TOKEN_STANDARD_FOUR_HOUR_MODE: "four-token standard four-hour run",
 }
 STANDARD_FOUR_HOUR_POLICY_VERSION = "V2-9.8-STANDARD-4H-OPERATIONAL-V1"
 STANDARD_FOUR_HOUR_TOTAL_DURATION_SECONDS = 14_700
@@ -163,6 +170,13 @@ _STANDARD_FOUR_HOUR_CAPACITY = standard_four_hour_capacity_contract()
 # standard-four-hour contract.
 from printer_v1.operator_cli import (  # noqa: E402
     four_token_proof_one_shot_wrapper as _four_token_authority,
+)
+
+# Operational four-token capacity/timing. This command owns no independent
+# four-token numbers: they come from the neutral operational composition facade,
+# which derives them from ``scaled_standard_four_hour_capacity_contract(4)``.
+from printer_v1.operator_cli import (  # noqa: E402
+    four_token_operational_composition as _four_token_operational,
 )
 
 _FOUR_TOKEN_PROOF_POLICY_VERSION = _four_token_authority.POLICY_VERSION
@@ -243,6 +257,7 @@ GIT_PROVENANCE_MANIFEST_ENV_VARS = (
 )
 GIT_PROVENANCE_MANIFEST_SUPPORTED_MODES = (
     "preflight-only", "run", STANDARD_FOUR_HOUR_MODE, FOUR_TOKEN_PROOF_MODE,
+    FOUR_TOKEN_STANDARD_FOUR_HOUR_MODE,
 )
 # Action-local run identity for blocked-command source accounting. Never inherit
 # a previous campaign's holder-ledger totals into a different public action.
@@ -328,6 +343,35 @@ FOUR_TOKEN_PROOF_POLICY = _OperationalCampaignPolicy(
     locked_windows=("WINDOW_12H", "WINDOW_24H"),
     pre_lifecycle_acquisition_duration_seconds=(
         _FOUR_TOKEN_PRE_LIFECYCLE_ACQUISITION_DURATION_SECONDS
+    ),
+    continuous_four_hour=True,
+    standard_four_hour_campaign=True,
+)
+
+# Operational four-token 4/2/2 policy. Every ceiling is projected from the
+# neutral operational composition facade, which derives from
+# ``scaled_standard_four_hour_capacity_contract(4)``. The two bounded clocks stay
+# separate: 2,400s pre-lifecycle acquisition and 18,000s post-supply lifecycle.
+# This is ordinary operational memory-growth authority, not a proof.
+FOUR_TOKEN_STANDARD_FOUR_HOUR_POLICY = _OperationalCampaignPolicy(
+    mode=FOUR_TOKEN_STANDARD_FOUR_HOUR_MODE,
+    policy_version=_four_token_operational.POLICY_VERSION,
+    duration_seconds=(
+        _four_token_operational.POST_SUPPLY_LIFECYCLE_DURATION_SECONDS
+    ),
+    selective_1h_continuation=True,
+    governed_request_ceiling=(
+        _four_token_operational.LIFECYCLE_REQUEST_OUTER_CEILING
+    ),
+    governed_requests_per_token=(
+        _four_token_operational.LIFECYCLE_REQUESTS_PER_TOKEN
+    ),
+    scheduler_row_ceiling=(
+        _four_token_operational.LIFECYCLE_SCHEDULER_OUTER_CEILING
+    ),
+    locked_windows=_four_token_operational.LOCKED_WINDOWS,
+    pre_lifecycle_acquisition_duration_seconds=(
+        _four_token_operational.PRE_LIFECYCLE_ACQUISITION_DURATION_SECONDS
     ),
     continuous_four_hour=True,
     standard_four_hour_campaign=True,
@@ -753,6 +797,14 @@ def _resolve_git_provenance_authorization(
             )
 
             validation_kwargs["profile"] = FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE
+        elif mode == FOUR_TOKEN_STANDARD_FOUR_HOUR_MODE:
+            from printer_v1.operator_cli.git_provenance_authorization_manifest import (
+                FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE,
+            )
+
+            validation_kwargs["profile"] = (
+                FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE
+            )
         return validate_git_provenance_authorization(**validation_kwargs)
     except GitProvenanceAuthorizationError as exc:
         raise OperationalMemoryFactoryError(
@@ -4387,6 +4439,38 @@ def run_four_token_bounded_capacity_proof_campaign(
     )
 
 
+def run_four_token_standard_four_hour_campaign(
+    *,
+    operator_approved: bool,
+    git_provenance_authorization: ValidatedGitProvenanceAuthorization | None,
+    owner: Any | None = None,
+    pump_transport: Any | None = None,
+    secondary_transport: Any | None = None,
+    migration_transport: Any | None = None,
+) -> dict[str, Any]:
+    """Run the one externally authorized OPERATIONAL four-token 4/2/2 campaign.
+
+    This enters exactly the already-repaired canonical multi-cycle composition
+    through the neutral operational facade and then calls the same canonical
+    operational factory path exactly once. It creates no second factory runner,
+    no second event loop, no second Central Scheduler, no second Source Governor,
+    no discovery polling loop and no selection algorithm of its own. Capacity is
+    fixed at exact 4/2/2 and can never be selected by a caller.
+    """
+    return _run_operational_campaign(
+        policy=FOUR_TOKEN_STANDARD_FOUR_HOUR_POLICY,
+        operator_approved=operator_approved,
+        owner=owner,
+        pump_transport=pump_transport,
+        secondary_transport=secondary_transport,
+        migration_transport=migration_transport,
+        git_provenance_authorization=git_provenance_authorization,
+        four_token_proof_controller=(
+            _four_token_operational.build_operational_multi_cycle_controller()
+        ),
+    )
+
+
 def run_selective_1h_proof(
     *,
     operator_approved: bool,
@@ -6032,7 +6116,8 @@ def main(argv: Iterable[str] | None = None) -> int:
             "Printer V1 bounded persistent Memory Factory command. "
             "Modes: preflight-only, run, selective-1h-preflight, "
             "selective-1h-proof, standard-four-hour-preflight, "
-            "standard-four-hour-run, status, cooperative-stop, recover-orphan, "
+            "standard-four-hour-run, four-token-standard-four-hour-run, "
+            "status, cooperative-stop, recover-orphan, "
             "report-only, discovery-only. Candidate acquisition and cursor "
             "recovery are deferred and are not operational prerequisites."
         )
@@ -6043,6 +6128,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             "preflight-only", "run", SELECTIVE_1H_PREFLIGHT_MODE,
             SELECTIVE_1H_MODE, STANDARD_FOUR_HOUR_PREFLIGHT_MODE,
             STANDARD_FOUR_HOUR_MODE, FOUR_TOKEN_PROOF_MODE,
+            FOUR_TOKEN_STANDARD_FOUR_HOUR_MODE,
             "status", "cooperative-stop", "recover-orphan",
             "report-only", "discovery-only",
         ),
@@ -6092,7 +6178,12 @@ def main(argv: Iterable[str] | None = None) -> int:
         provenance_binding_values = tuple(
             os.environ.get(name) for name in GIT_PROVENANCE_MANIFEST_ENV_VARS
         )
-        wrapper_bound_modes = {"run", STANDARD_FOUR_HOUR_MODE, FOUR_TOKEN_PROOF_MODE}
+        wrapper_bound_modes = {
+            "run",
+            STANDARD_FOUR_HOUR_MODE,
+            FOUR_TOKEN_PROOF_MODE,
+            FOUR_TOKEN_STANDARD_FOUR_HOUR_MODE,
+        }
         if args.mode in wrapper_bound_modes and not any(provenance_binding_values):
             label = _WRAPPER_BOUND_MODE_LABELS[args.mode]
             raise OperationalMemoryFactoryError(
@@ -6143,6 +6234,11 @@ def main(argv: Iterable[str] | None = None) -> int:
                 operator_approved=args.operator_approved,
                 git_provenance_authorization=git_provenance_authorization,
             )
+        elif args.mode == FOUR_TOKEN_STANDARD_FOUR_HOUR_MODE:
+            result = run_four_token_standard_four_hour_campaign(
+                operator_approved=args.operator_approved,
+                git_provenance_authorization=git_provenance_authorization,
+            )
         elif args.mode == SELECTIVE_1H_MODE:
             result = run_selective_1h_proof(
                 operator_approved=args.operator_approved
@@ -6183,6 +6279,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         baseline = _ACTION_RUN_CONTEXT.get("action_local_baseline")
         campaign_modes = {
             "run", SELECTIVE_1H_MODE, STANDARD_FOUR_HOUR_MODE, FOUR_TOKEN_PROOF_MODE,
+            FOUR_TOKEN_STANDARD_FOUR_HOUR_MODE,
         }
         from printer_v1.operator_cli.action_local_terminal_truth import (
             build_action_local_terminal_truth,
@@ -6309,7 +6406,12 @@ def main(argv: Iterable[str] | None = None) -> int:
                 "secondary_terminal_truth_error": None,
             }
         if (
-            args.mode in {"run", STANDARD_FOUR_HOUR_MODE, FOUR_TOKEN_PROOF_MODE}
+            args.mode in {
+                "run",
+                STANDARD_FOUR_HOUR_MODE,
+                FOUR_TOKEN_PROOF_MODE,
+                FOUR_TOKEN_STANDARD_FOUR_HOUR_MODE,
+            }
             and child_terminal_binding is not None
         ):
             try:

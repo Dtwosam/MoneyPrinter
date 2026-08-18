@@ -170,24 +170,26 @@ def test_migration_056_provenance_objects_exist_on_disposable_schema(
 
 
 # --------------------------------------------------------------------------
-# 3. Evidence profile: 057 current; 050, 055 and 056 are the required immutable
-#    historical packages; 055/056 keep their own distinct identities
+# 3. Evidence profile: 058 current; 050, 055, 056 and 057 are the required
+#    immutable historical packages; each keeps its own distinct identity
 # --------------------------------------------------------------------------
 
 
-def test_profile_current_migration_evidence_is_057() -> None:
+def test_profile_current_migration_evidence_is_058() -> None:
     profile = git_auth.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE
-    assert git_auth.MIGRATION_057_PACKAGE_ROOT == (
-        "operator-runs/v2-9-8b-migration-057-application"
+    assert git_auth.MIGRATION_058_PACKAGE_ROOT == (
+        "operator-runs/v2-9-8b-migration-058-application"
     )
-    assert git_auth.MIGRATION_057_PACKAGE_KIND == "MIGRATION_057_EVIDENCE"
-    assert profile.migration_package_root == git_auth.MIGRATION_057_PACKAGE_ROOT
-    assert profile.migration_package_kind == git_auth.MIGRATION_057_PACKAGE_KIND
-    # 056 is no longer current; it kept its own constants as historical identity.
+    assert git_auth.MIGRATION_058_PACKAGE_KIND == "MIGRATION_058_EVIDENCE"
+    assert profile.migration_package_root == git_auth.MIGRATION_058_PACKAGE_ROOT
+    assert profile.migration_package_kind == git_auth.MIGRATION_058_PACKAGE_KIND
+    # 056 and 057 are no longer current; each kept its own constants as a
+    # historical identity when its successor took over.
     assert profile.migration_package_root != git_auth.MIGRATION_056_PACKAGE_ROOT
+    assert profile.migration_package_root != git_auth.MIGRATION_057_PACKAGE_ROOT
 
 
-def test_profile_declares_050_055_056_as_required_historical_packages() -> None:
+def test_profile_declares_050_055_056_057_as_required_historical_packages() -> None:
     profile = git_auth.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE
     roots = {
         package.package_root: package
@@ -197,6 +199,7 @@ def test_profile_declares_050_055_056_as_required_historical_packages() -> None:
         git_auth.MIGRATION_PACKAGE_ROOT,
         git_auth.MIGRATION_055_PACKAGE_ROOT,
         git_auth.MIGRATION_056_PACKAGE_ROOT,
+        git_auth.MIGRATION_057_PACKAGE_ROOT,
     }
     mig050 = roots[git_auth.MIGRATION_PACKAGE_ROOT]
     assert mig050.execution_id == git_auth.FOUR_TOKEN_HISTORICAL_MIGRATION_EXECUTION_ID
@@ -207,8 +210,8 @@ def test_profile_declares_050_055_056_as_required_historical_packages() -> None:
     )
 
 
-def test_055_and_056_are_promoted_required_historical_packages() -> None:
-    """Declaring 055/056 here makes their evidence mandatory forever.
+def test_055_056_057_are_promoted_required_historical_packages() -> None:
+    """Declaring 055/056/057 here makes their evidence mandatory forever.
 
     That obligation is accepted deliberately: it is the only way to explain
     their untracked bytes without publishing SQLite database images into the
@@ -219,6 +222,7 @@ def test_055_and_056_are_promoted_required_historical_packages() -> None:
     declared = {p.package_root: p for p in profile.historical_migration_packages}
     assert git_auth.MIGRATION_055_PACKAGE_ROOT in declared
     assert git_auth.MIGRATION_056_PACKAGE_ROOT in declared
+    assert git_auth.MIGRATION_057_PACKAGE_ROOT in declared
 
     mig055 = declared[git_auth.MIGRATION_055_PACKAGE_ROOT]
     assert mig055.execution_id == (
@@ -234,8 +238,15 @@ def test_055_and_056_are_promoted_required_historical_packages() -> None:
     assert mig056.evidence_class == git_auth.HISTORICAL_MIGRATION_056_EVIDENCE_CLASS
     assert mig056.expected_file_count == 6
 
-    # Promotion never makes either of them the current schema transition.
-    assert git_auth.MIGRATION_057_PACKAGE_ROOT not in declared
+    mig057 = declared[git_auth.MIGRATION_057_PACKAGE_ROOT]
+    assert mig057.execution_id == (
+        git_auth.FOUR_TOKEN_HISTORICAL_MIGRATION_057_EXECUTION_ID
+    )
+    assert mig057.evidence_class == git_auth.HISTORICAL_MIGRATION_057_EVIDENCE_CLASS
+    assert mig057.expected_file_count == 6
+
+    # Promotion never makes any of them the current schema transition.
+    assert git_auth.MIGRATION_058_PACKAGE_ROOT not in declared
 
 
 def test_055_constants_are_preserved_and_not_repurposed() -> None:

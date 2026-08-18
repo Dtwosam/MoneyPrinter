@@ -360,8 +360,8 @@ class FourTokenHistoricalMigrationProvenanceTests(unittest.TestCase):
     def test_historical_migration_binding_is_exact_and_profile_scoped(self) -> None:
         """GREEN 1: only the four-token profile carries the exact binding."""
         profile = git_auth.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE
-        # 050, 055 and 056 are all required, immutable historical packages.
-        self.assertEqual(len(profile.historical_migration_packages), 3)
+        # 050, 055, 056 and 057 are all required, immutable historical packages.
+        self.assertEqual(len(profile.historical_migration_packages), 4)
         by_root = {
             item.package_root: item
             for item in profile.historical_migration_packages
@@ -379,13 +379,14 @@ class FourTokenHistoricalMigrationProvenanceTests(unittest.TestCase):
             package.expected_inventory_sha256,
             git_auth.FOUR_TOKEN_HISTORICAL_MIGRATION_EXPECTED_INVENTORY_SHA256,
         )
-        # 055 and 056 keep distinct roots, executions and evidence classes.
+        # 055, 056 and 057 keep distinct roots, executions and evidence classes.
         self.assertEqual(
             set(by_root),
             {
                 HISTORICAL_MIGRATION_ROOT,
                 git_auth.MIGRATION_055_PACKAGE_ROOT,
                 git_auth.MIGRATION_056_PACKAGE_ROOT,
+                git_auth.MIGRATION_057_PACKAGE_ROOT,
             },
         )
         self.assertEqual(
@@ -394,9 +395,10 @@ class FourTokenHistoricalMigrationProvenanceTests(unittest.TestCase):
                 git_auth.HISTORICAL_MIGRATION_EVIDENCE_CLASS,
                 git_auth.HISTORICAL_MIGRATION_055_EVIDENCE_CLASS,
                 git_auth.HISTORICAL_MIGRATION_056_EVIDENCE_CLASS,
+                git_auth.HISTORICAL_MIGRATION_057_EVIDENCE_CLASS,
             },
         )
-        # None of them is the current schema transition, which stays 057.
+        # None of them is the current schema transition, which is now 058.
         self.assertNotIn(
             profile.migration_package_root, set(by_root)
         )
@@ -417,18 +419,18 @@ class FourTokenHistoricalMigrationProvenanceTests(unittest.TestCase):
         try:
             payload, _path, _digest = fixture.manifest()
             current_kinds = {item["package_kind"] for item in payload["files"]}
-            # Migration 057 is the current schema transition for this profile.
+            # Migration 058 is the current schema transition for this profile.
             self.assertEqual(
                 current_kinds,
                 {
-                    git_auth.MIGRATION_057_PACKAGE_KIND,
+                    git_auth.MIGRATION_058_PACKAGE_KIND,
                     "FOUR_TOKEN_PROOF_AUTHORIZATION_EVIDENCE",
                 },
             )
             current_paths = {item["path"] for item in payload["files"]}
             for path in fixture.historical_migration_paths():
                 self.assertNotIn(path, current_paths)
-                self.assertFalse(path.startswith(git_auth.MIGRATION_057_PACKAGE_ROOT))
+                self.assertFalse(path.startswith(git_auth.MIGRATION_058_PACKAGE_ROOT))
             for item in payload["historical_migration_evidence"]:
                 self.assertEqual(
                     item["evidence_class"],
