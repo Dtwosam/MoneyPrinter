@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - v2-9-8b-h-dev
+  pull_request:
+    branches:
+      - v2-9-8b-h-baseline
 
 permissions:
   contents: read
