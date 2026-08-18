@@ -24,7 +24,6 @@ jobs:
         run: |
           python - <<'PY'
           import pathlib
-          import sys
           import unittest
 
           patterns = [
