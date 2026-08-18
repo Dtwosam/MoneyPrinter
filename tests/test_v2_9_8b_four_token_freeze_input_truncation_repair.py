@@ -6,6 +6,8 @@ from types import SimpleNamespace
 
 class FourTokenFreezeInputTruncationRepairTests(unittest.TestCase):
     def test_permanent_observation_admission_uses_full_reserve_not_selected_pair(self) -> None:
+        # RED contract: the permanent observation universe must be the full
+        # lawful reserve, not the already-selected two-slot handoff pair.
         from printer_v1.operator_cli.authoritative_live_operational_campaign import (
             _permanent_observation_admission_inputs,
         )
