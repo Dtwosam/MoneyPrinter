@@ -4,54 +4,52 @@ Date: 2026-08-18
 
 ## Current lane
 
-`V2-9.8B Four-Token 4/2/2 Freeze-Input Versus Two-Slot Truncation Repair Independent Closeout`
+`V2-9.8B Post-Freeze-Input-Repair Two-Cycle Four-Token Operational 4/2/2 Authoritative Readiness`
 
 Status: `CLOSED_PASS`
 
 Verdict:
 
-`V2_9_8B_FOUR_TOKEN_4_2_2_FREEZE_INPUT_VERSUS_TWO_SLOT_TRUNCATION_REPAIR_INDEPENDENT_CLOSEOUT_PASS`
+`V2_9_8B_POST_FREEZE_INPUT_REPAIR_TWO_CYCLE_FOUR_TOKEN_OPERATIONAL_4_2_2_AUTHORITATIVE_READINESS_PASS`
 
-The previous handoff still describing the **design** lane was stale and is superseded by this file.
+PASS means only that the inspected post-repair HEAD is ready for a **separate** fresh 4/2/2 authorization-preparation/review lane. It does not authorize Printer execution.
 
 ## Current baseline
 
-Implementation branch:
+Branch:
 
 `agent/v2-9-8b-four-token-4-2-2-freeze-input-versus-two-slot-truncation-repair-implementation`
 
-Independent-closeout HEAD is the commit that records this handoff and the independent closeout document.
+Readiness starting HEAD:
 
-Product repair commit (unchanged, still an ancestor):
+`ea6e116faaf140f669b6ec96a9cda63951236210`
+
+Product freeze-input repair (ancestor):
 
 `083962a5c193d47a9da35d9806f9420d256cc20b`
 
-Design / consumed-attempt baseline:
+Design / incident baseline:
 
 `2c8caf0b72136cc6eefbb114d4804175abc2097b`
 
-Reviewed implementation closeout:
+Independent repair closeout:
 
-`318c64bd2dcf18ae236d1ca79a4f82cea43c7cb9`
+`V2_9_8B_FOUR_TOKEN_4_2_2_FREEZE_INPUT_VERSUS_TWO_SLOT_TRUNCATION_REPAIR_INDEPENDENT_CLOSEOUT_PASS`
+
+The readiness-closeout HEAD is the commit that records this handoff and the readiness document.
 
 Master remains untouched.
 
-## What was independently confirmed
+## Consumed historical authorization
 
-Permanent admission now uses `_permanent_observation_admission_inputs(supply)` → `supply.holder_reserve_supply` at the live `_graduated_admission()` seam. Freeze depth remains 4. Two-slot truncation happens only after freeze. Holder I/O remains the selected-slot pair. Product scope is one file, seven lines. Focused tests 4/4. Nearby bounded set 49 passed; six holder-budget failures reproduced on isolated `2c8caf0` and are `PRE_EXISTING_HOLDER_BUDGET_TEST_DEBT`. PR #188 is closed without merge. Temporary CI is gone.
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260818T205144Z` remains consumed, immutable, and permanently non-reusable. Its application marker is present. It must not be recreated, copied, reset, or used to launch anything.
 
-## Historical authorization
+No new authorization exists.
 
-`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260818T205144Z` remains consumed, immutable, and non-reusable.
+## Residual debt (not readiness blockers)
 
-No new authorization exists. This lane created or consumed none.
-
-## Residual separate debt
-
-- Six pre-existing holder-budget decoupling test failures (`MULTIPLE_PRE_HOLDER_TRANSPORT_IDENTITY_DEFECTS`, `CAMPAIGN_SOURCE_REQUEST_SCOPE_ROOT_MISSING`).
-- `NON_CAUSAL_REPORTING_EVIDENCE_GAPS` from the consumed attempt (campaign_activity six-unit zeros; missing 056 / pre-lifecycle provenance row).
-
-Do not repair those in a readiness lane unless a later explicit lane names them.
+- `PRE_EXISTING_HOLDER_BUDGET_TEST_DEBT` — six holder-budget fixture cases; same on `2c8caf0`; production supplies `request_key_root` and fail-closes if missing.
+- `NON_CAUSAL_REPORTING_EVIDENCE_GAPS` — historical consumed-attempt reporting only.
 
 ## Locks
 
@@ -59,12 +57,12 @@ Do not repair those in a readiness lane unless a later explicit lane names them.
 
 ## Exact next permitted action
 
-`V2-9.8B Post-Freeze-Input-Repair Two-Cycle Four-Token Operational 4/2/2 Authoritative Readiness`
+`V2-9.8B Post-Freeze-Input-Repair Two-Cycle Four-Token Operational 4/2/2 Fresh Authorization Preparation`
 
-Read-only / static readiness and baseline reconciliation only.
+Must bind the exact readiness-closeout HEAD.
 
-Do **not** prepare, create, or consume an authorization from this handoff.
+Do **not** create that authorization from this handoff.
 Do **not** run Printer.
-Do **not** skip fresh readiness.
+Do **not** reuse the consumed authorization.
 
 The active authority stack wins any conflict with this handoff.
