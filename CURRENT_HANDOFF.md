@@ -4,15 +4,15 @@ Date: 2026-08-18
 
 ## Current lane
 
-`V2-9.8B Post-Repair Two-Cycle Four-Token Authorization Alignment Audit`
+`V2-9.8B Post-Repair Two-Cycle Four-Token Operational Authorization Alignment Design`
 
-Status: `CLOSED_PASS_WITH_SCOPED_REPAIR_REQUIRED`
+Status: `CLOSED_PASS`
 
 Verdict:
 
-`V2_9_8B_POST_REPAIR_TWO_CYCLE_FOUR_TOKEN_AUTHORIZATION_ALIGNMENT_AUDIT_PASS_WITH_SCOPED_REPAIR_REQUIRED`
+`V2_9_8B_POST_REPAIR_TWO_CYCLE_FOUR_TOKEN_OPERATIONAL_AUTHORIZATION_ALIGNMENT_DESIGN_PASS`
 
-Operational readiness: `BLOCKED`
+Implementation disposition: `IMPLEMENTATION_REQUIRED`
 
 ## Current code baseline
 
@@ -20,48 +20,74 @@ Repaired operational product-code baseline:
 
 `df1aced491d01d1a6d25ae38ca2da4eab72665c6`
 
-Audit branch:
+Design branch:
 
-`agent/v2-9-8b-post-repair-two-cycle-four-token-alignment-audit`
+`agent/v2-9-8b-post-repair-two-cycle-four-token-operational-authorization-alignment-design`
 
-Audit findings commit before this handoff update:
+Design commit before this handoff update:
 
-`29f4e25d512ec693649629d078b92a184d74c2a2`
+`d24853d8b6c2545a1d4031ecdf776e0de5ed0f8e`
 
-The audit lane changes documentation only. Master remains untouched.
+Parent audit handoff:
+
+`282066b2711b35e9a83117571fe278edf5e91dc5`
+
+The design lane changes documentation only. Master remains untouched.
 
 ## Latest completed work
 
-The audit established that the intended bounded 4/2/2 shape is structurally present in repaired code: four through-4h token slots are derived as exactly two active cycles with exactly two slots per cycle, and the existing multi-cycle coordinator preserves the canonical campaign/factory/Scheduler/Source-Governor ownership model.
+The design establishes a distinct operational 4/2/2 authority while preserving both existing authorities:
 
-Two scoped blockers remain before operational authorization preparation:
+- `standard-four-hour-run` remains the exact two-token Standard-4H operational authority;
+- `four-token-bounded-capacity-proof-run` remains proof-only;
+- new designed operational child mode: `four-token-standard-four-hour-run`;
+- one exact bounded invocation, four through-4h token slots, two cycles, two fresh distinct token/pair slots per cycle;
+- Cycle 2 is governed later-cycle fresh acquisition inside the same campaign/run and may overlap Cycle 1 only through existing multi-cycle admission/capacity gates;
+- no second Memory Factory runner, Scheduler, Source Governor, provider loop, schema owner or selection algorithm;
+- capacity remains derived from `scaled_standard_four_hour_capacity_contract(4)` rather than copied;
+- cycle-local 15m -> 1h -> eligible 4h continuation remains unchanged; 5m is support-only and 12h/24h remain locked;
+- one fresh operational authorization covers the exact whole 4/2/2 child; no per-cycle authorization, retry, rerun, resume, restart or successor.
 
-1. `MISSING_APPROVED_OPERATIONAL_MULTI_CYCLE_AUTHORITY_BOUNDARY` — the existing four-token command is explicitly proof-only (`four-token-bounded-capacity-proof-run`), while `standard-four-hour-run` is deliberately the existing two-token standard authority. The proof command must not be relabeled as ordinary production corpus growth and the standard mode must not be silently widened.
-2. `FOUR_TOKEN_PROVENANCE_CURRENT_MIGRATION_EVIDENCE_STALE_057_VS_058` — the four-token zero-state gate is correctly pinned to migration count 58 / `058_direct_pump_migration_cursor.sql`, but the current four-token Git authorization profile still binds Migration 057 as current migration evidence.
+The design also requires post-repair provenance alignment:
 
-No broad runtime repair is reopened. Fresh later-cycle acquisition, direct Pump/PumpSwap, `MARKET_PRESENT_POOL`, Source Governor, Central Scheduler/cadence ownership, 15m -> 1h -> eligible 4h continuation, exact predecessor cutoff, selected-slot holder ownership, terminal reporting and Migration 058 remain outside the repair scope unless new evidence proves a defect.
+- Migration 058 is current schema-transition evidence for both the repaired four-token proof profile and the new operational four-token profile;
+- Migration 057 becomes distinct preserved historical migration evidence alongside 050, 055 and 056;
+- exact Migration-057 historical execution/inventory values must come from preserved real evidence and must not be guessed;
+- exact Migration-058 current evidence must be reconciled with real repair evidence; inability to establish it is a readiness block, not permission to fabricate evidence;
+- ordinary and two-token Standard-4H profile semantics remain outside this repair scope.
 
-The current repository evidence does not establish an exact host-local Migration-058 operator-evidence execution identity/inventory digest; no such values may be invented.
+The preceding repository preparation lane created no fresh Standard-4H authorization. If additional authorization evidence exists only on the actual host, later preparation must enumerate and classify it by exact identity; it cannot be repurposed as 4/2/2 authority.
 
-The preceding standard-four-hour authorization-preparation handoff stated that no fresh authorization was created or consumed because host DB identity was unavailable. Any authorization evidence found later on the actual host must be enumerated and classified by exact identity; no two-token authorization may be repurposed as four-token authority.
+## Designed implementation boundary
+
+Likely implementation changes are limited to:
+
+- public-command registration/policy for the new exact operational mode;
+- a distinct `four_token_standard_four_hour_one_shot_wrapper.py` authority;
+- a distinct Git authorization profile for that operational mode;
+- Migration-058 current / Migration-057 historical repair for four-token provenance;
+- reuse/generalization of the existing read-only four-token zero-state gate without duplicating its ownership SQL;
+- only the smallest neutral facade/helper needed to enter the already-repaired multi-cycle composition.
+
+No migration file, provider contract, broad runtime repair or future capability activation is designed.
+
+## Verification sequence after implementation
+
+Implementation must use focused cross-cutting tests for wrapper one-use behavior, exact 4/2/2 derivation, command separation, Cycle-2 distinct identities/fresh supply, Source Governor/Scheduler ownership, 058-current/057-historical provenance, zero-state migration 58/058, locked long windows and existing standard/proof regressions.
+
+After implementation, a separate bounded offline/disposable proof must run with fake/frozen transports and deterministic time. No live provider/RPC/WebSocket campaign is authorized by implementation alone.
+
+Only after implementation -> bounded proof/test -> closeout PASS may host-local operational 4/2/2 authorization preparation begin.
 
 ## Exact next permitted action
 
-`V2-9.8B Post-Repair Two-Cycle Four-Token Operational Authorization Alignment Design`
+`V2-9.8B Post-Repair Two-Cycle Four-Token Operational Authorization Alignment Implementation`
 
-Type: `DESIGN_SPECIFICATION_ONLY`
+Implementation only.
 
-The design must specify:
+If exact preserved Migration-057 evidence needed for the immutable historical inventory cannot be established, stop as `BLOCKED_READINESS` before weakening provenance law.
 
-- one bounded operational invocation with exactly two cycles, exactly two fresh distinct token/pair slots per cycle and four total through-4h slots;
-- reuse of the existing canonical multi-cycle/campaign/factory/Scheduler/Source-Governor composition without a parallel runner or source loop;
-- preservation of `standard-four-hour-run` as two-token authority and preservation of the current four-token proof mode as proof-only;
-- a distinct explicit operational 4/2/2 one-use authorization boundary;
-- Migration 058 as current operational 4/2/2 migration evidence and Migration 057 as preserved historical evidence, with exact 058 package inventory bound from real evidence rather than guessed;
-- focused implementation/proof scope and stop conditions;
-- no Migration 059, no 12h/24h and no retrieval/financial capability unlocks.
-
-Do not implement, create/consume authorization, run providers, or mutate the authoritative campaign DB in the design lane.
+Do not create or consume the final operational authorization and do not run a live campaign in the implementation lane.
 
 ## Locks
 
