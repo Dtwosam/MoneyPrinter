@@ -4,46 +4,94 @@ Date: 2026-08-18
 
 ## Current lane
 
-`V2-9.8B Post-Repair Operational Rereadiness and Active-Baseline Reconciliation`
+`V2-9.8B Post-Repair Standard 15m-to-1h-to-4h Bounded Campaign Design`
 
 Status: `CLOSED_PASS`
 
-Verdict: `V2_9_8B_POST_REPAIR_OPERATIONAL_REREADINESS_AND_BASELINE_RECONCILIATION_PASS`
+Verdict: `V2_9_8B_POST_REPAIR_STANDARD_15M_TO_1H_TO_4H_BOUNDED_CAMPAIGN_DESIGN_PASS`
+
+Implementation disposition: `IMPLEMENTATION_NOT_REQUIRED`
 
 ## Current code baseline
 
-Repaired operational code baseline:
+Repaired operational product-code baseline:
 
 `df1aced491d01d1a6d25ae38ca2da4eab72665c6`
 
-Rereadiness documentation branch:
+Design documentation branch:
 
-`agent/v2-9-8b-post-repair-operational-rereadiness`
+`agent/v2-9-8b-post-repair-standard-campaign-design`
 
-Rereadiness closeout commit before this handoff commit:
+Design closeout commit before this handoff update:
 
-`482243f63c30f10797cde1cf036d2f2fc86e06a3`
+`6632ac72f170e2db21feb23681a474e632710163`
 
-Master remains untouched by this lane.
+The design adds no product source or migration. Master remains untouched by this lane.
 
 ## Latest completed work
 
-The completed A0/A/E/F/G/D/B/C/H/I/J repair chain has an integrated proof PASS and independent closeout PASS. The post-repair rereadiness audit found no remaining repair-program code defect and established `df1aced...` as the repaired operational code baseline for the next design step.
+The post-repair bounded standard campaign design is closed PASS. It binds the existing repaired runtime to one fresh, operator-approved, exactly-two-slot standard observation campaign using the canonical `standard-four-hour-run` path.
 
-Migration/capability locks remain preserved. Migration head is 058; no migration 059 is authorized. 12h/24h, retrieval, paper decisions, BUY/SELL/HOLD, positions, trades, audits, PnL, live wallet/private-key/signing execution, paid APIs, scoring/ranking/confidence/weighted logic, embeddings/vectors remain locked.
+The designed observation law is `WINDOW_15M -> WINDOW_1H -> eligible WINDOW_4H`, with `WINDOW_5M_MICRO_EVENT` support-only and `WINDOW_12H` / `WINDOW_24H` locked.
+
+The design preserves:
+
+- source-specific candidate authority, including direct Pump migration + exact PumpSwap and repaired `MARKET_PRESENT_POOL` admission;
+- exact mint+pair/current-pool identity;
+- the exact `$3,000` liquidity floor with no score/rank/weight;
+- Source Governor and Central Scheduler ownership;
+- repaired later-cycle fresh acquisition if a later cycle is lawfully reached inside the same invocation;
+- exact H predecessor cutoff and fresh first-hour safety authority;
+- selected-slot holder ownership, holder concentration as descriptive rather than an automatic veto, and honest UNKNOWN for unsupported optional evidence;
+- promotion/safety reporting separation;
+- evidence-derived accounting, unified terminal closure and zero-work read-only replay;
+- no retry/rerun/resume/restart/successor;
+- migration head 058 and no migration 059; and
+- all retrieval/financial/live/12h/24h capability locks.
+
+No new implementation is required because these behaviors are already present at `df1aced...` and were covered by the immediately preceding integrated proof and independent closeout.
 
 ## Blockers
 
-No proven code blocker for the next design/specification step.
+No proven product-code blocker for the next authorization-preparation/readiness step.
 
-Honest future runtime outcomes such as source/provider unavailability, insufficient eligible supply, exact-pair/Pump/PumpSwap evidence failure, liquidity below the $3,000 floor or unproven liquidity, UNKNOWN safety/holder evidence, continuity/freshness/provenance failure, or bounded resource exhaustion are not pre-emptively classified as code defects.
+The actual host authoritative DB identity is not proven by GitHub and must be read-only bound during authorization preparation. A DB identity/ledger/integrity problem is therefore a preparation/readiness blocker unless evidence proves a code defect.
+
+Future provider/source scarcity, insufficient eligible supply, exact-pair failure, liquidity below `$3,000` or unproven liquidity, honest UNKNOWN evidence, continuity/freshness/provenance failure, authorization mismatch, or bounded budget/duration/cancellation stop must be classified truthfully before reopening code.
 
 ## Exact next permitted action
 
-`V2-9.8B Post-Repair Standard 15m-to-1h-to-4h Bounded Campaign Design`
+`V2-9.8B Post-Repair Fresh Standard-4H One-Use Authorization Preparation`
 
-Design/specification only. Do not run providers, mutate the authoritative DB, create or consume a one-use authorization, or start a campaign during the design lane.
+Preparation/readiness only.
 
-If the design finds no new implementation requirement, explicitly record implementation as not required, then proceed only to a fresh one-use standard-four-hour authorization preparation/review lane. Never reuse a historical authorization.
+Allowed:
+
+- host-local read-only preflight;
+- bind exact repository/launch identity;
+- bind exact authoritative DB filesystem/hash identity;
+- verify migration head 058 and DB integrity/ledger readiness;
+- derive the current standard capacity from committed code;
+- construct one fresh temporally bounded standard-4h authorization package;
+- record historical authorization non-reuse evidence; and
+- stop for independent review.
+
+Not allowed:
+
+- consume the authorization;
+- start providers/RPC/WebSockets for campaign execution;
+- mutate the authoritative DB as campaign work;
+- run a Memory Factory campaign;
+- reuse any historical authorization;
+- change product source or migrations;
+- create migration 059;
+- activate 12h/24h, retrieval, decisions, positions, trades, audits or PnL; or
+- unlock wallets/private keys/signing/real funds, paid APIs, scoring/ranking/confidence/weighted logic, embeddings or vectors.
+
+After preparation, the next required gate is:
+
+`V2-9.8B Post-Repair Fresh Standard-4H One-Use Authorization Independent Review`
+
+Only an independent review PASS may authorize at most one bounded campaign invocation while the fresh authorization remains temporally valid.
 
 The active authority stack wins any conflict with this handoff.
