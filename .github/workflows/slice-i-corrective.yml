@@ -1,0 +1,104 @@
+name: Slice I corrective CI
+
+on:
+  pull_request:
+    branches: [v2-9-8b-i-ci-base]
+
+permissions:
+  contents: write
+
+jobs:
+  corrective:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install test runner
+        run: python -m pip install -q pytest
+
+      - name: RED proof
+        if: ${{ hashFiles('.slice-i-apply-fix') == '' }}
+        run: |
+          PYTHONPATH=src python -m pytest -q \
+            tests/test_v2_9_8b_slice_i_corrective.py::TestCycle1FinalAuthority::test_permanent_cycle_one_admission_universe_is_selected_pair \
+            tests/test_v2_9_8b_slice_i_corrective.py::test_tracking_requalification_still_requires_explicit_holder_evidence
+
+      - name: Apply narrow corrective patch
+        if: ${{ hashFiles('.slice-i-apply-fix') != '' }}
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          owner_path = Path('src/printer_v1/operator_cli/authoritative_live_operational_campaign.py')
+          owner = owner_path.read_text()
+          old = '''            admission_inputs = (\n                graduated_supply_proofs\n                if permanent_mode\n                else tuple(acquisition.origin_proofs)\n                + graduated_supply_proofs\n            )'''
+          new = '''            admission_inputs = (\n                tuple(supply.graduated_supply)\n                if permanent_mode and supply is not None\n                else tuple(acquisition.origin_proofs)\n                + graduated_supply_proofs\n            )'''
+          if old in owner:
+              owner = owner.replace(old, new, 1)
+              owner_path.write_text(owner)
+          elif new not in owner:
+              raise SystemExit('authoritative admission-input seam not found')
+
+          combined_path = Path('src/printer_v1/discovery/combined_executor.py')
+          combined = combined_path.read_text()
+          old = '''        holder_fact = dict(\n            fixtures.holder_evidence_eligibility.get(mint.lower()) or {}\n        )\n        from printer_v1.operator_cli.later_cycle_graduated_supply import (\n            holder_fact_blocks_selected_admission,\n        )\n\n        holder_blocks_admission, _holder_block_reason = (\n            holder_fact_blocks_selected_admission(holder_fact)\n        )\n        fresh_requalification = bool(\n            handoff.requalification_eligible and not holder_blocks_admission\n        )'''
+          new = '''        holder_fact = dict(\n            fixtures.holder_evidence_eligibility.get(mint.lower()) or {}\n        )\n        fresh_requalification = bool(\n            handoff.requalification_eligible\n            and holder_fact.get("eligible") is True\n            and holder_fact.get("tracking_requalification_required") is True\n        )'''
+          if old in combined:
+              combined = combined.replace(old, new, 1)
+              combined_path.write_text(combined)
+          elif new not in combined:
+              raise SystemExit('combined requalification seam not found')
+
+          test_path = Path('tests/test_v2_9_8b_slice_i_selected_slot_holder.py')
+          tests = test_path.read_text()
+          old = '''def test_combined_handoff_does_not_require_holder_eligible_for_descriptive():\n    from printer_v1.discovery import combined_executor\n\n    source = inspect.getsource(combined_executor.CombinedPumpfunCampaignExecutor._handoff_one_slot)\n    assert "holder_fact_blocks_selected_admission" in source\n    assert 'holder_fact.get("eligible") is True' not in source\n'''
+          new = '''def test_combined_handoff_preserves_explicit_tracking_requalification_contract():\n    from printer_v1.discovery import combined_executor\n\n    source = inspect.getsource(combined_executor.CombinedPumpfunCampaignExecutor._handoff_one_slot)\n    assert 'holder_fact.get("eligible") is True' in source\n    assert 'holder_fact.get("tracking_requalification_required") is True' in source\n'''
+          if old in tests:
+              tests = tests.replace(old, new, 1)
+              test_path.write_text(tests)
+          elif new not in tests:
+              raise SystemExit('Slice I requalification test seam not found')
+          PY
+
+      - name: Focused GREEN proof
+        if: ${{ hashFiles('.slice-i-apply-fix') != '' }}
+        run: |
+          PYTHONPATH=src python -m pytest -q \
+            tests/test_v2_9_8b_slice_i_corrective.py \
+            tests/test_v2_9_8b_slice_i_selected_slot_holder.py \
+            tests/test_v2_9_7e_19_holder_evidence_clean_memory_repair.py \
+            tests/test_v2_9_7d_7b_4d_combined_discovery_executor.py \
+            tests/test_v2_9_8b_h_continuation_cutoff.py
+          python -m py_compile \
+            src/printer_v1/operator_cli/authoritative_live_operational_campaign.py \
+            src/printer_v1/discovery/combined_executor.py \
+            src/printer_v1/operator_cli/later_cycle_graduated_supply.py
+          git diff --check f5bafa39405e214484d2064bf593cc9ad58b46c8..HEAD
+          PYTHONPATH=src python - <<'PY'
+          from printer_v1.db.migrate import canonical_migration_names
+          names = list(canonical_migration_names())
+          assert len(names) == 58, len(names)
+          assert names[-1].startswith('058'), names[-1]
+          PY
+
+      - name: Commit corrective patch
+        if: ${{ hashFiles('.slice-i-apply-fix') != '' }}
+        run: |
+          rm -f .slice-i-apply-fix
+          git add src/printer_v1/operator_cli/authoritative_live_operational_campaign.py \
+                  src/printer_v1/discovery/combined_executor.py \
+                  tests/test_v2_9_8b_slice_i_selected_slot_holder.py \
+                  tests/test_v2_9_8b_slice_i_corrective.py
+          if git diff --cached --quiet; then
+            echo 'No corrective changes to commit.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Fix Slice I selected-slot final authority'
+          git push origin HEAD:${{ github.head_ref }}
