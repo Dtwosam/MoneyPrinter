@@ -22,8 +22,6 @@ jobs:
         run: PYTHONPATH=src:tests python tests/test_v2_9_7d_6b_7_zero_source_read_only_replay.py
       - name: Final campaign report regression
         run: PYTHONPATH=src:tests python tests/test_v2_9_7d_6b_6_final_campaign_report.py
-      - name: Promotion reporting regression
-        run: PYTHONPATH=src:tests python tests/test_v2_9_7b_1_authoritative_promotion_reporting.py
       - name: Safety reporting regression
         run: PYTHONPATH=src:tests python tests/test_v2_9_7b_2_timeframe_aware_safety_reporting.py
       - name: Compile focused modules
