@@ -4,13 +4,13 @@ Date: 2026-08-18
 
 ## Current lane
 
-`V2-9.8B Post-Repair Two-Cycle Four-Token Operational Authorization Alignment Implementation`
+`V2-9.8B Post-Repair Two-Cycle Four-Token Operational Authorization Alignment Independent Closeout`
 
 Status: `CLOSED_PASS`
 
 Verdict:
 
-`V2_9_8B_POST_REPAIR_TWO_CYCLE_FOUR_TOKEN_OPERATIONAL_AUTHORIZATION_ALIGNMENT_IMPLEMENTATION_PASS`
+`V2_9_8B_POST_REPAIR_TWO_CYCLE_FOUR_TOKEN_OPERATIONAL_AUTHORIZATION_ALIGNMENT_INDEPENDENT_CLOSEOUT_PASS`
 
 ## Current code baseline
 
@@ -22,86 +22,90 @@ Repaired operational product-code baseline:
 
 `df1aced491d01d1a6d25ae38ca2da4eab72665c6`
 
+Reviewed implementation commit:
+
+`25daf4fd993fbea4142b16d02820b577fba6e300`
+
 Implementation branch:
 
 `agent/v2-9-8b-post-repair-two-cycle-four-token-operational-authorization-alignment-implementation`
 
-Master remains untouched at `19bcd23da1608e406e25f675532df193b65d038a`.
+This review adds documentation only. Product source, tests and migrations are
+unchanged by it. Master was not modified.
 
-## Latest completed work
+## What the independent review established
 
-The already-repaired multi-cycle four-token machinery is now an explicitly
-authorized OPERATIONAL command boundary.
+Every claim was re-derived from the repository rather than accepted from the
+implementation closeout.
 
-New operational mode: `four-token-standard-four-hour-run`.
+- Diff from the design baseline is exactly the approved scope. No migration,
+  provider adapter, Source Governor, Central Scheduler, discovery, coordinator,
+  factory-runner or selection-algorithm file was changed.
+- Three authorities remain distinct. Fourteen adversarial cross-authority reuse
+  attempts were executed and all were rejected, in both directions, including
+  mode substitution, schema substitution and one-shot policy loosening.
+- Reusing the repaired `FourTokenProofController` imports no proof-only
+  authorization, application, terminal, retry or execution semantics. The
+  controller holds only a capacity policy; `standard_four_hour_campaign=True`
+  hard-requires operational-persistent mode and rejects proof modes; and the
+  proof acceptance verdict function is test-only, never called from `src/`.
+- Capacity is live-derived: reloading the facade against a deliberately
+  perturbed canonical contract moved every value and restored cleanly. Derived
+  4 / 2 / 2 / 117 / 472 / 420, 300s spacing, zero retries, no rotation, no long
+  windows.
+- Migration-058 is current for both four-token profiles; 050, 055, 056 and 057
+  are preserved history. The 057 identity was reproduced independently, and the
+  method was validated by reproducing the two previously-committed 055 and 056
+  digests exactly. No fabrication; no weakened validation; the 058 execution
+  identity remains preparation-time bound.
+- The zero-state gate is one shared implementation with two thin entry points,
+  pinned to 58 / `058_direct_pump_migration_cursor.sql`, and it failed closed on
+  every probe including a cross-authority document.
+- The bounded proof was re-executed independently and audited with raw SQL: all
+  20 checks passed, including four distinct mint and exact-pair identities, one
+  campaign run, zero source requests, no 12h/24h, one terminal cleanup and no
+  third cycle.
 
-One bounded invocation; Cycle 1 two fresh governed slots (15m → eligible 1h →
-eligible 4h); Cycle 2 two NEW fresh governed slots inside the SAME campaign
-invocation; four token slots total; two active cycles; two tokens per cycle.
+## Residual finding (non-blocking)
 
-Existing meanings are unchanged:
+The authorization-binding policy derives from
+`scaled_standard_four_hour_capacity_contract(4)`, but the runtime controller's
+structural policy is built from separate literals in
+`four_token_proof_integration.py`. They agree exactly today and a focused test
+pins the agreement, and reusing that repaired builder was mandated by scope.
 
-- `standard-four-hour-run` remains the two-token operational Standard-4H
-  authority;
-- `four-token-bounded-capacity-proof-run` remains proof-only.
+The host-local preparation lane should re-derive both on the exact launch
+checkout and stop on any disagreement rather than assuming today's agreement.
 
-Implementation is the minimum authority/wiring layer: a neutral 4/2/2
-composition facade, a distinct one-shot wrapper, a distinct Git authorization
-profile, command registration/routing, and a generalized (not duplicated)
-zero-state gate. No new Scheduler, Source Governor, provider loop, Memory Factory
-runner, selection algorithm, DB schema, migration or parallel lifecycle owner was
-created.
+## Disposition of the pre-existing baseline failures
 
-Capacity derives from `scaled_standard_four_hour_capacity_contract(4)` and
-matches the expected comparison values exactly: 4 slots / 2 cycles / 2 per cycle
-/ 117 requests per token / 472 request outer ceiling / 420 Scheduler rows, with
-300s minimum admission spacing, zero retries, no endpoint rotation and no long
-windows. Nothing was hard-coded to force those numbers.
+Investigated against a read-only extracted copy of the design baseline, not
+auto-dismissed.
 
-## Provenance alignment
+`tests/test_v2_9_8b_window_15m_git_provenance_authorization_manifest.py` fails
+31 / passes 17 on both trees, with **identical failing test identities and
+identical failure signatures**. Every failing test exercises the ordinary `run`
+profile, which this lane did not change, and the file never references the new
+4/2/2 authority. The other six affected-set failures reproduce byte-identically
+on the baseline with signatures naming Migration-050.
 
-CURRENT: Migration 058, for both the repaired four-token proof profile and the
-new four-token operational profile.
+Critically, every one of these is a validator **rejection**, not a wrongful
+acceptance — they fail closed, so none can authorize anything unsafely.
 
-HISTORICAL: Migrations 050, 055, 056 and 057.
+Classification: `PRESERVED_SEPARATE_PRE_EXISTING_DEBT`. Zero new relevant
+regressions. Not repaired here; they require their own lane.
 
-Migration 057 is no longer current four-token schema-transition evidence. Its
-historical identity came from real preserved operator evidence
-(`MIGRATION_057_20260816T191558Z`, 6 files, inventory SHA-256
-`9272f596e7a82c3cfe9d824595be74f34c7203dccab3bd541c187dc236519535`), derived with
-the committed enumeration/digest primitives and validated by reproducing the
-already-committed Migration-055 and Migration-056 constants exactly. No evidence
-was fabricated and no provenance validation was weakened.
+## Git reconciliation
 
-Only the Migration-058 package root and kind are committed. The exact execution
-identity stays preparation-time bound through the authorization document, so
-host-local operator/DB evidence is never hard-coded source truth.
+Local HEAD `25daf4f` is local-only; the origin branch of the same name still
+points at the design baseline `babc8a3b`. Local master `19bcd23` is an ancestor
+of origin/master `a98e2da` — 21 behind, 0 ahead — a stale pointer, not a
+divergence. The implementation commit is on neither local master nor
+origin/master.
 
-Ordinary and two-token Standard-4H profile semantics are unchanged.
-
-## Verification
-
-Focused new tests: PASS. Touched Standard-4H, four-token proof, multi-cycle,
-zero-state, migration/provenance and capability-lock tests: PASS. Compilation and
-import checks: PASS.
-
-Bounded offline/disposable proof: PASS. One invocation produced Cycle 1 two fresh
-slots, Cycle 2 two new fresh slots, four distinct mint/pair identities, exact per
-cycle Scheduler ownership, no 12h/24h planning, one terminal closure and no
-successor, retry, rerun, resume or restart — with fake/frozen transports,
-deterministic time, a disposable database and zero source calls.
-
-Regression was measured against the untouched baseline rather than asserted.
-Baseline: 1037 passed / 89 failed. This lane: 1093 passed / 90 failed. Exactly one
-test moved pass-to-fail — a stale `057-as-current` assertion — and it was updated
-along with two sibling assertions found by running every affected file in full.
-Those affected files now show 182 passed / 3 failed, and those 3 were confirmed
-byte-identical failures on the stashed baseline.
-
-The 89 pre-existing baseline failures across roughly 26 files (largest cluster: 31
-in `tests/test_v2_9_8b_window_15m_git_provenance_authorization_manifest.py`) are
-documented, not repaired. They are outside this lane's approved scope and need
-their own lane.
+Classification: `LOCAL_ONLY_VISIBILITY_STATE`, not a product defect. Nothing was
+pushed. A later launch lane must bind the actual local launch checkout, because
+remote visibility does not currently reflect it.
 
 ## Authorization state
 
@@ -113,25 +117,34 @@ Historical authorization reused: `NO`
 
 Campaign started: `NO`
 
-Provider/RPC/WebSocket campaign calls: `0`
+Provider/RPC/WebSocket campaign calls: `0` (the bounded proof and the full new
+authority set also pass with outbound network hard-blocked)
 
-Authoritative campaign DB mutation: `0` (byte-identical: SHA-256
+Authoritative campaign DB mutation: `0` — identity unchanged: SHA-256
 `a77141bce32468a2685007a276dbac91d1ed68671b5036c7bc24f54f60ad46d7`, size
-`100794368`, inode `1230526`, mtime_ns `1787043184343686970`, no sidecars)
+`100794368`, inode `1230526`, mtime_ns `1787043184343686970`, no sidecars.
 
 Migration added: `NO`. Migration head remains `058_direct_pump_migration_cursor.sql`.
 
 Migration 059: `NO`
 
+The eight pre-existing untracked `standard-four-hour-run` authorization packages
+remain unconsumed and cannot authorize the 4/2/2 mode.
+
 ## Exact next permitted action
 
-`V2-9.8B Post-Repair Two-Cycle Four-Token Operational Authorization Alignment Independent Closeout`
+`V2-9.8B Post-Repair Two-Cycle Four-Token Operational 4/2/2 Host-Local Authorization Preparation`
 
-Do not proceed automatically into independent closeout. Do not prepare or create
-the final operational 4/2/2 authorization. Do not run Printer.
+Derived from the approved design's sequence: implementation -> bounded
+proof/test -> closeout -> host-local authorization preparation -> independent
+authorization review -> operator-approved one-use run.
 
-The unconsumed two-token Standard-4H authorization from the earlier lane remains
-untouched and is not authority for the new operational mode.
+That lane must bind the actual launch checkout and the actual
+`data/printer_v1.sqlite3` path, SHA-256, size, inode and mtime_ns. GitHub-only
+evidence cannot substitute. It must stop without consuming the authorization.
+
+Do not create or consume the operational authorization in this closeout. Do not
+run Printer.
 
 ## Locks
 
