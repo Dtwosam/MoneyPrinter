@@ -37,7 +37,12 @@ def _legacy_composite(*, blocked=False):
             if blocked
             else "SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY"
         ),
-        "mint_authority_status": "MINT_AUTHORITY_RENOUNCED",
+        # Holder concentration is descriptive after E.48 / Slice I.  A blocked
+        # fixture must therefore carry a real hard safety blocker rather than
+        # treating HOLDER_CONCENTRATION_EXTREME as an admission veto.
+        "mint_authority_status": (
+            "MINT_AUTHORITY_PRESENT" if blocked else "MINT_AUTHORITY_RENOUNCED"
+        ),
         "freeze_authority_status": "FREEZE_AUTHORITY_DISABLED",
         "metadata_mutability_status": "METADATA_IMMUTABLE",
         "supply_sanity_label": "SUPPLY_SANITY_OK",
@@ -50,7 +55,7 @@ def _legacy_composite(*, blocked=False):
         "known_risk_flag_label": "KNOWN_RISK_FLAGS_UNKNOWN",
         "token_program_label": "SPL_TOKEN_OR_TOKEN_2022_VERIFIED",
         "blockers_json": json.dumps(
-            ["holder_concentration_label"] if blocked else []
+            ["mint_authority_status"] if blocked else []
         ),
         "optional_unknowns_json": json.dumps(
             ["liquidity_lock_or_burn_label", "known_risk_flag_label"]
