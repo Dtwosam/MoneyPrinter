@@ -44,6 +44,13 @@ CHANNELS = frozenset(
     }
 )
 
+# Merged-candidate persistence has no observation-table CHECK. Keep the
+# provider-observation CHANNELS vocabulary untouched and admit the truthful
+# later-cycle fresh-aggregator promotion label here only.
+MERGED_CANDIDATE_CHANNELS = CHANNELS | frozenset(
+    {"FRESH_AGGREGATOR_PROTOCOL_CONFIRMED"}
+)
+
 CONTINUITY_STATES = frozenset({"NONE", "CONTIGUOUS", "GAPPED", "UNKNOWN"})
 
 # Non-authoritative fields must never enter factual observation payloads.
@@ -223,7 +230,7 @@ def merged_candidate_canonical_payload(
 ) -> tuple[str, str]:
     labels = sorted({_required(label, "channel label") for label in channel_labels})
     for label in labels:
-        if label not in CHANNELS:
+        if label not in MERGED_CANDIDATE_CHANNELS:
             raise DiscoveryPersistenceError(f"unsupported channel label: {label}")
     payload = {
         "discovery_batch_id": discovery_batch_id,

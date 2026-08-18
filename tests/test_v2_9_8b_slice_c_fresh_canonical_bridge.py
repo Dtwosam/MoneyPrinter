@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import base64
 import json
 import sqlite3
@@ -15,7 +15,10 @@ from printer_v1.discovery.memory_observation_activation import (
     TrackingFeasibility,
     required_evidence_roles_for_candidate,
 )
-from printer_v1.discovery.combined_executor import DiscoveryGateSelectionOutcome
+from printer_v1.discovery.combined_executor import (
+    DiscoverySelectionCandidate,
+    apply_existing_discovery_gate_and_selection,
+)
 from printer_v1.discovery.permanent_discovery_availability import (
     MEMORY_OBSERVATION_ELIGIBLE,
     SELECTION_FLOOR_USD,
@@ -28,9 +31,12 @@ from printer_v1.discovery.selection_authority import (
     SelectionCandidate,
     select_two_candidates,
 )
+from printer_v1.operator_cli.campaign_ownership import create_cycle_with_two_slots
 from printer_v1.operator_cli.four_token_proof_integration import (
     LaterCycleCandidateSupply,
+    LaterCycleDiscoveryCandidate,
     LaterCycleSourceEvidence,
+    build_four_token_proof_policy,
 )
 from printer_v1.operator_cli.abstract_campaign_command import (
     CENTRAL_SCHEDULER_OWNER,
@@ -40,12 +46,23 @@ from printer_v1.operator_cli.abstract_campaign_command import (
 from printer_v1.operator_cli.authoritative_live_operational_campaign import (
     AuthoritativeLiveOperationalCampaignOwner,
 )
-from printer_v1.operator_cli.multi_cycle_campaign_coordinator import (
-    MultiCycleAdmissionHealth,
+
+from printer_v1.discovery.persistence import (
+    CHANNELS,
+    MERGED_CANDIDATE_CHANNELS,
+    DiscoveryPersistenceError,
+    merged_candidate_canonical_payload,
 )
 from printer_v1.discovery.pre_admission_materialization import (
     PreAdmissionMaterializationError,
     _admission_states_from_canonical_evidence,
+    materialize_consumed_pre_admission_pair,
+)
+from printer_v1.operator_cli.multi_cycle_campaign_coordinator import (
+    MultiCycleAdmissionHealth,
+    MultiCycleCampaignBinding,
+    admit_two_token_cycle_from_attempt,
+    multi_cycle_configuration_contract,
 )
 from printer_v1.operator_cli.graduated_supply_front_door import (
     CANDIDATE_SUPPLY_READY,
@@ -141,7 +158,7 @@ def _ready_market_supply(*admissions: SourceSpecificCandidateAdmission):
             "pool": item.pool_address,
             "pumpswap_pool": item.pool_address,
             "market_identity": item.market_identity,
-            "provenance": item.nomination_source,
+            "provenance": "FRESH_AGGREGATOR_PROTOCOL_CONFIRMED",
             "admission_authority": item.admission_authority.value,
             "nomination_source": item.nomination_source,
             "lineage_state": item.lineage_state,
@@ -218,6 +235,7 @@ def test_market_present_pool_authority_survives_later_cycle_carrier(
         assert item.admission_authority is AdmissionAuthority.MARKET_PRESENT_POOL
         assert item.claims_pump_origin is False
         assert item.claims_pumpswap_graduation is False
+        assert item.channels == frozenset({"FRESH_AGGREGATOR_PROTOCOL_CONFIRMED"})
 
 
 def _prepare_callback_database(path):
@@ -332,11 +350,10 @@ def test_cycle_2_gate_receives_market_authority_without_pump_claims(
 
     def gate(connection, **kwargs):
         observed.update(kwargs)
-        return DiscoveryGateSelectionOutcome(
-            eligible=tuple(kwargs["candidates"]),
-            selected=tuple(kwargs["candidates"]),
-            rejection_causes=(),
-        )
+        outcome = apply_existing_discovery_gate_and_selection(connection, **kwargs)
+        observed["eligible"] = outcome.eligible
+        observed["selected"] = outcome.selected
+        return outcome
 
     monkeypatch.setattr(
         "printer_v1.operator_cli.authoritative_live_operational_campaign."
@@ -383,8 +400,19 @@ def test_cycle_2_gate_receives_market_authority_without_pump_claims(
 
     assert result.state == "PAIR_READY"
     assert observed["market_authority_mints"] == frozenset({"mint-1", "mint-2"})
-    assert {item.origin_state for item in observed["candidates"]} == {"NOT_CLAIMED"}
-    assert {item.pumpswap_state for item in observed["candidates"]} == {"NOT_CLAIMED"}
+    assert {item.origin_state for item in observed["candidates"]} == {"NOT_REQUIRED"}
+    assert {item.pumpswap_state for item in observed["candidates"]} == {"NOT_REQUIRED"}
+    assert len(observed["eligible"]) == 2
+    assert len(observed["selected"]) == 2
+    assert {item.lifecycle for item in observed["selected"]} == {
+        "PRESENT_POOL_CONFIRMED"
+    }
+    assert all(item.origin_state == "NOT_REQUIRED" for item in observed["selected"])
+    assert all(item.pumpswap_state == "NOT_REQUIRED" for item in observed["selected"])
+    assert all(
+        item.channels == {"FRESH_AGGREGATOR_PROTOCOL_CONFIRMED"}
+        for item in observed["selected"]
+    )
     connection = sqlite3.connect(database)
     try:
         rows = connection.execute(
@@ -411,7 +439,7 @@ def test_materialization_projects_truthful_source_specific_claim_states() -> Non
         ),
         lifecycle_identity="PRESENT_POOL_CONFIRMED",
     )
-    assert market == ("NOT_CLAIMED", "NOT_CLAIMED")
+    assert market == ("NOT_REQUIRED", "NOT_REQUIRED")
 
     direct = _admission_states_from_canonical_evidence(
         json.dumps(
@@ -810,3 +838,601 @@ def test_two_market_candidates_reach_neutral_two_slot_selection_without_scores()
     assert selection.ready is True
     assert len(selection.selected) == 2
     assert all("score" not in row for row in selection.funnel)
+
+
+FRESH_AGGREGATOR_CHANNEL = "FRESH_AGGREGATOR_PROTOCOL_CONFIRMED"
+E2E_START = NOW - timedelta(minutes=5)
+E2E_POLICY = build_four_token_proof_policy()
+E2E_BINDING = MultiCycleCampaignBinding(
+    campaign_id="campaign-c",
+    campaign_run_id="run-c",
+    configuration_id="configuration-c",
+    authoritative_factory_run_id="factory-c",
+)
+E2E_HEALTH = MultiCycleAdmissionHealth(
+    source_budget_available=True,
+    provider_budgets_available=True,
+    scheduler_budget_available=True,
+    scheduler_due_work_healthy=True,
+    close_reserve_available=True,
+    campaign_supervision_healthy=True,
+    lease_healthy=True,
+    db_healthy=True,
+    shared_terminal_condition=False,
+    cancellation_requested=False,
+    discovery_capacity_available=True,
+    protected_work_capacity_available=True,
+)
+E2E_GOVERNOR = OwnerPort(SOURCE_GOVERNOR_OWNER, True)
+E2E_SCHEDULER = OwnerPort(CENTRAL_SCHEDULER_OWNER, True)
+
+
+def _cycle1_slot(row_id: int, ordinal: int) -> dict[str, object]:
+    return {
+        "token_slot_id": f"t{ordinal}_c0001_slot",
+        "slot_ordinal": ordinal,
+        "token_identity": f"solana-mainnet:mint-{row_id}",
+        "token_row_id": row_id,
+        "mint_identity": f"mint-{row_id}",
+        "pair_identity": f"pool-{row_id}",
+        "pair_row_id": 100 + row_id,
+        "lifecycle_identity": "PUMPSWAP_GRADUATED_CONFIRMED",
+        "tracking_queue_id": None,
+        "replacement_predecessor_slot_id": None,
+    }
+
+
+def _later_cycle_candidate(
+    row_id: int,
+    *,
+    authority: AdmissionAuthority,
+    channel: str,
+    nomination_source: str,
+) -> LaterCycleDiscoveryCandidate:
+    market = authority is AdmissionAuthority.MARKET_PRESENT_POOL
+    mint = f"mint-{row_id}"
+    pool = f"pool-{row_id}"
+    market_identity = f"solana-mainnet:pumpswap:{pool}"
+    raw = {
+        "admission_authority": authority.value,
+        "exact_present_pool_confirmed": market,
+        "lineage_state": (
+            "UNKNOWN_ORIGIN" if market else "PUMP_GRADUATION_CONFIRMED"
+        ),
+        "market_identity": market_identity,
+        "mint": mint,
+        "nomination_source": nomination_source,
+        "pool": pool,
+        "provenance": channel,
+        "pumpswap_pool": pool,
+    }
+    encoded = json.dumps(
+        {
+            "candidate": raw,
+            "holder_evidence": {"eligible": True},
+            "market_identity": market_identity,
+            "mint_identity": mint,
+            "pair_identity": pool,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return LaterCycleDiscoveryCandidate(
+        token_identity=f"solana-mainnet:{mint}",
+        token_row_id=row_id,
+        mint_identity=mint,
+        pair_identity=pool,
+        pair_row_id=100 + row_id,
+        lifecycle_identity=(
+            "PRESENT_POOL_CONFIRMED" if market else "PUMPSWAP_GRADUATED_CONFIRMED"
+        ),
+        canonical_market_identity=market_identity,
+        canonical_pool_identity=pool,
+        channels=frozenset({channel}),
+        holder_evidence_eligible=True,
+        canonical_evidence_json=encoded,
+        canonical_evidence_hash=str(row_id) * 64,
+        evidence_version="V2_9_8B_PERMANENT_GRADUATED_SUPPLY_V1",
+        observed_at=NOW,
+        admission_authority=authority,
+        claims_pump_origin=not market,
+        claims_pumpswap_graduation=not market,
+    )
+
+
+def _selection_candidate(
+    name: str,
+    *,
+    lifecycle: str,
+    channels: set[str],
+    origin_state: str,
+    pumpswap_state: str,
+) -> DiscoverySelectionCandidate:
+    return DiscoverySelectionCandidate(
+        merged_candidate_id=f"pre-admission:mint-{name}",
+        mint=f"mint-{name}",
+        market_identity=f"solana-mainnet:pumpswap:pool-{name}",
+        lifecycle=lifecycle,
+        channels=channels,
+        observation_ids=[f"pre-admission:mint-{name}"],
+        conflicts=[],
+        gaps=[],
+        origin_state=origin_state,
+        pumpswap_state=pumpswap_state,
+    )
+
+
+def _prepare_e2e_database(tmp_path):
+    path = tmp_path / "slice-c-real-materialization.sqlite3"
+    apply_migrations(path)
+    connection = sqlite3.connect(path)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys=ON")
+    configuration = {
+        "token_capacity": 2,
+        "ceilings": {"cycle_count": E2E_POLICY.total_cycle_admission_ceiling},
+        "multi_cycle_capacity": multi_cycle_configuration_contract(
+            E2E_POLICY, intake_started_at=E2E_START
+        ),
+    }
+    connection.execute(
+        "INSERT INTO printer_memory_factory_campaigns("
+        "campaign_id,campaign_state,db_mode,db_target_identity,policy_version) "
+        "VALUES ('campaign-c','RUNNING','OPERATIONAL_PERSISTENT','db-c','policy-c')"
+    )
+    connection.execute(
+        "INSERT INTO printer_memory_factory_campaign_configurations("
+        "configuration_id,campaign_id,configuration_hash,configuration_json,"
+        "launch_provenance_json) VALUES (?,?,?,?,?)",
+        (
+            "configuration-c",
+            "campaign-c",
+            "a" * 64,
+            json.dumps(configuration, sort_keys=True),
+            '{"commit":"slice-c"}',
+        ),
+    )
+    connection.execute(
+        "INSERT INTO printer_memory_factory_runs("
+        "run_id,run_status,window_kind,db_mode,config_hash,config_json,started_at) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (
+            "factory-c",
+            "RUNNING",
+            "WINDOW_15M",
+            "OPERATIONAL_PERSISTENT",
+            "a" * 64,
+            "{}",
+            E2E_START.isoformat(),
+        ),
+    )
+    connection.execute(
+        "INSERT INTO printer_memory_factory_campaign_runs("
+        "run_id,campaign_id,run_ordinal,run_state,authoritative_run_id,created_at,updated_at) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (
+            "run-c",
+            "campaign-c",
+            1,
+            "RUNNING",
+            "factory-c",
+            E2E_START.isoformat(),
+            E2E_START.isoformat(),
+        ),
+    )
+    for row_id in range(1, 5):
+        connection.execute(
+            "INSERT INTO printer_tokens(id,token_mint,chain) VALUES (?,?, 'solana')",
+            (row_id, f"mint-{row_id}"),
+        )
+        connection.execute(
+            "INSERT INTO printer_pairs(id,token_id,pair_address,base_token_mint) "
+            "VALUES (?,?,?,?)",
+            (100 + row_id, row_id, f"pool-{row_id}", f"mint-{row_id}"),
+        )
+    create_cycle_with_two_slots(
+        connection,
+        campaign_id=E2E_BINDING.campaign_id,
+        run_id=E2E_BINDING.campaign_run_id,
+        cycle_id="cycle-1",
+        cycle_ordinal=1,
+        slots=(_cycle1_slot(1, 1), _cycle1_slot(2, 2)),
+        now=E2E_START.isoformat(),
+    )
+    request_id = int(
+        connection.execute(
+            "INSERT INTO printer_source_requests("
+            "source_name,request_kind,requested_at,source_status,data_quality_label) "
+            "VALUES ('dexscreener','fresh_profiles',?,'COMPLETE','CLEAN_DATA')",
+            (NOW.isoformat(),),
+        ).lastrowid
+    )
+    response_id = int(
+        connection.execute(
+            "INSERT INTO printer_source_responses("
+            "source_request_id,source_name,received_at,source_status,data_quality_label) "
+            "VALUES (?,'dexscreener',?,'COMPLETE','CLEAN_DATA')",
+            (request_id, NOW.isoformat()),
+        ).lastrowid
+    )
+    connection.commit()
+    connection.close()
+    return path, request_id, response_id
+
+
+def _run_real_selector_consume_materialize(tmp_path, monkeypatch, candidates):
+    path, request_id, response_id = _prepare_e2e_database(tmp_path)
+    observed = {}
+
+    def gate(connection, **kwargs):
+        observed.update(kwargs)
+        outcome = apply_existing_discovery_gate_and_selection(connection, **kwargs)
+        observed["eligible"] = outcome.eligible
+        observed["selected"] = outcome.selected
+        observed["rejection_causes"] = outcome.rejection_causes
+        return outcome
+
+    monkeypatch.setattr(
+        "printer_v1.operator_cli.authoritative_live_operational_campaign."
+        "apply_existing_discovery_gate_and_selection",
+        gate,
+    )
+
+    def supply(**_):
+        return LaterCycleCandidateSupply(
+            candidates=candidates,
+            source_evidence=(
+                LaterCycleSourceEvidence(
+                    logical_stage="fresh_market_nomination",
+                    source_request_id=request_id,
+                    source_response_id=response_id,
+                ),
+            ),
+            terminal_cause=None,
+        )
+
+    callback = AuthoritativeLiveOperationalCampaignOwner(
+        later_cycle_candidate_supply=supply
+    )._build_later_cycle_discovery_callback(
+        db_path=path, configuration_id=E2E_BINDING.configuration_id
+    )
+    callback_result = callback(
+        campaign_id=E2E_BINDING.campaign_id,
+        campaign_run_id=E2E_BINDING.campaign_run_id,
+        authoritative_factory_run_id=E2E_BINDING.authoritative_factory_run_id,
+        cycle_id="cycle-1-2",
+        cycle_ordinal=2,
+        cycle_cutoff=NOW.isoformat(),
+        evaluated_at=NOW.isoformat(),
+        selection_seed="seed-c-real",
+        source_governor=E2E_GOVERNOR,
+        central_scheduler=E2E_SCHEDULER,
+        admission_health=E2E_HEALTH,
+    )
+    connection = sqlite3.connect(path)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys=ON")
+    admission = admit_two_token_cycle_from_attempt(
+        connection,
+        binding=E2E_BINDING,
+        policy=E2E_POLICY,
+        now=NOW,
+        attempt_id=callback_result.attempt_id,
+        health=E2E_HEALTH,
+    )
+    materialized = materialize_consumed_pre_admission_pair(
+        connection,
+        attempt_id=callback_result.attempt_id,
+        campaign_id=E2E_BINDING.campaign_id,
+        campaign_run_id=E2E_BINDING.campaign_run_id,
+        configuration_id=E2E_BINDING.configuration_id,
+        authoritative_factory_run_id=E2E_BINDING.authoritative_factory_run_id,
+        cycle_id="cycle-1-2",
+        now=NOW,
+    )
+    return {
+        "connection": connection,
+        "callback": callback_result,
+        "admission": admission,
+        "materialized": materialized,
+        "observed": observed,
+        "request_id": request_id,
+        "response_id": response_id,
+    }
+
+
+def test_real_selector_accepts_two_market_present_pool_candidates(database) -> None:
+    connection = _open(database)
+    try:
+        candidates = (
+            _selection_candidate(
+                "1",
+                lifecycle="PRESENT_POOL_CONFIRMED",
+                channels={FRESH_AGGREGATOR_CHANNEL},
+                origin_state="NOT_REQUIRED",
+                pumpswap_state="NOT_REQUIRED",
+            ),
+            _selection_candidate(
+                "2",
+                lifecycle="PRESENT_POOL_CONFIRMED",
+                channels={FRESH_AGGREGATOR_CHANNEL},
+                origin_state="NOT_REQUIRED",
+                pumpswap_state="NOT_REQUIRED",
+            ),
+        )
+        outcome = apply_existing_discovery_gate_and_selection(
+            connection,
+            candidates=candidates,
+            discovery_batch_id="pre-admission:market-pair",
+            evaluated_at=NOW,
+            mode="INITIAL",
+            vacant_slot_ordinals=(1, 2),
+            batch_seq=2,
+            cycle_seed="seed-c-real-selector",
+            handoffs_used=0,
+            market_authority_mints=frozenset({"mint-1", "mint-2"}),
+        )
+        assert len(outcome.eligible) == 2
+        assert len(outcome.selected) == 2
+        assert {item.lifecycle for item in outcome.selected} == {
+            "PRESENT_POOL_CONFIRMED"
+        }
+        assert {item.origin_state for item in outcome.selected} == {"NOT_REQUIRED"}
+        assert {item.pumpswap_state for item in outcome.selected} == {"NOT_REQUIRED"}
+        assert outcome.rejection_causes == ()
+        assert all("score" not in item.channels for item in outcome.selected)
+    finally:
+        connection.close()
+
+
+def test_merged_candidate_channel_law_keeps_observation_channels_unbroadened() -> None:
+    assert FRESH_AGGREGATOR_CHANNEL in MERGED_CANDIDATE_CHANNELS
+    assert FRESH_AGGREGATOR_CHANNEL not in CHANNELS
+    payload, digest = merged_candidate_canonical_payload(
+        discovery_batch_id="batch-c",
+        candidate_identity_key="mint-1|solana-mainnet:pumpswap:pool-1|PRESENT_POOL_CONFIRMED",
+        mint_identity="mint-1",
+        market_identity="solana-mainnet:pumpswap:pool-1",
+        lifecycle_identity="PRESENT_POOL_CONFIRMED",
+        channel_labels=(FRESH_AGGREGATOR_CHANNEL,),
+        identity_conflicts=(),
+        evidence_gaps=(),
+        origin_verification_state="NOT_REQUIRED",
+        pumpswap_confirmation_state="NOT_REQUIRED",
+        first_failed_eligibility_gate=None,
+    )
+    assert FRESH_AGGREGATOR_CHANNEL in payload
+    assert "LATEST_PUMPFUN" not in payload
+    assert len(digest) == 64
+    with pytest.raises(DiscoveryPersistenceError, match="unsupported channel label"):
+        merged_candidate_canonical_payload(
+            discovery_batch_id="batch-c",
+            candidate_identity_key="mint-1|solana-mainnet:pumpswap:pool-1|PRESENT_POOL_CONFIRMED",
+            mint_identity="mint-1",
+            market_identity="solana-mainnet:pumpswap:pool-1",
+            lifecycle_identity="PRESENT_POOL_CONFIRMED",
+            channel_labels=("dexscreener",),
+            identity_conflicts=(),
+            evidence_gaps=(),
+            origin_verification_state="NOT_REQUIRED",
+            pumpswap_confirmation_state="NOT_REQUIRED",
+            first_failed_eligibility_gate=None,
+        )
+
+
+def test_real_selector_and_materialization_persist_two_market_present_pool_candidates(
+    tmp_path, monkeypatch
+) -> None:
+    result = _run_real_selector_consume_materialize(
+        tmp_path,
+        monkeypatch,
+        (
+            _later_cycle_candidate(
+                3,
+                authority=AdmissionAuthority.MARKET_PRESENT_POOL,
+                channel=FRESH_AGGREGATOR_CHANNEL,
+                nomination_source="dexscreener",
+            ),
+            _later_cycle_candidate(
+                4,
+                authority=AdmissionAuthority.MARKET_PRESENT_POOL,
+                channel=FRESH_AGGREGATOR_CHANNEL,
+                nomination_source="geckoterminal",
+            ),
+        ),
+    )
+    observed = result["observed"]
+    connection = result["connection"]
+    try:
+        assert result["callback"].state == "PAIR_READY"
+        assert result["admission"].mutation_performed
+        assert result["materialized"].materialized_item_count == 2
+        assert len(observed["eligible"]) == 2
+        assert len(observed["selected"]) == 2
+        assert observed["market_authority_mints"] == frozenset({"mint-3", "mint-4"})
+        assert {item.lifecycle for item in observed["selected"]} == {
+            "PRESENT_POOL_CONFIRMED"
+        }
+        assert {item.origin_state for item in observed["selected"]} == {"NOT_REQUIRED"}
+        assert {item.pumpswap_state for item in observed["selected"]} == {
+            "NOT_REQUIRED"
+        }
+        rows = connection.execute(
+            """SELECT mint_identity, market_identity, lifecycle_identity,
+                      origin_verification_state, pumpswap_confirmation_state,
+                      channel_labels_json
+               FROM printer_discovery_merged_candidates
+               ORDER BY mint_identity"""
+        ).fetchall()
+        assert len(rows) == 2
+        sources = {}
+        for row in rows:
+            assert row["lifecycle_identity"] == "PRESENT_POOL_CONFIRMED"
+            assert row["origin_verification_state"] == "NOT_REQUIRED"
+            assert row["pumpswap_confirmation_state"] == "NOT_REQUIRED"
+            assert json.loads(row["channel_labels_json"]) == [FRESH_AGGREGATOR_CHANNEL]
+            assert "PUMPFUN" not in row["channel_labels_json"]
+        items = connection.execute(
+            """SELECT mint_identity, pair_identity, canonical_market_identity,
+                      canonical_evidence_json
+               FROM printer_pre_admission_discovery_attempt_items
+               ORDER BY mint_identity"""
+        ).fetchall()
+        assert [
+            (row["mint_identity"], row["pair_identity"], row["canonical_market_identity"])
+            for row in items
+        ] == [
+            ("mint-3", "pool-3", "solana-mainnet:pumpswap:pool-3"),
+            ("mint-4", "pool-4", "solana-mainnet:pumpswap:pool-4"),
+        ]
+        for row in items:
+            candidate = json.loads(row["canonical_evidence_json"])["candidate"]
+            sources[row["mint_identity"]] = candidate["nomination_source"]
+            assert candidate["admission_authority"] == "MARKET_PRESENT_POOL"
+            assert candidate["lineage_state"] == "UNKNOWN_ORIGIN"
+            assert candidate["provenance"] == FRESH_AGGREGATOR_CHANNEL
+        assert sources == {"mint-3": "dexscreener", "mint-4": "geckoterminal"}
+        assert connection.execute(
+            "SELECT COUNT(*) FROM printer_pre_admission_discovery_attempt_source_links"
+        ).fetchone()[0] == 1
+        assert connection.execute(
+            "SELECT COUNT(*) FROM printer_discovery_work_source_links"
+        ).fetchone()[0] == 1
+        assert connection.execute(
+            "SELECT COUNT(*) FROM printer_pumpswap_graduated_candidate_registry"
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT COUNT(*) FROM printer_discovery_origin_verifications"
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT COUNT(*) FROM printer_discovery_pumpswap_confirmations"
+        ).fetchone()[0] == 0
+    finally:
+        connection.close()
+
+
+def test_real_selector_and_materialization_preserve_direct_pump_route(
+    tmp_path, monkeypatch
+) -> None:
+    result = _run_real_selector_consume_materialize(
+        tmp_path,
+        monkeypatch,
+        (
+            _later_cycle_candidate(
+                3,
+                authority=AdmissionAuthority.DIRECT_PUMP_PUMPSWAP,
+                channel="LATEST_PUMPFUN",
+                nomination_source="direct_pump_migration",
+            ),
+            _later_cycle_candidate(
+                4,
+                authority=AdmissionAuthority.DIRECT_PUMP_PUMPSWAP,
+                channel="TOP_PUMPFUN",
+                nomination_source="direct_pump_migration",
+            ),
+        ),
+    )
+    observed = result["observed"]
+    connection = result["connection"]
+    try:
+        assert result["callback"].state == "PAIR_READY"
+        assert result["materialized"].materialized_item_count == 2
+        assert len(observed["eligible"]) == 2
+        assert len(observed["selected"]) == 2
+        assert observed["market_authority_mints"] == frozenset()
+        assert {item.lifecycle for item in observed["selected"]} == {
+            "PUMPSWAP_GRADUATED_CONFIRMED"
+        }
+        assert {item.origin_state for item in observed["selected"]} == {"CONFIRMED"}
+        assert {item.pumpswap_state for item in observed["selected"]} == {"CONFIRMED"}
+        rows = connection.execute(
+            """SELECT lifecycle_identity, origin_verification_state,
+                      pumpswap_confirmation_state
+               FROM printer_discovery_merged_candidates
+               ORDER BY mint_identity"""
+        ).fetchall()
+        assert [
+            (
+                row["lifecycle_identity"],
+                row["origin_verification_state"],
+                row["pumpswap_confirmation_state"],
+            )
+            for row in rows
+        ] == [
+            ("PUMPSWAP_GRADUATED_CONFIRMED", "CONFIRMED", "CONFIRMED"),
+            ("PUMPSWAP_GRADUATED_CONFIRMED", "CONFIRMED", "CONFIRMED"),
+        ]
+        authorities = {
+            json.loads(row[0])["candidate"]["admission_authority"]
+            for row in connection.execute(
+                "SELECT canonical_evidence_json FROM "
+                "printer_pre_admission_discovery_attempt_items"
+            )
+        }
+        assert authorities == {"DIRECT_PUMP_PUMPSWAP"}
+    finally:
+        connection.close()
+
+
+def test_real_selector_selects_mixed_direct_and_market_pair(
+    tmp_path, monkeypatch
+) -> None:
+    result = _run_real_selector_consume_materialize(
+        tmp_path,
+        monkeypatch,
+        (
+            _later_cycle_candidate(
+                3,
+                authority=AdmissionAuthority.DIRECT_PUMP_PUMPSWAP,
+                channel="LATEST_PUMPFUN",
+                nomination_source="direct_pump_migration",
+            ),
+            _later_cycle_candidate(
+                4,
+                authority=AdmissionAuthority.MARKET_PRESENT_POOL,
+                channel=FRESH_AGGREGATOR_CHANNEL,
+                nomination_source="dexscreener",
+            ),
+        ),
+    )
+    observed = result["observed"]
+    connection = result["connection"]
+    try:
+        assert result["callback"].state == "PAIR_READY"
+        assert result["materialized"].materialized_item_count == 2
+        assert len(observed["eligible"]) == 2
+        assert len(observed["selected"]) == 2
+        selected_mints = {item.mint for item in observed["selected"]}
+        selected_pools = {
+            item.market_identity.rsplit(":", 1)[-1] for item in observed["selected"]
+        }
+        assert selected_mints == {"mint-3", "mint-4"}
+        assert selected_pools == {"pool-3", "pool-4"}
+        by_mint = {item.mint: item for item in observed["selected"]}
+        assert by_mint["mint-3"].lifecycle == "PUMPSWAP_GRADUATED_CONFIRMED"
+        assert by_mint["mint-3"].origin_state == "CONFIRMED"
+        assert by_mint["mint-3"].pumpswap_state == "CONFIRMED"
+        assert by_mint["mint-4"].lifecycle == "PRESENT_POOL_CONFIRMED"
+        assert by_mint["mint-4"].origin_state == "NOT_REQUIRED"
+        assert by_mint["mint-4"].pumpswap_state == "NOT_REQUIRED"
+        rows = {
+            row["mint_identity"]: row
+            for row in connection.execute(
+                """SELECT mint_identity, lifecycle_identity,
+                          origin_verification_state, pumpswap_confirmation_state,
+                          channel_labels_json
+                   FROM printer_discovery_merged_candidates"""
+            )
+        }
+        assert rows["mint-3"]["lifecycle_identity"] == "PUMPSWAP_GRADUATED_CONFIRMED"
+        assert rows["mint-3"]["origin_verification_state"] == "CONFIRMED"
+        assert rows["mint-3"]["pumpswap_confirmation_state"] == "CONFIRMED"
+        assert json.loads(rows["mint-3"]["channel_labels_json"]) == ["LATEST_PUMPFUN"]
+        assert rows["mint-4"]["lifecycle_identity"] == "PRESENT_POOL_CONFIRMED"
+        assert rows["mint-4"]["origin_verification_state"] == "NOT_REQUIRED"
+        assert rows["mint-4"]["pumpswap_confirmation_state"] == "NOT_REQUIRED"
+        assert json.loads(rows["mint-4"]["channel_labels_json"]) == [
+            FRESH_AGGREGATOR_CHANNEL
+        ]
+    finally:
+        connection.close()

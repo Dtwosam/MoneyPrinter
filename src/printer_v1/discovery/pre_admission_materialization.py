@@ -102,7 +102,7 @@ def _admission_states_from_canonical_evidence(
             raise PreAdmissionMaterializationError(
                 "FROZEN_ADMISSION_AUTHORITY_DRIFT"
             )
-        return "NOT_CLAIMED", "NOT_CLAIMED"
+        return "NOT_REQUIRED", "NOT_REQUIRED"
     if authority == "DIRECT_PUMP_PUMPSWAP":
         if lifecycle_identity != "PUMPSWAP_GRADUATED_CONFIRMED":
             raise PreAdmissionMaterializationError(

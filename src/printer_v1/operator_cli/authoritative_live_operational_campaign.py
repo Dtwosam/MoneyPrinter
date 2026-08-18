@@ -2315,12 +2315,12 @@ class AuthoritativeLiveOperationalCampaignOwner:
                                     {"kind": "HOLDER_EVIDENCE_INELIGIBLE"}
                                 ]),
                                 origin_state=(
-                                    "NOT_CLAIMED"
+                                    "NOT_REQUIRED"
                                     if item.mint_identity in market_authority_mints
                                     else "CONFIRMED"
                                 ),
                                 pumpswap_state=(
-                                    "NOT_CLAIMED"
+                                    "NOT_REQUIRED"
                                     if item.mint_identity in market_authority_mints
                                     else "CONFIRMED"
                                 ),

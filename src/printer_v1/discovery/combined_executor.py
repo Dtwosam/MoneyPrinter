@@ -529,24 +529,46 @@ def _round_robin_non_latest_existing(
     return ordered[(max(int(batch_seq), 1) - 1) % len(ordered)]
 
 
+def _selectable_existing_discovery_candidate(
+    candidate: DiscoverySelectionCandidate,
+    *,
+    market_authority_mints: frozenset[str],
+) -> bool:
+    """Keep the post-gate selectable pool aligned with both admission authorities.
+
+    The categorical gate already ran. This filter only prevents a MARKET
+    candidate from disappearing because the historical selector required
+    PUMPSWAP_GRADUATED_CONFIRMED. It does not re-check exact-pool admission.
+    """
+    if candidate.conflicts or not candidate.market_identity:
+        return False
+    if candidate.mint in market_authority_mints:
+        return candidate.lifecycle == "PRESENT_POOL_CONFIRMED"
+    return (
+        candidate.lifecycle == GRADUATED_LIFECYCLE
+        and candidate.market_identity.startswith(PUMPSWAP_MARKET_PREFIX)
+    )
+
+
 def _select_existing_discovery_candidates(
     eligible: Sequence[DiscoverySelectionCandidate],
     cycle_seed: str,
     *,
     vacancy_count: int,
     batch_seq: int,
+    market_authority_mints: frozenset[str] = frozenset(),
 ) -> list[DiscoverySelectionCandidate]:
     if vacancy_count <= 0:
         return []
-    graduated = [
+    selectable = [
         candidate
         for candidate in eligible
-        if not candidate.conflicts
-        and candidate.lifecycle == GRADUATED_LIFECYCLE
-        and candidate.market_identity.startswith(PUMPSWAP_MARKET_PREFIX)
+        if _selectable_existing_discovery_candidate(
+            candidate, market_authority_mints=market_authority_mints
+        )
     ]
     by_mint: dict[str, list[DiscoverySelectionCandidate]] = {}
-    for candidate in graduated:
+    for candidate in selectable:
         by_mint.setdefault(candidate.mint, []).append(candidate)
     collapsed: list[DiscoverySelectionCandidate] = []
     for group in by_mint.values():
@@ -623,6 +645,7 @@ def apply_existing_discovery_gate_and_selection(
         cycle_seed,
         vacancy_count=len(vacant_slot_ordinals),
         batch_seq=batch_seq,
+        market_authority_mints=market_authority_mints,
     )
     rejected = tuple(
         (candidate.merged_candidate_id, str(candidate.first_failed_gate))
@@ -3043,8 +3066,8 @@ class CombinedPumpfunCampaignExecutor:
         }
         for candidate in merged.values():
             if candidate.mint in market_authority_mints:
-                candidate.origin_state = "NOT_CLAIMED"
-                candidate.pumpswap_state = "NOT_CLAIMED"
+                candidate.origin_state = "NOT_REQUIRED"
+                candidate.pumpswap_state = "NOT_REQUIRED"
 
         for candidate in already_confirmed:
             # V2-9.7E.45: label the confirmed-origin evidence source by activation
@@ -3469,11 +3492,21 @@ class CombinedPumpfunCampaignExecutor:
         *,
         vacancy_count: int,
     ) -> list[_Merged]:
+        market_authority_mints = frozenset(
+            item.mint
+            for item in (
+                self.fixtures.memory_activation_set.selected
+                if self.fixtures.memory_activation_set is not None
+                else ()
+            )
+            if item.admission_authority.value == "MARKET_PRESENT_POOL"
+        )
         return _select_existing_discovery_candidates(
             eligible,
             cycle_seed,
             vacancy_count=vacancy_count,
             batch_seq=self.fixtures.batch_seq,
+            market_authority_mints=market_authority_mints,
         )
         # Historical implementation retained below temporarily for source
         # parity review; it is unreachable and the shared owner above is the
