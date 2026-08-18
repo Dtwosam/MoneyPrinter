@@ -477,8 +477,7 @@ def load_authoritative_window_safety(
             )
         composite = dict(composite_row)
         traces = [
-            dict(row)
-            for row in connection.execute(
+            dict(row) for row in connection.execute(
                 """
                 SELECT contribution.*,
                        request.source_name AS request_source_name,
@@ -528,8 +527,8 @@ def load_authoritative_window_safety(
 
         lifecycle_deadline: str | None = None
         evidence_cutoff_source = "CAMPAIGN_CHECKPOINT"
+        authoritative_window_end = str(window.get("window_end_at") or "")
         if memory_window_close_cutoff is not None:
-            authoritative_window_end = str(window.get("window_end_at") or "")
             if (
                 not authoritative_window_end
                 or str(memory_window_close_cutoff) != authoritative_window_end
@@ -538,14 +537,12 @@ def load_authoritative_window_safety(
                     "memory-window safety cutoff must equal authoritative window_end_at"
                 )
             lifecycle_deadline = authoritative_window_end
-            closing_snapshot = (
-                connection.execute(
-                    "SELECT token_id,pair_id,captured_at FROM printer_token_snapshots WHERE id=?",
-                    (int(closing_snapshot_id),),
-                ).fetchone()
-                if closing_snapshot_id is not None
-                else None
-            )
+
+        if closing_snapshot_id is not None:
+            closing_snapshot = connection.execute(
+                "SELECT token_id,pair_id,captured_at FROM printer_token_snapshots WHERE id=?",
+                (int(closing_snapshot_id),),
+            ).fetchone()
             if closing_snapshot is None:
                 reasons.append("closing_snapshot_missing")
                 cutoff_value = ""
@@ -557,9 +554,11 @@ def load_authoritative_window_safety(
                     reasons.append("closing_snapshot_target_identity_mismatch")
                 observed_close = _time(closing_snapshot["captured_at"])
                 fixed_deadline = _time(authoritative_window_end)
-                if observed_close is None or fixed_deadline is None:
+                if observed_close is None:
                     reasons.append("closing_snapshot_cutoff_timestamp_invalid")
-                elif observed_close < fixed_deadline:
+                elif authoritative_window_end and fixed_deadline is None:
+                    reasons.append("closing_snapshot_cutoff_timestamp_invalid")
+                elif fixed_deadline is not None and observed_close < fixed_deadline:
                     reasons.append("closing_snapshot_precedes_lifecycle_deadline")
                 cutoff_value = str(closing_snapshot["captured_at"])
             evidence_cutoff_source = "EXACT_CLOSING_SNAPSHOT"
