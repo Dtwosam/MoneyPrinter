@@ -3881,8 +3881,8 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 ledger=ledger,
             )
             admission_inputs = (
-                graduated_supply_proofs
-                if permanent_mode
+                tuple(supply.graduated_supply)
+                if permanent_mode and supply is not None
                 else tuple(acquisition.origin_proofs)
                 + graduated_supply_proofs
             )

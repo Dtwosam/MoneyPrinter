@@ -411,12 +411,12 @@ def test_later_cycle_callback_does_not_add_descriptive_holder_gap():
     assert "HOLDER_EVIDENCE_INELIGIBLE" in src
 
 
-def test_combined_handoff_does_not_require_holder_eligible_for_descriptive():
+def test_combined_handoff_preserves_explicit_tracking_requalification_contract():
     from printer_v1.discovery import combined_executor
 
     source = inspect.getsource(combined_executor.CombinedPumpfunCampaignExecutor._handoff_one_slot)
-    assert "holder_fact_blocks_selected_admission" in source
-    assert 'holder_fact.get("eligible") is True' not in source
+    assert 'holder_fact.get("eligible") is True' in source
+    assert 'holder_fact.get("tracking_requalification_required") is True' in source
 
 
 def test_holder_ceilings_remain_unchanged():
