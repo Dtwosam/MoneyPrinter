@@ -1,9 +1,6 @@
 name: Printer freeze-input repair TDD
 
 on:
-  push:
-    branches:
-      - agent/v2-9-8b-four-token-4-2-2-freeze-input-versus-two-slot-truncation-repair-implementation
   pull_request:
   workflow_dispatch:
 
