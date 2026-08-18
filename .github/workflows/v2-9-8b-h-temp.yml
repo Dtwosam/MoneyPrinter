@@ -1,0 +1,23 @@
+name: V2-9.8B H temporary verification
+
+on:
+  push:
+    branches:
+      - v2-9-8b-h-dev
+
+permissions:
+  contents: read
+
+jobs:
+  h-red-green:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install Printer
+        run: python -m pip install -e .
+      - name: H focused test
+        run: python -m unittest discover -s tests -p 'test_v2_9_8b_h_continuation_cutoff.py' -v
