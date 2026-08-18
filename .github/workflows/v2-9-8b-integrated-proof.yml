@@ -1,9 +1,9 @@
 name: V2-9.8B integrated repair proof
 
 on:
-  push:
+  pull_request:
     branches:
-      - agent/v2-9-8b-integrated-proof
+      - agent/v2-9-8b-slice-j-reporting-truth
   workflow_dispatch:
 
 jobs:
@@ -14,6 +14,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
 
       - uses: actions/setup-python@v5
         with:
@@ -28,7 +29,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD^)" = "df1aced491d01d1a6d25ae38ca2da4eab72665c6"
+          git merge-base --is-ancestor df1aced491d01d1a6d25ae38ca2da4eab72665c6 HEAD
+          git diff --exit-code df1aced491d01d1a6d25ae38ca2da4eab72665c6..HEAD -- . ':(exclude).github/workflows/v2-9-8b-integrated-proof.yml'
           test "$(git rev-parse refs/remotes/origin/master)" = "a98e2da6e133146026949a47e522d625fba59fff"
 
       - name: Pump and PumpSwap protocol authority
@@ -79,9 +81,17 @@ jobs:
             tests/test_v2_9_7d_6b_7_zero_source_read_only_replay.py
 
       - name: Migration and financial capability locks
+        shell: bash
         run: |
+          python - <<'PY'
+          from printer_v1.db.migrate import canonical_migration_names
+          names = canonical_migration_names()
+          assert len(names) == 58, names[-3:]
+          assert names[-1] == '058_direct_pump_migration_cursor.sql', names[-1]
+          assert not any(name.startswith('059_') for name in names), names[-3:]
+          PY
           python -m pytest -q \
-            tests/test_v2_9_8b_pre_authorization_migration_ledger_drift_guard.py \
+            tests/test_v2_9_8b_four_token_proof_authorization_profile.py \
             tests/test_post_lane10_lane_j_financial_action_lock_review.py
 
       - name: Focused compile and diff hygiene
