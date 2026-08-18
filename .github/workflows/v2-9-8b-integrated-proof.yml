@@ -1,0 +1,100 @@
+name: V2-9.8B integrated repair proof
+
+on:
+  push:
+    branches:
+      - agent/v2-9-8b-integrated-proof
+  workflow_dispatch:
+
+jobs:
+  integrated-proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install focused test runtime
+        run: |
+          python -m pip install -e .
+          python -m pip install pytest
+
+      - name: Verify proof base and master isolation
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = "df1aced491d01d1a6d25ae38ca2da4eab72665c6"
+          test "$(git rev-parse refs/remotes/origin/master)" = "a98e2da6e133146026949a47e522d625fba59fff"
+
+      - name: Pump and PumpSwap protocol authority
+        run: |
+          python -m pytest -q \
+            tests/test_v2_9_8b_pump_migrate_v2_contract.py \
+            tests/test_v2_9_8b_governed_pumpswap_account_batch_confirmation.py
+
+      - name: Source accounting and SOURCE INTERNAL failure truth
+        run: |
+          python -m pytest -q \
+            tests/test_v2_9_8b_refresh_internal_failure_truth.py \
+            tests/test_v2_9_8b_full_run_accounting_semantics_correction.py
+
+      - name: Scheduler cadence and exact-pair suppression
+        run: |
+          python -m pytest -q \
+            tests/test_v2_9_8b_slice_g_cadence_isolation.py \
+            tests/test_v2_9_8b_slice_d_negative_history_suppression.py
+
+      - name: Direct Pump migration acquisition and later-cycle market bridge
+        run: |
+          python -m pytest -q \
+            tests/test_v2_9_8b_slice_b_bounded_migration_acquisition.py \
+            tests/test_v2_9_8b_slice_c_fresh_canonical_bridge.py
+
+      - name: Exact predecessor cutoff and standard 15m 1h 4h continuation
+        run: |
+          python -m pytest -q \
+            tests/test_v2_9_8b_h_continuation_cutoff.py \
+            tests/test_v2_9_8b_operational_selective_1h.py \
+            tests/test_v2_9_8b_post_dtw100_standard_four_hour_campaign_handoff.py \
+            tests/test_v2_9_8b_post_dtw100_standard_four_hour_activation_final_public_wiring.py \
+            tests/test_v2_9_8b_post_dtw100_standard_four_hour_close_memory_terminal_reconciliation.py
+
+      - name: Selected-slot holder ownership and honest UNKNOWN
+        run: |
+          python -m pytest -q \
+            tests/test_v2_9_8b_slice_i_selected_slot_holder.py \
+            tests/test_v2_9_8b_slice_i_corrective.py
+
+      - name: Promotion safety reporting separation and zero-work replay
+        run: |
+          python -m pytest -q \
+            tests/test_v2_9_8b_slice_j_reporting_truth.py \
+            tests/test_v2_9_7b_2_timeframe_aware_safety_reporting.py \
+            tests/test_v2_9_7d_6b_6_final_campaign_report.py \
+            tests/test_v2_9_7d_6b_7_zero_source_read_only_replay.py
+
+      - name: Migration and financial capability locks
+        run: |
+          python -m pytest -q \
+            tests/test_v2_9_8b_pre_authorization_migration_ledger_drift_guard.py \
+            tests/test_post_lane10_lane_j_financial_action_lock_review.py
+
+      - name: Focused compile and diff hygiene
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            src/printer_v1/sources/pump_contracts.py \
+            src/printer_v1/discovery/combined_executor.py \
+            src/printer_v1/operator_cli/authoritative_live_operational_campaign.py \
+            src/printer_v1/ops/operational_memory_factory.py \
+            src/printer_v1/ops/pre_lifecycle.py \
+            src/printer_v1/ops/promotion.py \
+            src/printer_v1/operator_cli/final_campaign_report.py \
+            src/printer_v1/operator_cli/zero_source_campaign_replay.py
+          git diff --check fd9a9a7306c392bdef1535854cddddfecd5e3b70..df1aced491d01d1a6d25ae38ca2da4eab72665c6
