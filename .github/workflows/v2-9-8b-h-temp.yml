@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  issues: write
 
 jobs:
   h-implement-verify:
@@ -19,9 +20,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Install Printer
+      - id: install
+        name: Install Printer
         run: python -m pip install -e .
-      - name: Apply narrow H repair
+      - id: patch
+        name: Apply narrow H repair
         run: |
           python - <<'PY'
           from pathlib import Path
@@ -47,18 +50,37 @@ jobs:
               raise SystemExit('fixture value patch anchor mismatch')
           test.write_text(text.replace(old, new, 1))
           PY
-      - name: H focused proof
+      - id: htest
+        name: H focused proof
         run: python -m unittest discover -s tests -p 'test_v2_9_8b_h_continuation_cutoff.py' -v
-      - name: Selective 1h regression
+      - id: regression
+        name: Selective 1h regression
         run: python -m unittest discover -s tests -p 'test_v2_9_8b_operational_selective_1h.py' -v
-      - name: Compile changed production file
+      - id: compile
+        name: Compile changed production file
         run: python -m py_compile src/printer_v1/operator_cli/operational_selective_1h.py
-      - name: Diff check
+      - id: diffcheck
+        name: Diff check
         run: git diff --check
-      - name: Commit verified H repair
+      - id: commit
+        name: Commit verified H repair
         run: |
           git config user.name 'Printer H verifier'
           git config user.email 'actions@users.noreply.github.com'
           git add src/printer_v1/operator_cli/operational_selective_1h.py tests/test_v2_9_8b_operational_selective_1h.py tests/test_v2_9_8b_h_continuation_cutoff.py
           git commit -m 'Repair predecessor-bound continuation cutoff [skip ci]'
           git push origin HEAD:v2-9-8b-h-ci-dev
+      - name: Report verification outcome to draft PR
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INSTALL: ${{ steps.install.outcome }}
+          PATCH: ${{ steps.patch.outcome }}
+          HTEST: ${{ steps.htest.outcome }}
+          REGRESSION: ${{ steps.regression.outcome }}
+          COMPILE: ${{ steps.compile.outcome }}
+          DIFFCHECK: ${{ steps.diffcheck.outcome }}
+          COMMIT: ${{ steps.commit.outcome }}
+        run: |
+          gh api repos/${{ github.repository }}/issues/183/comments \
+            -f body="H_CI_RESULT install=$INSTALL patch=$PATCH htest=$HTEST regression=$REGRESSION compile=$COMPILE diffcheck=$DIFFCHECK commit=$COMMIT source_sha=${{ github.sha }}"
