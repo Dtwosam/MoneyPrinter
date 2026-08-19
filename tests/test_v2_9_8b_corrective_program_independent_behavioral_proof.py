@@ -25,6 +25,7 @@ from printer_v1.discovery.pre_lifecycle_temporal_acquisition import (
     TemporalRefreshOutcome,
     WAITING_FOR_ELIGIBLE_SUPPLY,
 )
+from printer_v1.sources.pumpswap_graduated_registry import record_graduated_candidate
 from printer_v1.trading_flow.recorder import record_trading_flow_snapshot
 
 
@@ -111,8 +112,6 @@ def _run_cooperative_supply(
     *,
     monkeypatch: pytest.MonkeyPatch,
     tracking_eligible: bool,
-    temporal_refresh_owner=None,
-    deadline_at: str | None = None,
 ):
     monkeypatch.setattr(
         tracking_queue,
@@ -135,8 +134,6 @@ def _run_cooperative_supply(
         cooperative_quantum=True,
         cooperative_phase="PROTOCOL_CONFIRMATION",
         cooperative_stage_budget=StageBudget.permanent_discovery_default(),
-        temporal_refresh_owner=temporal_refresh_owner,
-        deadline_at=deadline_at,
     )
 
 
@@ -200,17 +197,83 @@ class _TemporalOwner:
         )
 
 
+def _seed_historical_inventory(db_path: Path) -> None:
+    apply_migrations(db_path)
+    connection = sqlite3.connect(db_path)
+    try:
+        record_graduated_candidate(
+            connection,
+            mint="HistoricalMintIndependentProof",
+            migration_signature="HistoricalSignatureIndependentProof",
+            pumpswap_pool="HistoricalPoolIndependentProof",
+            graduation_block_time=1_784_000_000,
+            graduation_slot=1,
+            now=NOW,
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def _market_stage_exhausted_budget() -> StageBudget:
+    # Flat discovery budget remains available, but this cooperative market
+    # quantum has no remaining market-stage capacity. This is the exact shape
+    # that previously could terminalize despite a lawful temporal refresh.
+    return StageBudget(
+        (
+            ("intake", 3),
+            ("market_batching", 0),
+            ("reconciliation", 6),
+            ("protocol_confirmation", 7),
+            ("holder_safety", 8),
+            ("final_refresh_handoff", 4),
+        )
+    )
+
+
+def _run_refresh_boundary_supply(
+    db_path: Path,
+    *,
+    monkeypatch: pytest.MonkeyPatch,
+    owner: _TemporalOwner,
+    deadline_at: str,
+):
+    monkeypatch.setattr(
+        tracking_queue,
+        "assess_tracking_handoff_by_identity",
+        lambda *_args, **_kwargs: _tracking_assessment(eligible=True),
+    )
+    monkeypatch.setattr(eligible_supply, "_utc_now_iso", lambda: NOW)
+    return eligible_supply.run_persistent_eligible_token_supply(
+        db_path,
+        cycle_seed="independent-refresh-seed",
+        migration_transport=_never_source,
+        now=NOW,
+        campaign_id=CAMPAIGN,
+        execution_id="independent-execution:c0002",
+        run_id="independent-run",
+        cycle_id="independent-cycle-2",
+        permanent_availability=True,
+        tracking_precheck=True,
+        cooperative_resume=True,
+        cooperative_quantum=True,
+        cooperative_phase="MARKET_DISCOVERY",
+        cooperative_stage_budget=_market_stage_exhausted_budget(),
+        temporal_refresh_owner=owner,
+        deadline_at=deadline_at,
+    )
+
+
 def test_cycle2_remaining_refresh_window_yields_to_scheduler_instead_of_terminalizing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     db_path = tmp_path / "refresh.sqlite3"
-    apply_migrations(db_path)
+    _seed_historical_inventory(db_path)
     owner = _TemporalOwner(WAITING_FOR_ELIGIBLE_SUPPLY)
-    result = _run_cooperative_supply(
+    result = _run_refresh_boundary_supply(
         db_path,
         monkeypatch=monkeypatch,
-        tracking_eligible=True,
-        temporal_refresh_owner=owner,
+        owner=owner,
         deadline_at="2026-08-19T13:00:00+00:00",
     )
     assert len(owner.calls) == 1
@@ -226,16 +289,16 @@ def test_cycle2_closed_refresh_window_does_not_fake_a_wait(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     db_path = tmp_path / "closed-refresh.sqlite3"
-    apply_migrations(db_path)
+    _seed_historical_inventory(db_path)
     owner = _TemporalOwner(NO_LAWFUL_REFRESH_WINDOW)
-    result = _run_cooperative_supply(
+    result = _run_refresh_boundary_supply(
         db_path,
         monkeypatch=monkeypatch,
-        tracking_eligible=True,
-        temporal_refresh_owner=owner,
+        owner=owner,
         # Exactly one interval remains; strict due < deadline means no new wait.
         deadline_at="2026-08-19T12:50:00+00:00",
     )
+    assert owner.calls == []
     assert result.terminal != WAITING_FOR_ELIGIBLE_SUPPLY
     assert result.ready is False
 
