@@ -1,0 +1,50 @@
+name: V2-9.8B corrective apply and test
+
+on:
+  push:
+    branches:
+      - agent/v2-9-8b-corrective-program-cycle2-memory-flow
+
+permissions:
+  contents: write
+
+jobs:
+  corrective:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: agent/v2-9-8b-corrective-program-cycle2-memory-flow
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply exact guarded patch
+        run: python tools/apply_v2_9_8b_corrective_program.py
+      - name: Focused corrective proof
+        run: python -m pytest -q tests/test_v2_9_8b_corrective_program.py
+      - name: Nearby focused regression
+        run: |
+          python -m pytest -q \
+            tests/test_v2_9_8b_fresh_candidate_discovery_persistence.py \
+            tests/test_v2_9_8b_four_token_operational_composition.py \
+            tests/test_v2_9_8b_pre_lifecycle_persistent_refresh_owner.py \
+            tests/test_v2_8_1_one_token_4h_runtime.py \
+            tests/test_v2_9_4_7_trading_flow_optional_fields.py
+      - name: Commit implementation
+        run: |
+          if git diff --quiet; then
+            echo 'No patch delta to commit'
+            exit 0
+          fi
+          git config user.name 'printer-v1-corrective-bot'
+          git config user.email 'printer-v1-corrective-bot@users.noreply.github.com'
+          git add src/printer_v1/discovery/eligible_token_supply.py \
+                  src/printer_v1/discovery/permanent_discovery_availability.py \
+                  src/printer_v1/operator_cli/one_token_4h_runtime.py \
+                  src/printer_v1/trading_flow/recorder.py
+          git diff --cached --check
+          git commit -m 'Implement V2-9.8B corrective program'
+          git push origin HEAD:agent/v2-9-8b-corrective-program-cycle2-memory-flow
