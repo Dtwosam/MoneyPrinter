@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - agent/v2-9-8b-corrective-program-cycle2-memory-flow
+  pull_request:
+    branches:
+      - agent/v2-9-8b-four-token-4-2-2-freeze-input-versus-two-slot-truncation-repair-implementation
 
 permissions:
   contents: read
