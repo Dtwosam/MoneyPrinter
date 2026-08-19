@@ -1,9 +1,6 @@
 name: V2-9.8B Cycle2 Repair Proof
 
 on:
-  push:
-    branches:
-      - agent/v2-9-8b-cycle2-historical-proof-carrier-provenance-repair
   pull_request:
     branches:
       - agent/v2-9-8b-cycle2-proof-base-temporary
