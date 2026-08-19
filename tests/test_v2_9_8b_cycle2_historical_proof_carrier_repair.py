@@ -1,6 +1,6 @@
 """Focused regression proof for the consumed Cycle-2 graduated-supply failure.
 
-Offline/disposable DB only.  No live provider, campaign authorization, lifecycle,
+Offline/disposable DB only. No live provider, campaign authorization, lifecycle,
 wallet, financial, retry, endpoint-rotation, or scheduler behaviour is exercised.
 """
 from __future__ import annotations
@@ -11,17 +11,13 @@ from pathlib import Path
 import pytest
 
 from printer_v1.db.migrate import apply_migrations
-from printer_v1.discovery.permanent_discovery_availability import (
-    run_dexscreener_batch_market_resolution,
-)
 from printer_v1.operator_cli.graduated_supply_front_door import (
     GraduatedSupplyError,
+    _rehydrate_historical_direct_candidate,
     _source_specific_admission_for,
 )
-from printer_v1.sources.dexscreener import fixture_success_transport
 from printer_v1.sources.pumpswap_graduated_registry import (
     LATEST_GRADUATED_CHANNEL,
-    export_graduated_candidates,
     record_graduated_candidate,
 )
 
@@ -31,29 +27,11 @@ SIG = (
     "kbqgk3HtkePfN1tJfCdQAxNfGbCrrgZJeFuiy4idNSnVBP1Ev2YqsNq1nUWLaX5t1kKu9S84AZk5usESbbbbbbb"
 )
 NOW = "2026-08-19T15:30:00+00:00"
-WSOL = "So11111111111111111111111111111111111111112"
+GRADUATION_BLOCK_TIME = 1_787_153_400
+GRADUATION_SLOT = 432_400_000
 
 
-def _pair_payload() -> dict:
-    return {
-        "pairs": [
-            {
-                "chainId": "solana",
-                "pairAddress": POOL,
-                "baseToken": {"address": MINT, "symbol": "MEME", "name": "Meme"},
-                "quoteToken": {"address": WSOL, "symbol": "SOL", "name": "Wrapped SOL"},
-                "dexId": "pumpswap",
-                "priceUsd": "0.10",
-                "liquidity": {"usd": 15_350.10},
-                "volume": {"m5": 100.0, "h1": 1000.0, "h24": 10_000.0},
-                "txns": {"m5": {"buys": 3, "sells": 2}},
-                "priceChange": {"m5": 1.0},
-            }
-        ]
-    }
-
-
-def _seed_registry(db: Path) -> list[dict]:
+def _seed_registry(db: Path) -> None:
     apply_migrations(db)
     connection = sqlite3.connect(db)
     connection.row_factory = sqlite3.Row
@@ -64,45 +42,48 @@ def _seed_registry(db: Path) -> list[dict]:
             mint=MINT,
             migration_signature=SIG,
             pumpswap_pool=POOL,
-            graduation_block_time=1_787_153_400,
-            graduation_slot=432_400_000,
+            graduation_block_time=GRADUATION_BLOCK_TIME,
+            graduation_slot=GRADUATION_SLOT,
             now="2026-08-19T14:00:00+00:00",
             discovery_channel=LATEST_GRADUATED_CHANNEL,
         )
         connection.commit()
-        return [dict(row) for row in export_graduated_candidates(connection)]
     finally:
         connection.close()
 
 
-def test_historical_registry_market_refresh_preserves_direct_pump_proof(
+def _historical_market_carrier() -> dict:
+    """Shape emitted after current market revalidation in the consumed path."""
+    return {
+        "mint": MINT,
+        "pool": POOL,
+        "pumpswap_pool": POOL,
+        "market_identity": f"solana-mainnet:pumpswap:{POOL}",
+        "provenance": "PERSISTED_GRADUATED",
+        "lifecycle_state": "PUMPSWAP_GRADUATED_CONFIRMED",
+        "graduation_block_time": GRADUATION_BLOCK_TIME,
+        "liquidity": {
+            "status": "LIQUIDITY_PROVEN",
+            "liquidity_usd": 15_350.10,
+            "liquidity_observed_at": NOW,
+        },
+        "evidence_expires_at": "2026-08-19T16:00:00+00:00",
+        "eligible": True,
+        "rejection": None,
+    }
+
+
+def test_historical_registry_market_refresh_rejoins_direct_pump_proof(
     tmp_path: Path,
 ) -> None:
-    """Registry proof must survive a current market refresh without rediscovery."""
+    """A historical candidate need not be rediscovered by the current live tail."""
     db = tmp_path / "historical-proof.sqlite3"
-    inventory = _seed_registry(db)
+    _seed_registry(db)
 
-    connection = sqlite3.connect(db)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA foreign_keys = ON")
-    try:
-        report = run_dexscreener_batch_market_resolution(
-            connection,
-            inventory_rows=inventory,
-            request_key="cycle2-historical-proof-mint-batch-r1",
-            now=NOW,
-            campaign_id="cycle2-proof-campaign",
-            run_id="cycle2-proof-run",
-            cycle_id="cycle2-proof-cycle",
-            transport=fixture_success_transport(_pair_payload()),
-            enable_geckoterminal_fallback=False,
-            stage_sequence=1,
-        )
-    finally:
-        connection.close()
+    candidate = _rehydrate_historical_direct_candidate(
+        _historical_market_carrier(), db_path=db
+    )
 
-    candidate = next(item for item in report["candidates"] if item["mint"] == MINT)
-    assert candidate["eligible"] is True
     assert candidate["admission_authority"] == "DIRECT_PUMP_PUMPSWAP"
     assert candidate["nomination_source"] == "direct_pump_migration"
     assert candidate["lineage_state"] == "PUMP_GRADUATION_CONFIRMED"
@@ -112,18 +93,44 @@ def test_historical_registry_market_refresh_preserves_direct_pump_proof(
         "pool": POOL,
         "migration_signature": SIG,
         "pumpswap_program_id": candidate["direct_pump_evidence"]["pumpswap_program_id"],
-        "graduation_slot": 432_400_000,
-        "graduation_block_time": 1_787_153_400,
+        "graduation_slot": GRADUATION_SLOT,
+        "graduation_block_time": GRADUATION_BLOCK_TIME,
         "confirmed": True,
     }
 
-    # This is the exact consumed-run boundary: the final source-specific
-    # admission must succeed even though no same-invocation direct migration
-    # candidate_mix was needed to reconstruct the historical proof.
+    # Exact consumed-run boundary: the original source-specific validator now
+    # receives a complete carrier and succeeds without same-invocation discovery.
     admission = _source_specific_admission_for(candidate)
     assert admission.mint == MINT
     assert admission.pool_address == POOL
     assert admission.signature == SIG
+
+
+def test_corrupt_historical_registry_proof_fails_closed(tmp_path: Path) -> None:
+    db = tmp_path / "corrupt-proof.sqlite3"
+    _seed_registry(db)
+    connection = sqlite3.connect(db)
+    try:
+        connection.execute(
+            "UPDATE printer_pumpswap_graduated_candidate_registry "
+            "SET migration_signature='' WHERE mint_identity=?",
+            (MINT,),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    with pytest.raises(GraduatedSupplyError) as raised:
+        _rehydrate_historical_direct_candidate(
+            _historical_market_carrier(), db_path=db
+        )
+
+    exc = raised.value
+    assert exc.code == "DIRECT_PUMP_EVIDENCE_MISSING"
+    assert exc.__class__.__name__ == "DIRECT_PUMP_EVIDENCE_MISSING"
+    assert exc.stage == "SOURCE_SPECIFIC_ADMISSION"
+    assert exc.mint == MINT
+    assert exc.pool == POOL
 
 
 def test_typed_missing_direct_proof_exposes_bounded_failure_context() -> None:
@@ -141,11 +148,15 @@ def test_typed_missing_direct_proof_exposes_bounded_failure_context() -> None:
 
     exc = raised.value
     assert exc.code == "DIRECT_PUMP_EVIDENCE_MISSING"
+    # The existing live terminal classifier uses the exception class-name
+    # fallback for unknown exception types, so this remains categorical there.
+    assert exc.__class__.__name__ == "DIRECT_PUMP_EVIDENCE_MISSING"
     assert exc.stage == "SOURCE_SPECIFIC_ADMISSION"
     assert exc.mint == MINT
     assert exc.pool == POOL
     assert exc.admission_authority == "DIRECT_PUMP_PUMPSWAP"
     assert exc.nomination_source == "direct_pump_migration"
+    assert len(exc.detail) <= 512
 
 
 def test_market_present_pool_path_remains_non_pump_and_valid() -> None:
