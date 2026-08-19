@@ -22,11 +22,8 @@ jobs:
           python-version: '3.12'
       - name: Install test dependency
         run: python -m pip install pytest
-      - name: Apply guarded implementation when absent
-        run: |
-          if ! grep -q 'def prepare_full_run_accounting_owner' src/printer_v1/operator_cli/campaign_full_run_accounting.py; then
-            python tools/apply_v2_9_8b_multicycle_projection_finalization_repair.py
-          fi
+      - name: Apply pre-mutation projection rebuild guard
+        run: python tools/apply_v2_9_8b_multicycle_projection_finalization_repair.py
       - name: Compile touched production modules
         run: |
           python -m py_compile src/printer_v1/operator_cli/campaign_full_run_accounting.py
@@ -43,6 +40,6 @@ jobs:
             git config user.name 'github-actions[bot]'
             git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
             git add src/printer_v1/operator_cli/campaign_full_run_accounting.py src/printer_v1/operator_cli/operational_memory_factory_command.py
-            git commit -m 'Repair multi-cycle campaign projection finalization'
+            git commit -m 'Fail closed before projection rebuild mutation'
             git push origin HEAD:${{ github.head_ref }}
           fi
