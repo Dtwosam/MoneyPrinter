@@ -29,8 +29,14 @@ for _name in dir(_base):
         continue
     globals()[_name] = getattr(_base, _name)
 
+# Preserve the public exception identity exactly. Re-exported preserved functions
+# execute in the base-module namespace and may still raise this original class.
+# Typed corrective failures therefore extend the preserved class rather than
+# replacing it, so historical public catches remain valid.
+GraduatedSupplyError = _base.GraduatedSupplyError
 
-class GraduatedSupplyError(RuntimeError):
+
+class _TypedGraduatedSupplyError(GraduatedSupplyError):
     """Typed, bounded graduated-supply composition fault."""
 
     def __init__(
@@ -51,7 +57,7 @@ class GraduatedSupplyError(RuntimeError):
         self.admission_authority = _bounded(admission_authority)
         self.nomination_source = _bounded(nomination_source)
         # ``detail`` is retained for compatibility with the existing safe-code
-        # exception protocol.  It is bounded metadata only, never a provider body.
+        # exception protocol. It is bounded metadata only, never a provider body.
         details = [
             value
             for value in (
@@ -96,19 +102,23 @@ def _code_from_legacy_message(message: object) -> str:
     return "GRADUATED_SUPPLY_ERROR"
 
 
-def _typed_error_class(code: str) -> type[GraduatedSupplyError]:
+def _typed_error_class(code: str) -> type[_TypedGraduatedSupplyError]:
     """Return one stable code-named subclass for the existing class fallback.
 
     The live campaign's pre-existing safe identifier keeps an allow-list of
-    exception classes and otherwise uses ``exc.__class__.__name__``.  A
+    exception classes and otherwise uses ``exc.__class__.__name__``. A
     categorical subclass therefore preserves the exact code without changing
     that campaign owner or admitting arbitrary exception strings.
     """
     normalized = _normalize_code(code)
     existing = globals().get(normalized)
-    if isinstance(existing, type) and issubclass(existing, GraduatedSupplyError):
+    if isinstance(existing, type) and issubclass(existing, _TypedGraduatedSupplyError):
         return existing
-    created = type(normalized, (GraduatedSupplyError,), {"__module__": __name__})
+    created = type(
+        normalized,
+        (_TypedGraduatedSupplyError,),
+        {"__module__": __name__},
+    )
     globals()[normalized] = created
     return created
 
@@ -122,7 +132,7 @@ def _typed_error(
     pool: str | None = None,
     admission_authority: str | None = None,
     nomination_source: str | None = None,
-) -> GraduatedSupplyError:
+) -> _TypedGraduatedSupplyError:
     cls = _typed_error_class(code)
     error = cls(
         code,
@@ -150,7 +160,9 @@ _ORIGINAL_SOURCE_SPECIFIC_ADMISSION = _base._source_specific_admission_for
 _ORIGINAL_BUILD_GRADUATED_SUPPLY = _base.build_graduated_supply
 
 
-def _stage_active_pre_admission_diagnostic(error: GraduatedSupplyError) -> None:
+def _stage_active_pre_admission_diagnostic(
+    error: _TypedGraduatedSupplyError,
+) -> None:
     """Stage bounded context for the exact active Cycle-2 Scheduler job.
 
     Diagnostic staging is deliberately non-authoritative: zero or ambiguous
@@ -205,7 +217,7 @@ def _rehydrate_historical_direct_candidate(
     """Rejoin immutable registry proof for one exact historical candidate.
 
     This is zero-source, exact-mint+pool only, and is deliberately inapplicable
-    to ``MARKET_PRESENT_POOL`` candidates.  A synthetic protocol-resume carrier
+    to ``MARKET_PRESENT_POOL`` candidates. A synthetic protocol-resume carrier
     with no durable graduated-registry row is left untouched; it is never
     relabelled as direct Pump evidence.
     """
@@ -288,7 +300,7 @@ def _convert_base_error(
     *,
     item: Mapping[str, Any] | None = None,
     default_stage: str = "GRADUATED_SUPPLY_COMPOSITION",
-) -> GraduatedSupplyError:
+) -> _TypedGraduatedSupplyError:
     message = str(exc)
     code = _code_from_legacy_message(message)
     carrier = dict(item or {})
@@ -334,7 +346,7 @@ def build_graduated_supply(
     token = _ACTIVE_DB_PATH.set(str(db_path))
     try:
         return _ORIGINAL_BUILD_GRADUATED_SUPPLY(db_path, *args, **kwargs)
-    except GraduatedSupplyError:
+    except _TypedGraduatedSupplyError:
         raise
     except _base.GraduatedSupplyError as exc:
         raise _convert_base_error(exc) from exc
