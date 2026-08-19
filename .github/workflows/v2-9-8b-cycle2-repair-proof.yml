@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - agent/v2-9-8b-cycle2-historical-proof-carrier-provenance-repair
+  pull_request:
+    branches:
+      - agent/v2-9-8b-four-token-4-2-2-freeze-input-versus-two-slot-truncation-repair-implementation
 
 permissions:
   contents: read
