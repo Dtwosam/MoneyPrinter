@@ -284,12 +284,25 @@ def record_exact_market_transition(
             ("venue", "venue"),
         )
         conflicts: dict[str, dict[str, str]] = {}
+        preserved_identity_values: dict[str, str] = {}
         for attribute, column in identity_fields:
             old = str(prior_map[column])
             new = str(getattr(observation, attribute))
-            unresolved = old.startswith("UNRESOLVED_") or old.startswith("UNKNOWN_")
-            if old != new and not unresolved:
+            old_unresolved = old.startswith("UNRESOLVED_") or old.startswith("UNKNOWN_")
+            new_unresolved = new.startswith("UNRESOLVED_") or new.startswith("UNKNOWN_")
+            if old == new:
+                continue
+            if not old_unresolved and new_unresolved:
+                # A weaker observation cannot erase a stronger resolved fact.
+                preserved_identity_values[attribute] = old
+                continue
+            if old_unresolved and not new_unresolved:
+                # Stronger exact evidence upgrades the unresolved value.
+                continue
+            if not old_unresolved and not new_unresolved:
                 conflicts[attribute] = {"preserved": old, "observed": new}
+        if preserved_identity_values and not conflicts:
+            observation = replace(observation, **preserved_identity_values)
         if conflicts:
             observation = replace(
                 observation,
