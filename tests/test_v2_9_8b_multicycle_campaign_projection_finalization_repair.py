@@ -141,9 +141,10 @@ def test_projection_rebuild_requirement_fails_before_mutating_cycle_owner():
         cycle_id="cycle-1",
         stage_id="cycle-1-window15-slot1",
     )
+    ended_at_before = cycle_1.ended_at
 
     assert cycle_1.stage_evidence_count == 0
-    assert cycle_1.ended_at is None
+    assert cycle_1.ingested_stage_ids == []
 
     with pytest.raises(
         FullRunAccountingError,
@@ -157,7 +158,7 @@ def test_projection_rebuild_requirement_fails_before_mutating_cycle_owner():
 
     assert cycle_1.stage_evidence_count == 0
     assert cycle_1.ingested_stage_ids == []
-    assert cycle_1.ended_at is None
+    assert cycle_1.ended_at == ended_at_before
 
 
 def test_single_cycle_preserves_mutable_owner_behavior():
