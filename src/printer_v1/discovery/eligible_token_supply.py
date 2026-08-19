@@ -27,7 +27,7 @@ import json
 import sqlite3
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -1183,6 +1183,70 @@ def run_persistent_eligible_token_supply(
 
     connection = _connect(db_path)
     try:
+        # V2-9.8B corrective program: a later cooperative quantum must not
+        # forget fresh protocol-confirmed MOE persisted by an earlier quantum.
+        # Rehydrate only this exact Cycle-2 campaign and still apply the existing
+        # tracking precheck. Freeze/selection remain downstream authorities.
+        if (
+            permanent_availability
+            and cooperative_resume
+            and str(execution_id or "").endswith(":c0002")
+            and str(campaign_id or "").strip()
+        ):
+            from printer_v1.discovery.later_cycle_fresh_inventory import (
+                load_campaign_fresh_moe_candidates,
+            )
+            from printer_v1.lifecycle.contracts import TokenLifecycleState
+            from printer_v1.lifecycle.tracking_queue import (
+                HANDOFF_COOLDOWN_REOPEN_REQUIRED,
+                assess_tracking_handoff_by_identity,
+            )
+
+            for candidate in load_campaign_fresh_moe_candidates(
+                connection, campaign_id=str(campaign_id), at=now
+            ):
+                mint = str(candidate["mint"])
+                pool = str(candidate["pumpswap_pool"])
+                if mint in campaign_eligible:
+                    continue
+                assessment = assess_tracking_handoff_by_identity(
+                    connection,
+                    token_mint=mint,
+                    pair_address=pool,
+                    tracking_lane=TokenLifecycleState.TRACK_NORMAL,
+                    assessed_at=started_at,
+                )
+                disposition = {
+                    "category": assessment.category,
+                    "eligible_for_evidence": assessment.eligible,
+                    "tracking_queue_id": assessment.queue_id,
+                    "tracking_queue_status": assessment.queue_status,
+                    "requalification_required": assessment.requalification_eligible,
+                    "cooldown_until": assessment.cooldown_until,
+                    "historical_cooldown_expiry_derived": (
+                        assessment.historical_cooldown_expiry_derived
+                    ),
+                }
+                tracking_dispositions[mint] = disposition
+                evaluated_mints.add(mint)
+                if not assessment.eligible:
+                    reason = str(assessment.reason_code or assessment.category)
+                    rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
+                    if reason == HANDOFF_COOLDOWN_REOPEN_REQUIRED:
+                        cooldown_skips += 1
+                    rejected = dict(candidate)
+                    rejected.update(
+                        eligible=False,
+                        rejection=reason,
+                        tracking_handoff=disposition,
+                    )
+                    all_candidates.append(rejected)
+                    continue
+                accepted = dict(candidate)
+                accepted["tracking_handoff"] = disposition
+                campaign_eligible[mint] = accepted
+                all_candidates.append(accepted)
+
         if permanent_availability and (
             not cooperative_quantum
             or cooperative_phase == "AUXILIARY_FRESH_INTAKE"
@@ -1697,7 +1761,15 @@ def run_persistent_eligible_token_supply(
         acquisition_ledger: AcquisitionLedger | None = None
         if temporal_refresh_owner is not None:
             acquisition_ledger = AcquisitionLedger(
-                started_at=now,
+                # Preserve the original bounded attempt clock across cooperative
+                # quanta. The deadline is authoritative and the duration is fixed.
+                started_at=(
+                    (deadline_dt - timedelta(
+                        seconds=PRE_LIFECYCLE_ACQUISITION_DURATION_SECONDS
+                    )).isoformat()
+                    if deadline_dt is not None
+                    else now
+                ),
                 acquisition_deadline_at=str(
                     deadline_at
                     or _utc_now_iso()
@@ -2598,6 +2670,33 @@ def run_persistent_eligible_token_supply(
                     protocol_report.get("remaining_due")
                 ):
                     stage_budget.seal("protocol_confirmation")
+
+        # Before certifying a shortage in cooperative later-cycle mode,
+        # give the durable temporal owner one chance to own the next lawful
+        # 600-second refresh. This is a Scheduler yield, not a retry.
+        remaining_refresh_window = False
+        if (
+            cooperative_quantum
+            and temporal_refresh_owner is not None
+            and acquisition_ledger is not None
+            and len(campaign_eligible) < required_token_capacity
+            and last_stop_reason not in {
+                WAITING_FOR_ELIGIBLE_SUPPLY,
+                ACQUISITION_QUANTUM_YIELDED,
+            }
+            and _ops_remaining() > 0
+        ):
+            remaining = _duration_remaining()
+            interval = int(
+                getattr(temporal_refresh_owner, "refresh_interval_seconds", 600)
+            )
+            remaining_refresh_window = bool(
+                remaining is not None and remaining > float(interval)
+            )
+            if remaining_refresh_window:
+                _request_temporal_refresh(
+                    "NO_ADDITIONAL_UNIQUE_CANDIDATES_REACHABLE"
+                )
 
         eligible_list = list(campaign_eligible.values())
         # Deterministic non-ranked order by mint identity for handoff stability.

@@ -1229,13 +1229,35 @@ def close_current_run_4h(
 
 
 def run_4h_quality_gates(db_path: str, window_id: int) -> dict[str, Any]:
-    """Run E2Q then Lane Q then Lane K clean creation, in that order."""
+    """Persist U2 coverage, then run E2Q, Lane Q and E2Z clean creation."""
+    from printer_v1.operator_cli.lane_u2_coverage_audit_persistence import (
+        LANE_U2_STATUS_COMPLETED,
+        persist_coverage_for_windows,
+    )
     from printer_v1.operator_cli.e2q_memory_window_audit import (
         E2Q_STATUS_CLEAN_CANDIDATE,
         audit_15m_memory_window,
     )
     from printer_v1.operator_cli.e2z_clean_memory_creation import create_clean_memory_from_window
     from printer_v1.operator_cli.lane_q_15m_window_integrity_guard import guard_candidate_windows
+
+    lane_u2 = persist_coverage_for_windows(
+        db_path,
+        [window_id],
+        operator_approved=True,
+        production_mode=True,
+    )
+    if (
+        lane_u2.get("lane_u2_status") != LANE_U2_STATUS_COMPLETED
+        or window_id not in lane_u2.get("coverage_pass_ids", [])
+    ):
+        return {
+            "lane_k_status": "LANE_K_BLOCKED",
+            "lane_u2": lane_u2,
+            "e2q": None,
+            "lane_q": None,
+            "memory": None,
+        }
 
     connection = sqlite3.connect(db_path)
     connection.row_factory = sqlite3.Row
@@ -1263,12 +1285,12 @@ def run_4h_quality_gates(db_path: str, window_id: int) -> dict[str, Any]:
         or e2q.get("e2q_status") != E2Q_STATUS_CLEAN_CANDIDATE
         or window_id not in lane_q.get("valid_window_ids", [])
     ):
-        return {"lane_k_status": "LANE_K_BLOCKED", "e2q": e2q, "lane_q": lane_q, "memory": None}
+        return {"lane_k_status": "LANE_K_BLOCKED", "lane_u2": lane_u2, "e2q": e2q, "lane_q": lane_q, "memory": None}
     memory = create_clean_memory_from_window(
         db_path, window_id, operator_approved=True, individual_promotion=True,
         lane_q_report=lane_q,
     )
-    return {"lane_k_status": "LANE_K_COMPLETED", "e2q": e2q, "lane_q": lane_q, "memory": memory}
+    return {"lane_k_status": "LANE_K_COMPLETED", "lane_u2": lane_u2, "e2q": e2q, "lane_q": lane_q, "memory": memory}
 
 
 def reconcile_4h_terminal_lifecycle(

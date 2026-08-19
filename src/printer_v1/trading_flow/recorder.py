@@ -23,6 +23,9 @@ from printer_v1.trading_flow.classifier import (
     classify_wallet_participation,
 )
 from printer_v1.trading_flow.parser import normalize_trading_flow_payload, to_timestamp
+from printer_v1.trading_flow.evidence_completeness import (
+    plan_optional_wallet_flow_enrichment,
+)
 
 
 INSERT_FIELDS = (
@@ -192,6 +195,18 @@ def record_trading_flow_snapshot(
     normalized["wallet_participation_label"] = classify_wallet_participation(normalized).value
     normalized["trading_flow_payload_quality_label"] = payload_quality.value
     normalized["flow_memory_gate_label"] = classify_flow_memory_gate(normalized, current_time).value
+    # Current approved pair-snapshot sources do not deterministically expose
+    # unique wallets or split buy/sell volume. Record that the optional gap was
+    # evaluated rather than silently ignoring it. A future approved free
+    # enricher can flip the availability input without changing clean-memory
+    # eligibility or inventing values.
+    normalized["optional_wallet_flow_enrichment"] = (
+        plan_optional_wallet_flow_enrichment(
+            normalized,
+            approved_free_enricher_available=False,
+            source_budget_available=True,
+        ).to_dict()
+    )
 
     with connect(db_path_or_conn) as connection:
         resolve_token_pair_fields(connection, normalized)
