@@ -1,8 +1,8 @@
 name: Temporary PR191 exception compatibility proof
 on:
-  push:
+  pull_request:
     branches:
-      - agent/v2-9-8b-cycle2-historical-proof-carrier-provenance-repair
+      - agent/tmp-pr191-exception-compat-base
 jobs:
   proof:
     runs-on: ubuntu-latest
