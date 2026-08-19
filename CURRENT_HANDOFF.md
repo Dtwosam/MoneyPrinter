@@ -4,97 +4,140 @@ Date: 2026-08-19
 
 ## Current lane
 
-`V2-9.8B Multi-Cycle Campaign Projection Terminal-Finalization Independent Closeout / Operator Review of PR #190`
+`V2-9.8B Post-Multi-Cycle-Finalization-Repair Two-Cycle Four-Token Operational 4/2/2 Authoritative Readiness`
 
 Status: `CLOSED_PASS`
 
 Verdict:
 
-`V2_9_8B_MULTICYCLE_CAMPAIGN_PROJECTION_TERMINAL_FINALIZATION_REPAIR_INDEPENDENT_CLOSEOUT_PASS`
+`V2_9_8B_POST_MULTICYCLE_FINALIZATION_REPAIR_TWO_CYCLE_FOUR_TOKEN_OPERATIONAL_4_2_2_AUTHORITATIVE_READINESS_PASS`
 
-This PASS independently closes the repair review only. It does not authorize Printer, create or reuse an authorization, run providers, merge PR #190 automatically, or unlock any protected capability.
+This PASS permits a separate fresh authorization-preparation/review lane only. It does not authorize Printer execution, create or reuse an authorization, contact providers, mutate the authoritative DB, or unlock any protected capability.
 
-## What is independently proven
+## Latest completed work
 
-The deterministic multi-cycle campaign-acceptance AttributeError is repaired with the approved ownership split:
+PR #190 was lawfully adopted after independent closeout PASS.
 
-- `CampaignSixUnitProjection` remains read-only and has no `ingest_stage_evidence` authority.
-- Missing sealed `WINDOW_15M` terminal-stage evidence is ingested only into the exact supplied mutable `CampaignSixUnitOwner`.
-- The campaign projection is rebuilt after lawful mutable preparation.
-- Projection-without-mutable-owner fails closed as `MULTI_CYCLE_STAGE_EVIDENCE_OWNER_REQUIRED` instead of `AttributeError`.
-- Projection-without-required-rebuild-factory fails closed before mutable-owner mutation as `MULTI_CYCLE_PROJECTION_REBUILD_REQUIRED`.
-- Cross-cycle routing remains fail-closed through owner identity checks.
-- Single-cycle behavior remains on the ordinary mutable owner path.
+PR #190 state:
 
-The permanent focused regression behaviorally exercises the repair, including the original `_apply_full_run_campaign_acceptance(...)` seam.
+- closed;
+- merged;
+- exact independently reviewed head: `8f7e337ea0e6bce995ab1d0027a78e0272c9f9e2`;
+- exact merge commit: `f40210f439d3e8366369e7c919dc9dd011868cb3`.
 
-## Branch / PR state
+The merge used an exact-head guard. Comparison from reviewed head `8f7e337e...` to merge commit `f40210f...` reports zero changed files.
 
-Branch:
+The adoption closeout is:
 
-`agent/v2-9-8b-multicycle-campaign-projection-finalization-repair`
+`docs/printer-v1-v2-9-8b-multicycle-campaign-projection-terminal-finalization-operator-adoption-merge-closeout.md`
 
-PR:
+The fresh post-repair readiness closeout is:
 
-`#190` — open, draft, mergeable, not merged at independent review.
+`docs/printer-v1-v2-9-8b-post-multicycle-finalization-repair-two-cycle-four-token-operational-4-2-2-authoritative-readiness.md`
 
-Implementation-closeout HEAD independently reviewed:
+## Executable baseline
 
-`189c996bccb7cf2dd8620b0310c8cbae2dc720ad`
+The sole executable product/runtime baseline for the next lane is:
 
-Independent closeout document:
+`f40210f439d3e8366369e7c919dc9dd011868cb3`
 
-`docs/printer-v1-v2-9-8b-multicycle-campaign-projection-terminal-finalization-repair-independent-closeout.md`
+Documentation-only commits on branch:
 
-Independent closeout document commit:
+`docs/v2-9-8b-post-multicycle-finalization-repair-4-2-2-authoritative-readiness`
 
-`c5ef3a678f0cbcac63fb6501e60f1196868f03e1`
+do not replace `f40210f...` as executable authority.
 
-PR base:
+## Readiness result
 
-`3c81b7b0cda9256e1d1e14eb5970cda2554d4692`
+The prior post-corrective readiness blocker is repaired:
 
-The PR base is two documentation-only commits ahead of executable corrective merge `e8979e9c7e44e3165aa471827cecc407604895c0`; executable ancestry is intact.
+- `CampaignSixUnitProjection` remains read-only;
+- missing sealed terminal evidence is ingested only through the exact mutable cycle owner;
+- projection is rebuilt after lawful preparation;
+- missing owner fails closed as `MULTI_CYCLE_STAGE_EVIDENCE_OWNER_REQUIRED`;
+- missing required projection factory fails closed before mutation as `MULTI_CYCLE_PROJECTION_REBUILD_REQUIRED`;
+- the previous `AttributeError` campaign-acceptance fault is behaviorally covered and no longer the finalization contract.
+
+The earlier Cycle-2/memory/flow corrective program remains intact because PR #190 changed only:
+
+- `src/printer_v1/operator_cli/campaign_full_run_accounting.py`;
+- `src/printer_v1/operator_cli/operational_memory_factory_command.py`.
+
+No discovery/freeze/selection/continuation/memory/wallet-flow scheduling authority changed.
+
+4/2/2 remains:
+
+- 4 tokens total through 4h;
+- 2 cycles;
+- 2 fresh slots per cycle;
+- maximum 2 simultaneous active tokens;
+- freeze minimum depth 4;
+- 2400s pre-lifecycle acquisition;
+- 18000s post-supply lifecycle;
+- 20400s finite envelope;
+- 300s minimum cycle spacing;
+- zero automatic retries;
+- no endpoint rotation;
+- 5m support-only;
+- 12h/24h locked.
 
 ## Proof status
 
-Implementation closeout records:
+Repair implementation closeout:
 
-- focused committed-source repair suite: `8 passed`;
+- focused suite: `8 passed`;
 - adjacent bounded suite: `122 passed`, `7 failed`, `6 subtests passed`;
-- compile/import of both production owners: OK;
+- touched-module compile/import: OK;
 - `git diff --check`: clean.
 
-Independent classification of the seven failures:
+Independent review classified all seven failures as:
 
 `BASELINE_ONLY_MIGRATION_HEAD_TEST_DRIFT`
 
-The unchanged legacy test `tests/test_v2_9_8b_campaign_accounting_terminal_enforcement.py` asserts migration head `050`. The PR base already contains canonical migrations through `058_direct_pump_migration_cursor.sql`. PR #190 changes neither that test nor migrations, so the seven failures are not causal to this repair.
+The unchanged legacy campaign-accounting test expects migration head `050`; the PR base already had canonical head `058_direct_pump_migration_cursor.sql`. The repair changed neither the legacy test nor migrations.
 
-Temporary apply/workflow scaffolding has been removed; the permanent behavioral regression remains.
+No causal repair regression remains proven.
 
-## Residual debt
+## Authoritative DB boundary
 
-- `PRE_EXISTING_HOLDER_BUDGET_TEST_DEBT`
-- `NON_CAUSAL_REPORTING_EVIDENCE_GAPS`
-- legacy migration-head assertions in `test_v2_9_8b_campaign_accounting_terminal_enforcement.py` remain stale at `050` versus canonical `058`; baseline-only and not repaired opportunistically here.
+This readiness did not fabricate a fresh operator-machine DB hash/inode/zero-state check. No Printer campaign or authoritative DB mutation occurred during the corrective, projection-repair, proof, independent-review, adoption, or this readiness sequence.
+
+The next authorization-preparation lane MUST freshly read and bind the current authoritative DB identity, migration count/head, integrity/foreign-key state, sidecar state and zero active work before any fresh authorization package can exist.
+
+Any mismatch must fail closed.
+
+## Consumed historical authorization
+
+All historical four-token authorizations remain consumed, immutable and permanently non-reusable.
+
+No new authorization exists.
+
+## Residual debt / honest limitations
+
+- `PRE_EXISTING_HOLDER_BUDGET_TEST_DEBT`;
+- `NON_CAUSAL_REPORTING_EVIDENCE_GAPS` unrelated to the repaired projection fault;
+- stale legacy migration-head assertions expecting 050 instead of 058;
+- future market supply can honestly fail freeze depth 4 or Cycle-2 fresh/disjoint supply;
+- optional wallet/flow evidence can remain honestly UNKNOWN when unsupported by approved free deterministic evidence.
+
+These must not be misrepresented as repaired or as guaranteed future success.
 
 ## Locks
 
 Solana-only; Solana memecoin-only; paper-only. No live wallet/private keys/signing/real funds/live execution. No paid APIs. No scoring/ranking/confidence/weighted logic. No embeddings/vectors. No Source Governor or Central Scheduler bypass. No dirty-memory retrieval/decision use. Retrieval, BUY/SELL/HOLD, positions, trades, audits and PnL remain locked. `WINDOW_5M_MICRO_EVENT` remains support-only. 12h/24h remain locked. No Migration 059.
 
-All historical four-token authorizations remain consumed, immutable, and non-reusable. No new authorization exists. Printer was not run and no authoritative runtime DB mutation or provider contact occurred during this repair/independent-review sequence.
-
 ## Exact next permitted action
 
-`V2-9.8B Multi-Cycle Campaign Projection Terminal-Finalization Operator Adoption / Merge Review of PR #190`
+`V2-9.8B Post-Multi-Cycle-Finalization-Repair Two-Cycle Four-Token Operational 4/2/2 Fresh Authorization Preparation`
 
-That review must verify exact PR head, ancestry, independent PASS, mergeability, and adoption target before any merge.
+That lane must bind executable commit:
 
-Do **not** create or reuse an authorization from this handoff.
+`f40210f439d3e8366369e7c919dc9dd011868cb3`
+
+and must freshly bind the authoritative DB before creating any authorization.
+
+Do **not** reuse historical authorization.
 Do **not** run Printer from this handoff.
-Do **not** treat this PASS as post-repair 4/2/2 authorization readiness.
-
-If PR #190 is lawfully adopted/merged, the resulting exact executable merge commit must enter a fresh post-repair two-cycle/four-token authoritative readiness lane before any authorization-preparation lane.
+Do **not** treat readiness PASS as campaign execution authority.
 
 The active authority stack wins any conflict with this handoff.
