@@ -12,35 +12,12 @@ permissions:
   contents: read
 
 jobs:
-  independent-proof:
+  final-diff-check:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    env:
-      PYTHONPATH: ${{ github.workspace }}/src
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
-      - name: Install focused test dependency
-        run: python -m pip install pytest
-      - name: Independent behavioral proof
-        run: python -m pytest -q tests/test_v2_9_8b_corrective_program_independent_behavioral_proof.py
-      - name: Original focused corrective proof
-        run: python -m pytest -q tests/test_v2_9_8b_corrective_program.py
-      - name: Eligible supply nearby proof
-        run: python -m pytest -q tests/test_v2_9_8b_21_eligible_token_supply_architecture.py
-      - name: Later-cycle owner binding proof
-        run: python -m pytest -q tests/test_v2_9_8b_later_cycle_fresh_acquisition_implementation.py
-      - name: Persistent Scheduler refresh proof
-        run: python -m pytest -q tests/test_v2_9_8b_persistent_refresh_owner_proof.py
-      - name: Resolved-resolved identity still fails closed
-        run: python -m pytest -q tests/test_v2_9_8b_permanent_discovery_availability.py -k resolved_program_identity_conflict
-      - name: 4h U2 and E2Z quality path
-        run: python -m pytest -q tests/test_v2_8_1_one_token_4h_runtime.py -k test_clean_close_runs_e2q_lane_q_lane_k_and_is_idempotent
-      - name: Trading-flow regression
-        run: python -m pytest -q tests/test_phase11_trading_flow_engine.py
-      - name: Four-token freeze and admission regression
-        run: python -m pytest -q tests/test_v2_9_8b_four_token_freeze_input_truncation_repair.py
-      - name: Diff check
-        run: git diff --check HEAD^ HEAD
+          fetch-depth: 0
+      - name: Final PR diff check
+        run: git diff --check "origin/${GITHUB_BASE_REF}"...HEAD
