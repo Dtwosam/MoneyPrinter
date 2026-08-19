@@ -6,17 +6,17 @@ Date: 2026-08-19
 
 `V2-9.8B Post-Repair Two-Cycle/Four-Token Authoritative Readiness`
 
-Status: `READY_FOR_READINESS_AUDIT`
+Status: `CLOSED_PASS`
 
-PR #191 adoption is complete. This handoff advances only to the fresh post-repair 4/2/2 authoritative readiness lane required by the active source stack. It does not authorize Printer, create/reuse an authorization, run a campaign, or unlock any protected capability.
+Verdict:
 
-## Adopted target
+`V2_9_8B_POST_REPAIR_FOUR_TOKEN_AUTHORITATIVE_READINESS_PASS`
 
-Merged PR:
+This PASS closes only the fresh post-repair 4/2/2 readiness audit. It does not create an authorization, run Printer, reuse a consumed authorization, or prove runtime campaign success.
 
-`#191` — `V2-9.8B Cycle-2 historical proof carrier repair`
+## Exact executable authority
 
-Approved base branch:
+Approved product branch:
 
 `agent/v2-9-8b-four-token-4-2-2-freeze-input-versus-two-slot-truncation-repair-implementation`
 
@@ -24,74 +24,113 @@ Exact adopted executable merge commit:
 
 `ffd0ceec0492dc27c0ae703c5dbcbd1b191eca06`
 
-Merged PR head:
+Merged PR:
 
-`3bc4b02ffa8dc903c31769bf44f4a598ebcb820e`
+`#191` — `V2-9.8B Cycle-2 historical proof carrier repair`
 
-Original approved executable base / merge base:
+Original approved executable base / merge base before PR #191:
 
 `f40210f439d3e8366369e7c919dc9dd011868cb3`
 
-Independent adoption verdict:
+Readiness audit document:
 
-`V2_9_8B_CYCLE2_PR191_INDEPENDENT_REREVIEW_OPERATOR_ADOPTION_PASS`
+`docs/printer-v1-v2-9-8b-post-repair-four-token-authoritative-readiness.md`
 
-The post-merge handoff commit is documentation-only and is not a substitute executable authority for the adopted merge commit above.
+Readiness document commit:
 
-## Adopted corrective scope
+`f302f231330666cec3b5849366440708dfc1a967`
 
-The adopted repair preserves the proven bounded behavior:
+Documentation/handoff successors are not substitute executable authority. The executable target remains `ffd0ceec0492dc27c0ae703c5dbcbd1b191eca06`.
 
-1. exact historical `PUMPSWAP_GRADUATED_CONFIRMED` candidates may rejoin immutable direct-Pump/PumpSwap graduation proof after current market refresh without same-cycle rediscovery;
-2. rejoin remains exact mint+pool and fails closed on mismatch/corrupt immutable proof;
-3. fresh `MARKET_PRESENT_POOL` remains non-Pump and unchanged;
-4. bounded durable graduated-supply diagnostic context does not change categorical Scheduler/pre-admission control behavior;
-5. public/base `GraduatedSupplyError` compatibility is preserved;
-6. approved graduated-supply and Scheduler base owners remain preserved byte-for-byte behind bounded adapters.
+## Readiness conclusion
 
-Bounded proof already completed before adoption:
+No new code blocker was proven in the exact adopted path.
+
+The audit verified the current code/control boundaries for:
+
+1. governed fresh Cycle-2 supply and truthful failure-domain classification;
+2. PR #191 historical direct-Pump/PumpSwap immutable proof rejoin;
+3. fresh `MARKET_PRESENT_POOL` remaining non-Pump and unchanged;
+4. exact-pool `$3,000` liquidity admission;
+5. freeze-before-selection with the existing minimum depth 4 contract;
+6. neutral deterministic two-or-none selection without scoring/ranking/confidence/weights;
+7. exact Cycle-1/Cycle-2 disjointness and canonical pool/market identity binding;
+8. exact Central Scheduler ownership of pre-admission work;
+9. atomic Cycle-2 admission and same-transaction attempt consumption;
+10. exact frozen-pair materialization with no reselection;
+11. `WINDOW_15M` root and token-local `15m -> 1h -> 4h` continuation;
+12. safety UNKNOWN coverage semantics;
+13. `WINDOW_5M_MICRO_EVENT` support-only isolation;
+14. 12h/24h locks;
+15. one-shot/no-retry/no-rerun/no-resume/no-restart/no-successor controls.
+
+## Safety semantics preserved
+
+`LIQUIDITY_LOCK_OR_BURN_UNKNOWN` and `KNOWN_RISK_FLAGS_UNKNOWN` remain source-coverage-pending rather than mandatory hard blockers when the other hard safety/provenance requirements pass.
+
+Explicit `LIQUIDITY_UNLOCKED_OR_DANGEROUS` and explicit `KNOWN_RISK_FLAGS_PRESENT` remain hard blockers.
+
+Unknown coverage is not labeled `SAFETY_CLEAN` and is not trading approval.
+
+## Proof status
+
+Pre-adoption exact-blob proof inherited by the adopted merge:
 
 - Cycle-2 corrective suites: `8 passed`;
 - existing Scheduler compatibility suite: `25 passed`;
 - production compile: PASS;
 - `git diff --check`: clean.
 
-This proof supports adoption only. It is not a substitute for the fresh post-repair authoritative readiness required next.
+The adopted merge commit currently has no separate GitHub combined-status entries. No full post-repair 4/2/2 campaign was run in this readiness lane.
 
-## 4/2/2 readiness contract
+Therefore:
 
-The fresh readiness lane must evaluate the exact adopted executable commit against the existing V2-9.8B contract:
+- code/control readiness: GREEN;
+- runtime 4/2/2 completion proof: still intentionally pending a separately authorized fresh campaign.
+
+## Finding classification
+
+- A — proven code defect: **NONE FOUND**;
+- B — source scarcity: **NOT PROVEN**;
+- C — provider limitation: **NO NEW BLOCKING LIMITATION PROVEN**;
+- D — honest market block: **NOT PROVEN**;
+- E — missing evidence/proof: **full post-repair 4/2/2 runtime proof remains pending**.
+
+Future runtime source scarcity, provider failure, or honest market shortage must remain truthful outcomes and must not be bypassed or rewritten as code defects.
+
+## 4/2/2 contract
 
 - 4 total tokens;
 - 2 cycles;
 - 2 tokens per cycle;
 - maximum 2 simultaneously active;
-- Cycle 2 identities fresh and disjoint from Cycle 1;
+- Cycle 2 fresh/disjoint from Cycle 1;
 - freeze minimum depth 4;
 - liquidity floor `$3,000`;
-- spacing `300s`;
-- `15m` root with lawful `15m -> 1h -> 4h` continuation;
+- minimum spacing `300s`;
+- `WINDOW_15M` root;
+- lawful `WINDOW_15M -> WINDOW_1H -> WINDOW_4H`;
 - `WINDOW_5M_MICRO_EVENT` support-only;
 - retries `0`;
 - endpoint rotation `false`;
 - one-shot only.
 
-The readiness lane must distinguish proven code defects from source scarcity, provider limitations, honest market blocks, and missing evidence. It must not weaken evidence/safety rules or invent a successor authorization.
-
 ## Locks
 
 Solana-only; Solana memecoin-only; paper-only. No live wallet/private keys/signing/real funds/live execution. No paid API dependency. No scoring/ranking/confidence/weighted logic. No embeddings/vectors. No Source Governor or Central Scheduler bypass. No dirty-memory retrieval/decision use. Retrieval, BUY/SELL/HOLD, positions, trade events, paper audits and PnL remain locked. `WINDOW_5M_MICRO_EVENT` remains support-only. 12h/24h remain locked. No Migration 059.
 
-Known-risk flag is not mandatory for `15m -> 1h` or `1h -> 4h`. Liquidity-lock/burn evidence is not mandatory. Wallet/trading-flow completeness is not a current pre-admission hard blocker.
+Wallet/trading-flow completeness remains useful but is not a current pre-admission hard blocker.
 
-All historical four-token authorizations remain consumed, immutable, and non-reusable. No new authorization exists. Printer was not run during adoption.
+All historical four-token authorizations remain consumed, immutable, and non-reusable. No new authorization exists. Printer was not run during readiness.
 
 ## Exact next permitted action
 
-`Fresh V2-9.8B post-repair two-cycle/four-token authoritative readiness audit against adopted executable commit ffd0ceec0492dc27c0ae703c5dbcbd1b191eca06.`
+`Fresh V2-9.8B 4/2/2 authorization-preparation lane for executable commit ffd0ceec0492dc27c0ae703c5dbcbd1b191eca06.`
 
-Do **not** create or reuse an authorization before that readiness closes GREEN.
+That next lane may prepare a genuinely new one-shot authorization only after its own bounded preparation checks pass.
+
+Do **not** reuse, rerun, resume, restart, or create a successor to any consumed authorization.
 Do **not** run Printer from this handoff.
-Do **not** treat PR #191 adoption as authorization readiness.
+Do **not** treat readiness PASS as runtime-success proof.
 
 The active authority stack wins any conflict with this handoff.
