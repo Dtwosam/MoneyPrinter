@@ -51,6 +51,7 @@ def test_fresh_moe_rehydration_is_campaign_scoped_and_exact() -> None:
     assert rows[0]["mint"] == "SOLBULL"
     assert rows[0]["admission_authority"] == "MARKET_PRESENT_POOL"
     assert rows[0]["memory_observation_eligible"] is True
+    assert rows[0]["source_path"] == "campaign_fresh_protocol_confirmed_moe_rehydration"
     assert load_campaign_fresh_moe_candidates(c, campaign_id="campaign-2", at="2026-08-18T23:40:00+00:00") == []
 
 
@@ -93,14 +94,18 @@ def test_optional_wallet_flow_collection_is_accounted_without_becoming_clean_blo
 def test_cycle2_fresh_moe_is_wired_into_persistent_supply() -> None:
     text = (ROOT / "src/printer_v1/discovery/eligible_token_supply.py").read_text()
     assert "load_campaign_fresh_moe_candidates" in text
-    assert "campaign_fresh_protocol_confirmed_moe_rehydration" in text
+    assert "for candidate in load_campaign_fresh_moe_candidates(" in text
     assert 'endswith(":c0002")' in text
+    assert "assess_tracking_handoff_by_identity" in text
+    assert "campaign_eligible[mint] = accepted" in text
 
 
 def test_cycle2_temporal_ledger_uses_full_attempt_horizon_and_yields_refresh() -> None:
     text = (ROOT / "src/printer_v1/discovery/eligible_token_supply.py").read_text()
-    assert "timedelta(seconds=PRE_LIFECYCLE_ACQUISITION_DURATION_SECONDS)" in text
+    assert "deadline_dt - timedelta(" in text
+    assert "seconds=PRE_LIFECYCLE_ACQUISITION_DURATION_SECONDS" in text
     assert "remaining_refresh_window" in text
+    assert '_request_temporal_refresh(' in text
 
 
 def test_weaker_unresolved_identity_cannot_demote_resolved_programs() -> None:
