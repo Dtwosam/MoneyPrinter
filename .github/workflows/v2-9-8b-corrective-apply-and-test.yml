@@ -4,13 +4,15 @@ on:
   push:
     branches:
       - agent/v2-9-8b-corrective-program-cycle2-memory-flow
+  pull_request:
+    branches:
+      - agent/v2-9-8b-four-token-4-2-2-freeze-input-versus-two-slot-truncation-repair-implementation
 
 permissions:
   contents: write
 
 jobs:
   corrective:
-    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -34,6 +36,7 @@ jobs:
             tests/test_v2_8_1_one_token_4h_runtime.py \
             tests/test_v2_9_4_7_trading_flow_optional_fields.py
       - name: Commit implementation
+        if: github.event_name == 'push'
         run: |
           if git diff --quiet; then
             echo 'No patch delta to commit'
