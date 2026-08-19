@@ -1,0 +1,27 @@
+name: V2-9.8B Multi-Cycle Projection Repair Proof
+
+on:
+  pull_request:
+    branches:
+      - agent/v2-9-8b-four-token-4-2-2-freeze-input-versus-two-slot-truncation-repair-implementation
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  focused-proof:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install test dependency
+        run: python -m pip install pytest
+      - name: RED or GREEN focused repair proof
+        env:
+          PYTHONPATH: src
+        run: python -m pytest -q tests/test_v2_9_8b_multicycle_campaign_projection_finalization_repair.py
