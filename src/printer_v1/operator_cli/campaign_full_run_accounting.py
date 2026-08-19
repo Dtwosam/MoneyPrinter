@@ -45,6 +45,7 @@ from printer_v1.operator_cli.campaign_supervision import (
 from printer_v1.sources.campaign_six_unit_accounting import (
     CampaignActionLocalLedger,
     CampaignSixUnitOwner,
+    CampaignSixUnitProjection,
     build_campaign_stage_id,
     reconcile_full_run_owner_to_action_local,
     seal_campaign_stage_evidence,
@@ -2558,11 +2559,73 @@ def _resolve_lifecycle_scheduler_owner_disposition(
     return "VERIFIED", None
 
 
+def prepare_full_run_accounting_owner(
+    accounting_owner: CampaignSixUnitOwner | CampaignSixUnitProjection,
+    *,
+    sealed_stage_evidences: Sequence[Mapping[str, Any]],
+    stage_evidence_owner: CampaignSixUnitOwner | None = None,
+    accounting_projection_factory: Callable[[], CampaignSixUnitProjection] | None = None,
+) -> CampaignSixUnitOwner | CampaignSixUnitProjection:
+    """Complete mutable stage ownership before read-only campaign projection.
+
+    Single-cycle callers keep the historical behavior: the accounting owner is
+    the mutable stage owner. Multi-cycle callers must supply the exact mutable
+    cycle owner for any missing stages and a projection factory so reconciliation
+    sees a fresh read-only aggregate after those stages are committed.
+    """
+    mutable_owner = stage_evidence_owner
+    is_projection = isinstance(accounting_owner, CampaignSixUnitProjection)
+    missing_stage_evidence = False
+
+    if mutable_owner is None:
+        if is_projection:
+            for evidence in sealed_stage_evidences:
+                stage_id = str(evidence.get("stage_id") or "").strip()
+                if not stage_id:
+                    raise FullRunAccountingError("FULL_RUN_STAGE_EVIDENCE_ID_MISSING")
+                if stage_id not in accounting_owner.ingested_stage_ids:
+                    missing_stage_evidence = True
+                    break
+            if missing_stage_evidence:
+                raise FullRunAccountingError(
+                    "MULTI_CYCLE_STAGE_EVIDENCE_OWNER_REQUIRED"
+                )
+            accounting_owner.close()
+            return accounting_owner
+        mutable_owner = accounting_owner
+
+    ingested_new_stage = False
+    for evidence in sealed_stage_evidences:
+        stage_id = str(evidence.get("stage_id") or "").strip()
+        if not stage_id:
+            raise FullRunAccountingError("FULL_RUN_STAGE_EVIDENCE_ID_MISSING")
+        if stage_id not in mutable_owner.ingested_stage_ids:
+            mutable_owner.ingest_stage_evidence(evidence)
+            ingested_new_stage = True
+    mutable_owner.close()
+
+    if is_projection:
+        if accounting_projection_factory is None:
+            if ingested_new_stage:
+                raise FullRunAccountingError(
+                    "MULTI_CYCLE_PROJECTION_REBUILD_REQUIRED"
+                )
+            return accounting_owner
+        refreshed = accounting_projection_factory()
+        if not isinstance(refreshed, CampaignSixUnitProjection):
+            raise FullRunAccountingError(
+                "MULTI_CYCLE_PROJECTION_REBUILD_INVALID"
+            )
+        return refreshed
+
+    return mutable_owner
+
+
 def finalize_full_run_ownership_and_report(
     connection: sqlite3.Connection,
     *,
     context: OperationalLifecycleOwnershipContext,
-    owner: CampaignSixUnitOwner,
+    owner: CampaignSixUnitOwner | CampaignSixUnitProjection,
     action_local: CampaignActionLocalLedger,
     execution_id: str,
     supervision_id: Any,
@@ -2574,6 +2637,8 @@ def finalize_full_run_ownership_and_report(
     queue_dispositions: Mapping[int, str] | None = None,
     forbidden_capability_deltas: Mapping[str, int] | None = None,
     four_token_proof_owned: bool = False,
+    stage_evidence_owner: CampaignSixUnitOwner | None = None,
+    accounting_projection_factory: Callable[[], CampaignSixUnitProjection] | None = None,
     now: str | None = None,
 ) -> dict[str, Any]:
     """Register ownership, seal accounting, reconcile, report, and gate a run.
@@ -2874,6 +2939,7 @@ def finalize_full_run_ownership_and_report(
 
     sealed_transport_count = 0
     lifecycle_source_request_count = 0
+    sealed_slot_stage_evidences: list[Mapping[str, Any]] = []
     for ordinal in (1, 2):
         steps = by_ordinal.get(ordinal) or []
         if not steps:
@@ -3037,10 +3103,14 @@ def finalize_full_run_ownership_and_report(
             lifecycle_reservation_identities=ress,
             local_validation_identities=vals,
         )
-        if stage_id not in owner.ingested_stage_ids:
-            owner.ingest_stage_evidence(sealed)
+        sealed_slot_stage_evidences.append(sealed)
 
-    owner.close()
+    owner = prepare_full_run_accounting_owner(
+        owner,
+        sealed_stage_evidences=sealed_slot_stage_evidences,
+        stage_evidence_owner=stage_evidence_owner,
+        accounting_projection_factory=accounting_projection_factory,
+    )
 
     # Fail-closed transport proof: a lifecycle-started run whose lifecycle steps
     # made source requests can never seal zero source transport identities.
@@ -3438,6 +3508,7 @@ __all__ = [
     "evaluate_campaign_acceptance_gate",
     "evaluate_quality_consistency",
     "finalize_full_run_ownership_and_report",
+    "prepare_full_run_accounting_owner",
     "load_invocation_authority_evidence",
     "parse_durable_timestamp",
     "reservation_identities_for_step",
