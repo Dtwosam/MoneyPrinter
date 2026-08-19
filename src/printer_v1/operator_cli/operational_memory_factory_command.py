@@ -2846,6 +2846,8 @@ def _apply_full_run_campaign_acceptance(
     lifecycle_operation_records: Sequence[Mapping[str, Any]],
     forbidden_deltas: Mapping[str, int],
     accounting_owner: Any | None = None,
+    accounting_stage_evidence_owner: Any | None = None,
+    accounting_projection_factory: Any | None = None,
     action_local_ledger: Any | None = None,
     runtime_terminal_status: str | None = None,
     runtime_first_terminal_cause: str | None = None,
@@ -2918,6 +2920,8 @@ def _apply_full_run_campaign_acceptance(
                 cleanup_result=cleanup_result,
                 forbidden_capability_deltas=dict(forbidden_deltas or {}),
                 four_token_proof_owned=bool(four_token_proof_owned),
+                stage_evidence_owner=accounting_stage_evidence_owner,
+                accounting_projection_factory=accounting_projection_factory,
             )
         finally:
             connection.close()
@@ -4157,9 +4161,13 @@ def _run_operational_campaign(
             )
         )
         campaign_accounting_projection: Any = campaign_units
+        campaign_accounting_projection_factory: Any | None = None
         if len(cycle_accounting_registry.registered_cycle_ids) > 1:
+            campaign_accounting_projection_factory = (
+                cycle_accounting_registry.campaign_projection
+            )
             campaign_accounting_projection = (
-                cycle_accounting_registry.campaign_projection()
+                campaign_accounting_projection_factory()
             )
         # Repaired lifecycle acceptance finalizes the same coordinator-created
         # per-cycle owners through one derived campaign projection and the
@@ -4179,6 +4187,8 @@ def _run_operational_campaign(
             lifecycle_operation_records=lifecycle_operation_records,
             forbidden_deltas=dict(lifecycle.get("forbidden_deltas") or {}),
             accounting_owner=campaign_accounting_projection,
+            accounting_stage_evidence_owner=campaign_units,
+            accounting_projection_factory=campaign_accounting_projection_factory,
             action_local_ledger=action_local_ledger,
             runtime_terminal_status=(
                 "COMPLETED"
@@ -4189,6 +4199,10 @@ def _run_operational_campaign(
             cleanup_result=cleanup,
             four_token_proof_owned=four_token_proof_controller is not None,
         )
+        if campaign_accounting_projection_factory is not None:
+            campaign_accounting_projection = (
+                campaign_accounting_projection_factory()
+            )
         aggregated_six_unit_totals = (
             campaign_accounting_projection.six_unit_totals()
         )
