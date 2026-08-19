@@ -26,4 +26,5 @@ jobs:
           python -m pip install -e . pytest
       - name: Run focused Cycle-2 regression proof
         run: |
+          # Temporary RED proof for PR #191 only.
           pytest -q tests/test_v2_9_8b_cycle2_historical_proof_carrier_repair.py
