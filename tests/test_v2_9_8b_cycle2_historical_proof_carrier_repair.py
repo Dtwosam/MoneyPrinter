@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from printer_v1.db.migrate import apply_migrations
+import printer_v1.operator_cli.graduated_supply_front_door as supply_front_door
 from printer_v1.operator_cli.graduated_supply_front_door import (
     GraduatedSupplyError,
     _rehydrate_historical_direct_candidate,
@@ -106,19 +107,27 @@ def test_historical_registry_market_refresh_rejoins_direct_pump_proof(
     assert admission.signature == SIG
 
 
-def test_corrupt_historical_registry_proof_fails_closed(tmp_path: Path) -> None:
+def test_corrupt_historical_registry_proof_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Impossible/corrupt imported state is rejected; proof is never fabricated."""
     db = tmp_path / "corrupt-proof.sqlite3"
-    _seed_registry(db)
-    connection = sqlite3.connect(db)
-    try:
-        connection.execute(
-            "UPDATE printer_pumpswap_graduated_candidate_registry "
-            "SET migration_signature='' WHERE mint_identity=?",
-            (MINT,),
-        )
-        connection.commit()
-    finally:
-        connection.close()
+    apply_migrations(db)
+
+    corrupt_row = {
+        "mint_identity": MINT,
+        "migration_signature": "",
+        "pumpswap_pool": POOL,
+        "pumpswap_program_id": supply_front_door.PUMPSWAP_PROGRAM_ID,
+        "graduation_block_time": GRADUATION_BLOCK_TIME,
+        "graduation_slot": GRADUATION_SLOT,
+        "lifecycle_state": "PUMPSWAP_GRADUATED_CONFIRMED",
+    }
+    monkeypatch.setattr(
+        supply_front_door._base,
+        "lookup_graduated_candidate",
+        lambda _connection, mint: corrupt_row if mint == MINT else None,
+    )
 
     with pytest.raises(GraduatedSupplyError) as raised:
         _rehydrate_historical_direct_candidate(
