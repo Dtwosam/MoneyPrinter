@@ -1,0 +1,515 @@
+{
+  "authorization_file": {
+    "path": "operator-runs/v2-9-8b-four-token-standard-four-hour-final-authorization/V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260819T143940Z/final_authorization.json",
+    "sha256": "cbd512cb07cd40ea7a9dc75b884a8257e2739729acff905c42b197469a59afea"
+  },
+  "authorization_id": "V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260819T143940Z",
+  "authorized_command": {
+    "mode": "four-token-standard-four-hour-run",
+    "operator_approved": true
+  },
+  "created_at": "2026-08-19T14:39:40.173704+00:00",
+  "files": [
+    {
+      "package_kind": "FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_EVIDENCE",
+      "path": "operator-runs/v2-9-8b-four-token-standard-four-hour-final-authorization/V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260819T143940Z/final_authorization.json",
+      "sha256": "cbd512cb07cd40ea7a9dc75b884a8257e2739729acff905c42b197469a59afea",
+      "size": 3872
+    },
+    {
+      "package_kind": "MIGRATION_058_EVIDENCE",
+      "path": "operator-runs/v2-9-8b-migration-058-application/MIGRATION_058_20260818T082552Z/.gitignore",
+      "sha256": "32dae3052f331ee34d628ef535709b301259a45df7c7522c4d35dcf49873f00b",
+      "size": 13
+    },
+    {
+      "package_kind": "MIGRATION_058_EVIDENCE",
+      "path": "operator-runs/v2-9-8b-migration-058-application/MIGRATION_058_20260818T082552Z/README.md",
+      "sha256": "66100051757e7892e9b18cb6ac9f936d943d38b31bd5939d1563adda8df4ff82",
+      "size": 2477
+    },
+    {
+      "package_kind": "MIGRATION_058_EVIDENCE",
+      "path": "operator-runs/v2-9-8b-migration-058-application/MIGRATION_058_20260818T082552Z/__pycache__/apply_migration_058.cpython-312.pyc",
+      "sha256": "caf4be7d2329bb5bc5e42bb4b683da4ef86abc38e3b8f089d900f180762b54e4",
+      "size": 16497
+    },
+    {
+      "package_kind": "MIGRATION_058_EVIDENCE",
+      "path": "operator-runs/v2-9-8b-migration-058-application/MIGRATION_058_20260818T082552Z/apply_migration_058.py",
+      "sha256": "619f8fafb229a66a2f258befb809832792d582d0cc7f9e58c2a7d64eb478302f",
+      "size": 12789
+    },
+    {
+      "package_kind": "MIGRATION_058_EVIDENCE",
+      "path": "operator-runs/v2-9-8b-migration-058-application/MIGRATION_058_20260818T082552Z/authoritative-pre-058.sqlite3",
+      "sha256": "5d75234da3410fbe235f277122b2bd39f00f5900c32ac9a8576e1c7cf6473627",
+      "size": 100782080
+    },
+    {
+      "package_kind": "MIGRATION_058_EVIDENCE",
+      "path": "operator-runs/v2-9-8b-migration-058-application/MIGRATION_058_20260818T082552Z/disposable/migration-058-rehearsal.sqlite3",
+      "sha256": "645eb71e018afeff326ae192f0bfbd2ff6924f4b63144cf7d9bd2971c06b2689",
+      "size": 100794368
+    },
+    {
+      "package_kind": "MIGRATION_058_EVIDENCE",
+      "path": "operator-runs/v2-9-8b-migration-058-application/MIGRATION_058_20260818T082552Z/disposable_rehearsal.json",
+      "sha256": "a131b605302db6c98896d285f95c08dfccb7d6c910b9c527eff89ca225d54df3",
+      "size": 11120
+    },
+    {
+      "package_kind": "MIGRATION_058_EVIDENCE",
+      "path": "operator-runs/v2-9-8b-migration-058-application/MIGRATION_058_20260818T082552Z/migration_058_application_result.json",
+      "sha256": "6c91aad90888812888d270b26b02be8c3629405a2ba2e25094ee51cef5231db3",
+      "size": 4182
+    },
+    {
+      "package_kind": "MIGRATION_058_EVIDENCE",
+      "path": "operator-runs/v2-9-8b-migration-058-application/MIGRATION_058_20260818T082552Z/post_application_snapshot.json",
+      "sha256": "a8f5c25390c58b5787cf867a4c06effda262e2a186575fdf804895529ac604c2",
+      "size": 7204
+    },
+    {
+      "package_kind": "MIGRATION_058_EVIDENCE",
+      "path": "operator-runs/v2-9-8b-migration-058-application/MIGRATION_058_20260818T082552Z/post_application_verification.json",
+      "sha256": "712c7d8690a42824e0b4f0afc1d6800b49de3a5add697bc813a989579b4877be",
+      "size": 2855
+    },
+    {
+      "package_kind": "MIGRATION_058_EVIDENCE",
+      "path": "operator-runs/v2-9-8b-migration-058-application/MIGRATION_058_20260818T082552Z/pre_application_snapshot.json",
+      "sha256": "18f120f5dcf75cfd9d5f22f784ddaeb87c62ec23efde50272bb09d738b756cc5",
+      "size": 3442
+    }
+  ],
+  "historical_authorization_evidence": [
+    {
+      "authorization_id": "V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260818T205144Z",
+      "evidence_class": "HISTORICAL_WINDOW_15M_AUTHORIZATION_EVIDENCE",
+      "path": "operator-runs/v2-9-8b-four-token-standard-four-hour-final-authorization/V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260818T205144Z/final_authorization.json",
+      "sha256": "caac717f505bce81f5ce6d1ab8091bac09fe8660342a502bcdd4daeacbb64a12",
+      "size": 3769,
+      "terminal_disposition": "DISPOSITION_NOT_AVAILABLE"
+    },
+    {
+      "authorization_id": "V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260818T205144Z",
+      "evidence_class": "HISTORICAL_WINDOW_15M_AUTHORIZATION_EVIDENCE",
+      "path": "operator-runs/v2-9-8b-four-token-standard-four-hour-final-authorization/V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260818T205144Z/preparation-evidence.json",
+      "sha256": "f9188a7967401a718e877b1e1ce06a0c974fedcfd6942eceb8319ce38590dc52",
+      "size": 3239,
+      "terminal_disposition": "DISPOSITION_NOT_AVAILABLE"
+    },
+    {
+      "authorization_id": "V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260818T225253Z",
+      "evidence_class": "HISTORICAL_WINDOW_15M_AUTHORIZATION_EVIDENCE",
+      "path": "operator-runs/v2-9-8b-four-token-standard-four-hour-final-authorization/V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260818T225253Z/final_authorization.json",
+      "sha256": "f62877a21558cb279ffcba6f99aafd64e44053357b1844c2c4e9c22d210907ac",
+      "size": 3818,
+      "terminal_disposition": "DISPOSITION_NOT_AVAILABLE"
+    },
+    {
+      "authorization_id": "V2_9_8B_STANDARD_4H_AUTH_20260810T220717Z",
+      "evidence_class": "HISTORICAL_WINDOW_15M_AUTHORIZATION_EVIDENCE",
+      "path": "operator-runs/v2-9-8b-standard-four-hour-final-authorization/V2_9_8B_STANDARD_4H_AUTH_20260810T220717Z/final_authorization.json",
+      "sha256": "f8d321ed164463f289997d4d6de8c0069a767df738706eb8ec8fb337718ca76e",
+      "size": 2577,
+      "terminal_disposition": "DISPOSITION_NOT_AVAILABLE"
+    },
+    {
+      "authorization_id": "V2_9_8B_STANDARD_4H_AUTH_20260811T010152Z",
+      "evidence_class": "HISTORICAL_WINDOW_15M_AUTHORIZATION_EVIDENCE",
+      "path": "operator-runs/v2-9-8b-standard-four-hour-final-authorization/V2_9_8B_STANDARD_4H_AUTH_20260811T010152Z/final_authorization.json",
+      "sha256": "f58788685f836a3c0979bfb71ddd079beb84ffba568a5ad70823554fa2bb7612",
+      "size": 2611,
+      "terminal_disposition": "DISPOSITION_NOT_AVAILABLE"
+    },
+    {
+      "authorization_id": "V2_9_8B_STANDARD_4H_AUTH_20260811T135326Z",
+      "evidence_class": "HISTORICAL_WINDOW_15M_AUTHORIZATION_EVIDENCE",
+      "path": "operator-runs/v2-9-8b-standard-four-hour-final-authorization/V2_9_8B_STANDARD_4H_AUTH_20260811T135326Z/final_authorization.json",
+      "sha256": "446e50cf376e576bf308ceee254d025e8fa3221683c9e91e1dcc1f0d2976db36",
+      "size": 2663,
+      "terminal_disposition": "DISPOSITION_NOT_AVAILABLE"
+    },
+    {
+      "authorization_id": "V2_9_8B_STANDARD_4H_AUTH_20260811T181829Z",
+      "evidence_class": "HISTORICAL_WINDOW_15M_AUTHORIZATION_EVIDENCE",
+      "path": "operator-runs/v2-9-8b-standard-four-hour-final-authorization/V2_9_8B_STANDARD_4H_AUTH_20260811T181829Z/final_authorization.json",
+      "sha256": "178bb1ab928911bfa0ccde95e977c8c91b014b13afe110da81c19dfe3a84d0b5",
+      "size": 2704,
+      "terminal_disposition": "DISPOSITION_NOT_AVAILABLE"
+    },
+    {
+      "authorization_id": "V2_9_8B_STANDARD_4H_AUTH_20260811T232811Z",
+      "evidence_class": "HISTORICAL_WINDOW_15M_AUTHORIZATION_EVIDENCE",
+      "path": "operator-runs/v2-9-8b-standard-four-hour-final-authorization/V2_9_8B_STANDARD_4H_AUTH_20260811T232811Z/final_authorization.json",
+      "sha256": "edc117ab0e82cc17efc47c72f72e23d5e0497cd7c41614bf66dc015101b7dfda",
+      "size": 2753,
+      "terminal_disposition": "DISPOSITION_NOT_AVAILABLE"
+    },
+    {
+      "authorization_id": "V2_9_8B_STANDARD_4H_AUTH_20260812T124746Z",
+      "evidence_class": "HISTORICAL_WINDOW_15M_AUTHORIZATION_EVIDENCE",
+      "path": "operator-runs/v2-9-8b-standard-four-hour-final-authorization/V2_9_8B_STANDARD_4H_AUTH_20260812T124746Z/final_authorization.json",
+      "sha256": "ee817384e898a3d41b9f93137ffebf3fe54ca6ae3b568ce3b5d3d2259b49e09e",
+      "size": 2802,
+      "terminal_disposition": "DISPOSITION_NOT_AVAILABLE"
+    },
+    {
+      "authorization_id": "V2_9_8B_STANDARD_4H_AUTH_20260812T161210Z",
+      "evidence_class": "HISTORICAL_WINDOW_15M_AUTHORIZATION_EVIDENCE",
+      "path": "operator-runs/v2-9-8b-standard-four-hour-final-authorization/V2_9_8B_STANDARD_4H_AUTH_20260812T161210Z/final_authorization.json",
+      "sha256": "7634655df890611409b69844797367d4e9e0e6b07908e294906ae316ac5cfd55",
+      "size": 2853,
+      "terminal_disposition": "DISPOSITION_NOT_AVAILABLE"
+    },
+    {
+      "authorization_id": "V2_9_8B_STANDARD_4H_AUTH_20260818T183446Z",
+      "evidence_class": "HISTORICAL_WINDOW_15M_AUTHORIZATION_EVIDENCE",
+      "path": "operator-runs/v2-9-8b-standard-four-hour-final-authorization/V2_9_8B_STANDARD_4H_AUTH_20260818T183446Z/final_authorization.json",
+      "sha256": "a56235b74d7aac7fb75466dc0529307683557725745eae4153bc1128613db645",
+      "size": 2899,
+      "terminal_disposition": "DISPOSITION_NOT_AVAILABLE"
+    },
+    {
+      "authorization_id": "V2_9_8B_WINDOW_15M_AUTH_20260805T224959Z",
+      "evidence_class": "HISTORICAL_WINDOW_15M_AUTHORIZATION_EVIDENCE",
+      "path": "operator-runs/v2-9-8b-window-15m-final-authorization/V2_9_8B_WINDOW_15M_AUTH_20260805T224959Z/final_authorization.json",
+      "sha256": "c928f9588f5c82b350f71d0df40c4cb3a7e2a92fd366541f109488edbc17dcea",
+      "size": 7761,
+      "terminal_disposition": "PERMANENTLY_CONSUMED_PRESERVED"
+    },
+    {
+      "authorization_id": "V2_9_8B_WINDOW_15M_AUTH_20260806T005252Z",
+      "evidence_class": "HISTORICAL_WINDOW_15M_AUTHORIZATION_EVIDENCE",
+      "path": "operator-runs/v2-9-8b-window-15m-final-authorization/V2_9_8B_WINDOW_15M_AUTH_20260806T005252Z/final_authorization.json",
+      "sha256": "d58e354a2d01acc0c893ff20941055cd4cf5fb86e2b4daf889b0e8312db90e59",
+      "size": 8532,
+      "terminal_disposition": "BLOCKED_UNCONSUMED_SUPERSEDED"
+    },
+    {
+      "authorization_id": "V2_9_8B_WINDOW_15M_AUTH_20260806T103951Z",
+      "evidence_class": "HISTORICAL_WINDOW_15M_AUTHORIZATION_EVIDENCE",
+      "path": "operator-runs/v2-9-8b-window-15m-final-authorization/V2_9_8B_WINDOW_15M_AUTH_20260806T103951Z/final_authorization.json",
+      "sha256": "5cfa2c67bef94b16427cdf2cf426a38bf0543aaa328a2d095c2d85fa5e10a74c",
+      "size": 8914,
+      "terminal_disposition": "DISPOSITION_NOT_AVAILABLE"
+    },
+    {
+      "authorization_id": "V2_9_8B_WINDOW_15M_AUTH_20260806T115911Z",
+      "evidence_class": "HISTORICAL_WINDOW_15M_AUTHORIZATION_EVIDENCE",
+      "path": "operator-runs/v2-9-8b-window-15m-final-authorization/V2_9_8B_WINDOW_15M_AUTH_20260806T115911Z/final_authorization.json",
+      "sha256": "2648cb962cd87ef15a02a9247294ae3df0ce17996054a74ce16c73cffe0e545f",
+      "size": 8964,
+      "terminal_disposition": "DISPOSITION_NOT_AVAILABLE"
+    },
+    {
+      "authorization_id": "V2_9_8B_WINDOW_15M_AUTH_20260806T131011Z",
+      "evidence_class": "HISTORICAL_WINDOW_15M_AUTHORIZATION_EVIDENCE",
+      "path": "operator-runs/v2-9-8b-window-15m-final-authorization/V2_9_8B_WINDOW_15M_AUTH_20260806T131011Z/final_authorization.json",
+      "sha256": "a4e0acb604556b9ccb813ce0aa9597813d866f38089cce40e584a309bd84b969",
+      "size": 9094,
+      "terminal_disposition": "DISPOSITION_NOT_AVAILABLE"
+    },
+    {
+      "authorization_id": "V2_9_8B_WINDOW_15M_AUTH_20260808T122000Z",
+      "evidence_class": "HISTORICAL_WINDOW_15M_AUTHORIZATION_EVIDENCE",
+      "path": "operator-runs/v2-9-8b-window-15m-final-authorization/V2_9_8B_WINDOW_15M_AUTH_20260808T122000Z/final_authorization.json",
+      "sha256": "a0d297ab2cb1d76bd34914366170a1b2c843fef27d6e0e617f9f54b9ae0aa57b",
+      "size": 6511,
+      "terminal_disposition": "DISPOSITION_NOT_AVAILABLE"
+    },
+    {
+      "authorization_id": "V2_9_8B_WINDOW_15M_AUTH_20260808T133100Z",
+      "evidence_class": "HISTORICAL_WINDOW_15M_AUTHORIZATION_EVIDENCE",
+      "path": "operator-runs/v2-9-8b-window-15m-final-authorization/V2_9_8B_WINDOW_15M_AUTH_20260808T133100Z/final_authorization.json",
+      "sha256": "4e6f4ae2845ed8bb09241d49868e18d6f2c80a9adbf464e35c9ebd26dd941253",
+      "size": 6458,
+      "terminal_disposition": "DISPOSITION_NOT_AVAILABLE"
+    },
+    {
+      "authorization_id": "V2_9_8B_WINDOW_15M_AUTH_20260808T171829Z",
+      "evidence_class": "HISTORICAL_WINDOW_15M_AUTHORIZATION_EVIDENCE",
+      "path": "operator-runs/v2-9-8b-window-15m-final-authorization/V2_9_8B_WINDOW_15M_AUTH_20260808T171829Z/final_authorization.json",
+      "sha256": "9bf51d6d45d79f2532808f3280ae8afcbf3bbc252ecff55ba12599ba34ba5d7a",
+      "size": 6688,
+      "terminal_disposition": "DISPOSITION_NOT_AVAILABLE"
+    },
+    {
+      "authorization_id": "V2_9_8B_WINDOW_15M_AUTH_20260808T215650Z",
+      "evidence_class": "HISTORICAL_WINDOW_15M_AUTHORIZATION_EVIDENCE",
+      "path": "operator-runs/v2-9-8b-window-15m-final-authorization/V2_9_8B_WINDOW_15M_AUTH_20260808T215650Z/final_authorization.json",
+      "sha256": "6b1500d00a7a309d0726dec9146ac30f04ee9fe4cdad72cbc8f0eae4231263d1",
+      "size": 6738,
+      "terminal_disposition": "DISPOSITION_NOT_AVAILABLE"
+    },
+    {
+      "authorization_id": "V2_9_8B_WINDOW_15M_AUTH_20260809T011312Z",
+      "evidence_class": "HISTORICAL_WINDOW_15M_AUTHORIZATION_EVIDENCE",
+      "path": "operator-runs/v2-9-8b-window-15m-final-authorization/V2_9_8B_WINDOW_15M_AUTH_20260809T011312Z/final_authorization.json",
+      "sha256": "db453fa7c14bd892bf13fb7fe9a96a43f6beb29b7d33ad5858fafcd3b1ac3eb4",
+      "size": 6786,
+      "terminal_disposition": "DISPOSITION_NOT_AVAILABLE"
+    },
+    {
+      "authorization_id": "V2_9_8B_WINDOW_15M_AUTH_20260809T090158Z",
+      "evidence_class": "HISTORICAL_WINDOW_15M_AUTHORIZATION_EVIDENCE",
+      "path": "operator-runs/v2-9-8b-window-15m-final-authorization/V2_9_8B_WINDOW_15M_AUTH_20260809T090158Z/final_authorization.json",
+      "sha256": "27f6ec95b7de6cdfeed92c12bcb6f8b095c3c1d7c870efba112ac85ae8ca6778",
+      "size": 6834,
+      "terminal_disposition": "DISPOSITION_NOT_AVAILABLE"
+    },
+    {
+      "authorization_id": "V2_9_8B_WINDOW_15M_AUTH_20260809T095642Z",
+      "evidence_class": "HISTORICAL_WINDOW_15M_AUTHORIZATION_EVIDENCE",
+      "path": "operator-runs/v2-9-8b-window-15m-final-authorization/V2_9_8B_WINDOW_15M_AUTH_20260809T095642Z/final_authorization.json",
+      "sha256": "e31384e2d54a6d3b07380e9234511bb22dae481e4b91de0878e3025559dd23cc",
+      "size": 6882,
+      "terminal_disposition": "DISPOSITION_NOT_AVAILABLE"
+    },
+    {
+      "authorization_id": "V2_9_8B_WINDOW_15M_AUTH_20260809T120100Z",
+      "evidence_class": "HISTORICAL_WINDOW_15M_AUTHORIZATION_EVIDENCE",
+      "path": "operator-runs/v2-9-8b-window-15m-final-authorization/V2_9_8B_WINDOW_15M_AUTH_20260809T120100Z/final_authorization.json",
+      "sha256": "d64f2b4285aeebf93a4369350da960a9398f38a4123a160ce8e53cb505c66de1",
+      "size": 6930,
+      "terminal_disposition": "DISPOSITION_NOT_AVAILABLE"
+    },
+    {
+      "authorization_id": "V2_9_8B_WINDOW_15M_AUTH_20260809T130306Z",
+      "evidence_class": "HISTORICAL_WINDOW_15M_AUTHORIZATION_EVIDENCE",
+      "path": "operator-runs/v2-9-8b-window-15m-final-authorization/V2_9_8B_WINDOW_15M_AUTH_20260809T130306Z/final_authorization.json",
+      "sha256": "e37405cd6b0e1cb5295961546baf71d74e99c90b76640ed0eae4679f38ec2a24",
+      "size": 6978,
+      "terminal_disposition": "DISPOSITION_NOT_AVAILABLE"
+    },
+    {
+      "authorization_id": "V2_9_8B_WINDOW_15M_AUTH_20260809T163540Z",
+      "evidence_class": "HISTORICAL_WINDOW_15M_AUTHORIZATION_EVIDENCE",
+      "path": "operator-runs/v2-9-8b-window-15m-final-authorization/V2_9_8B_WINDOW_15M_AUTH_20260809T163540Z/final_authorization.json",
+      "sha256": "52a036cec8d104cc0bd22ff52a66be33b040515fe518ce06f97d3fb2bd8aed15",
+      "size": 7067,
+      "terminal_disposition": "DISPOSITION_NOT_AVAILABLE"
+    },
+    {
+      "authorization_id": "V2_9_8B_WINDOW_15M_AUTH_20260809T180257Z",
+      "evidence_class": "HISTORICAL_WINDOW_15M_AUTHORIZATION_EVIDENCE",
+      "path": "operator-runs/v2-9-8b-window-15m-final-authorization/V2_9_8B_WINDOW_15M_AUTH_20260809T180257Z/final_authorization.json",
+      "sha256": "b9e5c8191a3840ed2688516ba8d3ecceb46c177487ea16d3d76d56475eb12426",
+      "size": 7150,
+      "terminal_disposition": "DISPOSITION_NOT_AVAILABLE"
+    }
+  ],
+  "historical_migration_evidence": [
+    {
+      "evidence_class": "HISTORICAL_MIGRATION_050_EVIDENCE",
+      "migration_execution_id": "V2_9_8B_AUTHORITATIVE_MIG050_20260801T202423Z_f697cc0f",
+      "path": "operator-runs/v2-9-8b-authoritative-mig050/V2_9_8B_AUTHORITATIVE_MIG050_20260801T202423Z_f697cc0f/application_started.json",
+      "sha256": "8678ecb14feb1f04a315303ac5afd92639541900a267b8951adc7fad75050e8a",
+      "size": 50133
+    },
+    {
+      "evidence_class": "HISTORICAL_MIGRATION_050_EVIDENCE",
+      "migration_execution_id": "V2_9_8B_AUTHORITATIVE_MIG050_20260801T202423Z_f697cc0f",
+      "path": "operator-runs/v2-9-8b-authoritative-mig050/V2_9_8B_AUTHORITATIVE_MIG050_20260801T202423Z_f697cc0f/application_stderr.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0
+    },
+    {
+      "evidence_class": "HISTORICAL_MIGRATION_050_EVIDENCE",
+      "migration_execution_id": "V2_9_8B_AUTHORITATIVE_MIG050_20260801T202423Z_f697cc0f",
+      "path": "operator-runs/v2-9-8b-authoritative-mig050/V2_9_8B_AUTHORITATIVE_MIG050_20260801T202423Z_f697cc0f/application_stdout.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0
+    },
+    {
+      "evidence_class": "HISTORICAL_MIGRATION_050_EVIDENCE",
+      "migration_execution_id": "V2_9_8B_AUTHORITATIVE_MIG050_20260801T202423Z_f697cc0f",
+      "path": "operator-runs/v2-9-8b-authoritative-mig050/V2_9_8B_AUTHORITATIVE_MIG050_20260801T202423Z_f697cc0f/backup_restore_preflight.json",
+      "sha256": "569bea4e6d9aeacb6f612b4ec7ea85f43a73bfdc5cbde1693ecb8191aeb98083",
+      "size": 13836
+    },
+    {
+      "evidence_class": "HISTORICAL_MIGRATION_050_EVIDENCE",
+      "migration_execution_id": "V2_9_8B_AUTHORITATIVE_MIG050_20260801T202423Z_f697cc0f",
+      "path": "operator-runs/v2-9-8b-authoritative-mig050/V2_9_8B_AUTHORITATIVE_MIG050_20260801T202423Z_f697cc0f/closeout_inputs.json",
+      "sha256": "c10a76ba5729a2e4af42a9f3a4219571e0f959c2ba3d1214cfa1aa96a072e11f",
+      "size": 2384
+    },
+    {
+      "evidence_class": "HISTORICAL_MIGRATION_050_EVIDENCE",
+      "migration_execution_id": "V2_9_8B_AUTHORITATIVE_MIG050_20260801T202423Z_f697cc0f",
+      "path": "operator-runs/v2-9-8b-authoritative-mig050/V2_9_8B_AUTHORITATIVE_MIG050_20260801T202423Z_f697cc0f/disposable-restore/printer_v1-rehearsal.sqlite3",
+      "sha256": "e13c40892f0c14d4c07960e00218569a536c50c0fc27815049284c3dd2aff5c2",
+      "size": 65654784
+    },
+    {
+      "evidence_class": "HISTORICAL_MIGRATION_050_EVIDENCE",
+      "migration_execution_id": "V2_9_8B_AUTHORITATIVE_MIG050_20260801T202423Z_f697cc0f",
+      "path": "operator-runs/v2-9-8b-authoritative-mig050/V2_9_8B_AUTHORITATIVE_MIG050_20260801T202423Z_f697cc0f/final_authorization.json",
+      "sha256": "eb5388f3fac82b0c628a6b3e1e2893702fe221755838f971c6900f4e24e2b835",
+      "size": 6589
+    },
+    {
+      "evidence_class": "HISTORICAL_MIGRATION_050_EVIDENCE",
+      "migration_execution_id": "V2_9_8B_AUTHORITATIVE_MIG050_20260801T202423Z_f697cc0f",
+      "path": "operator-runs/v2-9-8b-authoritative-mig050/V2_9_8B_AUTHORITATIVE_MIG050_20260801T202423Z_f697cc0f/post_migration_proof.json",
+      "sha256": "fd7509280b2541eb3afa6010bdfdb44f6769219cd8a345224cfa26c6854f3c94",
+      "size": 103903
+    },
+    {
+      "evidence_class": "HISTORICAL_MIGRATION_050_EVIDENCE",
+      "migration_execution_id": "V2_9_8B_AUTHORITATIVE_MIG050_20260801T202423Z_f697cc0f",
+      "path": "operator-runs/v2-9-8b-authoritative-mig050/V2_9_8B_AUTHORITATIVE_MIG050_20260801T202423Z_f697cc0f/preauthorization_evidence.json",
+      "sha256": "4250b0e6a85bad41e50712ef21e5b11aab633c54e0246fc72aff037f7437119c",
+      "size": 36274
+    },
+    {
+      "evidence_class": "HISTORICAL_MIGRATION_050_EVIDENCE",
+      "migration_execution_id": "V2_9_8B_AUTHORITATIVE_MIG050_20260801T202423Z_f697cc0f",
+      "path": "operator-runs/v2-9-8b-authoritative-mig050/V2_9_8B_AUTHORITATIVE_MIG050_20260801T202423Z_f697cc0f/preflight.json",
+      "sha256": "3e3897da82a2012c1eb63aa8ea883a83a8c64fae49a86b2ff6192c8f82c88383",
+      "size": 18590
+    },
+    {
+      "evidence_class": "HISTORICAL_MIGRATION_050_EVIDENCE",
+      "migration_execution_id": "V2_9_8B_AUTHORITATIVE_MIG050_20260801T202423Z_f697cc0f",
+      "path": "operator-runs/v2-9-8b-authoritative-mig050/V2_9_8B_AUTHORITATIVE_MIG050_20260801T202423Z_f697cc0f/rollback_rehearsal.json",
+      "sha256": "997695a5aa4f4ffe6b8dd09970c93692d1a935491cf104b9a63a9c38440af149",
+      "size": 16244
+    },
+    {
+      "evidence_class": "HISTORICAL_MIGRATION_050_EVIDENCE",
+      "migration_execution_id": "V2_9_8B_AUTHORITATIVE_MIG050_20260801T202423Z_f697cc0f",
+      "path": "operator-runs/v2-9-8b-authoritative-mig050/V2_9_8B_AUTHORITATIVE_MIG050_20260801T202423Z_f697cc0f/verified-backup/printer_v1-pre050.sqlite3",
+      "sha256": "e13c40892f0c14d4c07960e00218569a536c50c0fc27815049284c3dd2aff5c2",
+      "size": 65654784
+    },
+    {
+      "evidence_class": "HISTORICAL_MIGRATION_055_EVIDENCE",
+      "migration_execution_id": "MIGRATION_055_20260813T220109Z",
+      "path": "operator-runs/v2-9-8b-migration-055-application/MIGRATION_055_20260813T220109Z/authoritative-pre-055.sqlite3",
+      "sha256": "07035fba786aba1d141789e5c069fc5de5bfb6185b711500ce8fa901f5358bfd",
+      "size": 93474816
+    },
+    {
+      "evidence_class": "HISTORICAL_MIGRATION_055_EVIDENCE",
+      "migration_execution_id": "MIGRATION_055_20260813T220109Z",
+      "path": "operator-runs/v2-9-8b-migration-055-application/MIGRATION_055_20260813T220109Z/disposable/migration-055-rehearsal.sqlite3",
+      "sha256": "90088a40795c9a451432830e7fc19400c1145558f4123b7cda36c2a80d58c7a7",
+      "size": 93552640
+    },
+    {
+      "evidence_class": "HISTORICAL_MIGRATION_055_EVIDENCE",
+      "migration_execution_id": "MIGRATION_055_20260813T220109Z",
+      "path": "operator-runs/v2-9-8b-migration-055-application/MIGRATION_055_20260813T220109Z/disposable_rehearsal.json",
+      "sha256": "16e92880a7d8d15fa9d0637116accd6ea8023d0bfa1c893fa03c24085096e428",
+      "size": 26483
+    },
+    {
+      "evidence_class": "HISTORICAL_MIGRATION_055_EVIDENCE",
+      "migration_execution_id": "MIGRATION_055_20260813T220109Z",
+      "path": "operator-runs/v2-9-8b-migration-055-application/MIGRATION_055_20260813T220109Z/migration_055_application_result.json",
+      "sha256": "63a514045383b18671c85c1d87347a233a01811bc3d5fc0d4eb43f5f7b8d8d08",
+      "size": 1847
+    },
+    {
+      "evidence_class": "HISTORICAL_MIGRATION_055_EVIDENCE",
+      "migration_execution_id": "MIGRATION_055_20260813T220109Z",
+      "path": "operator-runs/v2-9-8b-migration-055-application/MIGRATION_055_20260813T220109Z/pre_application_snapshot.json",
+      "sha256": "a1efc1992e6cfe35eb82d80078eb6caadaaa07afe018735f7501743b61e45c74",
+      "size": 6132
+    },
+    {
+      "evidence_class": "HISTORICAL_MIGRATION_056_EVIDENCE",
+      "migration_execution_id": "MIGRATION_056_20260815T164802Z",
+      "path": "operator-runs/v2-9-8b-migration-056-application/MIGRATION_056_20260815T164802Z/authoritative-pre-056.sqlite3",
+      "sha256": "9d0addd9e2b4859a33d07810cee26ec0893ada3ae884bde740719a4ec20e3b39",
+      "size": 94961664
+    },
+    {
+      "evidence_class": "HISTORICAL_MIGRATION_056_EVIDENCE",
+      "migration_execution_id": "MIGRATION_056_20260815T164802Z",
+      "path": "operator-runs/v2-9-8b-migration-056-application/MIGRATION_056_20260815T164802Z/disposable/migration-056-rehearsal.sqlite3",
+      "sha256": "b210bf5d7dcec21c146d21aab3d966ea5ef46d803041df4534bd546feb7a1bdc",
+      "size": 94978048
+    },
+    {
+      "evidence_class": "HISTORICAL_MIGRATION_056_EVIDENCE",
+      "migration_execution_id": "MIGRATION_056_20260815T164802Z",
+      "path": "operator-runs/v2-9-8b-migration-056-application/MIGRATION_056_20260815T164802Z/disposable_rehearsal.json",
+      "sha256": "647926eaf97954cf55fa51b826bc26d54fc772bfdf01f66296a70ecd49403235",
+      "size": 831
+    },
+    {
+      "evidence_class": "HISTORICAL_MIGRATION_056_EVIDENCE",
+      "migration_execution_id": "MIGRATION_056_20260815T164802Z",
+      "path": "operator-runs/v2-9-8b-migration-056-application/MIGRATION_056_20260815T164802Z/migration_056_application_result.json",
+      "sha256": "95fe0e7444269e91afffdf2e448359996b9b6709526795ef860c8d7ebcc73843",
+      "size": 349
+    },
+    {
+      "evidence_class": "HISTORICAL_MIGRATION_056_EVIDENCE",
+      "migration_execution_id": "MIGRATION_056_20260815T164802Z",
+      "path": "operator-runs/v2-9-8b-migration-056-application/MIGRATION_056_20260815T164802Z/post_application_snapshot.json",
+      "sha256": "fd6329cb7b5ba5e4a69e0c01da61b3f1a4e223f733987c13019082880123184e",
+      "size": 6236151
+    },
+    {
+      "evidence_class": "HISTORICAL_MIGRATION_056_EVIDENCE",
+      "migration_execution_id": "MIGRATION_056_20260815T164802Z",
+      "path": "operator-runs/v2-9-8b-migration-056-application/MIGRATION_056_20260815T164802Z/pre_application_snapshot.json",
+      "sha256": "a82d3197c686377308562761849181c597413f62aa4ab0a6235e387a3924f997",
+      "size": 6236021
+    },
+    {
+      "evidence_class": "HISTORICAL_MIGRATION_057_EVIDENCE",
+      "migration_execution_id": "MIGRATION_057_20260816T191558Z",
+      "path": "operator-runs/v2-9-8b-migration-057-application/MIGRATION_057_20260816T191558Z/authoritative-pre-057.sqlite3",
+      "sha256": "09684edd29a013a80748a03a7d3932f2dde1804c91ea58a02c4f76fb67863645",
+      "size": 96612352
+    },
+    {
+      "evidence_class": "HISTORICAL_MIGRATION_057_EVIDENCE",
+      "migration_execution_id": "MIGRATION_057_20260816T191558Z",
+      "path": "operator-runs/v2-9-8b-migration-057-application/MIGRATION_057_20260816T191558Z/disposable/migration-057-rehearsal.sqlite3",
+      "sha256": "f77042380ace84a732b90293d0ef90c1c19f093105826a8f2b034033ec723974",
+      "size": 96645120
+    },
+    {
+      "evidence_class": "HISTORICAL_MIGRATION_057_EVIDENCE",
+      "migration_execution_id": "MIGRATION_057_20260816T191558Z",
+      "path": "operator-runs/v2-9-8b-migration-057-application/MIGRATION_057_20260816T191558Z/disposable_rehearsal.json",
+      "sha256": "caa2acac3706182952777b62f0839af47ae4be69f6553fee525faeee250099bf",
+      "size": 12057
+    },
+    {
+      "evidence_class": "HISTORICAL_MIGRATION_057_EVIDENCE",
+      "migration_execution_id": "MIGRATION_057_20260816T191558Z",
+      "path": "operator-runs/v2-9-8b-migration-057-application/MIGRATION_057_20260816T191558Z/migration_057_application_result.json",
+      "sha256": "dcdd93174dbe8ca9d3e5735e73807e9b01c0f08756f85ba6a0314b8461ef43b6",
+      "size": 1990
+    },
+    {
+      "evidence_class": "HISTORICAL_MIGRATION_057_EVIDENCE",
+      "migration_execution_id": "MIGRATION_057_20260816T191558Z",
+      "path": "operator-runs/v2-9-8b-migration-057-application/MIGRATION_057_20260816T191558Z/post_application_snapshot.json",
+      "sha256": "07657896d4e792856840e2a42d9ab179343f4368c7b54bfaeb45ce1d06bc83ef",
+      "size": 6704487
+    },
+    {
+      "evidence_class": "HISTORICAL_MIGRATION_057_EVIDENCE",
+      "migration_execution_id": "MIGRATION_057_20260816T191558Z",
+      "path": "operator-runs/v2-9-8b-migration-057-application/MIGRATION_057_20260816T191558Z/pre_application_snapshot.json",
+      "sha256": "48d9e9638d72fa1ca37100e3dc332640e73940cc0253717fa93c306f6531d8f3",
+      "size": 6704334
+    }
+  ],
+  "migration_execution_id": "MIGRATION_058_20260818T082552Z",
+  "repository": {
+    "branch": "agent/v2-9-8b-four-token-4-2-2-freeze-input-versus-two-slot-truncation-repair-implementation",
+    "head": "f40210f439d3e8366369e7c919dc9dd011868cb3"
+  },
+  "schema_version": "PRINTER_V1_GIT_PROVENANCE_MANIFEST_FOUR_TOKEN_STANDARD_4H_V1"
+}
