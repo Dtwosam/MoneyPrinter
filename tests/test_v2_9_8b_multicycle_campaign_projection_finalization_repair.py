@@ -1,12 +1,20 @@
 from __future__ import annotations
 
+from pathlib import Path
+import sqlite3
+
 import pytest
 
+from printer_v1.db import apply_migrations
 from printer_v1.operator_cli.campaign_full_run_accounting import (
     FullRunAccountingError,
     prepare_full_run_accounting_owner,
 )
+from printer_v1.operator_cli.operational_memory_factory_command import (
+    _apply_full_run_campaign_acceptance,
+)
 from printer_v1.sources.campaign_six_unit_accounting import (
+    CampaignActionLocalLedger,
     CampaignCycleAccountingRegistry,
     CampaignSixUnitError,
     CampaignSixUnitProjection,
@@ -207,3 +215,108 @@ def test_cross_cycle_stage_cannot_be_routed_into_wrong_mutable_owner():
 
     assert cycle_1.stage_evidence_count == 0
     assert registry.owner_for_cycle("cycle-2").stage_evidence_count == 0
+
+
+def _disposable_factory_db(tmp_path: Path) -> Path:
+    db_path = tmp_path / "multicycle-projection-finalization.sqlite3"
+    apply_migrations(db_path)
+    connection = sqlite3.connect(db_path)
+    try:
+        connection.execute(
+            """INSERT INTO printer_memory_factory_runs(
+                run_id,run_status,window_kind,db_mode,config_hash,config_json,started_at
+            ) VALUES (?,'COMPLETED','WINDOW_15M','PROOF_ONLY','h','{}',?)""",
+            ("factory-run-1", "2026-08-19T10:00:00+00:00"),
+        )
+        connection.execute(
+            """INSERT INTO printer_scheduler_jobs(
+                id,job_name,job_kind,status,scheduled_for,finished_at
+            ) VALUES (1,'snap-1','SNAPSHOT','SUCCEEDED',?,?)""",
+            ("2026-08-19T10:00:00+00:00", "2026-08-19T10:00:00+00:00"),
+        )
+        connection.execute(
+            """INSERT INTO printer_memory_factory_run_steps(
+                run_id,step_key,step_kind,step_status,token_id,pair_id,scheduler_job_id
+            ) VALUES (?,'t1_snapshot_00','SNAPSHOT','SUCCEEDED',1,1,1)""",
+            ("factory-run-1",),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    return db_path
+
+
+def _acceptance_ledger() -> CampaignActionLocalLedger:
+    return CampaignActionLocalLedger(
+        campaign_id="campaign-1",
+        run_id="run-1",
+        cycle_id="cycle-1",
+    )
+
+
+def test_full_run_acceptance_does_not_attributeerror_on_readonly_projection(tmp_path):
+    """Original live fault: projection passed through finalize without a mutable owner."""
+    db_path = _disposable_factory_db(tmp_path)
+    registry = _registry()
+    projection = registry.campaign_projection()
+    assert not hasattr(projection, "ingest_stage_evidence")
+
+    outcome = _apply_full_run_campaign_acceptance(
+        db_path=db_path,
+        campaign_id="campaign-1",
+        campaign_run_id="run-1",
+        cycle_id="cycle-1",
+        configuration_id="configuration-1",
+        factory_run_id="factory-run-1",
+        execution_id="exec-1",
+        supervision_id="supervision-1",
+        launch_git_provenance={"git_head": "a" * 40},
+        db_target_identity="isolated-multicycle",
+        lifecycle_started=True,
+        lifecycle_operation_records=(),
+        forbidden_deltas={},
+        accounting_owner=projection,
+        action_local_ledger=_acceptance_ledger(),
+    )
+
+    reason = str(outcome.get("reason") or "")
+    assert outcome["verdict"] == "BLOCKED_UNSAFE"
+    assert outcome["campaign_acceptance"]["pass"] is False
+    assert "AttributeError" not in reason
+    assert "ingest_stage_evidence" not in reason
+    assert "MULTI_CYCLE_STAGE_EVIDENCE_OWNER_REQUIRED" in reason
+
+
+def test_full_run_acceptance_ingests_through_mutable_owner_not_projection(tmp_path):
+    db_path = _disposable_factory_db(tmp_path)
+    registry = _registry()
+    cycle_1 = registry.owner_for_cycle("cycle-1")
+    cycle_2 = registry.owner_for_cycle("cycle-2")
+    projection = registry.campaign_projection()
+
+    outcome = _apply_full_run_campaign_acceptance(
+        db_path=db_path,
+        campaign_id="campaign-1",
+        campaign_run_id="run-1",
+        cycle_id="cycle-1",
+        configuration_id="configuration-1",
+        factory_run_id="factory-run-1",
+        execution_id="exec-1",
+        supervision_id="supervision-1",
+        launch_git_provenance={"git_head": "a" * 40},
+        db_target_identity="isolated-multicycle",
+        lifecycle_started=True,
+        lifecycle_operation_records=(),
+        forbidden_deltas={},
+        accounting_owner=projection,
+        accounting_stage_evidence_owner=cycle_1,
+        accounting_projection_factory=registry.campaign_projection,
+        action_local_ledger=_acceptance_ledger(),
+    )
+
+    reason = str(outcome.get("reason") or "")
+    assert "AttributeError" not in reason
+    assert "ingest_stage_evidence" not in reason
+    assert cycle_2.stage_evidence_count == 0
+    assert not hasattr(registry.campaign_projection(), "ingest_stage_evidence")
+    assert outcome["verdict"] in {"BLOCKED_UNSAFE", "HONEST_BLOCKED", "CAMPAIGN_PASS"}
