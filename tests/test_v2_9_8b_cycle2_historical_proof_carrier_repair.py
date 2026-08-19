@@ -183,3 +183,10 @@ def test_market_present_pool_path_remains_non_pump_and_valid() -> None:
     assert admission.admission_authority.value == "MARKET_PRESENT_POOL"
     assert admission.signature == ""
     assert admission.pool_address == POOL
+
+
+def test_public_graduated_supply_error_preserves_base_catch_contract() -> None:
+    """Preserved base functions must still be catchable by the public exception."""
+    assert GraduatedSupplyError is supply_front_door._base.GraduatedSupplyError
+    with pytest.raises(GraduatedSupplyError):
+        supply_front_door._require_positive_graduation_epoch(None, mint=MINT)
