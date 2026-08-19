@@ -15,6 +15,8 @@ jobs:
   corrective:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      PYTHONPATH: ${{ github.workspace }}/src
     steps:
       - uses: actions/checkout@v4
         with:
