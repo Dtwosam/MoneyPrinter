@@ -124,7 +124,7 @@ def _typed_error(
     nomination_source: str | None = None,
 ) -> GraduatedSupplyError:
     cls = _typed_error_class(code)
-    return cls(
+    error = cls(
         code,
         message=message,
         stage=stage,
@@ -133,6 +133,8 @@ def _typed_error(
         admission_authority=admission_authority,
         nomination_source=nomination_source,
     )
+    _stage_active_pre_admission_diagnostic(error)
+    return error
 
 
 def _stage_for_code(code: str, default: str) -> str:
@@ -146,6 +148,53 @@ _ACTIVE_DB_PATH: ContextVar[str | None] = ContextVar(
 )
 _ORIGINAL_SOURCE_SPECIFIC_ADMISSION = _base._source_specific_admission_for
 _ORIGINAL_BUILD_GRADUATED_SUPPLY = _base.build_graduated_supply
+
+
+def _stage_active_pre_admission_diagnostic(error: GraduatedSupplyError) -> None:
+    """Stage bounded context for the exact active Cycle-2 Scheduler job.
+
+    Diagnostic staging is deliberately non-authoritative: zero or ambiguous
+    matching jobs do nothing, and a staging fault can never replace the original
+    supply failure or create a new admission decision.
+    """
+    db_path = _ACTIVE_DB_PATH.get()
+    if not db_path:
+        return
+    try:
+        connection = sqlite3.connect(str(db_path))
+        connection.row_factory = sqlite3.Row
+        try:
+            rows = connection.execute(
+                """
+                SELECT id
+                FROM printer_scheduler_jobs
+                WHERE job_kind = 'PRE_ADMISSION_DISCOVERY_SELECTION'
+                  AND status = 'RUNNING'
+                  AND locked_at IS NOT NULL
+                  AND length(trim(COALESCE(lock_owner, ''))) > 0
+                ORDER BY id
+                LIMIT 2
+                """
+            ).fetchall()
+        finally:
+            connection.close()
+        if len(rows) != 1:
+            return
+        from printer_v1.scheduler.scheduler import stage_job_failure_diagnostic
+
+        stage_job_failure_diagnostic(
+            job_id=int(rows[0]["id"]),
+            failure_code=error.code,
+            context={
+                "stage": error.stage,
+                "mint": error.mint,
+                "pool": error.pool,
+                "admission_authority": error.admission_authority,
+                "nomination_source": error.nomination_source,
+            },
+        )
+    except Exception:
+        return
 
 
 def _rehydrate_historical_direct_candidate(
