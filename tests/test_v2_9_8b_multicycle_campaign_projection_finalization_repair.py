@@ -131,6 +131,35 @@ def test_projection_needing_missing_stage_without_mutable_owner_fails_closed_cat
         )
 
 
+def test_projection_rebuild_requirement_fails_before_mutating_cycle_owner():
+    registry = _registry()
+    cycle_1 = registry.owner_for_cycle("cycle-1")
+    projection = registry.campaign_projection()
+    stage = _sealed_validation_stage(
+        campaign_id="campaign-1",
+        run_id="run-1",
+        cycle_id="cycle-1",
+        stage_id="cycle-1-window15-slot1",
+    )
+
+    assert cycle_1.stage_evidence_count == 0
+    assert cycle_1.ended_at is None
+
+    with pytest.raises(
+        FullRunAccountingError,
+        match="MULTI_CYCLE_PROJECTION_REBUILD_REQUIRED",
+    ):
+        prepare_full_run_accounting_owner(
+            projection,
+            sealed_stage_evidences=(stage,),
+            stage_evidence_owner=cycle_1,
+        )
+
+    assert cycle_1.stage_evidence_count == 0
+    assert cycle_1.ingested_stage_ids == []
+    assert cycle_1.ended_at is None
+
+
 def test_single_cycle_preserves_mutable_owner_behavior():
     registry = CampaignCycleAccountingRegistry(
         campaign_id="campaign-1",
