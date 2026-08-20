@@ -1,9 +1,6 @@
 name: V2-9.8B Safety Core Redundancy Proof
 
 on:
-  push:
-    branches:
-      - agent/v2-9-8b-safety-core-redundancy-repair
   pull_request:
     branches:
       - agent/v2-9-8b-cooperative-later-cycle-repair-implementation
@@ -18,13 +15,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Apply exact product patch on branch push only
-        if: github.event_name == 'push'
+      - name: Apply exact product patch in disposable checkout
         run: python .github/scripts/apply_safety_core_redundancy_patch.py
       - name: Focused safety redundancy tests
         env:
@@ -42,7 +38,6 @@ jobs:
       - name: Diff check
         run: git diff --check
       - name: Commit proven product patch
-        if: github.event_name == 'push'
         run: |
           if git diff --quiet -- src/printer_v1/safety/goplus_normalizer.py src/printer_v1/safety/composite.py src/printer_v1/sources/measured_transport.py src/printer_v1/operator_cli/holder_reliability_budget_control.py src/printer_v1/operator_cli/one_command_15m_factory.py; then
             echo 'No uncommitted product patch remains.'
