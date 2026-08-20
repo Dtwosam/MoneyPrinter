@@ -29,7 +29,7 @@ Branch:
 
 Final repaired product HEAD:
 
-`<SET_AT_COMMIT>`
+`d42a5aa5b5b27e79bb843babee4cbd91d9280af2`
 
 Baseline:
 
