@@ -97,14 +97,14 @@ PERSISTED = {"safety_composite": {"composite_id": 7}}
 
 class FirstHourSafetyRepairProof(unittest.TestCase):
     def test_transport_reservation_and_standard_campaign_budgets(self) -> None:
-        self.assertEqual(FIRST_HOUR_SAFETY_CONTEXT_REQUEST_COUNT, 3)
+        self.assertEqual(FIRST_HOUR_SAFETY_CONTEXT_REQUEST_COUNT, 4)
         self.assertEqual(
-            LIFECYCLE_RESERVED_OPERATIONS_BY_STEP_KIND["CONTINUATION_CLOSE"], 4
+            LIFECYCLE_RESERVED_OPERATIONS_BY_STEP_KIND["CONTINUATION_CLOSE"], 5
         )
         expected = {
-            ("TRACK_FAST", "TRACK_FAST"): (236, 210),
-            ("TRACK_FAST", "TRACK_NORMAL"): (188, 162),
-            ("TRACK_NORMAL", "TRACK_NORMAL"): (140, 114),
+            ("TRACK_FAST", "TRACK_FAST"): (238, 210),
+            ("TRACK_FAST", "TRACK_NORMAL"): (190, 162),
+            ("TRACK_NORMAL", "TRACK_NORMAL"): (142, 114),
         }
         for lanes, (request_ceiling, scheduler_ceiling) in expected.items():
             with self.subTest(lanes=lanes):
@@ -113,17 +113,17 @@ class FirstHourSafetyRepairProof(unittest.TestCase):
                 self.assertEqual(budget["scheduler_ceiling"], scheduler_ceiling)
                 self.assertEqual(
                     budget["request_components"]["token_1_window_1h_safety_context"],
-                    3,
+                    4,
                 )
                 self.assertEqual(
                     budget["request_components"]["token_2_window_1h_safety_context"],
-                    3,
+                    4,
                 )
 
         no_4h = standard_campaign_lifecycle_budget(
             ("TRACK_FAST", "TRACK_FAST"), (False, False)
         )
-        self.assertEqual(no_4h["request_ceiling"], 98)
+        self.assertEqual(no_4h["request_ceiling"], 100)
         self.assertEqual(no_4h["scheduler_ceiling"], 82)
         self.assertNotIn("token_1_window_4h_phase", no_4h["request_components"])
         self.assertNotIn("token_2_window_4h_phase", no_4h["request_components"])
@@ -215,9 +215,9 @@ class FirstHourSafetyRepairProof(unittest.TestCase):
         # instead of being independently maintained literals, so assert the
         # derived values themselves rather than the source text.
         standard = STANDARD_4H.read_text(encoding="utf-8")
-        self.assertNotIn("LIFECYCLE_REQUEST_OUTER_CEILING = 236", standard)
+        self.assertNotIn("LIFECYCLE_REQUEST_OUTER_CEILING = 238", standard)
         self.assertIn("standard_four_hour_capacity_contract", standard)
-        self.assertEqual(standard_4h.LIFECYCLE_REQUEST_OUTER_CEILING, 236)
+        self.assertEqual(standard_4h.LIFECYCLE_REQUEST_OUTER_CEILING, 238)
         self.assertEqual(standard_4h.LIFECYCLE_SCHEDULER_OUTER_CEILING, 210)
         self.assertEqual(
             standard_4h.LIFECYCLE_REQUEST_OUTER_CEILING,

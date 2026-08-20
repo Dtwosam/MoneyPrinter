@@ -1636,6 +1636,11 @@ def _collect_preclose_context(
         build_solana_rpc_holder_adapter,
         build_solana_rpc_holder_transport,
     )
+    from printer_v1.sources.solana_rpc_token_safety import (
+        SOLANA_RPC_TOKEN_SAFETY_REQUEST_KIND,
+        build_solana_rpc_token_safety_adapter,
+        build_solana_rpc_token_safety_transport,
+    )
 
     factories = adapter_factories or {}
     mint = str(step["token_mint"])
@@ -1737,6 +1742,33 @@ def _collect_preclose_context(
         ),
         expected_source_name="goplus",
     )
+    core_safety_factory = factories.get("solana_rpc_core_safety")
+    core_safety_adapter = None
+    if core_safety_factory is not None:
+        core_safety_adapter = require_concrete_adapter(
+            "preclose_solana_rpc_core_safety",
+            holder_factory_call(
+                core_safety_factory,
+                token_mint=mint,
+                timeout_seconds=timeout_seconds,
+                measured_transport_ledger=holder_transport_ledger,
+            ),
+            expected_source_name="solana_rpc",
+        )
+    elif adapter_factories is None:
+        core_safety_adapter = require_concrete_adapter(
+            "preclose_solana_rpc_core_safety",
+            build_solana_rpc_token_safety_adapter(
+                enabled=True,
+                fixture_transport=build_solana_rpc_token_safety_transport(
+                    mint,
+                    timeout_seconds=timeout_seconds,
+                    measured_transport_ledger=holder_transport_ledger,
+                ),
+            ),
+            expected_source_name="solana_rpc",
+        )
+
     quote_factory = factories.get("jupiter_quote")
 
     def quote_adapter(input_mint: str, output_mint: str) -> Any:
@@ -1782,6 +1814,15 @@ def _collect_preclose_context(
             executions["safety"] = execute(
                 "goplus", GOPLUS_SAFETY_REQUEST_KIND, "safety", {}, safety_adapter
             )
+            if core_safety_adapter is not None:
+                stage[0] = "core_solana_safety"
+                executions["core_solana_safety"] = execute(
+                    "solana_rpc",
+                    SOLANA_RPC_TOKEN_SAFETY_REQUEST_KIND,
+                    "core-safety",
+                    {},
+                    core_safety_adapter,
+                )
         if "entry_quote" in requested:
             stage[0] = "entry_quote"
             executions["entry_quote"] = execute(
@@ -1900,7 +1941,7 @@ def _collect_preclose_context(
     return {
         "executions": executions,
         "report": {
-            "source_request_budget": len(requested) + (1 if "safety" in requested else 0),
+            "source_request_budget": len(requested) + (2 if "safety" in requested else 0),
             "source_requests_attempted": len({id(value) for value in executions.values()}),
             "items": {
                 key: _context_execution_summary(value)
@@ -2002,6 +2043,7 @@ def _persist_preclose_context(
             evaluated_at=str(snapshot["captured_at"]),
             goplus_execution=safety,
             holder_execution=executions.get("holder"),
+            core_solana_execution=executions.get("core_solana_safety"),
         )
 
     for key, direction in (("entry_quote", "ENTRY"), ("exit_quote", "EXIT")):
