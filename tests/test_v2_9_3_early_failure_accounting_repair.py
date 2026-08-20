@@ -213,9 +213,9 @@ class EarlyFailureAccountingTests(unittest.TestCase):
     def test_projected_cumulative_budget_breach_has_distinct_scope(self) -> None:
         self._request(f"{self.run_id}:t1_p1_4h_000")
         # V2-9.8B first-hour safety provenance repair: the cumulative TRACK_FAST
-        # request ceiling rose by the 3 reserved fresh 1h safety transports, so
-        # the projected breach needs the same 3 additional prior requests.
-        for index in range(116):
+        # request ceiling includes 4 reserved fresh 1h safety requests, so
+        # the projected breach needs one additional prior request.
+        for index in range(117):
             self._request(f"{self.run_id}:earlier_{index:03d}")
         step = self.conn.execute(
             """INSERT INTO printer_memory_factory_run_steps
