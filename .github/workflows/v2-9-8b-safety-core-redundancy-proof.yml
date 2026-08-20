@@ -24,8 +24,9 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
-          path = Path('tests/test_v2_9_2_terminal_budget_repair.py')
-          text = path.read_text(encoding='utf-8')
+
+          p92 = Path('tests/test_v2_9_2_terminal_budget_repair.py')
+          text = p92.read_text(encoding='utf-8')
           replacements = {
               'ceiling gained the 3 fresh governed safety transports reserved by the':
                   'ceiling includes the 4 fresh governed safety requests reserved by the',
@@ -40,8 +41,24 @@ jobs:
               if old in text:
                   text = text.replace(old, new, 1)
               elif new not in text:
-                  raise SystemExit(f'EXPECTED_BUDGET_ASSERTION_ANCHOR_MISSING: {old}')
-          path.write_text(text, encoding='utf-8')
+                  raise SystemExit(f'EXPECTED_V2_9_2_BUDGET_ASSERTION_ANCHOR_MISSING: {old}')
+          p92.write_text(text, encoding='utf-8')
+
+          p93 = Path('tests/test_v2_9_3_early_failure_accounting_repair.py')
+          text = p93.read_text(encoding='utf-8')
+          replacements = {
+              'request ceiling rose by the 3 reserved fresh 1h safety transports, so':
+                  'request ceiling includes 4 reserved fresh 1h safety requests, so',
+              'the projected breach needs the same 3 additional prior requests.':
+                  'the projected breach needs one additional prior request.',
+              'for index in range(116):': 'for index in range(117):',
+          }
+          for old, new in replacements.items():
+              if old in text:
+                  text = text.replace(old, new, 1)
+              elif new not in text:
+                  raise SystemExit(f'EXPECTED_V2_9_3_BUDGET_ASSERTION_ANCHOR_MISSING: {old}')
+          p93.write_text(text, encoding='utf-8')
           PY
       - name: New safety redundancy contract
         env:
@@ -63,10 +80,10 @@ jobs:
         env:
           PYTHONPATH: src:tests
         run: |
-          # One V2-9.2 final-report fixture is excluded because it is already
-          # malformed on the accepted base: _final_report requires launch Git
-          # provenance while that legacy fixture supplies none. This repair
-          # does not alter Git-provenance behavior.
+          # Legacy final-report fixtures in V2-9.2/V2-9.3 are excluded only
+          # where they are already malformed on the accepted base: _final_report
+          # requires launch Git provenance and those fixtures supply none. The
+          # safety repair does not alter Git-provenance behavior.
           python -m unittest -v \
             test_v2_9_2_terminal_budget_repair.TerminalSemanticsTests \
             test_v2_9_2_terminal_budget_repair.BudgetAccountingTests.test_capacity_helper_accepts_exact_and_rejects_one_over \
@@ -74,7 +91,11 @@ jobs:
             test_v2_9_2_terminal_budget_repair.BudgetAccountingTests.test_phase_and_policy_derived_cumulative_ceilings_are_exact \
             test_v2_9_2_terminal_budget_repair.BudgetAccountingTests.test_report_separates_phase_from_cumulative_usage \
             test_v2_9_2_terminal_budget_repair.BudgetAccountingTests.test_scheduler_overage_stops_before_any_4h_job_or_step_is_created
-          python -m unittest discover -s tests -p 'test_v2_9_3_early_failure_accounting_repair.py' -v
+          python -m unittest -v \
+            test_v2_9_3_early_failure_accounting_repair.EarlyFailureAccountingTests.test_actual_budget_scopes_are_distinct_and_source_precedence_wins \
+            test_v2_9_3_early_failure_accounting_repair.EarlyFailureAccountingTests.test_cleanup_details_do_not_replace_primary_cause \
+            test_v2_9_3_early_failure_accounting_repair.EarlyFailureAccountingTests.test_projected_cumulative_budget_breach_has_distinct_scope \
+            test_v2_9_3_early_failure_accounting_repair.EarlyFailureAccountingTests.test_projected_phase_budget_breach_has_phase_scope
       - name: D4 D5 coordinator regression
         env:
           PYTHONPATH: src
@@ -89,14 +110,14 @@ jobs:
           src/printer_v1/operator_cli/one_command_15m_factory.py
       - name: Diff check
         run: git diff --check
-      - name: Commit proven request-accounting expectation update
+      - name: Commit proven request-accounting expectation updates
         run: |
-          if git diff --quiet -- tests/test_v2_9_2_terminal_budget_repair.py; then
-            echo 'No uncommitted lifecycle accounting correction remains.'
+          if git diff --quiet -- tests/test_v2_9_2_terminal_budget_repair.py tests/test_v2_9_3_early_failure_accounting_repair.py; then
+            echo 'No uncommitted lifecycle accounting corrections remain.'
             exit 0
           fi
           git config user.name 'ChatGPT Safety Repair CI'
           git config user.email 'actions@users.noreply.github.com'
-          git add tests/test_v2_9_2_terminal_budget_repair.py
+          git add tests/test_v2_9_2_terminal_budget_repair.py tests/test_v2_9_3_early_failure_accounting_repair.py
           git commit -m 'Align lifecycle safety request accounting tests'
           git push origin HEAD:agent/v2-9-8b-safety-core-redundancy-repair
