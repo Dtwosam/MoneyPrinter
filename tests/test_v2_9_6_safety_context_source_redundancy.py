@@ -7,11 +7,13 @@ holder call -> single backup RPC endpoint contract, without weakening safety:
 - an eligible transient primary failure + a valid backup yields exactly one
   holder contribution (from the backup), with both source attempts persisted;
 - both attempts stay budgeted; the primary failure is preserved;
-- a double failure (primary + backup) leaves holder UNKNOWN and the composite
-  blocking, with both attempts persisted;
+- a double failure (primary + backup) leaves holder UNKNOWN and descriptive,
+  with both attempts persisted;
 - non-retryable primary failures (malformed / 4xx / rpc-error) do not fall back;
-- GoPlus remains mandatory: missing GoPlus is never relabeled safe;
-- GoPlus-vs-holder disagreement stays blocking;
+- missing GoPlus without independent core-safety facts remains blocked, but
+  GoPlus itself is not a structural mandatory-source gate;
+- GoPlus-vs-holder disagreement remains visible and descriptive rather than
+  independently dirtying otherwise trustworthy memory evidence;
 - no duplicate contributions or evidence rows.
 """
 
@@ -221,7 +223,7 @@ class SafetyContextSourceRedundancyTests(unittest.TestCase):
                 ).fetchall()
                 self.assertEqual([r["source_name"] for r in contribs], ["goplus", "solana_rpc"])
 
-    # --- double failure => holder UNKNOWN, blocking, both persisted --------
+    # --- double failure => holder UNKNOWN, descriptive, both persisted -----
 
     def test_double_failure_holder_unknown_and_blocking(self):
         bundle = self._collect(
@@ -254,9 +256,9 @@ class SafetyContextSourceRedundancyTests(unittest.TestCase):
                 self.assertNotIn("holder_backup", bundle["executions"])
                 self.assertEqual(self._rpc_count(), 1)
 
-    # --- GoPlus mandatory: missing GoPlus never relabeled safe -------------
+    # --- missing GoPlus without core facts remains blocked -----------------
 
-    def test_missing_goplus_is_never_safe(self):
+    def test_missing_goplus_without_core_facts_stays_blocked(self):
         from printer_v1.sources.governed_execution import build_fixture_source_adapter
         factories = {
             "goplus": lambda *, token_mint, timeout_seconds: build_fixture_source_adapter(
@@ -267,18 +269,26 @@ class SafetyContextSourceRedundancyTests(unittest.TestCase):
             self.conn, self._step(), timeout_seconds=5.0,
             adapter_factories=factories, include=frozenset({"safety"}),
         )
-        # GoPlus failed -> its holder label is UNKNOWN -> RPC still runs, but the
-        # composite must block on the missing mandatory GoPlus contribution.
+        # GoPlus failed and this legacy helper intentionally supplies no
+        # independent core-safety contribution. The composite therefore blocks
+        # on missing required core facts, not on GoPlus's provider identity.
         result = self._composite(bundle)
         self.assertEqual(result["safety_contract_label"], "SAFETY_BLOCKED_FOR_15M_MEMORY")
-        self.assertIn("GOPLUS_MANDATORY_SAFETY_SOURCE_NOT_USABLE", result["blockers"])
+        self.assertNotIn("GOPLUS_MANDATORY_SAFETY_SOURCE_NOT_USABLE", result["blockers"])
+        for field in (
+            "mint_authority_status",
+            "freeze_authority_status",
+            "supply_sanity_label",
+            "token_program_label",
+        ):
+            self.assertIn(field, result["blockers"])
 
-    # --- disagreement (GoPlus vs holder) stays blocking --------------------
+    # --- holder disagreement stays visible but descriptive -----------------
 
-    def test_goplus_holder_disagreement_is_blocking(self):
+    def test_goplus_holder_disagreement_is_descriptive(self):
         # GoPlus reports a concentrated holder label; an RPC holder execution
-        # reports a different one -> conflict -> blocking. (Composite-level
-        # regression guard: redundancy must not weaken conflict handling.)
+        # reports a different one. E.48 requires the conflict to remain visible
+        # while preventing holder condition alone from dirtying memory evidence.
         from printer_v1.sources.contracts import build_governed_source_request
         from printer_v1.sources.governed_execution import (
             build_fixture_source_adapter, execute_source_request_with_governor,
@@ -304,7 +314,11 @@ class SafetyContextSourceRedundancyTests(unittest.TestCase):
         )
         self.assertIn("HOLDER_CONCENTRATION_SOURCE_CONFLICT", result["conflicts"])
         self.assertEqual(result["holder_concentration_label"], "HOLDER_CONCENTRATION_UNKNOWN")
-        self.assertEqual(result["safety_contract_label"], "SAFETY_BLOCKED_FOR_15M_MEMORY")
+        self.assertEqual(
+            result["safety_contract_label"],
+            "SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY",
+        )
+        self.assertNotIn("holder_concentration_label", result["blockers"])
 
 
 if __name__ == "__main__":
