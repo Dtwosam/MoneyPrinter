@@ -245,12 +245,12 @@ SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY = "SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY"
 HARD_SAFETY_FIELD_EXPECTATIONS: dict[str, str] = {
     "mint_authority_status": "MINT_AUTHORITY_RENOUNCED",
     "freeze_authority_status": "FREEZE_AUTHORITY_DISABLED",
-    "metadata_mutability_status": "METADATA_IMMUTABLE",
     "supply_sanity_label": "SUPPLY_SANITY_OK",
     "token_program_label": "SPL_TOKEN_OR_TOKEN_2022_VERIFIED",
 }
 
 SOURCE_COVERAGE_PENDING_VALUES: dict[str, str] = {
+    "metadata_mutability_status": "METADATA_UNKNOWN",
     "holder_concentration_label": "HOLDER_CONCENTRATION_UNKNOWN",
     "liquidity_lock_or_burn_label": "LIQUIDITY_LOCK_OR_BURN_UNKNOWN",
     "known_risk_flag_label": "KNOWN_RISK_FLAGS_UNKNOWN",
@@ -305,7 +305,11 @@ def safety_memory_policy_summary(evidence: Mapping[str, Any]) -> dict[str, Any]:
     else:
         source_coverage_pending.append("holder_concentration_label")
 
-    for field in ("liquidity_lock_or_burn_label", "known_risk_flag_label"):
+    for field in (
+        "metadata_mutability_status",
+        "liquidity_lock_or_burn_label",
+        "known_risk_flag_label",
+    ):
         value = evidence.get(field)
         if value == REQUIRED_CLEAN_SAFETY_FIELDS[field]:
             resolved.append(field)

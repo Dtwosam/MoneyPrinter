@@ -17,7 +17,7 @@ from printer_v1.safety.goplus_normalizer import (
 
 
 POLICY_VERSION = "V2_4_1_COMPOSITE_SAFETY_V1"
-MAX_CONTRIBUTIONS = 2
+MAX_CONTRIBUTIONS = 3
 MAX_AGE_SECONDS = 1800
 SAFETY_BLOCKED = "SAFETY_BLOCKED_FOR_15M_MEMORY"
 
@@ -183,6 +183,7 @@ def persist_safety_composite(
     evaluated_at: str,
     goplus_execution: Any,
     holder_execution: Any | None = None,
+    core_solana_execution: Any | None = None,
     memory_window_id: int | None = None,
 ) -> dict[str, Any]:
     """Persist one bounded safety composite and its independent source traces."""
@@ -238,6 +239,62 @@ def persist_safety_composite(
         )
     ]
 
+    core_conflicts: list[str] = []
+    core_bindings: dict[str, str | None] = {}
+    if core_solana_execution is not None:
+        core_payload = dict(
+            core_solana_execution.normalized_result.normalized_payload or {}
+        )
+        core_fields = {
+            field: core_payload.get(field)
+            for field in (
+                "mint_authority_status",
+                "freeze_authority_status",
+                "supply_sanity_label",
+                "token_program_label",
+            )
+        }
+        core_contribution = _execution_contribution(
+            connection,
+            core_solana_execution,
+            category="TOKEN_CORE_SAFETY",
+            token_mint=token_mint,
+            pair_address=pair_address,
+            fields=core_fields,
+            evaluated_at=evaluated,
+        )
+        contributions.append(core_contribution)
+        if core_contribution["usable"]:
+            unknown_values = {
+                "mint_authority_status": "MINT_AUTHORITY_UNKNOWN",
+                "freeze_authority_status": "FREEZE_AUTHORITY_UNKNOWN",
+                "supply_sanity_label": "SUPPLY_SANITY_UNKNOWN",
+                "token_program_label": "TOKEN_PROGRAM_UNKNOWN",
+            }
+            conflict_labels = {
+                "mint_authority_status": "MINT_AUTHORITY_SOURCE_CONFLICT",
+                "freeze_authority_status": "FREEZE_AUTHORITY_SOURCE_CONFLICT",
+                "supply_sanity_label": "SUPPLY_SANITY_SOURCE_CONFLICT",
+                "token_program_label": "TOKEN_PROGRAM_SOURCE_CONFLICT",
+            }
+            goplus_usable = contributions[0]["usable"]
+            for field, unknown_value in unknown_values.items():
+                core_value = core_fields.get(field)
+                if core_value in {None, "", unknown_value}:
+                    continue
+                existing = base.get(field)
+                if not goplus_usable or existing in {None, "", unknown_value}:
+                    base[field] = core_value
+                    core_bindings[field] = "solana_rpc"
+                elif existing != core_value:
+                    core_conflicts.append(conflict_labels[field])
+                    base[field] = unknown_value
+                    core_bindings[field] = None
+                else:
+                    # Chain-native proof is the authoritative binding when both
+                    # approved sources agree on the same chain fact.
+                    core_bindings[field] = "solana_rpc"
+
     holder_labels: list[tuple[str, str]] = []
     if contributions[0]["usable"] and base.get("holder_concentration_label") != "HOLDER_CONCENTRATION_UNKNOWN":
         holder_labels.append(("goplus", str(base["holder_concentration_label"])))
@@ -274,7 +331,7 @@ def persist_safety_composite(
     if len(contributions) > MAX_CONTRIBUTIONS:
         raise ValueError("composite safety contribution budget exceeded")
 
-    conflicts: list[str] = []
+    conflicts: list[str] = list(core_conflicts)
     distinct_holder_labels = {label for _source, label in holder_labels}
     if len(distinct_holder_labels) > 1:
         conflicts.append("HOLDER_CONCENTRATION_SOURCE_CONFLICT")
@@ -285,10 +342,11 @@ def persist_safety_composite(
     base["safety_context_label"] = compute_safety_context_label(base)
 
     field_bindings = {
-        field: "goplus"
+        field: "goplus" if contributions[0]["usable"] else None
         for field in SAFETY_FIELDS
         if field != "holder_concentration_label"
     }
+    field_bindings.update(core_bindings)
     if holder_labels and not conflicts:
         field_bindings["holder_concentration_label"] = holder_labels[0][0]
     else:
@@ -296,13 +354,18 @@ def persist_safety_composite(
 
     policy = safety_memory_policy_summary(base)
     blockers = list(policy["hard_blocking_safety_fields"])
-    if not contributions[0]["usable"]:
-        blockers.append("GOPLUS_MANDATORY_SAFETY_SOURCE_NOT_USABLE")
     for contribution in contributions[1:]:
-        if contribution["rejection_reason"] == "SOURCE_TRACE_MISMATCH":
-            blockers.append("HOLDER_EVIDENCE_PROVENANCE_INVALID")
-        elif contribution["rejection_reason"] == "TARGET_MINT_MISMATCH":
-            blockers.append("HOLDER_EVIDENCE_TARGET_MISMATCH")
+        category = contribution["evidence_category"]
+        if category == "TOKEN_CORE_SAFETY":
+            if contribution["rejection_reason"] == "SOURCE_TRACE_MISMATCH":
+                blockers.append("CORE_SAFETY_EVIDENCE_PROVENANCE_INVALID")
+            elif contribution["rejection_reason"] == "TARGET_MINT_MISMATCH":
+                blockers.append("CORE_SAFETY_EVIDENCE_TARGET_MISMATCH")
+        elif category == "HOLDER_CONCENTRATION":
+            if contribution["rejection_reason"] == "SOURCE_TRACE_MISMATCH":
+                blockers.append("HOLDER_EVIDENCE_PROVENANCE_INVALID")
+            elif contribution["rejection_reason"] == "TARGET_MINT_MISMATCH":
+                blockers.append("HOLDER_EVIDENCE_TARGET_MISMATCH")
     provenance_complete = all(
         item["trace_complete"]
         for item in contributions
@@ -319,7 +382,10 @@ def persist_safety_composite(
     elif not holder_labels:
         optional_unknowns.append("HOLDER_CONDITION_UNAVAILABLE")
     for contribution in contributions[1:]:
-        if contribution["rejection_reason"] == "SAFETY_EVIDENCE_STALE":
+        if (
+            contribution["evidence_category"] == "HOLDER_CONCENTRATION"
+            and contribution["rejection_reason"] == "SAFETY_EVIDENCE_STALE"
+        ):
             optional_unknowns.append("HOLDER_CONDITION_STALE")
     optional_unknowns = list(dict.fromkeys(optional_unknowns))
     contract_label = (
@@ -392,6 +458,11 @@ def persist_safety_composite(
     return {
         "composite_id": composite_id,
         "safety_contract_label": contract_label,
+        "mint_authority_status": base["mint_authority_status"],
+        "freeze_authority_status": base["freeze_authority_status"],
+        "metadata_mutability_status": base["metadata_mutability_status"],
+        "supply_sanity_label": base["supply_sanity_label"],
+        "token_program_label": base["token_program_label"],
         "holder_concentration_label": base["holder_concentration_label"],
         "liquidity_lock_or_burn_label": base["liquidity_lock_or_burn_label"],
         "known_risk_flag_label": base["known_risk_flag_label"],
@@ -399,6 +470,7 @@ def persist_safety_composite(
         "conflicts": conflicts,
         "blockers": blockers,
         "optional_unknowns": optional_unknowns,
+        "field_bindings": field_bindings,
         "inserted": True,
     }
 

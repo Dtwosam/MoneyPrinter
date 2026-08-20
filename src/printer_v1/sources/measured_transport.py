@@ -42,9 +42,10 @@ SIX_UNITS = (
 # Single source of truth for governed calls reserved by lifecycle close work.
 # WINDOW_CLOSE retains the established 15m bundle. CONTINUATION_CLOSE reserves
 # its exact-pair close observation plus the worst-case fresh first-hour safety
-# bundle: GoPlus + holder primary + one approved holder backup.
-PRECLOSE_CONTEXT_REQUEST_COUNT = 5
-FIRST_HOUR_SAFETY_CONTEXT_REQUEST_COUNT = 3
+# bundle: GoPlus + Solana core mint-account + holder primary + one approved
+# holder backup.
+PRECLOSE_CONTEXT_REQUEST_COUNT = 6
+FIRST_HOUR_SAFETY_CONTEXT_REQUEST_COUNT = 4
 LIFECYCLE_RESERVED_OPERATIONS_BY_STEP_KIND = MappingProxyType(
     {
         "SNAPSHOT": 1,

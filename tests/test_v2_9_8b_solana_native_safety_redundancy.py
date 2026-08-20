@@ -236,7 +236,7 @@ class SolanaNativeSafetyRedundancyTests(unittest.TestCase):
 
         source = inspect.getsource(factory._collect_preclose_context)
         persist_source = inspect.getsource(factory._persist_preclose_context)
-        self.assertIn("mint_account_reference", source)
+        self.assertIn("SOLANA_RPC_TOKEN_SAFETY_REQUEST_KIND", source)
         self.assertIn("core_solana_safety", source)
         self.assertIn(
             'core_solana_execution=executions.get("core_solana_safety")',
