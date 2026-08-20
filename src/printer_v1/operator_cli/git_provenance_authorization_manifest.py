@@ -135,6 +135,33 @@ FOUR_TOKEN_HISTORICAL_MIGRATION_057_EXPECTED_INVENTORY_SHA256 = (
     "9272f596e7a82c3cfe9d824595be74f34c7203dccab3bd541c187dc236519535"
 )
 
+# Preserved historical reconciliation evidence is neither schema-transition
+# evidence nor authorization evidence.  These two classes explain exact
+# operator repair artifacts only and carry no execution/reuse authority.
+PRE_ADMISSION_2364_RECONCILIATION_PACKAGE_ROOT = (
+    "operator-runs/v2-9-8b-pre-admission-2364-reconciliation"
+)
+PRE_ADMISSION_2364_RECONCILIATION_EXECUTION_ID = "RECONCILE_20260820T174324Z"
+PRE_ADMISSION_2364_RECONCILIATION_EVIDENCE_CLASS = (
+    "HISTORICAL_PRE_ADMISSION_2364_RECONCILIATION_EVIDENCE"
+)
+PRE_ADMISSION_2364_RECONCILIATION_EXPECTED_FILE_COUNT = 3
+PRE_ADMISSION_2364_RECONCILIATION_EXPECTED_INVENTORY_SHA256 = (
+    "f3b030d9b396380efd87310e4b1e72161271bbd0869ed4fae2b533d4e338bfcd"
+)
+
+ORPHAN_FACTORY_RUN_RECONCILIATION_PACKAGE_ROOT = (
+    "operator-runs/v2-9-8b-historical-orphan-factory-run-reconciliation"
+)
+ORPHAN_FACTORY_RUN_RECONCILIATION_EXECUTION_ID = "RECONCILE_20260820T192309Z"
+ORPHAN_FACTORY_RUN_RECONCILIATION_EVIDENCE_CLASS = (
+    "HISTORICAL_ORPHAN_FACTORY_RUN_RECONCILIATION_EVIDENCE"
+)
+ORPHAN_FACTORY_RUN_RECONCILIATION_EXPECTED_FILE_COUNT = 4
+ORPHAN_FACTORY_RUN_RECONCILIATION_EXPECTED_INVENTORY_SHA256 = (
+    "23ea78d77776c1bb566ec098623eb2957dff280a15701fd2fe4779d0e82d0ff3"
+)
+
 REQUIRED_MAIN_WINDOW = "WINDOW_15M"
 REQUIRED_COMMAND_MODE = "run"
 
@@ -144,6 +171,9 @@ REQUIRED_COMMAND_MODE = "run"
 # replayed from another digest domain.
 HISTORICAL_MIGRATION_INVENTORY_DOMAIN = (
     "PRINTER_V1_HISTORICAL_MIGRATION_PACKAGE_INVENTORY_V1"
+)
+HISTORICAL_RECONCILIATION_INVENTORY_DOMAIN = (
+    "PRINTER_V1_HISTORICAL_RECONCILIATION_PACKAGE_INVENTORY_V1"
 )
 
 
@@ -179,6 +209,47 @@ def compute_historical_migration_inventory_sha256(
     canonical = json.dumps(
         {
             "domain": HISTORICAL_MIGRATION_INVENTORY_DOMAIN,
+            "package_root": package_root,
+            "execution_id": execution_id,
+            "evidence_class": evidence_class,
+            "file_count": len(records),
+            "files": records,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    )
+    return hashlib.sha256(canonical.encode("ascii")).hexdigest()
+
+
+def compute_historical_reconciliation_inventory_sha256(
+    *,
+    package_root: str,
+    execution_id: str,
+    evidence_class: str,
+    files: Iterable[Mapping[str, Any]],
+) -> str:
+    """Digest one complete historical reconciliation package declaration."""
+    records = sorted(
+        (
+            {
+                "path": _require_str(
+                    item["path"], label="historical reconciliation inventory path"
+                ),
+                "sha256": _require_hex64(
+                    item["sha256"],
+                    label="historical reconciliation inventory sha256",
+                ),
+                "size": int(item["size"]),
+            }
+            for item in files
+        ),
+        key=lambda record: record["path"],
+    )
+    canonical = json.dumps(
+        {
+            "domain": HISTORICAL_RECONCILIATION_INVENTORY_DOMAIN,
             "package_root": package_root,
             "execution_id": execution_id,
             "evidence_class": evidence_class,
@@ -230,6 +301,40 @@ class HistoricalMigrationPackage:
 
 
 @dataclass(frozen=True)
+class HistoricalReconciliationFile:
+    """One immutable member of a historical reconciliation package."""
+
+    path: str
+    size: int
+    sha256: str
+
+
+@dataclass(frozen=True)
+class HistoricalReconciliationPackage:
+    """One exact historical reconciliation package with committed members."""
+
+    package_root: str
+    execution_id: str
+    evidence_class: str
+    expected_file_count: int
+    expected_inventory_sha256: str
+    execution_directories: tuple[str, ...]
+    files: tuple[HistoricalReconciliationFile, ...]
+
+    def inventory_sha256(self) -> str:
+        """Digest the committed member declarations under this identity."""
+        return compute_historical_reconciliation_inventory_sha256(
+            package_root=self.package_root,
+            execution_id=self.execution_id,
+            evidence_class=self.evidence_class,
+            files=(
+                {"path": item.path, "sha256": item.sha256, "size": item.size}
+                for item in self.files
+            ),
+        )
+
+
+@dataclass(frozen=True)
 class GitAuthorizationProfile:
     command_mode: str
     authorization_package_root: str
@@ -244,6 +349,12 @@ class GitAuthorizationProfile:
     # default keeps ordinary and standard-four-hour manifest semantics, schema
     # key sets, and reconciliation behavior byte-for-byte unchanged.
     historical_migration_packages: tuple[HistoricalMigrationPackage, ...] = ()
+    # Exact historical operator-reconciliation evidence.  It is deliberately
+    # profile data rather than public manifest data, and therefore can never be
+    # supplied or redefined by a future authorization preparation.
+    historical_reconciliation_packages: tuple[
+        HistoricalReconciliationPackage, ...
+    ] = ()
 
 
 ORDINARY_AUTHORIZATION_PROFILE = GitAuthorizationProfile(
@@ -330,6 +441,121 @@ FOUR_TOKEN_HISTORICAL_MIGRATION_PACKAGES: tuple[HistoricalMigrationPackage, ...]
 )
 
 
+FOUR_TOKEN_OPERATIONAL_HISTORICAL_RECONCILIATION_PACKAGES: tuple[
+    HistoricalReconciliationPackage, ...
+] = (
+    HistoricalReconciliationPackage(
+        package_root=PRE_ADMISSION_2364_RECONCILIATION_PACKAGE_ROOT,
+        execution_id=PRE_ADMISSION_2364_RECONCILIATION_EXECUTION_ID,
+        evidence_class=PRE_ADMISSION_2364_RECONCILIATION_EVIDENCE_CLASS,
+        expected_file_count=(
+            PRE_ADMISSION_2364_RECONCILIATION_EXPECTED_FILE_COUNT
+        ),
+        expected_inventory_sha256=(
+            PRE_ADMISSION_2364_RECONCILIATION_EXPECTED_INVENTORY_SHA256
+        ),
+        execution_directories=(
+            "RECONCILE_20260820T174244Z",
+            "RECONCILE_20260820T174324Z",
+        ),
+        files=(
+            HistoricalReconciliationFile(
+                path=(
+                    "operator-runs/v2-9-8b-pre-admission-2364-reconciliation/"
+                    "RECONCILE_20260820T174324Z/disposable-root/"
+                    "disposable-restore.sqlite3"
+                ),
+                size=112144384,
+                sha256=(
+                    "769befd90ab82e2ed7443b19ba8834dbf7807e0c0aaed20549e0e4ab6acc3847"
+                ),
+            ),
+            HistoricalReconciliationFile(
+                path=(
+                    "operator-runs/v2-9-8b-pre-admission-2364-reconciliation/"
+                    "RECONCILE_20260820T174324Z/reconciliation_evidence.json"
+                ),
+                size=1639,
+                sha256=(
+                    "ee538e004d5f1de9db6b4aff86002b8c2375fa547481ee1311917f1816ab17ad"
+                ),
+            ),
+            HistoricalReconciliationFile(
+                path=(
+                    "operator-runs/v2-9-8b-pre-admission-2364-reconciliation/"
+                    "RECONCILE_20260820T174324Z/verified-backup.sqlite3"
+                ),
+                size=112144384,
+                sha256=(
+                    "769befd90ab82e2ed7443b19ba8834dbf7807e0c0aaed20549e0e4ab6acc3847"
+                ),
+            ),
+        ),
+    ),
+    HistoricalReconciliationPackage(
+        package_root=ORPHAN_FACTORY_RUN_RECONCILIATION_PACKAGE_ROOT,
+        execution_id=ORPHAN_FACTORY_RUN_RECONCILIATION_EXECUTION_ID,
+        evidence_class=ORPHAN_FACTORY_RUN_RECONCILIATION_EVIDENCE_CLASS,
+        expected_file_count=(
+            ORPHAN_FACTORY_RUN_RECONCILIATION_EXPECTED_FILE_COUNT
+        ),
+        expected_inventory_sha256=(
+            ORPHAN_FACTORY_RUN_RECONCILIATION_EXPECTED_INVENTORY_SHA256
+        ),
+        execution_directories=(
+            "RECONCILE_20260820T185845Z",
+            "RECONCILE_20260820T192309Z",
+        ),
+        files=(
+            HistoricalReconciliationFile(
+                path=(
+                    "operator-runs/v2-9-8b-historical-orphan-factory-run-"
+                    "reconciliation/RECONCILE_20260820T185845Z/"
+                    "disposable-root/disposable-restore.sqlite3"
+                ),
+                size=112144384,
+                sha256=(
+                    "f167858a7a47c2837bced97223501f8d1c004d1c8c7a8177ed080c4e8d27f341"
+                ),
+            ),
+            HistoricalReconciliationFile(
+                path=(
+                    "operator-runs/v2-9-8b-historical-orphan-factory-run-"
+                    "reconciliation/RECONCILE_20260820T185845Z/"
+                    "verified-backup.sqlite3"
+                ),
+                size=112144384,
+                sha256=(
+                    "f167858a7a47c2837bced97223501f8d1c004d1c8c7a8177ed080c4e8d27f341"
+                ),
+            ),
+            HistoricalReconciliationFile(
+                path=(
+                    "operator-runs/v2-9-8b-historical-orphan-factory-run-"
+                    "reconciliation/RECONCILE_20260820T192309Z/"
+                    "disposable-root/disposable-restore.sqlite3"
+                ),
+                size=112144384,
+                sha256=(
+                    "f167858a7a47c2837bced97223501f8d1c004d1c8c7a8177ed080c4e8d27f341"
+                ),
+            ),
+            HistoricalReconciliationFile(
+                path=(
+                    "operator-runs/v2-9-8b-historical-orphan-factory-run-"
+                    "reconciliation/RECONCILE_20260820T192309Z/"
+                    "verified-backup.sqlite3"
+                ),
+                size=112144384,
+                sha256=(
+                    "f167858a7a47c2837bced97223501f8d1c004d1c8c7a8177ed080c4e8d27f341"
+                ),
+            ),
+        ),
+    ),
+)
+
+
 FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE = GitAuthorizationProfile(
     command_mode="four-token-bounded-capacity-proof-run",
     authorization_package_root=(
@@ -377,6 +603,9 @@ FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE = GitAuthorizationProfile(
     migration_package_root=MIGRATION_058_PACKAGE_ROOT,
     migration_package_kind=MIGRATION_058_PACKAGE_KIND,
     historical_migration_packages=FOUR_TOKEN_HISTORICAL_MIGRATION_PACKAGES,
+    historical_reconciliation_packages=(
+        FOUR_TOKEN_OPERATIONAL_HISTORICAL_RECONCILIATION_PACKAGES
+    ),
 )
 
 
@@ -500,6 +729,21 @@ _MARKER_FALSE_FLAGS = (
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _HEAD_PATTERN = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
 _GLOB_CHARACTERS = ("*", "?", "[")
+_NON_RECONCILIATION_EVIDENCE_CLASSES = frozenset(
+    {
+        HISTORICAL_AUTHORIZATION_EVIDENCE_CLASS,
+        HISTORICAL_MIGRATION_EVIDENCE_CLASS,
+        HISTORICAL_MIGRATION_055_EVIDENCE_CLASS,
+        HISTORICAL_MIGRATION_056_EVIDENCE_CLASS,
+        HISTORICAL_MIGRATION_057_EVIDENCE_CLASS,
+        MIGRATION_PACKAGE_KIND,
+        MIGRATION_055_PACKAGE_KIND,
+        MIGRATION_056_PACKAGE_KIND,
+        MIGRATION_057_PACKAGE_KIND,
+        MIGRATION_058_PACKAGE_KIND,
+        AUTHORIZATION_PACKAGE_KIND,
+    }
+)
 
 
 class GitProvenanceAuthorizationError(RuntimeError):
@@ -1115,19 +1359,23 @@ def _reconcile_evidence_sets(
     current_package_roots: tuple[str, str],
     sidecar_untracked_paths: Iterable[str],
     historical_migration_paths: set[str] | None = None,
+    historical_reconciliation_paths: set[str] | None = None,
 ) -> None:
-    """Reconcile complete operator-runs inventory against T, M, Ha and Hm.
+    """Reconcile complete operator-runs inventory against T, M, Ha, Hm and Hr.
 
     M (current_manifest_paths) is current-only and is the only set used for
     current-package equality (C == M). Ha is approved historical authorization
-    evidence and Hm is exact profile-bound historical migration evidence.
-    U = M ∪ Ha ∪ Hm is the untracked allowlist and F = T ∪ M ∪ Ha ∪ Hm is the
-    complete inventory. Never pass U into current-package equality checks.
+    evidence, Hm is exact profile-bound historical migration evidence, and Hr
+    is exact profile-bound historical reconciliation evidence.
+    U = M ∪ Ha ∪ Hm ∪ Hr is the untracked allowlist and
+    F = T ∪ M ∪ Ha ∪ Hm ∪ Hr is the complete inventory. Never pass U into
+    current-package equality checks.
     """
     m_paths = set(current_manifest_paths)
     h_paths = set(historical_paths)
     hm_paths = set(historical_migration_paths or ())
-    allowlist_u = m_paths | h_paths | hm_paths
+    hr_paths = set(historical_reconciliation_paths or ())
+    allowlist_u = m_paths | h_paths | hm_paths | hr_paths
     t_paths = set(tracked_paths)
     f_paths = set(inventory_paths)
 
@@ -1167,6 +1415,19 @@ def _reconcile_evidence_sets(
             "historical migration evidence: "
             + ", ".join(sorted(h_paths & hm_paths))
         )
+
+    for label, overlap in (
+        ("current files", m_paths & hr_paths),
+        ("historical authorization evidence", h_paths & hr_paths),
+        ("historical migration evidence", hm_paths & hr_paths),
+    ):
+        if overlap:
+            raise GitProvenanceAuthorizationError(
+                "duplicate path across historical reconciliation evidence and "
+                + label
+                + ": "
+                + ", ".join(sorted(overlap))
+            )
 
     unexpected_visible = effective_visible - allowlist_u
     if unexpected_visible:
@@ -1220,6 +1481,13 @@ def _reconcile_evidence_sets(
             "historical migration evidence is absent from the complete "
             "operator-runs inventory: "
             + ", ".join(sorted(missing_historical_migration))
+        )
+    missing_historical_reconciliation = hr_paths - f_paths
+    if missing_historical_reconciliation:
+        raise GitProvenanceAuthorizationError(
+            "historical reconciliation evidence is absent from the complete "
+            "operator-runs inventory: "
+            + ", ".join(sorted(missing_historical_reconciliation))
         )
 
     ignored_outside_inventory = ignored_paths - f_paths
@@ -1280,13 +1548,22 @@ def _reconcile_evidence_sets(
             + ", ".join(sorted(historical_migration_in_current))
         )
 
-    expected_inventory = t_paths | m_paths | h_paths | hm_paths
+    historical_reconciliation_in_current = hr_paths & current_inventory
+    if historical_reconciliation_in_current:
+        raise GitProvenanceAuthorizationError(
+            "historical reconciliation evidence path lies inside a current "
+            "package: "
+            + ", ".join(sorted(historical_reconciliation_in_current))
+        )
+
+    expected_inventory = t_paths | m_paths | h_paths | hm_paths | hr_paths
     unexplained_inventory = f_paths - expected_inventory
     if unexplained_inventory:
         raise GitProvenanceAuthorizationError(
             "unexpected operator-runs filesystem file is neither tracked history, "
             "current manifest evidence, approved historical authorization "
-            "evidence, nor approved historical migration evidence: "
+            "evidence, approved historical migration evidence, nor approved "
+            "historical reconciliation evidence: "
             + ", ".join(sorted(unexplained_inventory))
         )
 
@@ -1302,7 +1579,8 @@ def _reconcile_evidence_sets(
         raise GitProvenanceAuthorizationError(
             "complete operator-runs inventory does not equal tracked history plus "
             "current manifest files plus approved historical authorization "
-            "evidence plus approved historical migration evidence"
+            "evidence plus approved historical migration evidence plus approved "
+            "historical reconciliation evidence"
         )
 
 
@@ -1700,6 +1978,249 @@ def enumerate_historical_migration_evidence(
                 "untracked evidence: " + package.package_prefix
             )
     records.sort(key=lambda record: record["path"])
+    return tuple(records)
+
+
+def enumerate_historical_reconciliation_evidence(
+    *,
+    repository_root: str | Path,
+    historical_reconciliation_packages: Collection[
+        HistoricalReconciliationPackage
+    ],
+    tracked_operator_runs_paths: set[str] | None = None,
+    git_executable: str = "git",
+    timeout_seconds: float = GIT_COMMAND_TIMEOUT_SECONDS,
+    runner: Callable[..., Any] = subprocess.run,
+) -> tuple[dict[str, Any], ...]:
+    """Validate and enumerate immutable historical reconciliation evidence.
+
+    Package membership comes only from committed profile declarations.  The
+    filesystem can prove exact equality or fail closed; it cannot add, remove,
+    or redefine a member during manifest preparation.
+    """
+    packages = tuple(historical_reconciliation_packages)
+    if not packages:
+        return ()
+    if not 0 < timeout_seconds <= GIT_COMMAND_TIMEOUT_SECONDS:
+        raise GitProvenanceAuthorizationError(
+            "Git provenance timeout is outside the fixed ceiling"
+        )
+    root = Path(repository_root).resolve()
+    if not root.is_dir():
+        raise GitProvenanceAuthorizationError("repository root is unavailable")
+    tracked = (
+        _tracked_operator_runs_paths(
+            root,
+            git_executable=git_executable,
+            timeout_seconds=timeout_seconds,
+            runner=runner,
+        )
+        if tracked_operator_runs_paths is None
+        else set(tracked_operator_runs_paths)
+    )
+
+    records: list[dict[str, Any]] = []
+    seen_paths: set[str] = set()
+    seen_roots: set[str] = set()
+    for package in packages:
+        if (
+            not isinstance(package.package_root, str)
+            or not package.package_root
+            or not isinstance(package.execution_id, str)
+            or not package.execution_id
+            or not isinstance(package.evidence_class, str)
+            or not package.evidence_class
+            or type(package.expected_file_count) is not int
+            or type(package.expected_file_count) is bool
+            or package.expected_file_count < 1
+            or _SHA256_PATTERN.fullmatch(package.expected_inventory_sha256) is None
+            or not isinstance(package.execution_directories, tuple)
+            or not package.execution_directories
+            or not isinstance(package.files, tuple)
+        ):
+            raise GitProvenanceAuthorizationError(
+                "historical reconciliation package declaration is malformed"
+            )
+        if package.evidence_class in _NON_RECONCILIATION_EVIDENCE_CLASSES:
+            raise GitProvenanceAuthorizationError(
+                "historical reconciliation evidence_class reuses a migration "
+                "or authorization evidence class"
+            )
+        normalized_root = _normalize_git_path(
+            package.package_root, label="historical reconciliation package root"
+        )
+        if normalized_root != package.package_root or not _is_beneath_root(
+            f"{normalized_root}/{package.execution_id}", OPERATOR_RUNS_ROOT
+        ):
+            raise GitProvenanceAuthorizationError(
+                "historical reconciliation package root must live under operator-runs"
+            )
+        if normalized_root in seen_roots:
+            raise GitProvenanceAuthorizationError(
+                "duplicate historical reconciliation package root"
+            )
+        seen_roots.add(normalized_root)
+        require_safe_authorization_id(
+            package.execution_id,
+            label="historical reconciliation execution_id",
+        )
+        if (
+            tuple(sorted(package.execution_directories))
+            != package.execution_directories
+            or len(set(package.execution_directories))
+            != len(package.execution_directories)
+        ):
+            raise GitProvenanceAuthorizationError(
+                "historical reconciliation execution-directory declaration is "
+                "not exact, unique and sorted"
+            )
+        for directory_id in package.execution_directories:
+            require_safe_authorization_id(
+                directory_id,
+                label="historical reconciliation execution directory",
+            )
+        if package.execution_id not in package.execution_directories:
+            raise GitProvenanceAuthorizationError(
+                "historical reconciliation execution_id is not one of the "
+                "declared execution directories"
+            )
+        if len(package.files) != package.expected_file_count:
+            raise GitProvenanceAuthorizationError(
+                "historical reconciliation declared file count does not match "
+                "its immutable declaration"
+            )
+
+        declared: list[dict[str, Any]] = []
+        declared_paths: set[str] = set()
+        expected_execution_directories = set(package.execution_directories)
+        prefix = f"{normalized_root}/"
+        for member in package.files:
+            if not isinstance(member, HistoricalReconciliationFile):
+                raise GitProvenanceAuthorizationError(
+                    "historical reconciliation member declaration is malformed"
+                )
+            normalized = _normalize_git_path(
+                member.path, label="historical reconciliation member path"
+            )
+            if not normalized.startswith(prefix):
+                raise GitProvenanceAuthorizationError(
+                    "historical reconciliation member is outside its package root"
+                )
+            if normalized in declared_paths:
+                raise GitProvenanceAuthorizationError(
+                    "duplicate historical reconciliation member path"
+                )
+            if (
+                type(member.size) is not int
+                or type(member.size) is bool
+                or member.size < 0
+            ):
+                raise GitProvenanceAuthorizationError(
+                    "historical reconciliation member size is invalid"
+                )
+            digest = _require_hex64(
+                member.sha256, label="historical reconciliation member sha256"
+            )
+            declared_paths.add(normalized)
+            relative_member = normalized[len(prefix) :]
+            member_execution_directory = relative_member.split("/", 1)[0]
+            if member_execution_directory not in expected_execution_directories:
+                raise GitProvenanceAuthorizationError(
+                    "historical reconciliation member is outside the exact "
+                    "execution-directory declaration"
+                )
+            declared.append(
+                {"path": normalized, "sha256": digest, "size": member.size}
+            )
+        declared.sort(key=lambda item: item["path"])
+        if package.inventory_sha256() != package.expected_inventory_sha256:
+            raise GitProvenanceAuthorizationError(
+                "historical reconciliation package inventory digest does not "
+                "match its immutable declaration: " + normalized_root
+            )
+
+        package_dir = root / normalized_root
+        if os.path.islink(package_dir):
+            raise GitProvenanceAuthorizationError(
+                "historical reconciliation package root must not be a symlink: "
+                + normalized_root
+            )
+        if not package_dir.is_dir():
+            raise GitProvenanceAuthorizationError(
+                "declared historical reconciliation package root is missing: "
+                + normalized_root
+            )
+        try:
+            root_entries = sorted(
+                os.scandir(package_dir), key=lambda entry: entry.name
+            )
+        except OSError as exc:
+            raise GitProvenanceAuthorizationError(
+                "historical reconciliation package root could not be read: "
+                + normalized_root
+            ) from exc
+        actual_execution_directories: set[str] = set()
+        for entry in root_entries:
+            relative = f"{normalized_root}/{entry.name}"
+            if entry.is_symlink():
+                raise GitProvenanceAuthorizationError(
+                    "historical reconciliation package contains a symlink: "
+                    + relative
+                )
+            try:
+                mode = entry.stat(follow_symlinks=False).st_mode
+            except OSError as exc:
+                raise GitProvenanceAuthorizationError(
+                    "historical reconciliation package entry could not be "
+                    "inspected: " + relative
+                ) from exc
+            if not stat.S_ISDIR(mode):
+                raise GitProvenanceAuthorizationError(
+                    "historical reconciliation package root contains a "
+                    "non-execution entry: " + relative
+                )
+            actual_execution_directories.add(entry.name)
+        if actual_execution_directories != expected_execution_directories:
+            raise GitProvenanceAuthorizationError(
+                "historical reconciliation execution-directory inventory does "
+                "not match its immutable declaration: " + normalized_root
+            )
+
+        actual = _inventory_bound_package_files(
+            root=root,
+            package_dir=package_dir,
+            package_prefix=normalized_root,
+            label="historical reconciliation package",
+        )
+        if actual != declared:
+            raise GitProvenanceAuthorizationError(
+                "historical reconciliation package file inventory does not "
+                "match its immutable declaration: " + normalized_root
+            )
+        tracked_members = sorted(
+            item["path"] for item in actual if item["path"] in tracked
+        )
+        if tracked_members:
+            raise GitProvenanceAuthorizationError(
+                "historical reconciliation package member is tracked at HEAD "
+                "instead of preserved untracked evidence: "
+                + ", ".join(tracked_members)
+            )
+        for item in actual:
+            if item["path"] in seen_paths:
+                raise GitProvenanceAuthorizationError(
+                    "duplicate historical reconciliation evidence path: "
+                    + item["path"]
+                )
+            seen_paths.add(item["path"])
+            records.append(
+                {
+                    **item,
+                    "evidence_class": package.evidence_class,
+                    "reconciliation_execution_id": package.execution_id,
+                }
+            )
+    records.sort(key=lambda item: item["path"])
     return tuple(records)
 
 
@@ -2368,6 +2889,8 @@ def _validate_historical_migration_evidence(
 
 def _allowed_file_digest_records(
     manifest: Mapping[str, Any],
+    *,
+    historical_reconciliation_evidence: Iterable[Mapping[str, Any]] = (),
 ) -> list[dict[str, Any]]:
     """Map current files and historical evidence into allowlist digest records."""
     records: list[dict[str, Any]] = []
@@ -2394,6 +2917,15 @@ def _allowed_file_digest_records(
     # is created, exactly like current and historical authorization evidence.
     historical_migration = manifest.get(HISTORICAL_MIGRATION_EVIDENCE_KEY) or []
     for entry in historical_migration:
+        records.append(
+            {
+                "package_kind": entry["evidence_class"],
+                "path": entry["path"],
+                "sha256": entry["sha256"],
+                "size": entry["size"],
+            }
+        )
+    for entry in historical_reconciliation_evidence:
         records.append(
             {
                 "package_kind": entry["evidence_class"],
@@ -2578,6 +3110,19 @@ def validate_git_provenance_manifest_pre_marker(
             "historical_migration_evidence does not match the exact approved "
             "historical migration package inventory"
         )
+    historical_reconciliation = enumerate_historical_reconciliation_evidence(
+        repository_root=root,
+        historical_reconciliation_packages=(
+            active_profile.historical_reconciliation_packages
+        ),
+        tracked_operator_runs_paths=tracked_paths,
+        git_executable=git_executable,
+        timeout_seconds=timeout_seconds,
+        runner=runner,
+    )
+    historical_reconciliation_paths = tuple(
+        item["path"] for item in historical_reconciliation
+    )
     visible_paths = _visible_untracked_paths(
         root, git_executable=git_executable, timeout_seconds=timeout_seconds, runner=runner
     )
@@ -2595,16 +3140,21 @@ def validate_git_provenance_manifest_pre_marker(
         current_package_roots=current_package_roots,
         sidecar_untracked_paths=sidecar_untracked_paths,
         historical_migration_paths=set(historical_migration_paths),
+        historical_reconciliation_paths=set(historical_reconciliation_paths),
     )
     allowed_untracked_paths = tuple(
         sorted(
             set(current_paths)
             | set(historical_paths)
             | set(historical_migration_paths)
+            | set(historical_reconciliation_paths)
         )
     )
     allowed_file_set_sha256 = compute_allowed_file_set_sha256(
-        _allowed_file_digest_records(manifest)
+        _allowed_file_digest_records(
+            manifest,
+            historical_reconciliation_evidence=historical_reconciliation,
+        )
     )
     return PreparedGitProvenanceAuthorization(
         allowed_untracked_paths=allowed_untracked_paths,
@@ -2688,6 +3238,7 @@ __all__ = [
     "HISTORICAL_MIGRATION_EVIDENCE_CLASS",
     "HISTORICAL_MIGRATION_EVIDENCE_KEY",
     "HISTORICAL_MIGRATION_INVENTORY_DOMAIN",
+    "HISTORICAL_RECONCILIATION_INVENTORY_DOMAIN",
     "HISTORICAL_MIGRATION_055_EVIDENCE_CLASS",
     "HISTORICAL_MIGRATION_056_EVIDENCE_CLASS",
     "FOUR_TOKEN_HISTORICAL_MIGRATION_EXECUTION_ID",
@@ -2700,6 +3251,7 @@ __all__ = [
     "FOUR_TOKEN_HISTORICAL_MIGRATION_056_EXPECTED_FILE_COUNT",
     "FOUR_TOKEN_HISTORICAL_MIGRATION_056_EXPECTED_INVENTORY_SHA256",
     "compute_historical_migration_inventory_sha256",
+    "compute_historical_reconciliation_inventory_sha256",
     "MANIFEST_SCHEMA_VERSION",
     "MIGRATION_PACKAGE_KIND",
     "MIGRATION_PACKAGE_ROOT",
@@ -2708,6 +3260,8 @@ __all__ = [
     "supported_profiles",
     "GitAuthorizationProfile",
     "HistoricalMigrationPackage",
+    "HistoricalReconciliationFile",
+    "HistoricalReconciliationPackage",
     "ORDINARY_AUTHORIZATION_PROFILE",
     "STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE",
     "PreparedGitProvenanceAuthorization",
@@ -2716,6 +3270,7 @@ __all__ = [
     "compute_allowed_file_set_sha256",
     "enumerate_historical_authorization_evidence",
     "enumerate_historical_migration_evidence",
+    "enumerate_historical_reconciliation_evidence",
     "expected_manifest_keys",
     "extract_approved_historical_authorization_ids",
     "require_safe_authorization_id",
