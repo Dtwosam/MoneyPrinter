@@ -51,6 +51,7 @@ from printer_v1.operator_cli.campaign_persistence import (
 )
 from printer_v1.operator_cli.pre_admission_discovery_attempt import (
     PreAdmissionAttemptState,
+    cancel_pair_ready_pre_admission_attempt_for_terminal_parent,
     terminalize_pre_admission_attempt,
 )
 from printer_v1.scheduler.scheduler import cancel_job
@@ -386,11 +387,10 @@ def reconcile_campaign_terminal(
                 cancelled += 1
         report["cancelled_jobs"] = cancelled
 
-        # 2b. Terminalize still-active pre-admission discovery attempts. Active-work
-        #     accounting already treats PLANNED/RUNNING attempts as unclean
-        #     terminal residue; cancel any still-active linked Scheduler job
-        #     through the Central Scheduler owner, then terminalize exclusively
-        #     through terminalize_pre_admission_attempt(... CANCELLED ...).
+        # 2b. Terminalize attributable pre-admission discovery attempts. Existing
+        #     PLANNED/RUNNING cleanup keeps its broad attribution law. A frozen
+        #     PAIR_READY admission authority is cancelled only on exact campaign,
+        #     run and factory ownership and preserves its frozen-pair truth.
         pre_admission_outcomes: list[dict[str, Any]] = []
         if _table_exists(
             connection, "printer_pre_admission_discovery_attempts"
@@ -406,7 +406,7 @@ def reconcile_campaign_terminal(
                 if value:
                     clauses.append(f"{column} = ?")
                     params.append(value)
-            attempt_rows = connection.execute(
+            attempt_rows = list(connection.execute(
                 """
                 SELECT attempt_id, scheduler_job_id, attempt_state
                 FROM printer_pre_admission_discovery_attempts
@@ -415,12 +415,33 @@ def reconcile_campaign_terminal(
                 ORDER BY attempt_id
                 """.format(" OR ".join(clauses)),
                 tuple(params),
-            ).fetchall()
+            ).fetchall())
+            if factory_run_id:
+                pair_ready_rows = connection.execute(
+                    """
+                    SELECT attempt_id, scheduler_job_id, attempt_state
+                    FROM printer_pre_admission_discovery_attempts
+                    WHERE campaign_id=?
+                      AND campaign_run_id=?
+                      AND authoritative_factory_run_id=?
+                      AND attempt_state='PAIR_READY'
+                    ORDER BY attempt_id
+                    """,
+                    (campaign_id, run_id, factory_run_id),
+                ).fetchall()
+                existing_attempt_ids = {
+                    str(row["attempt_id"]) for row in attempt_rows
+                }
+                attempt_rows.extend(
+                    row for row in pair_ready_rows
+                    if str(row["attempt_id"]) not in existing_attempt_ids
+                )
             attempt_now = datetime.fromisoformat(instant)
             if attempt_now.tzinfo is None:
                 attempt_now = attempt_now.replace(tzinfo=timezone.utc)
             for attempt_row in attempt_rows:
                 attempt_id = str(attempt_row["attempt_id"])
+                prior_state = str(attempt_row["attempt_state"])
                 job_id = int(attempt_row["scheduler_job_id"])
                 job_row = connection.execute(
                     "SELECT status, locked_at, lock_owner "
@@ -442,21 +463,37 @@ def reconcile_campaign_terminal(
                         cancel_job(connection, job_id=job_id)
                         job_cancelled = True
                         cancelled += 1
-                terminalize_pre_admission_attempt(
-                    connection,
-                    attempt_id=attempt_id,
-                    state=PreAdmissionAttemptState.CANCELLED,
-                    cause=cause,
-                    now=attempt_now,
-                )
+                if prior_state == PreAdmissionAttemptState.PAIR_READY.value:
+                    if not factory_run_id:
+                        raise TerminalClosureError(
+                            "PAIR_READY_PARENT_TERMINAL_FACTORY_ID_REQUIRED"
+                        )
+                    cancel_pair_ready_pre_admission_attempt_for_terminal_parent(
+                        connection,
+                        attempt_id=attempt_id,
+                        campaign_id=campaign_id,
+                        campaign_run_id=run_id,
+                        authoritative_factory_run_id=factory_run_id,
+                        now=attempt_now,
+                    )
+                    outcome_cause = "EXACT_PAIR_FROZEN"
+                else:
+                    terminalize_pre_admission_attempt(
+                        connection,
+                        attempt_id=attempt_id,
+                        state=PreAdmissionAttemptState.CANCELLED,
+                        cause=cause,
+                        now=attempt_now,
+                    )
+                    outcome_cause = cause
                 pre_admission_outcomes.append(
                     {
                         "attempt_id": attempt_id,
                         "scheduler_job_id": job_id,
-                        "prior_state": str(attempt_row["attempt_state"]),
+                        "prior_state": prior_state,
                         "new_state": PreAdmissionAttemptState.CANCELLED.value,
                         "job_cancelled": job_cancelled,
-                        "terminal_cause": cause,
+                        "terminal_cause": outcome_cause,
                     }
                 )
             report["cancelled_jobs"] = cancelled
