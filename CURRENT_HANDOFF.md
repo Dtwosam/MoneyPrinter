@@ -4,64 +4,90 @@ Date: 2026-08-20
 
 ## Current lane
 
-`V2-9.8B Cooperative Later-Cycle Repair Implementation`
+`V2-9.8B Solana-Native Core Safety Redundancy Repair`
 
 Status: `CLOSED_PASS`
 
 Verdict:
 
-`V2_9_8B_COOPERATIVE_LATER_CYCLE_REPAIR_CLOSEOUT_GREEN`
+`V2_9_8B_SOLANA_NATIVE_CORE_SAFETY_REDUNDANCY_REPAIR_CLOSEOUT_GREEN`
 
-D4/D5 cooperative later-cycle coordinator repair is implemented and bounded-offline proved. New 4/2/2 authorization remains blocked until independent closeout / post-repair readiness reopens that path.
+The bounded GoPlus single-point-dependency repair is implemented and offline-proved. Core chain-provable safety facts now have an approved Source-Governed Solana RPC path while GoPlus remains complementary. Conflicts and missing required facts remain fail-closed.
 
-## Exact branch / HEAD
+This handoff does **not** authorize a new 4/2/2 campaign.
+
+## Exact branch / evidence anchors
 
 Branch:
 
-`agent/v2-9-8b-cooperative-later-cycle-repair-implementation`
+`agent/v2-9-8b-safety-core-redundancy-repair`
 
-Final HEAD:
+Accepted D4/D5 base:
 
-`22f76d5f5df996ae901b97d2a68cb1b37489e91a`
+`3f982ce97f30d99fabc384bfbf790b02b2049bdf`
+
+Clean committed-state proof anchor:
+
+`3d9388fa7cb382450e026de0f2dc2d0d3140429f`
+
+Post-proof cleanup anchor:
+
+`7abca8cfa24638b6f9272818b2c2645bdbae2491`
+
+Safety closeout commit:
+
+`854f5c384fafe6197d3a29a0f03133b83e11ce1c`
 
 Closeout document:
 
-`docs/printer-v1-v2-9-8b-cooperative-later-cycle-repair-closeout.md`
-
-Adopted design:
-
-`docs/printer-v1-v2-9-8b-cooperative-later-cycle-repair-design.md`
+`docs/printer-v1-v2-9-8b-solana-native-core-safety-redundancy-repair-closeout.md`
 
 ## What landed
 
-Primary product file:
+Product scope:
 
-`src/printer_v1/operator_cli/one_command_15m_factory.py`
+- `src/printer_v1/operator_cli/one_command_15m_factory.py`
+- `src/printer_v1/safety/composite.py`
+- `src/printer_v1/safety/goplus_normalizer.py`
+- `src/printer_v1/sources/measured_transport.py`
+- `src/printer_v1/sources/solana_rpc_token_safety.py`
 
-- `attempt_wake_at` boundary field
-- `_active_later_cycle_refresh_wake_at(...)`
-- `_cooperative_later_cycle_recheck(...)`
-- RUNNING wake binding and main-loop recheck before stale `pending is None`
+Key behavior:
 
-Frozen RED tests remained intact and are GREEN:
+- one additional Source-Governed Solana mint-account safety request inside the existing lifecycle safety collection;
+- chain-provable mint authority, freeze authority, supply sanity, and Token / Token-2022 identity can remain usable when GoPlus is unavailable;
+- usable source disagreement becomes explicit conflict + `UNKNOWN` and remains blocked;
+- `METADATA_UNKNOWN` is optional 15m source coverage, while explicit mutable metadata remains blocking;
+- holder unknown/conflict remains descriptive under the existing E.48 separation law;
+- lifecycle request ceilings account for the one additional request per token; Scheduler ceilings are unchanged;
+- no new Scheduler job, provider loop, cadence increase, migration, paid API, or capacity mechanism.
 
-`tests/test_v2_9_8b_cooperative_later_cycle_repair.py` — 8 passed
+The final read-only committed-state proof passed the new safety contract, composite/holder regressions, first-hour/timeframe safety regressions, relevant lifecycle accounting regressions, D4/D5 coordinator regression, Python compilation, and `git diff --check`.
+
+Temporary proof workflow/helpers were removed after proof.
+
+## Known baseline debt kept separate
+
+The safety repair did not change unrelated accepted-base fixture drift:
+
+- an older V2-8.1 WINDOW_4H test still asserts real collection disabled although the accepted cadence policy already enables it only through standard-four-hour authority;
+- selected legacy V2-9.2 / V2-9.3 final-report fixtures omit required launch Git provenance even though accepted-base `_final_report()` already validates it.
+
+These items require their own evidence-based treatment if they remain relevant to later readiness; they are not classified as safety-repair regressions.
 
 ## Authorization posture
 
 `NOT READY FOR NEW 4/2/2 AUTHORIZATION`
 
-Residual blockers before another authoritative campaign include at least:
-
-- independent closeout / post-repair readiness for this repair
-- GoPlus / Solana-native safety redundancy (separate)
-- fresh live authoritative DB identity re-measure
+The previous GoPlus / Solana-native core-safety blocker is closed by this repair, but operational authorization remains blocked pending post-repair re-readiness, including fresh authoritative repository/database identity checks and any other current readiness blockers established there.
 
 All prior authorizations remain non-reusable.
 
 ## Exact next permitted action
 
-`V2-9.8B Cooperative Later-Cycle Repair Independent Closeout / Post-Repair Authoritative Readiness`
+`V2-9.8B Post-Safety-Repair Operational Re-Readiness Audit`
+
+This next action is read-only/offline first. It must reconcile the closed D4/D5 repair and closed core-safety redundancy repair against the current authoritative repository/database state before any fresh 4/2/2 authorization can be considered.
 
 Do **not** create a new authorization from this handoff.
 Do **not** run Printer from this handoff.
