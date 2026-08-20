@@ -21,7 +21,10 @@ import sqlite3
 from typing import Any, Mapping, Sequence
 
 from printer_v1.operator_cli.campaign_identity_state import validate_identity
-from printer_v1.operator_cli.campaign_ownership import create_cycle_with_two_slots
+from printer_v1.operator_cli.campaign_ownership import (
+    create_cycle_with_two_slots,
+    cycle_scoped_token_slot_id,
+)
 from printer_v1.operator_cli.multi_cycle_memory_growth import (
     MAX_ACTIVE_TWO_TOKEN_CYCLES,
     MAX_THROUGH_4H_TOKENS,
@@ -707,13 +710,23 @@ def _admit_two_token_cycle_in_transaction(
         (cycle_id,),
     ).fetchone() is not None:
         raise MultiCycleCoordinatorError("derived cycle identity already exists")
+    cycle_scoped_slots = tuple(
+        {
+            **slot,
+            "token_slot_id": cycle_scoped_token_slot_id(
+                cycle_id=cycle_id,
+                slot_ordinal=int(slot["slot_ordinal"]),
+            ),
+        }
+        for slot in validated_slots
+    )
     create_cycle_with_two_slots(
         connection,
         campaign_id=binding.campaign_id,
         run_id=binding.campaign_run_id,
         cycle_id=cycle_id,
         cycle_ordinal=next_ordinal,
-        slots=validated_slots,
+        slots=cycle_scoped_slots,
         now=_normalize_time(now).isoformat(),
         commit_transaction=False,
     )
@@ -766,7 +779,10 @@ def admit_two_token_cycle_from_attempt(
         items = load_pre_admission_pair(connection, attempt_id=attempt_id)
         slots = tuple(
             {
-                "token_slot_id": f"t{item.slot_ordinal}_c0002_slot",
+                "token_slot_id": cycle_scoped_token_slot_id(
+                    cycle_id=attempt.proposed_cycle_id,
+                    slot_ordinal=item.slot_ordinal,
+                ),
                 "slot_ordinal": item.slot_ordinal,
                 "token_identity": item.token_identity,
                 "token_row_id": item.token_row_id,

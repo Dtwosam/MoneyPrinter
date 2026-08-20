@@ -222,6 +222,22 @@ class MultiCycleSessionCoordinatorTests(unittest.TestCase):
         self.assertEqual(second.cycle_ordinal, 2)
         self.assertEqual(third.cycle_id, "session-cycle-3")
         self.assertEqual(third.cycle_ordinal, 3)
+        self.assertEqual(
+            [tuple(row) for row in self.connection.execute(
+                "SELECT c.cycle_id,s.slot_ordinal,s.token_slot_id "
+                "FROM printer_memory_factory_campaign_cycles AS c "
+                "JOIN printer_memory_factory_campaign_token_slots AS s "
+                "ON s.cycle_id=c.cycle_id "
+                "WHERE c.cycle_ordinal IN (2,3) "
+                "ORDER BY c.cycle_ordinal,s.slot_ordinal"
+            )],
+            [
+                ("session-cycle-2", 1, "slot-session-cycle-2-1"),
+                ("session-cycle-2", 2, "slot-session-cycle-2-2"),
+                ("session-cycle-3", 1, "slot-session-cycle-3-1"),
+                ("session-cycle-3", 2, "slot-session-cycle-3-2"),
+            ],
+        )
 
         owners = self.connection.execute(
             """SELECT DISTINCT campaign_id,run_id

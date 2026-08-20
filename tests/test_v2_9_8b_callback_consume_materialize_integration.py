@@ -14,7 +14,12 @@ from printer_v1.operator_cli.abstract_campaign_command import (
 from printer_v1.operator_cli.authoritative_live_operational_campaign import (
     AuthoritativeLiveOperationalCampaignOwner,
 )
-from printer_v1.operator_cli.campaign_ownership import create_cycle_with_two_slots
+from printer_v1.operator_cli.campaign_ownership import (
+    create_cycle_with_two_slots,
+    cycle_scoped_token_slot_id,
+    persist_scheduler_work,
+    persist_window,
+)
 from printer_v1.operator_cli.four_token_proof_integration import (
     LaterCycleCandidateSupply,
     LaterCycleDiscoveryCandidate,
@@ -58,6 +63,23 @@ HEALTH = MultiCycleAdmissionHealth(
 )
 GOVERNOR = OwnerPort(SOURCE_GOVERNOR_OWNER, True)
 SCHEDULER = OwnerPort(CENTRAL_SCHEDULER_OWNER, True)
+
+
+def test_cycle_scoped_slot_ids_preserve_cycle_one_and_disjoin_later_campaigns() -> None:
+    assert tuple(
+        cycle_scoped_token_slot_id(cycle_id="cycle-1", slot_ordinal=ordinal)
+        for ordinal in (1, 2)
+    ) == ("slot-cycle-1-1", "slot-cycle-1-2")
+    assert {
+        cycle_scoped_token_slot_id(cycle_id=cycle_id, slot_ordinal=ordinal)
+        for cycle_id in ("campaign-a-cycle-2", "campaign-b-cycle-2")
+        for ordinal in (1, 2)
+    } == {
+        "slot-campaign-a-cycle-2-1",
+        "slot-campaign-a-cycle-2-2",
+        "slot-campaign-b-cycle-2-1",
+        "slot-campaign-b-cycle-2-2",
+    }
 
 
 def _slot(row_id: int, ordinal: int) -> dict[str, object]:
@@ -194,6 +216,54 @@ def _prepare_database(tmp_path):
     return path, request_id, response_id
 
 
+def _seed_historical_cycle_two_slots(connection: sqlite3.Connection) -> None:
+    for row_id in (5, 6):
+        connection.execute(
+            "INSERT INTO printer_tokens(id,token_mint,chain) VALUES (?,?, 'solana')",
+            (row_id, f"mint-{row_id}"),
+        )
+        connection.execute(
+            "INSERT INTO printer_pairs(id,token_id,pair_address,base_token_mint) "
+            "VALUES (?,?,?,?)",
+            (100 + row_id, row_id, f"pool-{row_id}", f"mint-{row_id}"),
+        )
+    connection.execute(
+        "INSERT INTO printer_memory_factory_campaigns("
+        "campaign_id,campaign_state,db_mode,db_target_identity,policy_version) "
+        "VALUES ('historical-campaign','RUNNING',"
+        "'OPERATIONAL_PERSISTENT','historical-db','policy-1')"
+    )
+    connection.execute(
+        "INSERT INTO printer_memory_factory_runs("
+        "run_id,run_status,window_kind,db_mode,config_hash,config_json,started_at) "
+        "VALUES ('historical-factory','RUNNING','WINDOW_15M',"
+        "'OPERATIONAL_PERSISTENT',?,'{}',?)",
+        ("b" * 64, START.isoformat()),
+    )
+    connection.execute(
+        "INSERT INTO printer_memory_factory_campaign_runs("
+        "run_id,campaign_id,run_ordinal,run_state,authoritative_run_id,created_at,updated_at) "
+        "VALUES ('historical-run','historical-campaign',1,'RUNNING',"
+        "'historical-factory',?,?)",
+        (START.isoformat(), START.isoformat()),
+    )
+    historical_slots = []
+    for row_id, ordinal in ((5, 1), (6, 2)):
+        slot = _slot(row_id, ordinal)
+        slot["token_slot_id"] = f"t{ordinal}_c0002_slot"
+        historical_slots.append(slot)
+    create_cycle_with_two_slots(
+        connection,
+        campaign_id="historical-campaign",
+        run_id="historical-run",
+        cycle_id="historical-cycle-2",
+        cycle_ordinal=2,
+        slots=historical_slots,
+        now=START.isoformat(),
+    )
+    connection.commit()
+
+
 def test_real_callback_pair_consumes_and_materializes_without_refetch_or_reselection(tmp_path) -> None:
     path, request_id, response_id = _prepare_database(tmp_path)
     supply_calls = 0
@@ -240,6 +310,11 @@ def test_real_callback_pair_consumes_and_materializes_without_refetch_or_reselec
     connection = sqlite3.connect(path)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys=ON")
+    _seed_historical_cycle_two_slots(connection)
+    historical_before = [tuple(row) for row in connection.execute(
+        "SELECT * FROM printer_memory_factory_campaign_token_slots "
+        "WHERE campaign_id='historical-campaign' ORDER BY slot_ordinal"
+    )]
     source_count = int(
         connection.execute("SELECT COUNT(*) FROM printer_source_requests").fetchone()[0]
     )
@@ -254,6 +329,36 @@ def test_real_callback_pair_consumes_and_materializes_without_refetch_or_reselec
     assert admission.mutation_performed
     assert admission.cycle_id == "cycle-1-2"
     assert admission.cycle_ordinal == 2
+
+    for ordinal, row_id in ((1, 3), (2, 4)):
+        slot_id = f"slot-cycle-1-2-{ordinal}"
+        window_id = f"window-cycle-1-2-{ordinal}-15m"
+        persist_window(
+            connection,
+            window_id=window_id,
+            campaign_id=BINDING.campaign_id,
+            run_id=BINDING.campaign_run_id,
+            cycle_id="cycle-1-2",
+            token_slot_id=slot_id,
+            token_row_id=row_id,
+            pair_row_id=100 + row_id,
+            window_kind="WINDOW_15M",
+            root_15m_lifecycle_identity=GRADUATED,
+            checkpoint_cutoff=NOW.isoformat(),
+            now=NOW.isoformat(),
+        )
+        persist_scheduler_work(
+            connection,
+            scheduler_work_id=f"work-cycle-1-2-{ordinal}-15m",
+            campaign_id=BINDING.campaign_id,
+            run_id=BINDING.campaign_run_id,
+            cycle_id="cycle-1-2",
+            token_slot_id=slot_id,
+            window_id=window_id,
+            work_intent="CLOSE_WINDOW",
+            deadline_at=NOW.isoformat(),
+            now=NOW.isoformat(),
+        )
 
     with patch(
         "printer_v1.discovery.combined_executor.apply_existing_discovery_gate_and_selection",
@@ -278,15 +383,27 @@ def test_real_callback_pair_consumes_and_materializes_without_refetch_or_reselec
         "FROM printer_memory_factory_campaign_token_slots "
         "WHERE cycle_id='cycle-1-2' ORDER BY slot_ordinal"
     )] == [
-        ("t1_c0002_slot", "mint-3", "pool-3", GRADUATED),
-        ("t2_c0002_slot", "mint-4", "pool-4", GRADUATED),
+        ("slot-cycle-1-2-1", "mint-3", "pool-3", GRADUATED),
+        ("slot-cycle-1-2-2", "mint-4", "pool-4", GRADUATED),
     ]
     assert [tuple(row) for row in connection.execute(
         "SELECT token_slot_id,tracking_handoff_state,first_window_15m_scheduler_job_id "
         "FROM printer_discovery_selected_item_links ORDER BY token_slot_id"
     )] == [
-        ("t1_c0002_slot", "LINKED_ONLY", None),
-        ("t2_c0002_slot", "LINKED_ONLY", None),
+        ("slot-cycle-1-2-1", "LINKED_ONLY", None),
+        ("slot-cycle-1-2-2", "LINKED_ONLY", None),
+    ]
+    assert [tuple(row) for row in connection.execute(
+        "SELECT * FROM printer_memory_factory_campaign_token_slots "
+        "WHERE campaign_id='historical-campaign' ORDER BY slot_ordinal"
+    )] == historical_before
+    assert [tuple(row) for row in connection.execute(
+        "SELECT token_slot_id,window_id FROM "
+        "printer_memory_factory_campaign_scheduler_work "
+        "WHERE cycle_id='cycle-1-2' ORDER BY token_slot_id"
+    )] == [
+        ("slot-cycle-1-2-1", "window-cycle-1-2-1-15m"),
+        ("slot-cycle-1-2-2", "window-cycle-1-2-2-15m"),
     ]
     assert connection.execute(
         "SELECT COUNT(*) FROM printer_scheduler_jobs "

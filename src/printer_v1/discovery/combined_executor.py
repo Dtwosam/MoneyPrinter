@@ -64,6 +64,7 @@ from printer_v1.operator_cli.abstract_campaign_command import (
     OwnerPort,
     SOURCE_GOVERNOR_OWNER,
 )
+from printer_v1.operator_cli.campaign_ownership import cycle_scoped_token_slot_id
 from printer_v1.discovery.scheduler_parity import (
     reconcile_discovery_work_jobs,
     terminalize_scheduler_job_for_work,
@@ -3856,7 +3857,10 @@ class CombinedPumpfunCampaignExecutor:
         ):
             raise CombinedDiscoveryError("FORBIDDEN_WINDOW_ACTIVATION")
 
-        slot_id = f"slot-{fixtures.cycle_id}-{ordinal}"
+        slot_id = cycle_scoped_token_slot_id(
+            cycle_id=fixtures.cycle_id,
+            slot_ordinal=ordinal,
+        )
         existing_slot = connection.execute(
             """
             SELECT token_slot_id, mint_identity, token_state

@@ -109,6 +109,14 @@ def _required(value: object, label: str) -> str:
     return text
 
 
+def cycle_scoped_token_slot_id(*, cycle_id: str, slot_ordinal: int) -> str:
+    """Return the canonical token-slot identity for one exact campaign cycle."""
+    cycle = _required(cycle_id, "cycle_id")
+    if type(slot_ordinal) is not int or slot_ordinal not in (1, 2):
+        raise CampaignOwnershipError("token slot ordinal must be exactly 1 or 2")
+    return f"slot-{cycle}-{slot_ordinal}"
+
+
 def _write(connection: sqlite3.Connection, sql: str, values: Sequence[object]) -> None:
     try:
         connection.execute(sql, tuple(values))

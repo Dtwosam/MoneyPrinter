@@ -7,7 +7,10 @@ import sqlite3
 import pytest
 
 from printer_v1.db import apply_migrations
-from printer_v1.operator_cli.campaign_ownership import create_cycle_with_two_slots
+from printer_v1.operator_cli.campaign_ownership import (
+    CampaignOwnershipError,
+    create_cycle_with_two_slots,
+)
 from printer_v1.operator_cli.four_token_proof_integration import build_four_token_proof_policy
 from printer_v1.operator_cli.multi_cycle_campaign_coordinator import (
     MultiCycleAdmissionHealth,
@@ -170,6 +173,14 @@ def test_pair_ready_attempt_is_consumed_with_exact_cycle2_atomically(connection)
         "SELECT COUNT(*) FROM printer_memory_factory_campaign_token_slots "
         "WHERE cycle_id='cycle-1-2'"
     ).fetchone()[0] == 2
+    assert [tuple(row) for row in connection.execute(
+        "SELECT token_slot_id,slot_ordinal,mint_identity,pair_identity "
+        "FROM printer_memory_factory_campaign_token_slots "
+        "WHERE cycle_id='cycle-1-2' ORDER BY slot_ordinal"
+    )] == [
+        ("slot-cycle-1-2-1", 1, "mint-3", "pair-3"),
+        ("slot-cycle-1-2-2", 2, "mint-4", "pair-4"),
+    ]
 
 
 def test_changed_admission_decision_leaves_frozen_attempt_unconsumed(connection) -> None:
@@ -215,9 +226,48 @@ def test_identity_reuse_or_persistence_fault_rolls_back_cycle_and_consumption(co
             attempt_id="attempt-1",
             health=HEALTH,
         )
-    assert connection.execute(
-        "SELECT attempt_state FROM printer_pre_admission_discovery_attempts"
-    ).fetchone()[0] == "PAIR_READY"
+    assert tuple(connection.execute(
+        "SELECT attempt_state,consumed_cycle_id,consumed_at "
+        "FROM printer_pre_admission_discovery_attempts"
+    ).fetchone()) == ("PAIR_READY", None, None)
     assert connection.execute(
         "SELECT COUNT(*) FROM printer_memory_factory_campaign_cycles"
     ).fetchone()[0] == 1
+
+
+def test_second_slot_ownership_failure_rolls_back_cycle_and_attempt(connection) -> None:
+    connection.execute(
+        """CREATE TRIGGER injected_second_slot_ownership_failure
+           BEFORE INSERT ON printer_memory_factory_campaign_token_slots
+           WHEN NEW.cycle_id='cycle-1-2' AND NEW.slot_ordinal=2
+           BEGIN
+               SELECT RAISE(ABORT, 'injected exact ownership failure');
+           END"""
+    )
+    connection.commit()
+
+    with pytest.raises(
+        CampaignOwnershipError,
+        match="injected exact ownership failure",
+    ):
+        admit_two_token_cycle_from_attempt(
+            connection,
+            binding=BINDING,
+            policy=POLICY,
+            now=NOW,
+            attempt_id="attempt-1",
+            health=HEALTH,
+        )
+
+    assert connection.execute(
+        "SELECT COUNT(*) FROM printer_memory_factory_campaign_cycles "
+        "WHERE cycle_id='cycle-1-2'"
+    ).fetchone()[0] == 0
+    assert connection.execute(
+        "SELECT COUNT(*) FROM printer_memory_factory_campaign_token_slots "
+        "WHERE cycle_id='cycle-1-2'"
+    ).fetchone()[0] == 0
+    assert tuple(connection.execute(
+        "SELECT attempt_state,consumed_cycle_id,consumed_at "
+        "FROM printer_pre_admission_discovery_attempts"
+    ).fetchone()) == ("PAIR_READY", None, None)
