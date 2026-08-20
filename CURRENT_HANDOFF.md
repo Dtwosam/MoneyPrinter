@@ -1,129 +1,119 @@
 # CURRENT HANDOFF
 
-Date: 2026-08-19
+Date: 2026-08-20
 
 ## Current lane
 
-`V2-9.8B Fresh 4/2/2 Authorization Preparation`
+`V2-9.8B D123 Cycle-2 Materialization Corrective Adoption Closeout`
 
-Status: `BLOCKED_LIVE_BINDING_EVIDENCE_REQUIRED`
+Status: `CLOSED_PASS`
 
 Verdict:
 
-`V2_9_8B_FOUR_TOKEN_STANDARD_4H_AUTHORIZATION_PREPARATION_BLOCKED_LIVE_BINDING_EVIDENCE_REQUIRED`
+`V2_9_8B_D123_CYCLE2_MATERIALIZATION_ADOPTION_CLOSEOUT_PASS`
 
-This is a control/evidence boundary, not a code-readiness failure. The fresh post-repair 4/2/2 readiness remains GREEN. No authorization was created and Printer was not run.
+This closes repository adoption of the D123 corrective only. It does not authorize Printer, create/reuse an authorization, contact providers, or prove a successful 4/2/2 runtime.
 
-## Exact executable authority
+## Exact adopted executable authority
 
 Approved product branch:
 
 `agent/v2-9-8b-four-token-4-2-2-freeze-input-versus-two-slot-truncation-repair-implementation`
 
-Exact readiness-approved executable merge commit:
+Merged PR:
 
-`ffd0ceec0492dc27c0ae703c5dbcbd1b191eca06`
+`#197` — `Repair Cycle 2 materialization and local fault isolation`
 
-Readiness verdict:
+Exact adopted executable merge commit:
 
-`V2_9_8B_POST_REPAIR_FOUR_TOKEN_AUTHORITATIVE_READINESS_PASS`
+`8709a971cb463a258525831e82c3672865d21b47`
 
-Documentation/handoff successors do not replace executable authority. Static comparison after `ffd0ceec...` found documentation-only changes; no production or test code drift was proven.
+Reviewed/rebased PR head:
 
-## Authorization-preparation closeout
+`1bb2acfa948563746a02f8b04b756fae09661fdf`
+
+Original independently reviewed D123 commit before history-only rebase:
+
+`86748f0ca801a50b36f01666e1ded08518368630`
+
+The rebase changed history only; D123 product/test content remained byte-identical to the independent review target.
+
+## D123 result
+
+D1: later-cycle `MARKET_PRESENT_POOL` freezes canonical `FRESH_AGGREGATOR_PROTOCOL_CONFIRMED` rather than raw provider labels.
+
+D2: materialization persistence failures retain bounded typed categorical reasons; unsupported merged-candidate channel maps to `UNSUPPORTED_MERGED_CANDIDATE_CHANNEL`, while unclassified SQLite failures remain outside the local-isolation allowlist.
+
+D3: only that known Cycle-2-local contract reason may be isolated, and only before any Cycle-2 lifecycle work exists. Healthy Cycle-1 work can drain; shared/unknown faults continue to fail closed globally.
+
+Proof/adoption anchors:
+
+- `V2_9_8B_D123_CYCLE2_MATERIALIZATION_CORRECTIVE_BOUNDED_PROOF_PASS`
+- `V2_9_8B_D123_INDEPENDENT_REVIEW_ADOPT_PASS`
+- `V2_9_8B_D123_REPOSITORY_ADOPTION_PREP_PASS`
+- focused D123: `9 passed`
+- direct affected regressions: `39 passed`
+- `py_compile`: PASS
+- `git diff --check`: PASS
+- PR #197 merge-readiness: PASS
 
 Closeout document:
 
-`docs/printer-v1-v2-9-8b-4-2-2-authorization-preparation-closeout.md`
+`docs/printer-v1-v2-9-8b-d123-cycle2-materialization-adoption-closeout.md`
 
-Closeout document commit:
+## Controlling consumed incident
 
-`6906d0697c948dbcd7c5724a87898ea84d3faf5b`
+Execution:
 
-The canonical operational authority is the dedicated `four-token-standard-four-hour-run` one-shot wrapper. Its final authorization must bind the exact live Git branch/HEAD, the exact authoritative SQLite file identity, the exact current Migration 058 package, preserved historical authorization/migration evidence, and the immutable one-shot 4/2/2 policy.
+`20260819T215053Z-e4fde0d4e4ea`
 
-Required database binding fields are:
+Campaign:
 
-- path;
-- SHA-256;
-- size;
-- inode;
-- mtime_ns;
-- migration count;
-- migration head.
+`20260819T215053Z-e4fde0d4e4ea-campaign`
 
-The pre-authorization migration-ledger guard must inspect the live authoritative database read-only before authorization bytes are written. The Git-provenance manifest must also reconcile the host-local `operator-runs/` inventory and exact live Git state.
+Factory run:
 
-This session has GitHub repository access but does not have the operational repository filesystem, authoritative SQLite database, host-local `operator-runs/` evidence inventory, or live local Git worktree mounted. Those facts therefore cannot be guessed, copied from historical packages, or substituted with GitHub metadata.
+`b24f02f5-5f74-44f8-8390-7aecdf75990e`
 
-## Authorization state
+Latest consumed authorization for that attempt:
 
-No new authorization ID exists.
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260819T213040Z`
 
-No new authorization SHA-256 exists.
+It remains permanently consumed, immutable, and non-reusable. No rerun, resume, restart, retry, or successor is permitted.
 
-No application marker was created.
+Last proven post-incident authoritative DB SHA-256 supplied by the operator:
 
-No provider/source call was made for authorization preparation.
+`79a653f7f8c270bca0c08f271882784660caad954e278bd05b6d7bb9a4be5f8f`
 
-No authoritative database mutation occurred.
-
-Printer was not run.
-
-Consumed authorization:
-
-`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260819T143940Z`
-
-remains consumed, immutable, and non-reusable. It must not be rerun, resumed, restarted, or treated as authority for a new campaign.
-
-## 4/2/2 contract preserved
-
-- 4 total tokens;
-- 2 cycles;
-- 2 tokens per cycle;
-- maximum 2 simultaneously active;
-- Cycle 2 fresh/disjoint from Cycle 1;
-- freeze minimum depth 4;
-- exact-pool liquidity floor `$3,000`;
-- minimum spacing `300s`;
-- `WINDOW_15M` root;
-- lawful `WINDOW_15M -> WINDOW_1H -> WINDOW_4H`;
-- `WINDOW_5M_MICRO_EVENT` support-only;
-- retries `0`;
-- endpoint rotation `false`;
-- one-shot only;
-- no rerun/resume/restart/successor.
-
-## Finding classification
-
-- proven code defect: **NONE**;
-- source scarcity: **NOT EVALUATED / NOT PROVEN**;
-- provider limitation: **NOT EVALUATED / NOT PROVEN**;
-- honest market block: **NOT EVALUATED / NOT PROVEN**;
-- missing evidence/control: **live host authorization-binding evidence unavailable in this session**.
-
-Do not repair or weaken Printer for this blocker.
+That identity must be freshly rechecked on the operational host before any later authorization preparation; this handoff does not treat a historical hash as current execution authority.
 
 ## Locks
 
 Solana-only; Solana memecoin-only; paper-only. No live wallet/private keys/signing/real funds/live execution. No paid API dependency. No scoring/ranking/confidence/weighted logic. No embeddings/vectors. No Source Governor or Central Scheduler bypass. No dirty-memory retrieval/decision use. Retrieval, BUY/SELL/HOLD, positions, trade events, paper audits and PnL remain locked. `WINDOW_5M_MICRO_EVENT` remains support-only. 12h/24h remain locked. No Migration 059.
 
+The 4/2/2 contract remains: 4 total tokens; 2 cycles; 2 tokens per cycle; Cycle 2 fresh/disjoint from Cycle 1; freeze minimum depth 4; exact-pool liquidity floor `$3,000`; minimum spacing `300s`; `WINDOW_15M` root; lawful token-local `15m -> 1h -> 4h`; retries `0`; endpoint rotation `false`; one-shot only; no rerun/resume/restart/successor.
+
 ## Exact next permitted action
 
-On the operational host, perform **non-consuming** 4/2/2 authorization preparation against an intentional live Git identity carrying the readiness-approved `ffd0ceec0492dc27c0ae703c5dbcbd1b191eca06` executable, the live authoritative database, and the host-local `operator-runs/` evidence.
+`V2-9.8B Post-D123 Two-Cycle/Four-Token Authoritative Readiness`
 
-Required sequence:
+The readiness target is exact adopted executable merge commit:
 
-1. establish and verify the intended live Git branch/HEAD without changing executable authority;
-2. run the pre-authorization migration-ledger guard in `prepare` mode against the live authoritative database;
-3. verify the exact current Migration 058 package and preserved historical evidence inventories;
-4. verify all prior authorizations are non-reusable and no conflicting application marker exists;
-5. only if all checks PASS, create one genuinely new host-local `final_authorization.json` using the production four-token standard-4h schema;
-6. compute its exact SHA-256 and run production manifest/pre-marker preparation parity;
-7. stop for independent authorization review before any wrapper application or Printer run.
+`8709a971cb463a258525831e82c3672865d21b47`
 
+Before any authorization-preparation lane, perform minimum sufficient fresh readiness that verifies:
+
+1. exact D123 ancestry/scope and adopted product/test content;
+2. canonical later-cycle fresh-market provenance through freeze/materialization/persistence;
+3. strict Cycle-2-local isolation allowlist and fully-unstarted preconditions;
+4. shared/unknown failure paths remain global fail-closed;
+5. Cycle-1 lifecycle/Scheduler work survives/drains under the known local Cycle-2 materialization failure;
+6. Source Governor, Central Scheduler, freeze depth 4, `$3,000` exact-pool liquidity, disjointness, one-shot controls, and all V1 locks remain unchanged;
+7. live operational-host authoritative DB, Migration 058, and `operator-runs/` evidence are freshly reconciled read-only;
+8. all prior authorizations are non-reusable and no conflicting application marker exists.
+
+Do **not** create a new authorization from this handoff.
 Do **not** run Printer from this handoff.
-Do **not** create an authorization from guessed database facts, copied historical values, or GitHub-only state.
-Do **not** reuse, rerun, resume, restart, or create a successor to any consumed authorization.
+Do **not** reuse any consumed authorization or historical application artifact.
 
 The active authority stack wins any conflict with this handoff.
