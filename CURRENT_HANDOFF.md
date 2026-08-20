@@ -28,7 +28,7 @@ Branch:
 
 Product repair commit / candidate lineage tip after this closeout:
 
-`<SET_AT_COMMIT>`
+`d3b8a128a23167d3f77852a9396b7a87daf9acc2`
 
 Baseline:
 
