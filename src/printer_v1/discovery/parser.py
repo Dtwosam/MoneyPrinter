@@ -49,6 +49,13 @@ NORMALIZED_FIELDS = (
     "txns_15m_source_kind",
     "txns_15m_completeness",
     "txns_15m_provenance",
+    "unique_wallets_15m",
+    "buys_15m",
+    "sells_15m",
+    "buy_volume_15m",
+    "sell_volume_15m",
+    "wallet_identity_semantics_15m",
+    "wallet_flow_provenance_15m",
     "market_15m_evidence_requests",
     "market_15m_evidence_pool_address",
     # V2-2P: T4-safe pair-age context labels; token_age_evidence_tier always None until T1/T2/T3 source active.
@@ -345,6 +352,17 @@ def normalize_candidate(
         "txns_15m_source_kind": candidate_payload.get("txns_15m_source_kind"),
         "txns_15m_completeness": candidate_payload.get("txns_15m_completeness"),
         "txns_15m_provenance": candidate_payload.get("txns_15m_provenance"),
+        "unique_wallets_15m": candidate_payload.get("unique_wallets_15m"),
+        "buys_15m": candidate_payload.get("buys_15m"),
+        "sells_15m": candidate_payload.get("sells_15m"),
+        "buy_volume_15m": candidate_payload.get("buy_volume_15m"),
+        "sell_volume_15m": candidate_payload.get("sell_volume_15m"),
+        "wallet_identity_semantics_15m": candidate_payload.get(
+            "wallet_identity_semantics_15m"
+        ),
+        "wallet_flow_provenance_15m": candidate_payload.get(
+            "wallet_flow_provenance_15m"
+        ),
         "market_15m_evidence_requests": candidate_payload.get("market_15m_evidence_requests"),
         "market_15m_evidence_pool_address": candidate_payload.get("market_15m_evidence_pool_address"),
         # V2-2P: T4-safe pair-age context. Never drives age gates or A3.

@@ -36,6 +36,33 @@ SAFETY_FIELDS = (
     "token_program_label",
 )
 
+_OPTIONAL_SAFETY_UNKNOWN_REASON_MAP = {
+    "metadata_mutability_status": "METADATA_MUTABILITY_SOURCE_UNAVAILABLE",
+    "liquidity_lock_or_burn_label": "EXACT_PAIR_LIQUIDITY_LOCK_OR_BURN_UNPROVEN",
+    "known_risk_flag_label": "PROVIDER_RISK_FLAGS_UNAVAILABLE",
+    "holder_concentration_label": "HOLDER_CONDITION_UNAVAILABLE",
+    "HOLDER_CONDITION_UNAVAILABLE": "HOLDER_CONDITION_UNAVAILABLE",
+    "HOLDER_CONDITION_CONFLICTING": "HOLDER_CONDITION_CONFLICTING",
+    "HOLDER_CONDITION_STALE": "HOLDER_CONDITION_STALE",
+}
+
+
+def optional_safety_unknown_reasons(optional_unknowns: list[str]) -> dict[str, str]:
+    """Map optional UNKNOWN fields to exact evidence-availability reasons."""
+    reasons: dict[str, str] = {}
+    for raw in optional_unknowns:
+        item = str(raw)
+        reason = _OPTIONAL_SAFETY_UNKNOWN_REASON_MAP.get(item)
+        if reason is None:
+            continue
+        key = (
+            "holder_concentration_label"
+            if item.startswith("HOLDER_CONDITION_")
+            else item
+        )
+        reasons[key] = reason
+    return reasons
+
 
 def effective_safety_context_report(
     row: Mapping[str, Any] | None,
@@ -388,6 +415,7 @@ def persist_safety_composite(
         ):
             optional_unknowns.append("HOLDER_CONDITION_STALE")
     optional_unknowns = list(dict.fromkeys(optional_unknowns))
+    optional_unknown_reason_map = optional_safety_unknown_reasons(optional_unknowns)
     contract_label = (
         "SAFETY_CLEAN"
         if not blockers and base.get("safety_context_label") == "SAFETY_CLEAN"
@@ -470,6 +498,7 @@ def persist_safety_composite(
         "conflicts": conflicts,
         "blockers": blockers,
         "optional_unknowns": optional_unknowns,
+        "optional_unknown_reasons": optional_unknown_reason_map,
         "field_bindings": field_bindings,
         "inserted": True,
     }
