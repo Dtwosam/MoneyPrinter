@@ -1,0 +1,399 @@
+name: pair-ready-parent-terminal-repair
+
+on:
+  push:
+    branches:
+      - agent/tmp-pair-ready-parent-terminal-tdd
+
+permissions:
+  contents: write
+
+jobs:
+  repair-and-proof:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out exact repair branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/v2-9-8b-pair-ready-parent-terminal-cancellation-repair
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install project and test runner
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e . pytest
+
+      - name: Add focused RED and bounded proof tests
+        shell: bash
+        run: |
+          cat >> tests/test_v2_9_8b_pre_admission_terminal_cleanup_repair.py <<'PYTEST'
+
+
+def _seed_frozen_pair_ready_attempt(db_path, *, attempt_id="attempt-pair-ready"):
+    connection = _open(db_path)
+    try:
+        for row_id in (3, 4):
+            connection.execute(
+                "INSERT INTO printer_tokens(id,token_mint,chain) VALUES (?,?, 'solana')",
+                (row_id, f"mint-{row_id}"),
+            )
+            connection.execute(
+                "INSERT INTO printer_pairs(id,token_id,pair_address) VALUES (?,?,?)",
+                (100 + row_id, row_id, f"pair-{row_id}"),
+            )
+        cursor = connection.execute(
+            "INSERT INTO printer_scheduler_jobs("
+            "job_name,job_kind,target_table,priority,status,scheduled_for,finished_at) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (
+                f"pre-admission:{attempt_id}",
+                "PRE_ADMISSION_DISCOVERY_SELECTION",
+                "printer_pre_admission_discovery_attempts",
+                13,
+                "SUCCEEDED",
+                NOW.isoformat(),
+                NOW.isoformat(),
+            ),
+        )
+        job_id = int(cursor.lastrowid)
+        connection.execute(
+            """INSERT INTO printer_pre_admission_discovery_attempts(
+                   attempt_id,campaign_id,campaign_run_id,configuration_id,
+                   authoritative_factory_run_id,proposed_cycle_ordinal,proposed_cycle_id,
+                   scheduler_job_id,cycle_cutoff,evaluated_at,selection_seed_identity,
+                   attempt_state,first_terminal_cause,terminal_at,created_at,updated_at
+               ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                attempt_id,
+                "campaign-1",
+                "campaign-run-1",
+                "configuration-1",
+                "factory-1",
+                2,
+                "cycle-2",
+                job_id,
+                NOW.isoformat(),
+                NOW.isoformat(),
+                "seed-frozen-pair",
+                "PAIR_READY",
+                "EXACT_PAIR_FROZEN",
+                NOW.isoformat(),
+                NOW.isoformat(),
+                NOW.isoformat(),
+            ),
+        )
+        for slot in (1, 2):
+            row_id = slot + 2
+            connection.execute(
+                """INSERT INTO printer_pre_admission_discovery_attempt_items(
+                       attempt_id,slot_ordinal,token_identity,token_row_id,mint_identity,
+                       pair_identity,pair_row_id,lifecycle_identity,canonical_market_identity,
+                       canonical_pool_identity,canonical_evidence_json,
+                       canonical_evidence_hash,evidence_version,observed_at,created_at
+                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    attempt_id,
+                    slot,
+                    f"token-{row_id}",
+                    row_id,
+                    f"mint-{row_id}",
+                    f"pair-{row_id}",
+                    100 + row_id,
+                    f"lifecycle-{row_id}",
+                    f"solana-mainnet:pumpswap:pair-{row_id}",
+                    f"pair-{row_id}",
+                    '{"quality":"exact"}',
+                    str(row_id) * 64,
+                    "v1",
+                    NOW.isoformat(),
+                    NOW.isoformat(),
+                ),
+            )
+        connection.commit()
+        row = connection.execute(
+            "SELECT * FROM printer_pre_admission_discovery_attempts WHERE attempt_id=?",
+            (attempt_id,),
+        ).fetchone()
+        items = connection.execute(
+            "SELECT * FROM printer_pre_admission_discovery_attempt_items "
+            "WHERE attempt_id=? ORDER BY slot_ordinal",
+            (attempt_id,),
+        ).fetchall()
+        return (
+            {key: row[key] for key in row.keys()},
+            [{key: item[key] for key in item.keys()} for item in items],
+        )
+    finally:
+        connection.close()
+
+
+def test_pair_ready_parent_terminal_cancellation_preserves_frozen_evidence(db_path) -> None:
+    before_row, before_items = _seed_frozen_pair_ready_attempt(db_path)
+    cancel_now = datetime(2026, 8, 20, 12, 5, tzinfo=timezone.utc)
+
+    result = reconcile_campaign_terminal(
+        db_path,
+        campaign_id="campaign-1",
+        run_id="campaign-run-1",
+        cycle_id="cycle-1",
+        terminal_cause=CAUSE,
+        run_status="FAILED",
+        factory_run_id="factory-1",
+        lifecycle_started=False,
+        now=cancel_now.isoformat(),
+    )
+
+    connection = _open(db_path)
+    try:
+        after = connection.execute(
+            "SELECT * FROM printer_pre_admission_discovery_attempts WHERE attempt_id=?",
+            ("attempt-pair-ready",),
+        ).fetchone()
+        after_row = {key: after[key] for key in after.keys()}
+        after_items = connection.execute(
+            "SELECT * FROM printer_pre_admission_discovery_attempt_items "
+            "WHERE attempt_id=? ORDER BY slot_ordinal",
+            ("attempt-pair-ready",),
+        ).fetchall()
+        after_items = [{key: item[key] for key in item.keys()} for item in after_items]
+
+        assert after_row["attempt_state"] == "CANCELLED"
+        assert after_row["first_terminal_cause"] == "EXACT_PAIR_FROZEN"
+        assert after_row["terminal_at"] == before_row["terminal_at"]
+        assert after_row["consumed_cycle_id"] is None
+        assert after_row["consumed_at"] is None
+        assert after_row["updated_at"] == cancel_now.isoformat()
+        assert after_items == before_items
+        assert connection.execute(
+            "SELECT COUNT(*) FROM printer_memory_factory_campaign_cycles "
+            "WHERE campaign_id='campaign-1' AND cycle_ordinal=2"
+        ).fetchone()[0] == 0
+        assert [entry["prior_state"] for entry in result["pre_admission_attempts"]] == ["PAIR_READY"]
+    finally:
+        connection.close()
+
+    second = reconcile_campaign_terminal(
+        db_path,
+        campaign_id="campaign-1",
+        run_id="campaign-run-1",
+        cycle_id="cycle-1",
+        terminal_cause="SECOND_CAUSE_MUST_NOT_REWRITE",
+        run_status="FAILED",
+        factory_run_id="factory-1",
+        lifecycle_started=False,
+        now=datetime(2026, 8, 20, 12, 10, tzinfo=timezone.utc).isoformat(),
+    )
+    assert second["pre_admission_attempts"] == []
+
+    connection = _open(db_path)
+    try:
+        final = connection.execute(
+            "SELECT attempt_state,first_terminal_cause,terminal_at,updated_at,"
+            "consumed_cycle_id,consumed_at FROM printer_pre_admission_discovery_attempts "
+            "WHERE attempt_id='attempt-pair-ready'"
+        ).fetchone()
+        assert tuple(final) == (
+            "CANCELLED",
+            "EXACT_PAIR_FROZEN",
+            before_row["terminal_at"],
+            cancel_now.isoformat(),
+            None,
+            None,
+        )
+    finally:
+        connection.close()
+
+
+def test_pair_ready_cancellation_remains_parent_terminal_only(db_path) -> None:
+    _seed_frozen_pair_ready_attempt(db_path)
+    connection = _open(db_path)
+    try:
+        with pytest.raises(Exception, match="INVALID_ATTEMPT_TRANSITION"):
+            terminalize_pre_admission_attempt(
+                connection,
+                attempt_id="attempt-pair-ready",
+                state=PreAdmissionAttemptState.CANCELLED,
+                cause=CAUSE,
+                now=NOW,
+            )
+
+        from printer_v1.operator_cli.pre_admission_discovery_attempt import (
+            cancel_pair_ready_pre_admission_attempt_for_terminal_parent,
+        )
+        with pytest.raises(Exception, match="PARENT_TERMINAL_OWNERSHIP_MISMATCH"):
+            cancel_pair_ready_pre_admission_attempt_for_terminal_parent(
+                connection,
+                attempt_id="attempt-pair-ready",
+                campaign_id="wrong-campaign",
+                campaign_run_id="campaign-run-1",
+                authoritative_factory_run_id="factory-1",
+                now=NOW,
+            )
+    finally:
+        connection.close()
+PYTEST
+
+      - name: RED proof on exact baseline
+        shell: bash
+        run: |
+          set +e
+          pytest -q tests/test_v2_9_8b_pre_admission_terminal_cleanup_repair.py::test_pair_ready_parent_terminal_cancellation_preserves_frozen_evidence > /tmp/red.log 2>&1
+          code=$?
+          set -e
+          cat /tmp/red.log
+          if [ "$code" -eq 0 ]; then
+            echo "RED proof unexpectedly passed"
+            exit 1
+          fi
+          grep -q "PAIR_READY" /tmp/red.log
+
+      - name: Implement dedicated parent-terminal cancellation
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          pre = Path("src/printer_v1/operator_cli/pre_admission_discovery_attempt.py")
+          text = pre.read_text()
+          marker = "\n\ndef _validate_pair("
+          if marker not in text:
+              raise SystemExit("pre-admission insertion marker not found")
+          addition = r'''
+
+
+def cancel_pair_ready_pre_admission_attempt_for_terminal_parent(
+    connection: sqlite3.Connection,
+    *,
+    attempt_id: str,
+    campaign_id: str,
+    campaign_run_id: str,
+    authoritative_factory_run_id: str,
+    now: datetime,
+) -> PreAdmissionDiscoveryAttempt:
+    """Revoke frozen pair authority when its exact owning parent terminalizes.
+
+    ``PAIR_READY`` already durably records ``EXACT_PAIR_FROZEN`` and its freeze
+    timestamp.  Parent-terminal cancellation therefore changes only the state
+    and update timestamp: it must not rewrite the frozen-pair truth or fabricate
+    consumption.  The generic terminalizer intentionally remains unable to
+    cancel ``PAIR_READY`` so ordinary callers cannot discard valid admission
+    authority.
+    """
+    exact_id = _required(attempt_id, "attempt_id")
+    exact_campaign_id = _required(campaign_id, "campaign_id")
+    exact_run_id = _required(campaign_run_id, "campaign_run_id")
+    exact_factory_id = _required(
+        authoritative_factory_run_id, "authoritative_factory_run_id"
+    )
+    current = load_pre_admission_attempt(connection, attempt_id=exact_id)
+    if (
+        current.state is not PreAdmissionAttemptState.PAIR_READY
+        or current.first_terminal_cause != "EXACT_PAIR_FROZEN"
+        or current.terminal_at is None
+        or current.consumed_cycle_id is not None
+        or current.consumed_at is not None
+    ):
+        raise PreAdmissionAttemptError("PAIR_READY_PARENT_TERMINAL_SHAPE_INVALID")
+    if (
+        current.campaign_id != exact_campaign_id
+        or current.campaign_run_id != exact_run_id
+        or current.authoritative_factory_run_id != exact_factory_id
+    ):
+        raise PreAdmissionAttemptError("PARENT_TERMINAL_OWNERSHIP_MISMATCH")
+
+    # Re-read through the canonical pair loader so exact-two immutable frozen
+    # items and slot ordinals are proven before authority is revoked.
+    load_pre_admission_pair(connection, attempt_id=exact_id)
+    instant = _timestamp(now, "now")
+    cursor = connection.execute(
+        """UPDATE printer_pre_admission_discovery_attempts
+           SET attempt_state='CANCELLED', updated_at=?
+           WHERE attempt_id=?
+             AND campaign_id=?
+             AND campaign_run_id=?
+             AND authoritative_factory_run_id=?
+             AND attempt_state='PAIR_READY'
+             AND first_terminal_cause='EXACT_PAIR_FROZEN'
+             AND terminal_at IS NOT NULL
+             AND consumed_cycle_id IS NULL
+             AND consumed_at IS NULL""",
+        (
+            instant,
+            exact_id,
+            exact_campaign_id,
+            exact_run_id,
+            exact_factory_id,
+        ),
+    )
+    if cursor.rowcount != 1:
+        raise PreAdmissionAttemptError("PAIR_READY_PARENT_TERMINAL_CANCEL_FAILED")
+    return load_pre_admission_attempt(connection, attempt_id=exact_id)
+'''
+          text = text.replace(marker, addition + marker, 1)
+          pre.write_text(text)
+
+          closure = Path("src/printer_v1/operator_cli/unified_terminal_closure.py")
+          text = closure.read_text()
+          old_import = '''from printer_v1.operator_cli.pre_admission_discovery_attempt import (\n    PreAdmissionAttemptState,\n    terminalize_pre_admission_attempt,\n)'''
+          new_import = '''from printer_v1.operator_cli.pre_admission_discovery_attempt import (\n    PreAdmissionAttemptState,\n    cancel_pair_ready_pre_admission_attempt_for_terminal_parent,\n    terminalize_pre_admission_attempt,\n)'''
+          if old_import not in text:
+              raise SystemExit("terminal-closure import marker not found")
+          text = text.replace(old_import, new_import, 1)
+          text = text.replace(
+              "AND attempt_state IN ('PLANNED','RUNNING')",
+              "AND attempt_state IN ('PLANNED','RUNNING','PAIR_READY')",
+              1,
+          )
+          old_call = '''                terminalize_pre_admission_attempt(\n                    connection,\n                    attempt_id=attempt_id,\n                    state=PreAdmissionAttemptState.CANCELLED,\n                    cause=cause,\n                    now=attempt_now,\n                )'''
+          new_call = '''                if str(attempt_row["attempt_state"]) == PreAdmissionAttemptState.PAIR_READY.value:\n                    cancel_pair_ready_pre_admission_attempt_for_terminal_parent(\n                        connection,\n                        attempt_id=attempt_id,\n                        campaign_id=campaign_id,\n                        campaign_run_id=run_id,\n                        authoritative_factory_run_id=str(factory_run_id or ""),\n                        now=attempt_now,\n                    )\n                else:\n                    terminalize_pre_admission_attempt(\n                        connection,\n                        attempt_id=attempt_id,\n                        state=PreAdmissionAttemptState.CANCELLED,\n                        cause=cause,\n                        now=attempt_now,\n                    )'''
+          if old_call not in text:
+              raise SystemExit("terminal-closure call marker not found")
+          text = text.replace(old_call, new_call, 1)
+          closure.write_text(text)
+          PY
+
+      - name: GREEN bounded proof
+        shell: bash
+        run: |
+          pytest -q \
+            tests/test_v2_9_8b_pre_admission_terminal_cleanup_repair.py \
+            tests/test_v2_9_8b_pre_admission_atomic_cycle2_consumption.py \
+            tests/test_v2_9_8b_factory_run_terminal_cleanup_product_repair.py \
+            tests/test_v2_9_8b_reconcile_already_terminal_factory_persist_repair.py
+
+          FINALIZER_TESTS=$(grep -rl "one-cycle shared terminal requires exact terminal no-admission evidence" tests --include='test_*.py' || true)
+          if [ -n "$FINALIZER_TESTS" ]; then
+            pytest -q $FINALIZER_TESTS
+          fi
+
+          python -m compileall -q \
+            src/printer_v1/operator_cli/pre_admission_discovery_attempt.py \
+            src/printer_v1/operator_cli/unified_terminal_closure.py
+          git diff --check
+          if git diff --name-only | grep -q '^migrations/'; then
+            echo "Unexpected migration change"
+            exit 1
+          fi
+          changed=$(git diff --name-only | sort)
+          expected=$(printf '%s\n' \
+            src/printer_v1/operator_cli/pre_admission_discovery_attempt.py \
+            src/printer_v1/operator_cli/unified_terminal_closure.py \
+            tests/test_v2_9_8b_pre_admission_terminal_cleanup_repair.py | sort)
+          test "$changed" = "$expected"
+
+      - name: Commit repaired target branch
+        shell: bash
+        run: |
+          git config user.name "OpenAI"
+          git config user.email "noreply@openai.com"
+          git add -- \
+            src/printer_v1/operator_cli/pre_admission_discovery_attempt.py \
+            src/printer_v1/operator_cli/unified_terminal_closure.py \
+            tests/test_v2_9_8b_pre_admission_terminal_cleanup_repair.py
+          git commit -m "Fix frozen pair terminal cleanup"
+          git push origin HEAD:agent/v2-9-8b-pair-ready-parent-terminal-cancellation-repair
