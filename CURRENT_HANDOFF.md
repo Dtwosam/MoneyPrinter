@@ -29,7 +29,7 @@ Branch:
 
 Final repaired product HEAD / candidate launch identity:
 
-`ec4470ee219ab1271bd56b9eb96ecc0def9e6196`
+`6c44d5140bb79d032ad6a78e81eb8c77540371c8`
 
 Product repair commit:
 
