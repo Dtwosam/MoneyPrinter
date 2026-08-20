@@ -1710,6 +1710,26 @@ def enrich_eligible_geckoterminal_candidate_15m(
         else:
             selected_transport = live_transport
 
+        # Capture pre-redaction pool-trades payload so wallet/flow aggregates can
+        # be derived after durable normalize strips tx_from_address for persistence.
+        captured_trades_payload: dict[str, Any] = {"provider_payload": None}
+        if request_kind == GECKOTERMINAL_POOL_TRADES_REQUEST_KIND:
+            base_transport = selected_transport
+
+            def selected_transport(
+                context,
+                *,
+                _base=base_transport,
+                _capture=captured_trades_payload,
+            ):
+                payload = dict(_base(context))
+                _capture["provider_payload"] = {
+                    key: value
+                    for key, value in payload.items()
+                    if not str(key).startswith("_requested_")
+                }
+                return payload
+
         source_request = build_governed_source_request(
             "geckoterminal",
             request_kind,
@@ -1767,8 +1787,11 @@ def enrich_eligible_geckoterminal_candidate_15m(
             if not isinstance(candle_provenance, Mapping):
                 derived = {}
             else:
+                enrich_payload = captured_trades_payload.get("provider_payload")
+                if not isinstance(enrich_payload, Mapping):
+                    enrich_payload = provider_payload
                 derived = enrich_candidate_15m_trades(
-                    provider_payload,
+                    enrich_payload,
                     pool_address=pool_address,
                     network="solana",
                     endpoint_url=endpoint,

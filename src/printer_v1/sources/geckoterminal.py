@@ -25,6 +25,7 @@ from printer_v1.sources.geckoterminal_15m import (
     GECKOTERMINAL_POOL_TRADES_REQUEST_KIND,
     build_gt15m_ohlcv_url,
     build_gt15m_trades_url,
+    redact_geckoterminal_trades_tx_from_addresses,
 )
 from printer_v1.sources.operational_source_contracts import (
     GECKOTERMINAL_EXACT_PAIR_URL,
@@ -433,6 +434,13 @@ def _normalize_geckoterminal_15m_payload(
     provider_payload = {
         key: value for key, value in payload.items() if not str(key).startswith("_requested_")
     }
+    if request_kind == GECKOTERMINAL_POOL_TRADES_REQUEST_KIND:
+        # Derive-capable callers must enrich from the pre-redaction transport
+        # payload. Durable normalized_payload_json must never retain
+        # tx_from_address values.
+        provider_payload = redact_geckoterminal_trades_tx_from_addresses(
+            provider_payload
+        )
     return NormalizedSourceResult(
         source_name=GECKOTERMINAL_SOURCE_NAME,
         request_kind=request_kind,

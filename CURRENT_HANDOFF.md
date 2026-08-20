@@ -12,7 +12,7 @@ Verdict:
 
 `V2_9_8B_REMAINING_QUALITY_REPAIRS_4_6_CLOSEOUT_GREEN`
 
-Bounded offline completion of remaining quality repairs 4–6 on the closed Solana-native core-safety base. No live campaign, authorization, provider activation, retrieval, or financial capability.
+Bounded offline completion of remaining quality repairs 4–6 on the closed Solana-native core-safety base, plus a Repair-4 durable-persistence corrective so raw `tx_from_address` values never land in source-response/candidate/snapshot/report JSON. No live campaign, authorization, provider activation, retrieval, or financial capability.
 
 ## Exact branch / HEAD
 
@@ -28,14 +28,19 @@ Draft PR:
 
 `#199`
 
+Final HEAD:
+
+`62617b803183f4d46bf30cee2606437843eb7521`
+
 ## What landed
 
 ### 4. Wallet / trading-flow completeness
 
 - Reuse the existing governed GeckoTerminal exact-pool trades payload.
 - Derive only supported aggregates: `unique_wallets_15m`, `buys_15m`, `sells_15m`, `buy_volume_15m`, `sell_volume_15m`.
-- Truncated / incomplete address coverage stays honest `None`.
-- No raw wallet addresses persisted; no beneficial-owner / new-wallet / repeat-wallet claims; no extra provider request.
+- Durable normalize redacts `tx_from_address` before `printer_source_responses.normalized_payload_json` persistence.
+- Pre-redaction capture is used only in-memory to derive aggregates; truncated / incomplete address coverage stays honest `None`.
+- No beneficial-owner / new-wallet / repeat-wallet claims; no extra provider request; no Scheduler work.
 
 ### 5. Optional safety completeness
 
@@ -66,7 +71,7 @@ Do **not** reuse any consumed authorization or historical application artifact.
 
 `V2-9.8B Remaining Quality Repairs 4-6 Independent Closeout / Post-Repair Operational Re-Readiness Audit`
 
-Reconcile closed D4/D5, closed Solana-native core-safety redundancy, and closed quality repairs 4–6 against current authoritative repository/database identity before any fresh 4/2/2 authorization can be considered.
+Reconcile closed D4/D5, closed Solana-native core-safety redundancy, and closed quality repairs 4–6 (including the Repair-4 durable address-redaction corrective) against current authoritative repository/database identity before any fresh 4/2/2 authorization can be considered.
 
 ## Locks
 

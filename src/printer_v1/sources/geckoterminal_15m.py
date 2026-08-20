@@ -339,6 +339,41 @@ def count_txns_15m_from_trades(
 
 
 # ---------------------------------------------------------------------------
+# Durable trade-payload address redaction
+# ---------------------------------------------------------------------------
+
+def redact_geckoterminal_trades_tx_from_addresses(
+    provider_payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return a durable copy of a pool-trades payload without raw addresses.
+
+    Keeps non-address trade evidence (timestamp, kind, volume, tx_hash, etc.)
+    and provenance metadata. Used before source-response persistence so
+    ``tx_from_address`` never lands in ``normalized_payload_json``.
+    """
+    redacted = dict(provider_payload)
+    raw_data = redacted.get("data")
+    if not isinstance(raw_data, list):
+        return redacted
+    cleaned_trades: list[Any] = []
+    for trade in raw_data:
+        if not isinstance(trade, Mapping):
+            cleaned_trades.append(trade)
+            continue
+        trade_copy = dict(trade)
+        attrs = trade_copy.get("attributes")
+        if isinstance(attrs, Mapping):
+            attrs_copy = dict(attrs)
+            attrs_copy.pop("tx_from_address", None)
+            trade_copy["attributes"] = attrs_copy
+        trade_copy.pop("tx_from_address", None)
+        cleaned_trades.append(trade_copy)
+    redacted["data"] = cleaned_trades
+    redacted["tx_from_address_redacted"] = True
+    return redacted
+
+
+# ---------------------------------------------------------------------------
 # Observed exact-pool wallet / split-flow aggregation
 # ---------------------------------------------------------------------------
 
