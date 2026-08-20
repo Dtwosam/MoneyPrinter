@@ -185,6 +185,84 @@ def _later_cycle_attempt_is_terminal(state: str | None) -> bool:
     return bool(value) and value != "RUNNING"
 
 
+_CYCLE_LOCAL_MATERIALIZATION_REASONS = frozenset(
+    {"UNSUPPORTED_MERGED_CANDIDATE_CHANNEL"}
+)
+
+
+def _terminalize_unstarted_cycle_after_materialization_failure(
+    connection: sqlite3.Connection,
+    *,
+    cycle_id: str,
+    terminal_cause: str,
+    now: datetime,
+) -> None:
+    """Atomically isolate one admitted cycle before any lifecycle work exists."""
+    if connection.in_transaction:
+        raise ValueError("cycle-local isolation requires a clean transaction boundary")
+    cause = str(terminal_cause).strip()[:128]
+    if not cause:
+        raise ValueError("cycle-local isolation requires terminal cause")
+    timestamp = now.astimezone(timezone.utc).isoformat()
+    cycle = connection.execute(
+        "SELECT cycle_state FROM printer_memory_factory_campaign_cycles WHERE cycle_id=?",
+        (cycle_id,),
+    ).fetchone()
+    slots = connection.execute(
+        "SELECT token_slot_id,token_state,tracking_queue_id "
+        "FROM printer_memory_factory_campaign_token_slots "
+        "WHERE cycle_id=? ORDER BY slot_ordinal",
+        (cycle_id,),
+    ).fetchall()
+    windows = int(
+        connection.execute(
+            "SELECT COUNT(*) FROM printer_memory_factory_campaign_windows WHERE cycle_id=?",
+            (cycle_id,),
+        ).fetchone()[0]
+    )
+    work = int(
+        connection.execute(
+            "SELECT COUNT(*) FROM printer_memory_factory_campaign_scheduler_work WHERE cycle_id=?",
+            (cycle_id,),
+        ).fetchone()[0]
+    )
+    if (
+        cycle is None
+        or str(cycle[0]) != "PLANNED"
+        or len(slots) != 2
+        or any(str(row[1]) != "SELECTED" for row in slots)
+        or any(row[2] is not None for row in slots)
+        or windows != 0
+        or work != 0
+    ):
+        raise ValueError("cycle-local materialization isolation preconditions failed")
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        slot_update = connection.execute(
+            """UPDATE printer_memory_factory_campaign_token_slots
+               SET token_state='MANUAL_REVIEW',first_terminal_cause=?,
+                   terminal_at=?,updated_at=?
+               WHERE cycle_id=? AND token_state='SELECTED'
+                 AND tracking_queue_id IS NULL""",
+            (cause, timestamp, timestamp, cycle_id),
+        )
+        if slot_update.rowcount != 2:
+            raise ValueError("cycle-local slot terminalization failed")
+        cycle_update = connection.execute(
+            """UPDATE printer_memory_factory_campaign_cycles
+               SET cycle_state='TERMINAL_FAILED',first_terminal_cause=?,
+                   terminal_at=?,updated_at=?
+               WHERE cycle_id=? AND cycle_state='PLANNED'""",
+            (cause, timestamp, timestamp, cycle_id),
+        )
+        if cycle_update.rowcount != 1:
+            raise ValueError("cycle-local cycle terminalization failed")
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+
+
 def _run_four_token_admission_boundary(
     *,
     connection: Any,
@@ -284,16 +362,41 @@ def _run_four_token_admission_boundary(
             post_disposition, False, attempt_id, attempt_state, None
         )
     cycle_id = str(getattr(admission, "cycle_id", "") or "")
-    materialize(
-        connection=connection,
-        attempt_id=attempt_id,
-        campaign_id=binding.campaign_id,
-        campaign_run_id=binding.campaign_run_id,
-        configuration_id=binding.configuration_id,
-        authoritative_factory_run_id=binding.authoritative_factory_run_id,
-        cycle_id=cycle_id,
-        now=post_now,
+    from printer_v1.discovery.pre_admission_materialization import (
+        PreAdmissionMaterializationError,
     )
+    try:
+        materialize(
+            connection=connection,
+            attempt_id=attempt_id,
+            campaign_id=binding.campaign_id,
+            campaign_run_id=binding.campaign_run_id,
+            configuration_id=binding.configuration_id,
+            authoritative_factory_run_id=binding.authoritative_factory_run_id,
+            cycle_id=cycle_id,
+            now=post_now,
+        )
+    except PreAdmissionMaterializationError as exc:
+        persistence_reason = str(getattr(exc, "persistence_reason", "") or "")
+        if persistence_reason not in _CYCLE_LOCAL_MATERIALIZATION_REASONS:
+            raise
+        terminal_cause = (
+            f"CYCLE2_MATERIALIZATION_FAILED_{persistence_reason}"
+        )[:128]
+        _terminalize_unstarted_cycle_after_materialization_failure(
+            connection,
+            cycle_id=cycle_id,
+            terminal_cause=terminal_cause,
+            now=post_now,
+        )
+        return FourTokenAdmissionBoundaryResult(
+            post_disposition,
+            False,
+            attempt_id,
+            "CONSUMED",
+            terminal_cause,
+            cycle_id,
+        )
     plan_opening(cycle_id=cycle_id, cycle_ordinal=2, now=post_now)
     return FourTokenAdmissionBoundaryResult(
         post_disposition, True, attempt_id, "CONSUMED", None, cycle_id

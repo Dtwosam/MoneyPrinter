@@ -29,6 +29,39 @@ from printer_v1.operator_cli.pre_admission_discovery_attempt import (
 class PreAdmissionMaterializationError(RuntimeError):
     """Fail-closed frozen-evidence materialization contract violation."""
 
+    def __init__(
+        self,
+        code: str,
+        *,
+        persistence_reason: str | None = None,
+    ) -> None:
+        self.code = str(code)
+        self.persistence_reason = (
+            None if persistence_reason is None else str(persistence_reason)
+        )
+        message = (
+            self.code
+            if self.persistence_reason is None
+            else f"{self.code}:{self.persistence_reason}"
+        )
+        super().__init__(message)
+
+
+def _safe_persistence_reason(exc: BaseException) -> str:
+    """Return bounded categorical persistence diagnostics only."""
+    if isinstance(exc, DiscoveryPersistenceError):
+        message = str(exc)
+        if message.startswith("unsupported channel label:"):
+            return "UNSUPPORTED_MERGED_CANDIDATE_CHANNEL"
+        if "ownership mismatch" in message:
+            return "DISCOVERY_OWNERSHIP_CONTRACT"
+        if "constraint failed" in message.lower():
+            return "DISCOVERY_PERSISTENCE_CONSTRAINT"
+        return "DISCOVERY_PERSISTENCE_CONTRACT"
+    if isinstance(exc, sqlite3.IntegrityError):
+        return "SQLITE_INTEGRITY_CONSTRAINT"
+    return "SQLITE_PERSISTENCE_ERROR"
+
 
 @dataclass(frozen=True)
 class PreAdmissionMaterializationResult:
@@ -419,7 +452,10 @@ def materialize_consumed_pre_admission_pair(
         connection.rollback()
         if isinstance(exc, PreAdmissionMaterializationError):
             raise
-        raise PreAdmissionMaterializationError("MATERIALIZATION_PERSISTENCE_FAILED") from exc
+        raise PreAdmissionMaterializationError(
+            "MATERIALIZATION_PERSISTENCE_FAILED",
+            persistence_reason=_safe_persistence_reason(exc),
+        ) from exc
     return PreAdmissionMaterializationResult(
         attempt_id=exact_attempt_id,
         discovery_batch_id=discovery_batch_id,
