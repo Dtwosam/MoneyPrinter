@@ -1,0 +1,24 @@
+name: v2-9-8b-remaining-quality-inspect
+on:
+  push:
+    branches:
+      - agent/v2-9-8b-remaining-quality-repairs-4-6
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspect exact repair wiring
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '=== GT 15m trade enrichment ==='
+          grep -n -B 12 -A 45 'trade_count = max' src/printer_v1/sources/geckoterminal_15m.py || true
+          echo '=== trading-flow call sites ==='
+          grep -RIn -B 6 -A 18 'classify_trading_flow\|extract_wallet_metrics\|TRADING_FLOW_CONTEXT' src/printer_v1 | head -n 420 || true
+          echo '=== remaining blockers/reporting ==='
+          grep -n -B 30 -A 55 'remaining_blockers\|MISSING_CRITICAL_DATA' src/printer_v1/operator_cli/one_command_15m_factory.py | head -n 700 || true
+          echo '=== safety optional fields ==='
+          grep -RIn -B 8 -A 30 'liquidity_locked\|known_risk\|metadata_mutable\|remaining_blockers' src/printer_v1/safety src/printer_v1/operator_cli | head -n 700 || true
+          echo '=== memory promotion/authority ==='
+          grep -RIn -B 12 -A 36 'CLEAN_PROMOTED\|PARTIAL_MEMORY\|CLEAN_MEMORY\|episode_fingerprint\|memory_episode' src/printer_v1/memory src/printer_v1/operator_cli src/printer_v1 | head -n 1000 || true
