@@ -548,6 +548,48 @@ def _extract_returned_factory_run_id(
     return candidate
 
 
+def _resolve_linked_factory_run_id(
+    connection: sqlite3.Connection,
+    *,
+    campaign_id: str,
+    run_id: str,
+) -> str | None:
+    """Return the exact authoritative factory-run id linked to one campaign run.
+
+    ``None`` is lawful only when the campaign run has no authoritative factory
+    linkage and no factory row is claimed. Ambiguous or mismatched linkage fails
+    closed so terminal reconciliation cannot silently omit an owned factory run.
+    """
+    if not _table_exists(connection, "printer_memory_factory_campaign_runs"):
+        return None
+    row = connection.execute(
+        "SELECT authoritative_run_id FROM printer_memory_factory_campaign_runs "
+        "WHERE campaign_id=? AND run_id=?",
+        (campaign_id, run_id),
+    ).fetchone()
+    if row is None:
+        raise OperationalMemoryFactoryError(
+            "linked factory resolution failed: campaign run missing"
+        )
+    linked = row["authoritative_run_id"] if isinstance(row, sqlite3.Row) else row[0]
+    linked_id = str(linked or "").strip()
+    if not linked_id:
+        return None
+    if not _table_exists(connection, "printer_memory_factory_runs"):
+        raise OperationalMemoryFactoryError(
+            "linked factory resolution failed: factory table missing"
+        )
+    matches = connection.execute(
+        "SELECT run_id FROM printer_memory_factory_runs WHERE run_id=?",
+        (linked_id,),
+    ).fetchall()
+    if len(matches) != 1:
+        raise OperationalMemoryFactoryError(
+            "linked factory resolution failed: FACTORY identity missing or ambiguous"
+        )
+    return linked_id
+
+
 def _iso(value: datetime | None = None) -> str:
     return (value or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat()
 
@@ -3008,6 +3050,18 @@ def _finalize_returned_pre_lifecycle_result(
             }
         )
     try:
+        resolve_connection = _read_only(
+            command.db_path,
+            expected_path=command.db_path,
+        )
+        try:
+            linked_factory_run_id = _resolve_linked_factory_run_id(
+                resolve_connection,
+                campaign_id=command.campaign_id,
+                run_id=command.run_id,
+            )
+        finally:
+            resolve_connection.close()
         reconciliation = reconcile_campaign_terminal(
             command.db_path,
             campaign_id=command.campaign_id,
@@ -3015,8 +3069,8 @@ def _finalize_returned_pre_lifecycle_result(
             cycle_id=cycle_id,
             terminal_cause=first_cause,
             run_status=str(lifecycle_map.get("run_status") or "NOT_STARTED"),
-            factory_run_id=None,
-            lifecycle_started=False,
+            factory_run_id=linked_factory_run_id,
+            lifecycle_started=bool(linked_factory_run_id),
             now=_iso(),
         )
     except BaseException as exc:

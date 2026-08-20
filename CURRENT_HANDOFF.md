@@ -4,115 +4,92 @@ Date: 2026-08-20
 
 ## Current lane
 
-`V2-9.8B Orphan Factory-Run Residual Reconciliation`
+`V2-9.8B Factory-Run Terminal Cleanup Product Repair`
 
-Status: `BLOCKED_PRODUCT_DEFECT_BEFORE_DB_MUTATION`
+Status: `CLOSED_PASS`
 
 Verdict:
 
-`PRODUCT_TERMINAL_CLEANUP_DEFECT_REQUIRES_REPAIR`
+`V2_9_8B_FACTORY_RUN_TERMINAL_CLEANUP_PRODUCT_REPAIR_PASS`
 
-Separate findings:
+Boundary evidence:
 
-- historical DB residue repaired: **NO** (authoritative mutation withheld)
-- production terminal-cleanup defect found: **YES**
-- zero-state / readiness visibility defect found: **YES** (narrow readiness helper repaired)
-- active factory runs after: **1** (unchanged)
+- authoritative DB mutation: **NO**
+- historical orphan reconciled: **NO**
+- provider/runtime calls: **NO**
+- orphan `ad5a83e6-9830-4c6b-8150-66445f54c8cc` remains `RUNNING`
 - authoritative DB SHA unchanged:
   `f167858a7a47c2837bced97223501f8d1c004d1c8c7a8177ed080c4e8d27f341`
-
-No authorization was created or consumed. Printer was not run.
 
 ## Exact branch / HEAD
 
 Branch:
 
-`agent/v2-9-8b-orphan-factory-run-residual-reconciliation`
+`agent/v2-9-8b-factory-run-terminal-cleanup-product-repair`
 
-Authorized product baseline HEAD (unchanged launch identity):
+Final repaired product HEAD:
+
+`<SET_AT_COMMIT>`
+
+Baseline:
+
+`28e9d44c14c7eefcc6b2210922e6456e0f39ff3c`
+
+Historical pre-repair executable provenance (do **not** use for next authorization):
 
 `9cfa8a152c3a02c0c5ef599cf0cffe6e269ab885`
 
-## Classification of orphan
+## Defects repaired
 
-Exact orphan:
+1. `campaign_active_work_report(...).clean_terminal` is false while the exact
+   linked factory run is `PENDING`/`RUNNING` (`active_factory_runs` counted).
+2. `finalize_four_token_shared_terminal` no longer early-returns from an
+   already-terminal campaign/run while its linked factory remains active; it
+   routes cleanup through the existing canonical terminal owner.
+3. `_finalize_returned_pre_lifecycle_result` resolves and passes the exact linked
+   `factory_run_id` when an authoritative factory exists; `None` remains lawful
+   only when no factory was ever linked.
 
-- `printer_memory_factory_runs.run_id = ad5a83e6-9830-4c6b-8150-66445f54c8cc`
-- `run_status = RUNNING`
-- only active factory-run row
-- linked campaign / campaign-run already `TERMINAL_FAILED`
-- terminal cause:
-  `OPERATIONAL_CAMPAIGN_FAILED:FourTokenFactoryAdapterError`
-- factory steps: 18 `SUCCEEDED`, zero active
-- Scheduler / pre-admission / discovery / supervision / lease residue: already zero
+Preserved:
 
-`reconcile_campaign_terminal(..., factory_run_id=..., run_status="FAILED")`
-already maps this row lawfully to `SAFE_STOPPED` while preserving the campaign
-terminal cause when invoked with the factory id.
+- `_active_counts()` factory-run visibility repair
+- `reconcile_campaign_terminal` as the sole factory terminal owner
+- failed-campaign factory transition `RUNNING -> SAFE_STOPPED`
+- first terminal cause / existing stop_reason preservation
+- Scheduler/pre-admission cleanup ownership
 
-## Why prior re-readiness reported zero factory residue
+## Proof summary
 
-`operational_memory_factory_command._active_counts()` counted:
+Focused disposable suite:
 
-- `factory_run_steps` PENDING/RUNNING
+`tests/test_v2_9_8b_factory_run_terminal_cleanup_product_repair.py`
 
-but did **not** count:
-
-- `printer_memory_factory_runs.run_status IN ('PENDING','RUNNING')`
-
-So an orphan RUNNING factory with only SUCCEEDED steps looked quiescent to
-readiness, while the strict four-token zero-state gate correctly reported
-`active_factory_runs: 1`.
-
-## Visibility repair landed in this lane
-
-`_active_counts()` now includes `factory_runs` with the same PENDING/RUNNING
-contract as the strict zero-state gate.
-
-Focused proof:
-
-`tests/test_v2_9_8b_active_counts_factory_run_visibility.py`
-
-Authoritative DB was not mutated.
-
-## Production terminal-cleanup defect (DB mutation blocked)
-
-Do **not** one-row-clean the authoritative orphan yet. Current production can
-still recreate or preserve the same condition:
-
-1. `four_token_factory_adapter` returns early when the campaign run is already
-   `TERMINAL_*` and does not require the linked factory run to be non-RUNNING.
-2. `campaign_active_work_report(...).clean_terminal` does not treat a RUNNING
-   factory run as unclean when steps are terminal.
-3. At least one operational reconcile caller still passes
-   `factory_run_id=None` on a failure path
-   (`operational_memory_factory_command` pre-lifecycle reconciliation).
-
-Hiding those with a historical row update would leave the defect live.
+Adjacent regressions (factory/shared terminal, pre-admission cleanup, unified
+terminal, active-count visibility): **68 passed + 30 subtests**.
 
 ## Authorization posture
 
-Do **not** create a fresh 4/2/2 authorization while:
+Do **not** create a fresh 4/2/2 authorization yet.
 
-- `active_factory_runs != 0`, or
-- the production terminal-cleanup defect above remains unrepaired.
+The next authorization must bind:
+
+- launch Git HEAD = this repaired product HEAD (not `9cfa8a…`)
+- DB SHA = the post-orphan-reconciliation SHA (not yet changed)
+
+The existing fresh 4/2/2 authorization design needs only a narrow identity
+refresh/rebind after orphan reconciliation.
 
 ## Exact next permitted action
 
-`V2-9.8B Factory-Run Terminal Cleanup Product Repair`
+`V2-9.8B One-Time Historical Orphan Factory-Run Reconciliation`
 
-Repair the production paths so a campaign terminal cannot leave
-`printer_memory_factory_runs.run_status='RUNNING'`, and so
-`campaign_active_work_report` / shared-terminal already-terminal handling cannot
-treat that orphan as clean.
+Reconcile exactly:
 
-Only after that product repair + focused proofs may the operator authorize the
-exact one-time authoritative reconciliation of
-`ad5a83e6-9830-4c6b-8150-66445f54c8cc`, then retry:
+`printer_memory_factory_runs.run_id = ad5a83e6-9830-4c6b-8150-66445f54c8cc`
 
-`V2-9.8B Fresh 4/2/2 Authorization Creation`
-
-against launch HEAD `9cfa8a…` and the then-current DB SHA.
+through the existing canonical terminal owner
+(`RUNNING -> SAFE_STOPPED`), with backup/restore proof, then remeasure the
+authoritative DB SHA for the later authorization identity refresh.
 
 ## Locks
 

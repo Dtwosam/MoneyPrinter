@@ -1091,10 +1091,6 @@ def finalize_four_token_shared_terminal(
         campaign_id=campaign,
         run_id=run,
     )
-    if active_report.get("clean_terminal") is not True:
-        raise FourTokenFactoryAdapterError(
-            "shared terminal requires zero active or orphan campaign work"
-        )
     run_row = connection.execute(
         "SELECT run_state,authoritative_run_id FROM printer_memory_factory_campaign_runs "
         "WHERE campaign_id=? AND run_id=?",
@@ -1102,7 +1098,35 @@ def finalize_four_token_shared_terminal(
     ).fetchone()
     if run_row is None or str(run_row[1] or "") != factory:
         raise FourTokenFactoryAdapterError("shared terminal identity is missing")
-    if str(run_row[0]).startswith("TERMINAL_"):
+    factory_row = connection.execute(
+        "SELECT run_status FROM printer_memory_factory_runs WHERE run_id=?",
+        (factory,),
+    ).fetchone()
+    if factory_row is None:
+        raise FourTokenFactoryAdapterError("shared terminal factory identity is missing")
+    factory_status = str(factory_row[0])
+    factory_active = factory_status in {"PENDING", "RUNNING"}
+    campaign_already_terminal = str(run_row[0]).startswith("TERMINAL_")
+
+    # Linked factory PENDING/RUNNING is owned residue that the canonical terminal
+    # owner must still clear. Any other uncleanness remains fail-closed.
+    otherwise_clean = (
+        int(active_report.get("active_jobs") or 0) == 0
+        and int(active_report.get("active_work_rows") or 0) == 0
+        and int(active_report.get("terminal_work_with_active_job") or 0) == 0
+        and int(active_report.get("pending_or_running_run_steps") or 0) == 0
+        and int(active_report.get("active_pre_lifecycle_refresh_waits") or 0) == 0
+        and int(active_report.get("active_pre_admission_attempts") or 0) == 0
+    )
+    if not otherwise_clean:
+        raise FourTokenFactoryAdapterError(
+            "shared terminal requires zero active or orphan campaign work"
+        )
+    if campaign_already_terminal and not factory_active:
+        if active_report.get("clean_terminal") is not True:
+            raise FourTokenFactoryAdapterError(
+                "shared terminal requires zero active or orphan campaign work"
+            )
         return {
             "shared_terminalized": False,
             "shared_cleanup_count": 0,
@@ -1131,7 +1155,7 @@ def finalize_four_token_shared_terminal(
         run_after is None
         or not str(run_after[0]).startswith("TERMINAL_")
         or factory_after is None
-        or str(factory_after[0]) == "RUNNING"
+        or str(factory_after[0]) in {"PENDING", "RUNNING"}
     ):
         raise FourTokenFactoryAdapterError(
             "shared terminal owner did not terminalize shared run identities"

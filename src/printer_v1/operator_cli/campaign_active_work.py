@@ -447,6 +447,21 @@ def campaign_active_work_report(
             ).fetchone()[0]
         )
 
+    # Exact linked factory-run ownership. A PENDING/RUNNING factory row remains
+    # active campaign ownership even when every step is already terminal. This
+    # matches the strict four-token zero-state / readiness factory-run contract.
+    active_factory_runs = 0
+    if factory_run_id and _table_exists(
+        connection, "printer_memory_factory_runs"
+    ):
+        active_factory_runs = int(
+            connection.execute(
+                "SELECT COUNT(*) FROM printer_memory_factory_runs "
+                "WHERE run_id = ? AND run_status IN ('PENDING','RUNNING')",
+                (factory_run_id,),
+            ).fetchone()[0]
+        )
+
     return {
         "scope": {
             "factory_run_id": factory_run_id,
@@ -465,6 +480,7 @@ def campaign_active_work_report(
         "active_work_details": active_work_rows,
         "terminal_work_with_active_job": terminal_work_with_active_job,
         "pending_or_running_run_steps": pending_run_steps,
+        "active_factory_runs": active_factory_runs,
         "active_pre_lifecycle_refresh_waits": active_refresh_waits,
         "active_pre_admission_attempts": active_pre_admission_attempts,
         "clean_terminal": (
@@ -472,6 +488,7 @@ def campaign_active_work_report(
             and not active_work_rows
             and terminal_work_with_active_job == 0
             and pending_run_steps == 0
+            and active_factory_runs == 0
             and active_refresh_waits == 0
             and active_pre_admission_attempts == 0
         ),
