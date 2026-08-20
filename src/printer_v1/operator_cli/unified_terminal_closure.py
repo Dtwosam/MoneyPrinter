@@ -49,6 +49,10 @@ from printer_v1.operator_cli.campaign_persistence import (
     CampaignPersistenceError,
     persist_terminal_report,
 )
+from printer_v1.operator_cli.pre_admission_discovery_attempt import (
+    PreAdmissionAttemptState,
+    terminalize_pre_admission_attempt,
+)
 from printer_v1.scheduler.scheduler import cancel_job
 
 
@@ -331,6 +335,7 @@ def reconcile_campaign_terminal(
         "new_state": new_state,
         "records": {},
         "cancelled_jobs": 0,
+        "pre_admission_attempts": [],
         "discovery_parity": {},
         "windows": {},
         "factory_run": "not_found",
@@ -375,6 +380,82 @@ def reconcile_campaign_terminal(
                 cancel_job(connection, job_id=job_id)
                 cancelled += 1
         report["cancelled_jobs"] = cancelled
+
+        # 2b. Terminalize still-active pre-admission discovery attempts. Active-work
+        #     accounting already treats PLANNED/RUNNING attempts as unclean
+        #     terminal residue; cancel any still-active linked Scheduler job
+        #     through the Central Scheduler owner, then terminalize exclusively
+        #     through terminalize_pre_admission_attempt(... CANCELLED ...).
+        pre_admission_outcomes: list[dict[str, Any]] = []
+        if _table_exists(
+            connection, "printer_pre_admission_discovery_attempts"
+        ) and (factory_run_id or campaign_id or run_id or cycle_id):
+            clauses: list[str] = []
+            params: list[Any] = []
+            for column, value in (
+                ("authoritative_factory_run_id", factory_run_id),
+                ("campaign_id", campaign_id),
+                ("campaign_run_id", run_id),
+                ("proposed_cycle_id", cycle_id),
+            ):
+                if value:
+                    clauses.append(f"{column} = ?")
+                    params.append(value)
+            attempt_rows = connection.execute(
+                """
+                SELECT attempt_id, scheduler_job_id, attempt_state
+                FROM printer_pre_admission_discovery_attempts
+                WHERE ({})
+                  AND attempt_state IN ('PLANNED','RUNNING')
+                ORDER BY attempt_id
+                """.format(" OR ".join(clauses)),
+                tuple(params),
+            ).fetchall()
+            attempt_now = datetime.fromisoformat(instant)
+            if attempt_now.tzinfo is None:
+                attempt_now = attempt_now.replace(tzinfo=timezone.utc)
+            for attempt_row in attempt_rows:
+                attempt_id = str(attempt_row["attempt_id"])
+                job_id = int(attempt_row["scheduler_job_id"])
+                job_row = connection.execute(
+                    "SELECT status, locked_at, lock_owner "
+                    "FROM printer_scheduler_jobs WHERE id=?",
+                    (job_id,),
+                ).fetchone()
+                job_cancelled = False
+                if job_row is not None:
+                    job_active = str(job_row["status"]) in {
+                        "PENDING",
+                        "RUNNING",
+                        "COOLDOWN",
+                    }
+                    job_locked = (
+                        job_row["locked_at"] is not None
+                        or job_row["lock_owner"] is not None
+                    )
+                    if job_active or job_locked:
+                        cancel_job(connection, job_id=job_id)
+                        job_cancelled = True
+                        cancelled += 1
+                terminalize_pre_admission_attempt(
+                    connection,
+                    attempt_id=attempt_id,
+                    state=PreAdmissionAttemptState.CANCELLED,
+                    cause=cause,
+                    now=attempt_now,
+                )
+                pre_admission_outcomes.append(
+                    {
+                        "attempt_id": attempt_id,
+                        "scheduler_job_id": job_id,
+                        "prior_state": str(attempt_row["attempt_state"]),
+                        "new_state": PreAdmissionAttemptState.CANCELLED.value,
+                        "job_cancelled": job_cancelled,
+                        "terminal_cause": cause,
+                    }
+                )
+            report["cancelled_jobs"] = cancelled
+            report["pre_admission_attempts"] = pre_admission_outcomes
 
         # 3. Every started campaign memory window reaches a terminal state.
         if _table_exists(connection, "printer_memory_factory_campaign_windows"):
