@@ -4,98 +4,91 @@ Date: 2026-08-20
 
 ## Current lane
 
-`V2-9.8B Factory-Run Terminal Cleanup Product Repair`
+`V2-9.8B One-Time Historical Orphan Factory-Run Reconciliation`
 
-Status: `CLOSED_PASS`
+Status: `BLOCKED_PRODUCT_DEFECT_BEFORE_AUTHORITATIVE_MUTATION`
 
 Verdict:
 
-`V2_9_8B_FACTORY_RUN_TERMINAL_CLEANUP_PRODUCT_REPAIR_PASS`
+`PRODUCT_TERMINAL_CLEANUP_DEFECT_REQUIRES_REPAIR`
 
 Boundary evidence:
 
-- authoritative DB mutation: **NO**
-- historical orphan reconciled: **NO**
-- provider/runtime calls: **NO**
-- orphan `ad5a83e6-9830-4c6b-8150-66445f54c8cc` remains `RUNNING`
+- `ORPHAN_RECONCILED: NO`
+- `ACTIVE_FACTORY_RUNS: 1`
+- `AUTHORIZATION_CREATED: NO`
+- `PRINTER_EXECUTED: NO`
 - authoritative DB SHA unchanged:
   `f167858a7a47c2837bced97223501f8d1c004d1c8c7a8177ed080c4e8d27f341`
+- orphan `ad5a83e6-9830-4c6b-8150-66445f54c8cc` remains `RUNNING`
+- verified backup preserved (no authoritative write occurred):
+  `operator-runs/v2-9-8b-historical-orphan-factory-run-reconciliation/RECONCILE_20260820T185845Z/verified-backup.sqlite3`
 
 ## Exact branch / HEAD
 
 Branch:
 
-`agent/v2-9-8b-factory-run-terminal-cleanup-product-repair`
+`agent/v2-9-8b-historical-orphan-factory-run-reconciliation`
 
-Candidate launch identity after this closeout is the branch tip at push time.
+HEAD:
 
-Product repair commit:
+`cd6c2fed552ffb9753f61a7a33afd3118efff869`
+
+Product repair ancestry present:
 
 `d42a5aa5b5b27e79bb843babee4cbd91d9280af2`
 
-Handoff tip at write:
+## What was proved before mutation
 
-`86885689b3d8af055f42ebf0ec25e540c9dc56ea`
+All preflight gates passed:
 
-Baseline:
+- only active factory run = orphan id above
+- linked campaign/run = `TERMINAL_FAILED`
+- first terminal cause =
+  `OPERATIONAL_CAMPAIGN_FAILED:FourTokenFactoryAdapterError`
+- factory steps = 18 `SUCCEEDED`
+- other active residue = 0
+- integrity `ok`; FK 0; migrations 58 / `058_...`
+- DB SHA exact match
+- backup/restore preflight `OPERATIONAL_BACKUP_RESTORE_PREFLIGHT_READY`
 
-`28e9d44c14c7eefcc6b2210922e6456e0f39ff3c`
+## Why canonical reconcile cannot finish this orphan
 
-Historical pre-repair executable provenance (do **not** use for next authorization):
+`reconcile_campaign_terminal(..., factory_run_id=...)` updates the factory row to
+`SAFE_STOPPED` in the open transaction, then calls `transition_state` for
+cycle/run/campaign.
 
-`9cfa8a152c3a02c0c5ef599cf0cffe6e269ab885`
+When those records are already terminal, `transition_state` raises immutable /
+uses `with connection:` and **rolls back the same connection**, reverting the
+factory UPDATE. The report still claims `factory_run=SAFE_STOPPED`, but the DB
+row remains `RUNNING`.
 
-## Defects repaired
+Disposable reproduction against the verified backup confirmed:
 
-1. `campaign_active_work_report(...).clean_terminal` is false while the exact
-   linked factory run is `PENDING`/`RUNNING` (`active_factory_runs` counted).
-2. `finalize_four_token_shared_terminal` no longer early-returns from an
-   already-terminal campaign/run while its linked factory remains active; it
-   routes cleanup through the existing canonical terminal owner.
-3. `_finalize_returned_pre_lifecycle_result` resolves and passes the exact linked
-   `factory_run_id` when an authoritative factory exists; `None` remains lawful
-   only when no factory was ever linked.
+- report `factory_run=SAFE_STOPPED`
+- persisted status remains `RUNNING`
+- `clean_terminal=false` / `active_factory_runs=1`
 
-Preserved:
-
-- `_active_counts()` factory-run visibility repair
-- `reconcile_campaign_terminal` as the sole factory terminal owner
-- failed-campaign factory transition `RUNNING -> SAFE_STOPPED`
-- first terminal cause / existing stop_reason preservation
-- Scheduler/pre-admission cleanup ownership
-
-## Proof summary
-
-Focused disposable suite:
-
-`tests/test_v2_9_8b_factory_run_terminal_cleanup_product_repair.py`
-
-Adjacent regressions (factory/shared terminal, pre-admission cleanup, unified
-terminal, active-count visibility): **68 passed + 30 subtests**.
-
-## Authorization posture
-
-Do **not** create a fresh 4/2/2 authorization yet.
-
-The next authorization must bind:
-
-- launch Git HEAD = this repaired product HEAD (not `9cfa8a…`)
-- DB SHA = the post-orphan-reconciliation SHA (not yet changed)
-
-The existing fresh 4/2/2 authorization design needs only a narrow identity
-refresh/rebind after orphan reconciliation.
+Therefore ad-hoc SQL was not used, and authoritative mutation was withheld.
 
 ## Exact next permitted action
 
-`V2-9.8B One-Time Historical Orphan Factory-Run Reconciliation`
+`V2-9.8B Reconcile-Campaign-Terminal Already-Terminal Factory Persist Repair`
 
-Reconcile exactly:
+Minimum product repair:
 
-`printer_memory_factory_runs.run_id = ad5a83e6-9830-4c6b-8150-66445f54c8cc`
+1. Persist factory terminalization so a later already-terminal
+   `transition_state` rollback cannot revert it (for example SAVEPOINT around
+   ownership transitions, or commit/skip already-terminal transitions without
+   rolling back prior factory work); and
+2. Keep report honesty: do not claim `SAFE_STOPPED` unless the factory row is
+   actually persisted that way.
 
-through the existing canonical terminal owner
-(`RUNNING -> SAFE_STOPPED`), with backup/restore proof, then remeasure the
-authoritative DB SHA for the later authorization identity refresh.
+Then retry this one-time orphan reconciliation against the same backup identity
+/ refreshed preflight.
+
+Do **not** create a 4/2/2 authorization until the orphan is truly
+`SAFE_STOPPED` and re-readiness passes.
 
 ## Locks
 
