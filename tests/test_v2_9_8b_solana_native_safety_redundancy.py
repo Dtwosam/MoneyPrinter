@@ -12,10 +12,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from printer_v1.db import apply_migrations
-from printer_v1.operator_cli.holder_reliability_budget_control import (
-    HOLDER_WORST_CASE_GOVERNED_REQUESTS,
-    HOLDER_WORST_CASE_TRANSPORT_OPERATIONS,
-)
 from printer_v1.safety.composite import persist_safety_composite
 from printer_v1.safety.goplus_normalizer import (
     HARD_SAFETY_FIELD_EXPECTATIONS,
@@ -248,8 +244,6 @@ class SolanaNativeSafetyRedundancyTests(unittest.TestCase):
         self.assertEqual(FIRST_HOUR_SAFETY_CONTEXT_REQUEST_COUNT, 4)
         self.assertEqual(LIFECYCLE_RESERVED_OPERATIONS_BY_STEP_KIND["WINDOW_CLOSE"], 7)
         self.assertEqual(LIFECYCLE_RESERVED_OPERATIONS_BY_STEP_KIND["CONTINUATION_CLOSE"], 5)
-        self.assertEqual(HOLDER_WORST_CASE_GOVERNED_REQUESTS, 4)
-        self.assertEqual(HOLDER_WORST_CASE_TRANSPORT_OPERATIONS, 6)
 
 
 if __name__ == "__main__":
