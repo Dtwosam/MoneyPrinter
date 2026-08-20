@@ -4,75 +4,96 @@ Date: 2026-08-20
 
 ## Current lane
 
-`V2-9.8B Remaining Quality Repairs 4-6`
+`V2-9.8B Pre-Admission Terminal Cleanup Repair + Exact Historical Reconciliation`
 
 Status: `CLOSED_PASS`
 
-Verdict:
+Verdicts:
 
-`V2_9_8B_REMAINING_QUALITY_REPAIRS_4_6_CLOSEOUT_GREEN`
+- Product repair: `V2_9_8B_PRE_ADMISSION_TERMINAL_CLEANUP_REPAIR_GREEN`
+- Authoritative reconciliation: `PASS` for Scheduler job `2364` + linked pre-admission attempt
+- Post-repair operational re-readiness:
+  `V2_9_8B_POST_ALL_SIX_REPAIRS_OPERATIONAL_REREADINESS_PASS`
 
-Bounded offline completion of remaining quality repairs 4–6 on the closed Solana-native core-safety base, plus a Repair-4 durable-persistence corrective so raw `tx_from_address` values never land in source-response/candidate/snapshot/report JSON. No live campaign, authorization, provider activation, retrieval, or financial capability.
+`READY_FOR_FRESH_4_2_2_AUTHORIZATION_DESIGN: YES`
+
+This still does **not** authorize or run Printer.
 
 ## Exact branch / HEAD
 
 Branch:
 
-`agent/v2-9-8b-remaining-quality-repairs-4-6`
+`agent/v2-9-8b-pre-admission-terminal-cleanup-repair`
 
-Base / closed safety-repair head:
+Repair commit / HEAD:
 
-`0ae2c3066ce92b4051b6b3b11987c49a5a7e6473`
+`3836148924a4dfa021902f5844a7a3383bd52078`
 
-Draft PR:
+Prior closed quality-repairs baseline:
 
-`#199`
-
-Final HEAD:
-
-`403b5e0fb9310d768404c50a118efa89f959d3d4`
-
+`dc5b3e2f65677fd40f16a31ccdbccd63b7fc0833`
 
 ## What landed
 
-### 4. Wallet / trading-flow completeness
+### Product repair
 
-- Reuse the existing governed GeckoTerminal exact-pool trades payload.
-- Derive only supported aggregates: `unique_wallets_15m`, `buys_15m`, `sells_15m`, `buy_volume_15m`, `sell_volume_15m`.
-- Durable normalize redacts `tx_from_address` before `printer_source_responses.normalized_payload_json` persistence.
-- Pre-redaction capture is used only in-memory to derive aggregates; truncated / incomplete address coverage stays honest `None`.
-- No beneficial-owner / new-wallet / repeat-wallet claims; no extra provider request; no Scheduler work.
+`reconcile_campaign_terminal()` now terminalizes every still-active
+(`PLANNED`/`RUNNING`) pre-admission discovery attempt attributable to the exact
+campaign/run/factory/cycle scope:
 
-### 5. Optional safety completeness
+- linked Scheduler jobs cancel only through Central Scheduler `cancel_job()`
+- attempts terminalize only through `terminalize_pre_admission_attempt(... CANCELLED ...)`
+- campaign terminal cause is carried into the attempt
+- already-terminal / consumed attempts are preserved
+- second reconciliation is idempotent
+- `campaign_active_work_report(...).clean_terminal` can become true without
+  weakening active-work law
 
-- Preserve existing Solana-native core safety redundancy and fail-closed dangerous evidence.
-- Expose exact nonblocking reasons for optional UNKNOWN fields (`optional_unknown_reasons`).
-- Pump identity alone still does not prove LP lock/burn. No paid APIs.
+### Authoritative DB reconciliation (operator-approved one-time)
 
-### 6. Reporting / memory-authority cleanup
+Target: `data/printer_v1.sqlite3`
 
-- Terminal reports expose exact `blocking_reasons` / `window_blocker_summary` from persisted `remaining_blockers`.
-- Machine-readable `memory_authority` summary: parent window may remain `PARTIAL_MEMORY`; promoted episode+fingerprint is the authoritative clean object; retrieval stays `LOCKED`.
-- Parent windows are not rewritten to `CLEAN_MEMORY` for cosmetics.
+| Item | Value |
+| --- | --- |
+| SHA-256 before | `769befd90ab82e2ed7443b19ba8834dbf7807e0c0aaed20549e0e4ab6acc3847` |
+| SHA-256 after | `f167858a7a47c2837bced97223501f8d1c004d1c8c7a8177ed080c4e8d27f341` |
+| Backup/restore | `OPERATIONAL_BACKUP_RESTORE_PREFLIGHT_READY` |
+| Backup evidence | `operator-runs/v2-9-8b-pre-admission-2364-reconciliation/RECONCILE_20260820T174324Z/` |
+| Job 2364 | `PENDING` → `CANCELLED` (unlocked; `finished_at` set) |
+| Linked attempt | `RUNNING` → `CANCELLED` |
+| Attempt ID | `pre-admission:20260820T012435Z-09f5d090566f-campaign:20260820T012435Z-09f5d090566f-campaign-run:ad5a83e6-9830-4c6b-8150-66445f54c8cc:c0002` |
+| Terminal cause | `OPERATIONAL_CAMPAIGN_FAILED:FourTokenFactoryAdapterError` |
+| Integrity / FK | `ok` / 0 |
 
-## Temporary scaffolding removed
+No unrelated Scheduler jobs or attempts were touched. Parent campaign/run
+terminal truth was unchanged. Rows were not deleted.
 
-- `.github/workflows/v2-9-8b-remaining-quality-inspect.yml`
-- `scripts/v2_9_8b_apply_remaining_quality_repairs_4_6.py`
+## Proof summary
+
+- Focused RED→GREEN tests: `tests/test_v2_9_8b_pre_admission_terminal_cleanup_repair.py` (7 passed)
+- Affected regressions: unified terminal / pre-admission persistence / scheduler /
+  shared terminal suites — 64 passed + 30 subtests
+- Post-repair read-only re-readiness: zero active Scheduler / pre-admission /
+  campaign / supervision / discovery / factory / lease residue; migrations 58 /
+  head `058_direct_pump_migration_cursor.sql`; locked capability baseline intact;
+  D4/D5 + Solana-native + Repairs 4–6 lineage remain closed
 
 ## Authorization posture
 
-`NOT READY FOR NEW 4/2/2 AUTHORIZATION`
+Do **not** create a new 4/2/2 authorization from this handoff alone as an
+automatic next step unless the operator explicitly starts the authorization-
+design lane.
 
-Do **not** create a new authorization from this handoff.
 Do **not** run Printer from this handoff.
 Do **not** reuse any consumed authorization or historical application artifact.
 
 ## Exact next permitted action
 
-`V2-9.8B Remaining Quality Repairs 4-6 Independent Closeout / Post-Repair Operational Re-Readiness Audit`
+`V2-9.8B Fresh 4/2/2 Authorization Design`
 
-Reconcile closed D4/D5, closed Solana-native core-safety redundancy, and closed quality repairs 4–6 (including the Repair-4 durable address-redaction corrective) against current authoritative repository/database identity before any fresh 4/2/2 authorization can be considered.
+Design/specification only for a new execution identity bound to the repaired
+HEAD and current authoritative DB SHA. It must not execute a campaign, contact
+providers/RPC, or unlock retrieval/financial capabilities.
 
 ## Locks
 
