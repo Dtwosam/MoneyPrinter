@@ -4,91 +4,88 @@ Date: 2026-08-20
 
 ## Current lane
 
-`V2-9.8B One-Time Historical Orphan Factory-Run Reconciliation`
+`V2-9.8B Reconcile-Campaign-Terminal Already-Terminal Factory Persist Repair`
 
-Status: `BLOCKED_PRODUCT_DEFECT_BEFORE_AUTHORITATIVE_MUTATION`
+Status: `CLOSED_PASS`
 
 Verdict:
 
-`PRODUCT_TERMINAL_CLEANUP_DEFECT_REQUIRES_REPAIR`
+`V2_9_8B_RECONCILE_CAMPAIGN_TERMINAL_ALREADY_TERMINAL_FACTORY_PERSIST_REPAIR_PASS`
 
 Boundary evidence:
 
-- `ORPHAN_RECONCILED: NO`
-- `ACTIVE_FACTORY_RUNS: 1`
-- `AUTHORIZATION_CREATED: NO`
-- `PRINTER_EXECUTED: NO`
+- authoritative DB mutation: **NO**
+- orphan reconciled: **NO** (`ad5a83e6…` remains `RUNNING` on authoritative DB)
+- provider/runtime calls: **NO**
 - authoritative DB SHA unchanged:
   `f167858a7a47c2837bced97223501f8d1c004d1c8c7a8177ed080c4e8d27f341`
-- orphan `ad5a83e6-9830-4c6b-8150-66445f54c8cc` remains `RUNNING`
-- verified backup preserved (no authoritative write occurred):
-  `operator-runs/v2-9-8b-historical-orphan-factory-run-reconciliation/RECONCILE_20260820T185845Z/verified-backup.sqlite3`
 
 ## Exact branch / HEAD
 
 Branch:
 
-`agent/v2-9-8b-historical-orphan-factory-run-reconciliation`
+`agent/v2-9-8b-reconcile-already-terminal-factory-persist-repair`
 
-HEAD:
+Product repair commit / candidate lineage tip after this closeout:
 
-`cd6c2fed552ffb9753f61a7a33afd3118efff869`
+`<SET_AT_COMMIT>`
 
-Product repair ancestry present:
+Baseline:
+
+`40c7e3410d8b5d03b87cf0c92961c95af70d279a`
+
+Required ancestral product repair:
 
 `d42a5aa5b5b27e79bb843babee4cbd91d9280af2`
 
-## What was proved before mutation
+## Exact repair
 
-All preflight gates passed:
+`reconcile_campaign_terminal` remains the sole owner.
 
-- only active factory run = orphan id above
-- linked campaign/run = `TERMINAL_FAILED`
-- first terminal cause =
-  `OPERATIONAL_CAMPAIGN_FAILED:FourTokenFactoryAdapterError`
-- factory steps = 18 `SUCCEEDED`
-- other active residue = 0
-- integrity `ok`; FK 0; migrations 58 / `058_...`
-- DB SHA exact match
-- backup/restore preflight `OPERATIONAL_BACKUP_RESTORE_PREFLIGHT_READY`
+For cycle/run/campaign terminalization:
 
-## Why canonical reconcile cannot finish this orphan
+- read current ownership state first;
+- if already `TERMINAL_*`, record `already_terminal` and **do not** call
+  `transition_state` again;
+- otherwise use existing `transition_state` path.
 
-`reconcile_campaign_terminal(..., factory_run_id=...)` updates the factory row to
-`SAFE_STOPPED` in the open transaction, then calls `transition_state` for
-cycle/run/campaign.
+Report honesty:
 
-When those records are already terminal, `transition_state` raises immutable /
-uses `with connection:` and **rolls back the same connection**, reverting the
-factory UPDATE. The report still claims `factory_run=SAFE_STOPPED`, but the DB
-row remains `RUNNING`.
+- factory status is re-read from the durable row after `commit`;
+- `factory_run=SAFE_STOPPED` only when the persisted row is actually
+  `SAFE_STOPPED`.
 
-Disposable reproduction against the verified backup confirmed:
+This prevents already-terminal `transition_state` connection-context rollback
+from silently reverting a prior factory `RUNNING -> SAFE_STOPPED` update while
+still returning a success-shaped report.
 
-- report `factory_run=SAFE_STOPPED`
-- persisted status remains `RUNNING`
-- `clean_terminal=false` / `active_factory_runs=1`
+## Proof summary
 
-Therefore ad-hoc SQL was not used, and authoritative mutation was withheld.
+Focused disposable suite:
+
+`tests/test_v2_9_8b_reconcile_already_terminal_factory_persist_repair.py`
+
+Also proved against the exact verified orphan backup copy:
+
+- report `SAFE_STOPPED` == DB `SAFE_STOPPED`
+- parent terminal states/causes preserved
+- authoritative DB left unchanged
+
+Adjacent focused regressions green (factory cleanup, pre-admission cleanup,
+active-count, unified terminal).
 
 ## Exact next permitted action
 
-`V2-9.8B Reconcile-Campaign-Terminal Already-Terminal Factory Persist Repair`
+`V2-9.8B One-Time Historical Orphan Factory-Run Reconciliation`
 
-Minimum product repair:
+Reconcile exactly:
 
-1. Persist factory terminalization so a later already-terminal
-   `transition_state` rollback cannot revert it (for example SAVEPOINT around
-   ownership transitions, or commit/skip already-terminal transitions without
-   rolling back prior factory work); and
-2. Keep report honesty: do not claim `SAFE_STOPPED` unless the factory row is
-   actually persisted that way.
+`printer_memory_factory_runs.run_id = ad5a83e6-9830-4c6b-8150-66445f54c8cc`
 
-Then retry this one-time orphan reconciliation against the same backup identity
-/ refreshed preflight.
+`RUNNING -> SAFE_STOPPED` through the repaired canonical owner, with
+backup/restore proof, then remeasure the authoritative DB SHA.
 
-Do **not** create a 4/2/2 authorization until the orphan is truly
-`SAFE_STOPPED` and re-readiness passes.
+Do **not** create a fresh 4/2/2 authorization in that lane.
 
 ## Locks
 

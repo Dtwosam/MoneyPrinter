@@ -306,6 +306,11 @@ def _current_state(
     return None if row is None else str(row[0])
 
 
+def _is_already_terminal_ownership_state(state: str | None) -> bool:
+    """True when campaign/run/cycle ownership is already in a TERMINAL_* state."""
+    return bool(state) and str(state).startswith("TERMINAL_")
+
+
 def reconcile_campaign_terminal(
     db_path: str | Path,
     *,
@@ -516,7 +521,8 @@ def reconcile_campaign_terminal(
                         factory_run_id,
                     ),
                 )
-                report["factory_run"] = factory_terminal_status
+                # Provisional only. Durable report status is re-read after commit.
+                report["factory_run"] = "pending_persist"
             else:
                 report["factory_run"] = str(row["run_status"])
 
@@ -623,8 +629,9 @@ def reconcile_campaign_terminal(
                 )
             report["pre_lifecycle_dispositions"] = dispositions
 
-        # 5. Cycle, run and campaign. The cycle may sit anywhere in its own
-        #    sequence; the campaign/run may be RUNNING or STOP_REQUESTED.
+        # 5. Cycle, run and campaign. Already-terminal ownership must not call
+        #    transition_state again: its connection context manager rolls back
+        #    prior uncommitted factory terminalization on the same connection.
         cycle_state = _current_state(
             connection,
             "printer_memory_factory_campaign_cycles",
@@ -632,32 +639,71 @@ def reconcile_campaign_terminal(
             "cycle_state",
             cycle_id,
         )
-        report["records"]["cycle"] = _transition(
-            connection,
-            record_kind="cycle",
-            identity=cycle_id,
-            candidate_states=(
-                (cycle_state,) if cycle_state else
-                ("PLANNED", "DISCOVERING", "SELECTING", "TRACKING", "CLOSING",
-                 "AUDITING", "ROTATING")
-            ),
-            new_state=new_state,
-            cause=cause,
-            now=instant,
-        )
-        for record_kind, identity in (("run", run_id), ("campaign", campaign_id)):
-            report["records"][record_kind] = _transition(
+        if _is_already_terminal_ownership_state(cycle_state):
+            report["records"]["cycle"] = "already_terminal"
+        else:
+            report["records"]["cycle"] = _transition(
                 connection,
-                record_kind=record_kind,
-                identity=identity,
-                candidate_states=("RUNNING", "STOP_REQUESTED", "PREFLIGHT", "DRAFT"),
+                record_kind="cycle",
+                identity=cycle_id,
+                candidate_states=(
+                    (cycle_state,) if cycle_state else
+                    ("PLANNED", "DISCOVERING", "SELECTING", "TRACKING", "CLOSING",
+                     "AUDITING", "ROTATING")
+                ),
                 new_state=new_state,
                 cause=cause,
                 now=instant,
             )
+        for record_kind, identity, table, column in (
+            (
+                "run",
+                run_id,
+                "printer_memory_factory_campaign_runs",
+                "run_state",
+            ),
+            (
+                "campaign",
+                campaign_id,
+                "printer_memory_factory_campaigns",
+                "campaign_state",
+            ),
+        ):
+            current = _current_state(
+                connection,
+                table,
+                "run_id" if record_kind == "run" else "campaign_id",
+                column,
+                identity,
+            )
+            if _is_already_terminal_ownership_state(current):
+                report["records"][record_kind] = "already_terminal"
+            else:
+                report["records"][record_kind] = _transition(
+                    connection,
+                    record_kind=record_kind,
+                    identity=identity,
+                    candidate_states=(
+                        "RUNNING", "STOP_REQUESTED", "PREFLIGHT", "DRAFT"
+                    ),
+                    new_state=new_state,
+                    cause=cause,
+                    now=instant,
+                )
         connection.commit()
 
-        # 6. Prove the terminal: zero active jobs, zero active work rows.
+        # 6. Durable factory report honesty: only claim SAFE_STOPPED/COMPLETED
+        #    when the committed row actually has that status.
+        if factory_run_id and _table_exists(connection, "printer_memory_factory_runs"):
+            durable = connection.execute(
+                "SELECT run_status FROM printer_memory_factory_runs WHERE run_id=?",
+                (factory_run_id,),
+            ).fetchone()
+            report["factory_run"] = (
+                "not_found" if durable is None else str(durable["run_status"])
+            )
+
+        # 7. Prove the terminal: zero active jobs, zero active work rows.
         report["active_work"] = campaign_active_work_report(
             connection,
             factory_run_id=factory_run_id,
