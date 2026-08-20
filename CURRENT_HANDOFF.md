@@ -20,6 +20,10 @@ Branch:
 
 `agent/v2-9-8b-cooperative-later-cycle-repair-implementation`
 
+Final HEAD:
+
+`22f76d5f5df996ae901b97d2a68cb1b37489e91a`
+
 Closeout document:
 
 `docs/printer-v1-v2-9-8b-cooperative-later-cycle-repair-closeout.md`

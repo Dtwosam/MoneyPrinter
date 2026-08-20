@@ -21,6 +21,7 @@ This closes the D4/D5 coordinator repair with bounded offline proof only. It doe
 | Design adoption HEAD | `980907bd429efe2f412e31d389cfbde0be5c6fa0` |
 | Adopted D123 executable merge | `8709a971cb463a258525831e82c3672865d21b47` |
 | Frozen RED tests commit | `b76d1580688d8467ebec89dd9d519648ccb06a21` |
+| Final implementation/closeout HEAD | `22f76d5f5df996ae901b97d2a68cb1b37489e91a` |
 | Migration head | `058_direct_pump_migration_cursor.sql` (unchanged) |
 
 ## What was repaired
