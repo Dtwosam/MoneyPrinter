@@ -1,0 +1,12 @@
+name: pair-ready-pr-probe
+
+on:
+  pull_request:
+    branches:
+      - agent/v2-9-8b-pair-ready-parent-terminal-cancellation-repair
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo pair-ready-actions-probe
