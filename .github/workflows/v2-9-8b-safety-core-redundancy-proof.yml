@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   focused-proof:
@@ -20,12 +20,33 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Preserve pre-activation holder budget ownership
-        run: python .github/scripts/correct_safety_budget_scope.py
-      - name: Focused safety redundancy tests
+      - name: New safety redundancy contract
         env:
           PYTHONPATH: src
         run: python -m unittest discover -s tests -p 'test_v2_9_8b_solana_native_safety_redundancy.py' -v
+      - name: Composite and holder redundancy regressions
+        env:
+          PYTHONPATH: src
+        run: |
+          python -m unittest discover -s tests -p 'test_v2_4_1_composite_safety_contract.py' -v
+          python -m unittest discover -s tests -p 'test_v2_9_6_safety_context_source_redundancy.py' -v
+      - name: First-hour and timeframe safety regressions
+        env:
+          PYTHONPATH: src
+        run: |
+          python -m unittest discover -s tests -p 'test_v2_9_8b_first_hour_safety_provenance_repair.py' -v
+          python -m unittest discover -s tests -p 'test_v2_9_7b_2_timeframe_aware_safety_reporting.py' -v
+      - name: Lifecycle budget regressions
+        env:
+          PYTHONPATH: src
+        run: |
+          python -m unittest discover -s tests -p 'test_v2_8_1_one_token_4h_runtime.py' -v
+          python -m unittest discover -s tests -p 'test_v2_9_2_terminal_budget_repair.py' -v
+          python -m unittest discover -s tests -p 'test_v2_9_3_early_failure_accounting_repair.py' -v
+      - name: D4 D5 coordinator regression
+        env:
+          PYTHONPATH: src
+        run: python -m unittest discover -s tests -p 'test_v2_9_8b_cooperative_later_cycle_repair.py' -v
       - name: Compile touched production modules
         run: >-
           python -m py_compile
@@ -33,18 +54,6 @@ jobs:
           src/printer_v1/safety/goplus_normalizer.py
           src/printer_v1/safety/composite.py
           src/printer_v1/sources/measured_transport.py
-          src/printer_v1/operator_cli/holder_reliability_budget_control.py
           src/printer_v1/operator_cli/one_command_15m_factory.py
       - name: Diff check
         run: git diff --check
-      - name: Commit proven budget/test correction
-        run: |
-          if git diff --quiet -- src/printer_v1/operator_cli/holder_reliability_budget_control.py tests/test_v2_9_8b_solana_native_safety_redundancy.py; then
-            echo 'No uncommitted correction remains.'
-            exit 0
-          fi
-          git config user.name 'ChatGPT Safety Repair CI'
-          git config user.email 'actions@users.noreply.github.com'
-          git add src/printer_v1/operator_cli/holder_reliability_budget_control.py tests/test_v2_9_8b_solana_native_safety_redundancy.py
-          git commit -m 'Correct safety lifecycle budget ownership'
-          git push origin HEAD:agent/v2-9-8b-safety-core-redundancy-repair
