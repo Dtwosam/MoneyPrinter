@@ -4,101 +4,118 @@ Date: 2026-08-20
 
 ## Current lane
 
-`V2-9.8B Pre-Admission Terminal Cleanup Repair + Exact Historical Reconciliation`
+`V2-9.8B Orphan Factory-Run Residual Reconciliation`
 
-Status: `CLOSED_PASS`
+Status: `BLOCKED_PRODUCT_DEFECT_BEFORE_DB_MUTATION`
 
-Verdicts:
+Verdict:
 
-- Product repair: `V2_9_8B_PRE_ADMISSION_TERMINAL_CLEANUP_REPAIR_GREEN`
-- Authoritative reconciliation: `PASS` for Scheduler job `2364` + linked pre-admission attempt
-- Post-repair operational re-readiness:
-  `V2_9_8B_POST_ALL_SIX_REPAIRS_OPERATIONAL_REREADINESS_PASS`
+`PRODUCT_TERMINAL_CLEANUP_DEFECT_REQUIRES_REPAIR`
 
-`READY_FOR_FRESH_4_2_2_AUTHORIZATION_DESIGN: YES`
+Separate findings:
 
-This still does **not** authorize or run Printer.
+- historical DB residue repaired: **NO** (authoritative mutation withheld)
+- production terminal-cleanup defect found: **YES**
+- zero-state / readiness visibility defect found: **YES** (narrow readiness helper repaired)
+- active factory runs after: **1** (unchanged)
+- authoritative DB SHA unchanged:
+  `f167858a7a47c2837bced97223501f8d1c004d1c8c7a8177ed080c4e8d27f341`
+
+No authorization was created or consumed. Printer was not run.
 
 ## Exact branch / HEAD
 
 Branch:
 
-`agent/v2-9-8b-pre-admission-terminal-cleanup-repair`
+`agent/v2-9-8b-orphan-factory-run-residual-reconciliation`
 
-Repair commit / HEAD:
+Authorized product baseline HEAD (unchanged launch identity):
 
-`3836148924a4dfa021902f5844a7a3383bd52078`
+`9cfa8a152c3a02c0c5ef599cf0cffe6e269ab885`
 
-Prior closed quality-repairs baseline:
+## Classification of orphan
 
-`dc5b3e2f65677fd40f16a31ccdbccd63b7fc0833`
+Exact orphan:
 
-## What landed
+- `printer_memory_factory_runs.run_id = ad5a83e6-9830-4c6b-8150-66445f54c8cc`
+- `run_status = RUNNING`
+- only active factory-run row
+- linked campaign / campaign-run already `TERMINAL_FAILED`
+- terminal cause:
+  `OPERATIONAL_CAMPAIGN_FAILED:FourTokenFactoryAdapterError`
+- factory steps: 18 `SUCCEEDED`, zero active
+- Scheduler / pre-admission / discovery / supervision / lease residue: already zero
 
-### Product repair
+`reconcile_campaign_terminal(..., factory_run_id=..., run_status="FAILED")`
+already maps this row lawfully to `SAFE_STOPPED` while preserving the campaign
+terminal cause when invoked with the factory id.
 
-`reconcile_campaign_terminal()` now terminalizes every still-active
-(`PLANNED`/`RUNNING`) pre-admission discovery attempt attributable to the exact
-campaign/run/factory/cycle scope:
+## Why prior re-readiness reported zero factory residue
 
-- linked Scheduler jobs cancel only through Central Scheduler `cancel_job()`
-- attempts terminalize only through `terminalize_pre_admission_attempt(... CANCELLED ...)`
-- campaign terminal cause is carried into the attempt
-- already-terminal / consumed attempts are preserved
-- second reconciliation is idempotent
-- `campaign_active_work_report(...).clean_terminal` can become true without
-  weakening active-work law
+`operational_memory_factory_command._active_counts()` counted:
 
-### Authoritative DB reconciliation (operator-approved one-time)
+- `factory_run_steps` PENDING/RUNNING
 
-Target: `data/printer_v1.sqlite3`
+but did **not** count:
 
-| Item | Value |
-| --- | --- |
-| SHA-256 before | `769befd90ab82e2ed7443b19ba8834dbf7807e0c0aaed20549e0e4ab6acc3847` |
-| SHA-256 after | `f167858a7a47c2837bced97223501f8d1c004d1c8c7a8177ed080c4e8d27f341` |
-| Backup/restore | `OPERATIONAL_BACKUP_RESTORE_PREFLIGHT_READY` |
-| Backup evidence | `operator-runs/v2-9-8b-pre-admission-2364-reconciliation/RECONCILE_20260820T174324Z/` |
-| Job 2364 | `PENDING` → `CANCELLED` (unlocked; `finished_at` set) |
-| Linked attempt | `RUNNING` → `CANCELLED` |
-| Attempt ID | `pre-admission:20260820T012435Z-09f5d090566f-campaign:20260820T012435Z-09f5d090566f-campaign-run:ad5a83e6-9830-4c6b-8150-66445f54c8cc:c0002` |
-| Terminal cause | `OPERATIONAL_CAMPAIGN_FAILED:FourTokenFactoryAdapterError` |
-| Integrity / FK | `ok` / 0 |
+- `printer_memory_factory_runs.run_status IN ('PENDING','RUNNING')`
 
-No unrelated Scheduler jobs or attempts were touched. Parent campaign/run
-terminal truth was unchanged. Rows were not deleted.
+So an orphan RUNNING factory with only SUCCEEDED steps looked quiescent to
+readiness, while the strict four-token zero-state gate correctly reported
+`active_factory_runs: 1`.
 
-## Proof summary
+## Visibility repair landed in this lane
 
-- Focused RED→GREEN tests: `tests/test_v2_9_8b_pre_admission_terminal_cleanup_repair.py` (7 passed)
-- Affected regressions: unified terminal / pre-admission persistence / scheduler /
-  shared terminal suites — 64 passed + 30 subtests
-- Post-repair read-only re-readiness: zero active Scheduler / pre-admission /
-  campaign / supervision / discovery / factory / lease residue; migrations 58 /
-  head `058_direct_pump_migration_cursor.sql`; locked capability baseline intact;
-  D4/D5 + Solana-native + Repairs 4–6 lineage remain closed
+`_active_counts()` now includes `factory_runs` with the same PENDING/RUNNING
+contract as the strict zero-state gate.
+
+Focused proof:
+
+`tests/test_v2_9_8b_active_counts_factory_run_visibility.py`
+
+Authoritative DB was not mutated.
+
+## Production terminal-cleanup defect (DB mutation blocked)
+
+Do **not** one-row-clean the authoritative orphan yet. Current production can
+still recreate or preserve the same condition:
+
+1. `four_token_factory_adapter` returns early when the campaign run is already
+   `TERMINAL_*` and does not require the linked factory run to be non-RUNNING.
+2. `campaign_active_work_report(...).clean_terminal` does not treat a RUNNING
+   factory run as unclean when steps are terminal.
+3. At least one operational reconcile caller still passes
+   `factory_run_id=None` on a failure path
+   (`operational_memory_factory_command` pre-lifecycle reconciliation).
+
+Hiding those with a historical row update would leave the defect live.
 
 ## Authorization posture
 
-Do **not** create a new 4/2/2 authorization from this handoff alone as an
-automatic next step unless the operator explicitly starts the authorization-
-design lane.
+Do **not** create a fresh 4/2/2 authorization while:
 
-Do **not** run Printer from this handoff.
-Do **not** reuse any consumed authorization or historical application artifact.
+- `active_factory_runs != 0`, or
+- the production terminal-cleanup defect above remains unrepaired.
 
 ## Exact next permitted action
 
-`V2-9.8B Fresh 4/2/2 Authorization Design`
+`V2-9.8B Factory-Run Terminal Cleanup Product Repair`
 
-Design/specification only for a new execution identity bound to the repaired
-HEAD and current authoritative DB SHA. It must not execute a campaign, contact
-providers/RPC, or unlock retrieval/financial capabilities.
+Repair the production paths so a campaign terminal cannot leave
+`printer_memory_factory_runs.run_status='RUNNING'`, and so
+`campaign_active_work_report` / shared-terminal already-terminal handling cannot
+treat that orphan as clean.
+
+Only after that product repair + focused proofs may the operator authorize the
+exact one-time authoritative reconciliation of
+`ad5a83e6-9830-4c6b-8150-66445f54c8cc`, then retry:
+
+`V2-9.8B Fresh 4/2/2 Authorization Creation`
+
+against launch HEAD `9cfa8a…` and the then-current DB SHA.
 
 ## Locks
 
 Solana-only; Solana memecoin-only; paper-only. No live wallet/private keys/signing/real funds/live execution. No paid API dependency. No scoring/ranking/confidence/weighted logic. No embeddings/vectors. No Source Governor or Central Scheduler bypass. No dirty-memory retrieval/decision use. Retrieval, BUY/SELL/HOLD, positions, trade events, paper audits and PnL remain locked. `WINDOW_5M_MICRO_EVENT` remains support-only. 12h/24h remain locked. No Migration 059.
-
-The 4/2/2 contract remains: 4 total tokens; 2 cycles; 2 tokens per cycle; Cycle 2 fresh/disjoint from Cycle 1; freeze minimum depth 4; exact-pool liquidity floor `$3,000`; minimum spacing `300s`; `WINDOW_15M` root; lawful token-local `15m -> 1h -> 4h`; retries `0`; endpoint rotation `false`; one-shot only; no rerun/resume/restart/successor.
 
 The active authority stack wins any conflict with this handoff.

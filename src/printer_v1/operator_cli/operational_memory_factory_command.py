@@ -662,6 +662,13 @@ def _active_counts(connection: sqlite3.Connection) -> dict[str, int]:
             "printer_discovery_work", "work_state",
             ("PENDING", "RUNNING", "COOLDOWN"),
         ),
+        # Match the strict four-token zero-state gate: a RUNNING/PENDING factory
+        # run remains active ownership even when every step row is already
+        # terminal. Steps alone must not be treated as sufficient quiescence.
+        "factory_runs": (
+            "printer_memory_factory_runs", "run_status",
+            ("PENDING", "RUNNING"),
+        ),
         "factory_run_steps": (
             "printer_memory_factory_run_steps", "step_status",
             ("PENDING", "RUNNING"),
