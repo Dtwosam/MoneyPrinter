@@ -152,6 +152,7 @@ class FourTokenAdmissionBoundaryResult:
     attempt_state: str | None = None
     attempt_terminal_cause: str | None = None
     cycle_id: str | None = None
+    attempt_wake_at: datetime | None = None
 
 
 def _later_cycle_acquisition_deadline_conflict(
@@ -168,6 +169,68 @@ def _later_cycle_acquisition_deadline_conflict(
     current = now.astimezone(timezone.utc)
     deadline = earliest_lifecycle_deadline.astimezone(timezone.utc)
     return current + timedelta(seconds=worst_case_quantum_seconds) >= deadline
+
+
+def _active_later_cycle_refresh_wake_at(
+    connection: sqlite3.Connection,
+    *,
+    campaign_id: str,
+    run_id: str,
+    cycle_id: str,
+) -> datetime | None:
+    """Resolve exactly one WAITING later-cycle temporal-refresh wake, or None.
+
+    CLAIMED or ambiguous active ownership fails closed.
+    """
+    from printer_v1.discovery.pre_lifecycle_temporal_acquisition import (
+        active_refresh_waits,
+        parse_iso,
+    )
+
+    waits = active_refresh_waits(
+        connection,
+        campaign_id=str(campaign_id),
+        run_id=str(run_id),
+        cycle_id=str(cycle_id),
+    )
+    if not waits:
+        return None
+    if len(waits) != 1:
+        raise ValueError("ambiguous later-cycle refresh wait ownership")
+    wait = waits[0]
+    state = str(wait["wait_state"] or "")
+    if state != "WAITING":
+        raise ValueError(
+            f"later-cycle refresh wait ownership is not WAITING: {state}"
+        )
+    return parse_iso(str(wait["scheduled_for"]))
+
+
+def _cooperative_later_cycle_recheck(
+    boundary: FourTokenAdmissionBoundaryResult,
+    *,
+    next_due_work_at: datetime | None,
+    proof_deadline: datetime,
+) -> tuple[bool, datetime | None]:
+    """Decide whether a RUNNING later-cycle attempt requires coordinator re-entry.
+
+    Returns:
+      (False, None) for non-RUNNING attempts;
+      (True, None) for a productive cooperative quantum with no refresh wait;
+      (True, earliest_due) when a genuine WAITING refresh must bound the wake.
+    """
+    if str(boundary.attempt_state or "") != "RUNNING":
+        return (False, None)
+    refresh_due = boundary.attempt_wake_at
+    if refresh_due is None:
+        return (True, None)
+    candidates = [
+        refresh_due.astimezone(timezone.utc),
+        proof_deadline.astimezone(timezone.utc),
+    ]
+    if next_due_work_at is not None:
+        candidates.append(next_due_work_at.astimezone(timezone.utc))
+    return (True, min(candidates))
 
 
 def _resolve_acquisition_quantum_bound(
@@ -333,13 +396,24 @@ def _run_four_token_admission_boundary(
     attempt_terminal_cause = str(
         getattr(attempt, "first_terminal_cause", "") or ""
     )
+    later_cycle_id = f"{first_cycle_id}-2"
     if attempt_state != "PAIR_READY" or not attempt_id:
+        wake_at = None
+        if attempt_state == "RUNNING":
+            wake_at = _active_later_cycle_refresh_wake_at(
+                connection,
+                campaign_id=str(binding.campaign_id),
+                run_id=str(binding.campaign_run_id),
+                cycle_id=later_cycle_id,
+            )
         return FourTokenAdmissionBoundaryResult(
             disposition,
             False,
             attempt_id or None,
             attempt_state or None,
             attempt_terminal_cause or None,
+            None,
+            wake_at,
         )
 
     post_now = (clock or (lambda: now))()
@@ -7360,6 +7434,34 @@ def run_one_command_15m_factory(
                                 sleep=_sleep,
                                 probe=cancellation_probe,
                             )
+                        continue
+                    # D4/D5: after a cooperative later-cycle quantum, re-evaluate
+                    # before any stale pending-None terminal path or lifecycle sleep.
+                    should_recheck, cooperative_wake_at = (
+                        _cooperative_later_cycle_recheck(
+                            boundary,
+                            next_due_work_at=_next_due(),
+                            proof_deadline=proof_deadline,
+                        )
+                    )
+                    if should_recheck:
+                        if cooperative_wake_at is not None:
+                            wait = max(
+                                0.0,
+                                (cooperative_wake_at - _now()).total_seconds(),
+                            )
+                            if wait:
+                                _sleep_with_cancellation(
+                                    min(
+                                        wait,
+                                        max(
+                                            0.0,
+                                            total_duration_seconds - elapsed,
+                                        ),
+                                    ),
+                                    sleep=_sleep,
+                                    probe=cancellation_probe,
+                                )
                         continue
             if pending is None:
                 if four_token_attempt_terminal_cause is not None:

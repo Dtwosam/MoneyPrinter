@@ -4,87 +4,61 @@ Date: 2026-08-20
 
 ## Current lane
 
-`V2-9.8B Cooperative Later-Cycle Repair Design Authoritative Adoption / Review`
+`V2-9.8B Cooperative Later-Cycle Repair Implementation`
 
 Status: `CLOSED_PASS`
 
 Verdict:
 
-`V2_9_8B_COOPERATIVE_LATER_CYCLE_REPAIR_DESIGN_ADOPTION_PASS`
+`V2_9_8B_COOPERATIVE_LATER_CYCLE_REPAIR_CLOSEOUT_GREEN`
 
-The cooperative later-cycle D4/D5 repair design is now authoritative. Implementation is the next permitted lane. New 4/2/2 authorization remains blocked until implementation, bounded offline proof, and independent closeout complete.
+D4/D5 cooperative later-cycle coordinator repair is implemented and bounded-offline proved. New 4/2/2 authorization remains blocked until independent closeout / post-repair readiness reopens that path.
 
-## Adopted design authority
+## Exact branch / HEAD
 
-Design:
+Branch:
+
+`agent/v2-9-8b-cooperative-later-cycle-repair-implementation`
+
+Closeout document:
+
+`docs/printer-v1-v2-9-8b-cooperative-later-cycle-repair-closeout.md`
+
+Adopted design:
 
 `docs/printer-v1-v2-9-8b-cooperative-later-cycle-repair-design.md`
 
-Supporting plan:
+## What landed
 
-`docs/superpowers/plans/2026-08-20-cooperative-later-cycle-repair.md`
-
-Adoption closeout:
-
-`docs/printer-v1-v2-9-8b-cooperative-later-cycle-repair-design-adoption.md`
-
-Source side branch tip copied from:
-
-`origin/agent/v2-9-8b-cooperative-later-cycle-repair` @ `87cfa1e5f3f64d3d606fb3c43732f20ebde52398`
-
-Frozen RED tests remain the implementation contract and must be landed/used without weakening:
-
-`tests/test_v2_9_8b_cooperative_later_cycle_repair.py`
-
-## Preserved prior states
-
-Historical Post-D123 readiness PASS remains valid for the D123 checklist only:
-
-`docs/printer-v1-v2-9-8b-post-d123-two-cycle-four-token-authoritative-readiness.md`
-
-Successor authorization block remains in force until D4/D5 closeout:
-
-`docs/printer-v1-v2-9-8b-post-d123-d4-d5-cooperative-coordination-authorization-block.md`
-
-Verdict still controlling for authorization posture:
-
-`NOT READY FOR NEW 4/2/2 AUTHORIZATION`
-
-## Exact adopted executable baseline for the repair
-
-Product branch:
-
-`agent/v2-9-8b-four-token-4-2-2-freeze-input-versus-two-slot-truncation-repair-implementation`
-
-Adopted D123 executable merge:
-
-`8709a971cb463a258525831e82c3672865d21b47`
-
-Design baseline named by the repair design:
-
-`91535856be9e335ede15308c3b422b5e8a4e8bec`
-
-## Exact next permitted action
-
-`V2-9.8B Cooperative Later-Cycle Repair Implementation`
-
-Apply the minimum coordinator repair primarily in:
+Primary product file:
 
 `src/printer_v1/operator_cli/one_command_15m_factory.py`
 
-Frozen contract:
-
 - `attempt_wake_at` boundary field
-- refresh-wait resolver rejecting `CLAIMED` / ambiguous ownership
-- cooperative later-cycle recheck before stale `pending is None` terminal/sleep
-- preserve Central Scheduler ownership and lifecycle-deadline priority
-- no independent provider loop, thread, background scheduler, or Source Governor bypass
+- `_active_later_cycle_refresh_wake_at(...)`
+- `_cooperative_later_cycle_recheck(...)`
+- RUNNING wake binding and main-loop recheck before stale `pending is None`
 
-Then: bounded offline proof → independent closeout → only then reconsider fresh 4/2/2 authorization readiness.
+Frozen RED tests remained intact and are GREEN:
 
-GoPlus / Solana-native safety redundancy remains a separate residual blocker before another authoritative 4/2/2 campaign unless separately closed.
+`tests/test_v2_9_8b_cooperative_later_cycle_repair.py` — 8 passed
 
-Do **not** weaken frozen RED tests.
+## Authorization posture
+
+`NOT READY FOR NEW 4/2/2 AUTHORIZATION`
+
+Residual blockers before another authoritative campaign include at least:
+
+- independent closeout / post-repair readiness for this repair
+- GoPlus / Solana-native safety redundancy (separate)
+- fresh live authoritative DB identity re-measure
+
+All prior authorizations remain non-reusable.
+
+## Exact next permitted action
+
+`V2-9.8B Cooperative Later-Cycle Repair Independent Closeout / Post-Repair Authoritative Readiness`
+
 Do **not** create a new authorization from this handoff.
 Do **not** run Printer from this handoff.
 Do **not** reuse any consumed authorization or historical application artifact.
