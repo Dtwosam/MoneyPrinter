@@ -1858,6 +1858,29 @@ def operational_discovery_batch_identity_inputs() -> tuple[dict[str, str], str]:
     )
 
 
+_FRESH_AGGREGATOR_CANONICAL_CHANNEL = "FRESH_AGGREGATOR_PROTOCOL_CONFIRMED"
+
+
+def _canonical_pre_admission_channel_labels(candidate: Any) -> tuple[str, ...]:
+    """Freeze canonical channel semantics without losing provider provenance."""
+    authority = getattr(candidate, "admission_authority", None)
+    authority_value = str(getattr(authority, "value", authority) or "")
+    if authority_value == "MARKET_PRESENT_POOL":
+        return (_FRESH_AGGREGATOR_CANONICAL_CHANNEL,)
+    labels = tuple(
+        sorted(
+            {
+                str(label)
+                for label in getattr(candidate, "channels", ())
+                if isinstance(label, str) and label
+            }
+        )
+    )
+    if not labels:
+        raise LiveOperationalError("LATER_CYCLE_CHANNEL_PROVENANCE_MISSING")
+    return labels
+
+
 class AuthoritativeLiveOperationalCampaignOwner:
     """Sole internal live origin→lifecycle composition entry point (DI-only)."""
 
@@ -2367,7 +2390,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                                         canonical_evidence_hash=item.canonical_evidence_hash,
                                         evidence_version=item.evidence_version,
                                         observed_at=item.observed_at,
-                                        channel_labels=tuple(sorted(item.channels)),
+                                        channel_labels=_canonical_pre_admission_channel_labels(item),
                                     )
                                     for ordinal, item in enumerate(selected, start=1)
                                 ),
