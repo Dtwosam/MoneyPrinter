@@ -16,6 +16,10 @@ from typing import Any, Callable, Mapping
 
 from printer_v1.discovery.scheduler_parity import reconcile_discovery_work_jobs
 from printer_v1.operator_cli.campaign_active_work import campaign_active_work_report
+from printer_v1.operator_cli.quality_reporting import (
+    build_memory_authority_summary,
+    build_window_blocker_summary,
+)
 from printer_v1.operator_cli.safety_context_source_redundancy import (
     HOLDER_REQUEST_KIND as HOLDER_CONCENTRATION_REQUEST_KIND,
 )
@@ -6386,6 +6390,10 @@ def _final_report(
     selected = _selected_targets(conn, discovery.get("selection_handoff_report", {}).get("batch_id") or "")
     windows_by_id = {int(w["id"]): w for w in windows}
     promotions_by_window_id = _authoritative_promotions_for_run(conn, run_id)
+    window_blocker_summary = build_window_blocker_summary(windows)
+    memory_authority = build_memory_authority_summary(
+        windows, promotions_by_window_id
+    )
     dirty_promotion_count = int(conn.execute(
         """SELECT COUNT(DISTINCT e.id)
            FROM printer_episodes e
@@ -6472,6 +6480,9 @@ def _final_report(
         "per_token_outcomes": per_token,
         "terminal_window_outcomes": terminal_window_outcomes,
         "run_local_yield": run_local_yield,
+        "blocking_reasons": window_blocker_summary["blocking_reasons"],
+        "window_blocker_summary": window_blocker_summary,
+        "memory_authority": memory_authority,
         "historical_report_note": (
             "Lane K/E2Z pipeline summaries embedded in step result_json may include "
             "historical windows copied into the proof DB and are not authoritative "

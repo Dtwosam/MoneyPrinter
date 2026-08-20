@@ -4,94 +4,75 @@ Date: 2026-08-20
 
 ## Current lane
 
-`V2-9.8B Solana-Native Core Safety Redundancy Repair`
+`V2-9.8B Remaining Quality Repairs 4-6`
 
 Status: `CLOSED_PASS`
 
 Verdict:
 
-`V2_9_8B_SOLANA_NATIVE_CORE_SAFETY_REDUNDANCY_REPAIR_CLOSEOUT_GREEN`
+`V2_9_8B_REMAINING_QUALITY_REPAIRS_4_6_CLOSEOUT_GREEN`
 
-The bounded GoPlus single-point-dependency repair is implemented and offline-proved. Core chain-provable safety facts now have an approved Source-Governed Solana RPC path while GoPlus remains complementary. Conflicts and missing required facts remain fail-closed.
+Bounded offline completion of remaining quality repairs 4–6 on the closed Solana-native core-safety base, plus a Repair-4 durable-persistence corrective so raw `tx_from_address` values never land in source-response/candidate/snapshot/report JSON. No live campaign, authorization, provider activation, retrieval, or financial capability.
 
-This handoff does **not** authorize a new 4/2/2 campaign.
-
-## Exact branch / evidence anchors
+## Exact branch / HEAD
 
 Branch:
 
-`agent/v2-9-8b-safety-core-redundancy-repair`
+`agent/v2-9-8b-remaining-quality-repairs-4-6`
 
-Accepted D4/D5 base:
+Base / closed safety-repair head:
 
-`3f982ce97f30d99fabc384bfbf790b02b2049bdf`
+`0ae2c3066ce92b4051b6b3b11987c49a5a7e6473`
 
-Clean committed-state proof anchor:
+Draft PR:
 
-`3d9388fa7cb382450e026de0f2dc2d0d3140429f`
+`#199`
 
-Post-proof cleanup anchor:
+Final HEAD:
 
-`7abca8cfa24638b6f9272818b2c2645bdbae2491`
+`403b5e0fb9310d768404c50a118efa89f959d3d4`
 
-Safety closeout commit:
-
-`854f5c384fafe6197d3a29a0f03133b83e11ce1c`
-
-Closeout document:
-
-`docs/printer-v1-v2-9-8b-solana-native-core-safety-redundancy-repair-closeout.md`
 
 ## What landed
 
-Product scope:
+### 4. Wallet / trading-flow completeness
 
-- `src/printer_v1/operator_cli/one_command_15m_factory.py`
-- `src/printer_v1/safety/composite.py`
-- `src/printer_v1/safety/goplus_normalizer.py`
-- `src/printer_v1/sources/measured_transport.py`
-- `src/printer_v1/sources/solana_rpc_token_safety.py`
+- Reuse the existing governed GeckoTerminal exact-pool trades payload.
+- Derive only supported aggregates: `unique_wallets_15m`, `buys_15m`, `sells_15m`, `buy_volume_15m`, `sell_volume_15m`.
+- Durable normalize redacts `tx_from_address` before `printer_source_responses.normalized_payload_json` persistence.
+- Pre-redaction capture is used only in-memory to derive aggregates; truncated / incomplete address coverage stays honest `None`.
+- No beneficial-owner / new-wallet / repeat-wallet claims; no extra provider request; no Scheduler work.
 
-Key behavior:
+### 5. Optional safety completeness
 
-- one additional Source-Governed Solana mint-account safety request inside the existing lifecycle safety collection;
-- chain-provable mint authority, freeze authority, supply sanity, and Token / Token-2022 identity can remain usable when GoPlus is unavailable;
-- usable source disagreement becomes explicit conflict + `UNKNOWN` and remains blocked;
-- `METADATA_UNKNOWN` is optional 15m source coverage, while explicit mutable metadata remains blocking;
-- holder unknown/conflict remains descriptive under the existing E.48 separation law;
-- lifecycle request ceilings account for the one additional request per token; Scheduler ceilings are unchanged;
-- no new Scheduler job, provider loop, cadence increase, migration, paid API, or capacity mechanism.
+- Preserve existing Solana-native core safety redundancy and fail-closed dangerous evidence.
+- Expose exact nonblocking reasons for optional UNKNOWN fields (`optional_unknown_reasons`).
+- Pump identity alone still does not prove LP lock/burn. No paid APIs.
 
-The final read-only committed-state proof passed the new safety contract, composite/holder regressions, first-hour/timeframe safety regressions, relevant lifecycle accounting regressions, D4/D5 coordinator regression, Python compilation, and `git diff --check`.
+### 6. Reporting / memory-authority cleanup
 
-Temporary proof workflow/helpers were removed after proof.
+- Terminal reports expose exact `blocking_reasons` / `window_blocker_summary` from persisted `remaining_blockers`.
+- Machine-readable `memory_authority` summary: parent window may remain `PARTIAL_MEMORY`; promoted episode+fingerprint is the authoritative clean object; retrieval stays `LOCKED`.
+- Parent windows are not rewritten to `CLEAN_MEMORY` for cosmetics.
 
-## Known baseline debt kept separate
+## Temporary scaffolding removed
 
-The safety repair did not change unrelated accepted-base fixture drift:
-
-- an older V2-8.1 WINDOW_4H test still asserts real collection disabled although the accepted cadence policy already enables it only through standard-four-hour authority;
-- selected legacy V2-9.2 / V2-9.3 final-report fixtures omit required launch Git provenance even though accepted-base `_final_report()` already validates it.
-
-These items require their own evidence-based treatment if they remain relevant to later readiness; they are not classified as safety-repair regressions.
+- `.github/workflows/v2-9-8b-remaining-quality-inspect.yml`
+- `scripts/v2_9_8b_apply_remaining_quality_repairs_4_6.py`
 
 ## Authorization posture
 
 `NOT READY FOR NEW 4/2/2 AUTHORIZATION`
 
-The previous GoPlus / Solana-native core-safety blocker is closed by this repair, but operational authorization remains blocked pending post-repair re-readiness, including fresh authoritative repository/database identity checks and any other current readiness blockers established there.
-
-All prior authorizations remain non-reusable.
-
-## Exact next permitted action
-
-`V2-9.8B Post-Safety-Repair Operational Re-Readiness Audit`
-
-This next action is read-only/offline first. It must reconcile the closed D4/D5 repair and closed core-safety redundancy repair against the current authoritative repository/database state before any fresh 4/2/2 authorization can be considered.
-
 Do **not** create a new authorization from this handoff.
 Do **not** run Printer from this handoff.
 Do **not** reuse any consumed authorization or historical application artifact.
+
+## Exact next permitted action
+
+`V2-9.8B Remaining Quality Repairs 4-6 Independent Closeout / Post-Repair Operational Re-Readiness Audit`
+
+Reconcile closed D4/D5, closed Solana-native core-safety redundancy, and closed quality repairs 4–6 (including the Repair-4 durable address-redaction corrective) against current authoritative repository/database identity before any fresh 4/2/2 authorization can be considered.
 
 ## Locks
 

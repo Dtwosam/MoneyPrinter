@@ -230,6 +230,13 @@ def _insert_snapshot(
             "volume_15m_source_kind", "volume_15m_provenance",
             "txns_15m_source_kind", "txns_15m_completeness",
             "txns_15m_provenance",
+            "unique_wallets_15m",
+            "buys_15m",
+            "sells_15m",
+            "buy_volume_15m",
+            "sell_volume_15m",
+            "wallet_identity_semantics_15m",
+            "wallet_flow_provenance_15m",
         )
     }
     normalized_json = json.dumps(

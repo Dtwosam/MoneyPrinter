@@ -1,9 +1,12 @@
 """Governed GeckoTerminal 15-minute OHLCV and pool-trades enrichment.
 
-Provides three 15m market evidence fields derived from GeckoTerminal free API:
+Provides 15m market evidence fields derived from GeckoTerminal free API:
   price_change_15m  — derived from completed 15m OHLCV candle arithmetic
   volume_15m        — native volume from completed 15m OHLCV candle
   txns_15m          — trade-record count within the 15m window (proven complete only)
+  unique_wallets_15m / buys_15m / sells_15m / buy_volume_15m / sell_volume_15m
+                    — aggregates from the same complete exact-pool trades payload
+                      (no extra provider request; raw addresses never persisted)
 
 Source kind labels written to normalized_snapshot_payload_json:
   price_change_15m_source_kind = "PROVIDER_CANDLE_DERIVED"
@@ -12,7 +15,8 @@ Source kind labels written to normalized_snapshot_payload_json:
   txns_15m_completeness        = "TRADE_HISTORY_COMPLETE" | "TRADE_HISTORY_TRUNCATED"
 
 Provenance dicts are also written:
-  price_change_15m_provenance, volume_15m_provenance, txns_15m_provenance
+  price_change_15m_provenance, volume_15m_provenance, txns_15m_provenance,
+  wallet_flow_provenance_15m
 
 Design:
   All enrichment is transport-injected. Callers must supply a governed transport
@@ -335,6 +339,152 @@ def count_txns_15m_from_trades(
 
 
 # ---------------------------------------------------------------------------
+# Durable trade-payload address redaction
+# ---------------------------------------------------------------------------
+
+def redact_geckoterminal_trades_tx_from_addresses(
+    provider_payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return a durable copy of a pool-trades payload without raw addresses.
+
+    Keeps non-address trade evidence (timestamp, kind, volume, tx_hash, etc.)
+    and provenance metadata. Used before source-response persistence so
+    ``tx_from_address`` never lands in ``normalized_payload_json``.
+    """
+    redacted = dict(provider_payload)
+    raw_data = redacted.get("data")
+    if not isinstance(raw_data, list):
+        return redacted
+    cleaned_trades: list[Any] = []
+    for trade in raw_data:
+        if not isinstance(trade, Mapping):
+            cleaned_trades.append(trade)
+            continue
+        trade_copy = dict(trade)
+        attrs = trade_copy.get("attributes")
+        if isinstance(attrs, Mapping):
+            attrs_copy = dict(attrs)
+            attrs_copy.pop("tx_from_address", None)
+            trade_copy["attributes"] = attrs_copy
+        trade_copy.pop("tx_from_address", None)
+        cleaned_trades.append(trade_copy)
+    redacted["data"] = cleaned_trades
+    redacted["tx_from_address_redacted"] = True
+    return redacted
+
+
+# ---------------------------------------------------------------------------
+# Observed exact-pool wallet / split-flow aggregation
+# ---------------------------------------------------------------------------
+
+def derive_observed_15m_flow_from_trades(
+    trades: list[Any],
+    *,
+    window_start_unix: float,
+    window_end_unix: float,
+    completeness: str,
+) -> dict[str, Any]:
+    """Aggregate only what one complete exact-pool trade window proves.
+
+    ``tx_from_address`` is an observed transaction-from address, not beneficial
+    ownership and not historical first-seen/new-wallet evidence. Raw addresses
+    are never returned or persisted by this helper.
+    """
+    empty = {
+        "unique_wallets_15m": None,
+        "buys_15m": None,
+        "sells_15m": None,
+        "buy_volume_15m": None,
+        "sell_volume_15m": None,
+        "wallet_identity_semantics_15m": (
+            "OBSERVED_TX_FROM_ADDRESS_NOT_BENEFICIAL_OWNER"
+        ),
+        "wallet_flow_provenance_15m": {
+            "trade_history_completeness": completeness,
+            "raw_addresses_persisted": False,
+            "new_wallet_history_claimed": False,
+            "beneficial_owner_claimed": False,
+        },
+    }
+    if completeness != TRADE_HISTORY_COMPLETE:
+        return empty
+
+    observed_addresses: set[str] = set()
+    address_coverage_complete = True
+    recognized_kind_complete = True
+    volume_coverage_complete = True
+    buys = 0
+    sells = 0
+    buy_volume = 0.0
+    sell_volume = 0.0
+    in_window = 0
+
+    for trade in trades:
+        if not isinstance(trade, Mapping):
+            continue
+        attrs = trade.get("attributes")
+        if not isinstance(attrs, Mapping):
+            attrs = trade
+        ts = _parse_trade_block_timestamp(attrs)
+        if ts is None or not (window_start_unix <= ts < window_end_unix):
+            continue
+        in_window += 1
+        raw_address = attrs.get("tx_from_address")
+        if isinstance(raw_address, str) and raw_address.strip():
+            observed_addresses.add(raw_address.strip())
+        else:
+            address_coverage_complete = False
+
+        kind = str(attrs.get("kind") or "").strip().lower()
+        if kind not in {"buy", "sell"}:
+            recognized_kind_complete = False
+            continue
+        if kind == "buy":
+            buys += 1
+        else:
+            sells += 1
+        raw_volume = attrs.get("volume_in_usd")
+        try:
+            volume = float(raw_volume)
+        except (TypeError, ValueError):
+            volume_coverage_complete = False
+            continue
+        if volume < 0:
+            volume_coverage_complete = False
+            continue
+        if kind == "buy":
+            buy_volume += volume
+        else:
+            sell_volume += volume
+
+    result = dict(empty)
+    result["unique_wallets_15m"] = (
+        len(observed_addresses)
+        if in_window > 0 and address_coverage_complete
+        else None
+    )
+    if recognized_kind_complete:
+        result["buys_15m"] = buys
+        result["sells_15m"] = sells
+    if recognized_kind_complete and volume_coverage_complete:
+        result["buy_volume_15m"] = buy_volume
+        result["sell_volume_15m"] = sell_volume
+    result["wallet_flow_provenance_15m"] = {
+        **result["wallet_flow_provenance_15m"],
+        "trades_in_window": in_window,
+        "observed_address_count": (
+            len(observed_addresses) if address_coverage_complete else None
+        ),
+        "address_coverage_complete": address_coverage_complete,
+        "buy_sell_kind_coverage_complete": recognized_kind_complete,
+        "split_volume_coverage_complete": (
+            recognized_kind_complete and volume_coverage_complete
+        ),
+    }
+    return result
+
+
+# ---------------------------------------------------------------------------
 # High-level enrichment functions
 # ---------------------------------------------------------------------------
 
@@ -446,10 +596,18 @@ def enrich_candidate_15m_trades(
         window_end_unix=window_end_unix,
     )
 
+    observed_flow = derive_observed_15m_flow_from_trades(
+        raw_trades_data,
+        window_start_unix=window_start_unix,
+        window_end_unix=window_end_unix,
+        completeness=completeness,
+    )
+
     return {
         "txns_15m": count,
         "txns_15m_source_kind": PROVIDER_TRADES_WINDOW,
         "txns_15m_completeness": completeness,
+        **observed_flow,
         "txns_15m_provenance": {
             "source": GT15M_SOURCE_NAME,
             "network": network,
