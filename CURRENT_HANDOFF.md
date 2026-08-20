@@ -4,15 +4,30 @@ Date: 2026-08-20
 
 ## Current lane
 
-`V2-9.8B D123 Cycle-2 Materialization Corrective Adoption Closeout`
+`V2-9.8B Post-D123 D4/D5 Cooperative Coordination Authorization Block`
 
-Status: `CLOSED_PASS`
+Status: `CLOSED_BLOCKED`
 
 Verdict:
 
-`V2_9_8B_D123_CYCLE2_MATERIALIZATION_ADOPTION_CLOSEOUT_PASS`
+`V2_9_8B_POST_D123_D4_D5_COOPERATIVE_COORDINATION_AUTHORIZATION_BLOCKED`
 
-This closes repository adoption of the D123 corrective only. It does not authorize Printer, create/reuse an authorization, contact providers, or prove a successful 4/2/2 runtime.
+Current authorization posture:
+
+`NOT READY FOR NEW 4/2/2 AUTHORIZATION`
+
+## Historical Post-D123 readiness preserved
+
+The historical Post-D123 readiness remains PASS and is not rewritten:
+
+- Document: `docs/printer-v1-v2-9-8b-post-d123-two-cycle-four-token-authoritative-readiness.md`
+- Verdict: `V2_9_8B_POST_D123_TWO_CYCLE_FOUR_TOKEN_AUTHORITATIVE_READINESS_PASS`
+
+That PASS was correct for the adopted D123 checklist and the evidence available then. It is not current authority to prepare or consume a new 4/2/2 authorization.
+
+Successor block document:
+
+`docs/printer-v1-v2-9-8b-post-d123-d4-d5-cooperative-coordination-authorization-block.md`
 
 ## Exact adopted executable authority
 
@@ -28,38 +43,24 @@ Exact adopted executable merge commit:
 
 `8709a971cb463a258525831e82c3672865d21b47`
 
-Reviewed/rebased PR head:
+Post-adoption documentation HEAD that closed D123 adoption:
 
-`1bb2acfa948563746a02f8b04b756fae09661fdf`
+`91535856be9e335ede15308c3b422b5e8a4e8bec`
 
-Original independently reviewed D123 commit before history-only rebase:
+## Why authorization is blocked
 
-`86748f0ca801a50b36f01666e1ded08518368630`
+Subsequently discovered cooperative later-cycle coordination defects remain open on the adopted executable:
 
-The rebase changed history only; D123 product/test content remained byte-identical to the independent review target.
+- **D4** `CYCLE2_PREMATURE_CAMPAIGN_SHUTDOWN` — stale `pending is None` terminal/sleep after a `RUNNING` later-cycle quantum
+- **D5** later-cycle acquisition under-service — stale lifecycle sleep instead of cooperative recheck for another lawful bounded quantum
 
-## D123 result
+Side-branch design + frozen RED tests exist at:
 
-D1: later-cycle `MARKET_PRESENT_POOL` freezes canonical `FRESH_AGGREGATOR_PROTOCOL_CONFIRMED` rather than raw provider labels.
+`origin/agent/v2-9-8b-cooperative-later-cycle-repair` @ `87cfa1e5f3f64d3d606fb3c43732f20ebde52398`
 
-D2: materialization persistence failures retain bounded typed categorical reasons; unsupported merged-candidate channel maps to `UNSUPPORTED_MERGED_CANDIDATE_CHANNEL`, while unclassified SQLite failures remain outside the local-isolation allowlist.
+That side branch is not yet authoritative: it did not update this handoff, and no design-adoption closeout has landed on the controlling product authority.
 
-D3: only that known Cycle-2-local contract reason may be isolated, and only before any Cycle-2 lifecycle work exists. Healthy Cycle-1 work can drain; shared/unknown faults continue to fail closed globally.
-
-Proof/adoption anchors:
-
-- `V2_9_8B_D123_CYCLE2_MATERIALIZATION_CORRECTIVE_BOUNDED_PROOF_PASS`
-- `V2_9_8B_D123_INDEPENDENT_REVIEW_ADOPT_PASS`
-- `V2_9_8B_D123_REPOSITORY_ADOPTION_PREP_PASS`
-- focused D123: `9 passed`
-- direct affected regressions: `39 passed`
-- `py_compile`: PASS
-- `git diff --check`: PASS
-- PR #197 merge-readiness: PASS
-
-Closeout document:
-
-`docs/printer-v1-v2-9-8b-d123-cycle2-materialization-adoption-closeout.md`
+Static confirmation on adopted HEAD: cooperative helpers/`attempt_wake_at`/pre-`pending is None` recheck are still absent.
 
 ## Controlling consumed incident
 
@@ -81,11 +82,13 @@ Latest consumed authorization for that attempt:
 
 It remains permanently consumed, immutable, and non-reusable. No rerun, resume, restart, retry, or successor is permitted.
 
-Last proven post-incident authoritative DB SHA-256 supplied by the operator:
+Additional local authorization package `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260820T010928Z` is also not reusable execution authority from this handoff.
+
+Last proven post-incident authoritative DB SHA-256 supplied historically:
 
 `79a653f7f8c270bca0c08f271882784660caad954e278bd05b6d7bb9a4be5f8f`
 
-That identity must be freshly rechecked on the operational host before any later authorization preparation; this handoff does not treat a historical hash as current execution authority.
+Fresh workspace read-only measurement at the Post-D123 readiness inspection differed (`769befd9...`). Any later authorization preparation must re-measure the live operational-host DB. This handoff does not treat a historical hash as current execution authority.
 
 ## Locks
 
@@ -95,23 +98,18 @@ The 4/2/2 contract remains: 4 total tokens; 2 cycles; 2 tokens per cycle; Cycle 
 
 ## Exact next permitted action
 
-`V2-9.8B Post-D123 Two-Cycle/Four-Token Authoritative Readiness`
+`V2-9.8B Cooperative Later-Cycle Repair Design Authoritative Adoption / Review`
 
-The readiness target is exact adopted executable merge commit:
+Adopt/review the existing cooperative D4/D5 design into authoritative repository/handoff control. Sequence after adoption PASS:
 
-`8709a971cb463a258525831e82c3672865d21b47`
+1. implementation of the frozen D4/D5 contract (no RED-test weakening)
+2. bounded offline proof
+3. independent closeout
+4. only then reconsider fresh 4/2/2 authorization readiness
 
-Before any authorization-preparation lane, perform minimum sufficient fresh readiness that verifies:
+GoPlus / Solana-native safety redundancy remains a separate residual blocker before another authoritative 4/2/2 campaign unless separately closed.
 
-1. exact D123 ancestry/scope and adopted product/test content;
-2. canonical later-cycle fresh-market provenance through freeze/materialization/persistence;
-3. strict Cycle-2-local isolation allowlist and fully-unstarted preconditions;
-4. shared/unknown failure paths remain global fail-closed;
-5. Cycle-1 lifecycle/Scheduler work survives/drains under the known local Cycle-2 materialization failure;
-6. Source Governor, Central Scheduler, freeze depth 4, `$3,000` exact-pool liquidity, disjointness, one-shot controls, and all V1 locks remain unchanged;
-7. live operational-host authoritative DB, Migration 058, and `operator-runs/` evidence are freshly reconciled read-only;
-8. all prior authorizations are non-reusable and no conflicting application marker exists.
-
+Do **not** implement D4/D5 from this handoff until the design adoption/review closes PASS.
 Do **not** create a new authorization from this handoff.
 Do **not** run Printer from this handoff.
 Do **not** reuse any consumed authorization or historical application artifact.
