@@ -27,13 +27,15 @@ Branch:
 
 `agent/v2-9-8b-factory-run-terminal-cleanup-product-repair`
 
-Final repaired product HEAD / candidate launch identity:
-
-`6c44d5140bb79d032ad6a78e81eb8c77540371c8`
+Candidate launch identity after this closeout is the branch tip at push time.
 
 Product repair commit:
 
 `d42a5aa5b5b27e79bb843babee4cbd91d9280af2`
+
+Handoff tip at write:
+
+`86885689b3d8af055f42ebf0ec25e540c9dc56ea`
 
 Baseline:
 
