@@ -27,7 +27,11 @@ Branch:
 
 `agent/v2-9-8b-factory-run-terminal-cleanup-product-repair`
 
-Final repaired product HEAD:
+Final repaired product HEAD / candidate launch identity:
+
+`ec4470ee219ab1271bd56b9eb96ecc0def9e6196`
+
+Product repair commit:
 
 `d42a5aa5b5b27e79bb843babee4cbd91d9280af2`
 
