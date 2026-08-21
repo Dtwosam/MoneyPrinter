@@ -43,6 +43,43 @@ HISTORICAL_MIGRATION_EXECUTION_ID = (
     "V2_9_8B_AUTHORITATIVE_MIG050_20260801T202423Z_f697cc0f"
 )
 
+MIGRATION_058_ROOT = "operator-runs/v2-9-8b-migration-058-application"
+MIGRATION_058_EXECUTION_ID = "MIGRATION_058_20260818T082552Z"
+MIGRATION_058_PATHS = frozenset(
+    f"{MIGRATION_058_ROOT}/{MIGRATION_058_EXECUTION_ID}/{relative}"
+    for relative in (
+        ".gitignore",
+        "README.md",
+        "__pycache__/apply_migration_058.cpython-312.pyc",
+        "apply_migration_058.py",
+        "authoritative-pre-058.sqlite3",
+        "disposable/migration-058-rehearsal.sqlite3",
+        "disposable_rehearsal.json",
+        "migration_058_application_result.json",
+        "post_application_snapshot.json",
+        "post_application_verification.json",
+        "pre_application_snapshot.json",
+    )
+)
+
+MIGRATION_059_ROOT = "operator-runs/v2-9-8b-migration-059-application"
+MIGRATION_059_EXECUTION_ID = "MIGRATION_059_20260821T095456Z"
+
+PAIR_READY_ROOT = (
+    "operator-runs/v2-9-8b-pair-ready-residual-reconciliation"
+)
+PAIR_READY_EXECUTION_ID = "RECONCILIATION_20260821T110736Z"
+PAIR_READY_PATHS = frozenset(
+    f"{PAIR_READY_ROOT}/{PAIR_READY_EXECUTION_ID}/{relative}"
+    for relative in (
+        "backup_and_disposable_rehearsal.json",
+        "post_reconciliation_snapshot.json",
+        "pre_reconciliation_snapshot.json",
+        "reconcile_pair_ready_residual.py",
+        "reconciliation_receipt.json",
+    )
+)
+
 # Faithful to the preserved package: nested evidence plus ignored database
 # artifacts under the same exact execution ID.
 _HISTORICAL_MIGRATION_FILES = {
@@ -118,7 +155,7 @@ class FourTokenHistoricalMigrationFixture:
     """Disposable repository carrying M, Ha and the exact preserved Hm package."""
 
     authorization_id = "V2_9_8B_FOUR_TOKEN_AUTH_TESTONLY"
-    migration_id = "MIGRATION_055_TESTONLY"
+    migration_id = "MIGRATION_059_TESTONLY"
     historical_authorization_id = "V2_9_8B_STANDARD_4H_AUTH_TESTONLY"
 
     def __init__(
@@ -149,7 +186,7 @@ class FourTokenHistoricalMigrationFixture:
             self.repo / profile.migration_package_root / self.migration_id
         )
         self.migration_root.mkdir(parents=True)
-        (self.migration_root / "migration_055_application_result.json").write_text(
+        (self.migration_root / "migration_059_application_result.json").write_text(
             json.dumps({"migration": self.migration_id}) + "\n", encoding="utf-8"
         )
 
@@ -360,8 +397,9 @@ class FourTokenHistoricalMigrationProvenanceTests(unittest.TestCase):
     def test_historical_migration_binding_is_exact_and_profile_scoped(self) -> None:
         """GREEN 1: only the four-token profile carries the exact binding."""
         profile = git_auth.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE
-        # 050, 055, 056 and 057 are all required, immutable historical packages.
-        self.assertEqual(len(profile.historical_migration_packages), 4)
+        # 050, 055, 056, 057 and 058 are all required immutable historical
+        # packages after migration 059 becomes current authority.
+        self.assertEqual(len(profile.historical_migration_packages), 5)
         by_root = {
             item.package_root: item
             for item in profile.historical_migration_packages
@@ -387,6 +425,7 @@ class FourTokenHistoricalMigrationProvenanceTests(unittest.TestCase):
                 git_auth.MIGRATION_055_PACKAGE_ROOT,
                 git_auth.MIGRATION_056_PACKAGE_ROOT,
                 git_auth.MIGRATION_057_PACKAGE_ROOT,
+                MIGRATION_058_ROOT,
             },
         )
         self.assertEqual(
@@ -396,9 +435,10 @@ class FourTokenHistoricalMigrationProvenanceTests(unittest.TestCase):
                 git_auth.HISTORICAL_MIGRATION_055_EVIDENCE_CLASS,
                 git_auth.HISTORICAL_MIGRATION_056_EVIDENCE_CLASS,
                 git_auth.HISTORICAL_MIGRATION_057_EVIDENCE_CLASS,
+                "HISTORICAL_MIGRATION_058_EVIDENCE",
             },
         )
-        # None of them is the current schema transition, which is now 058.
+        # None of them is the current schema transition, which is now 059.
         self.assertNotIn(
             profile.migration_package_root, set(by_root)
         )
@@ -413,24 +453,40 @@ class FourTokenHistoricalMigrationProvenanceTests(unittest.TestCase):
             profile.historical_authorization_package_roots,
         )
 
+    def test_migration059_identity_is_preparation_bound_and_old_auth_is_superseded(
+        self,
+    ) -> None:
+        profile = git_auth.FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE
+        self.assertEqual(profile.migration_package_root, MIGRATION_059_ROOT)
+        self.assertEqual(profile.migration_package_kind, "MIGRATION_059_EVIDENCE")
+        self.assertFalse(
+            hasattr(git_auth, "FOUR_TOKEN_CURRENT_MIGRATION_059_EXECUTION_ID")
+        )
+        self.assertEqual(
+            git_auth._terminal_disposition_for(
+                "V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260821T124505Z_8cf7ee5d"
+            ),
+            "BLOCKED_UNCONSUMED_SUPERSEDED",
+        )
+
     def test_migration050_remains_historical_never_current(self) -> None:
         """GREEN 2/6: Hm never becomes current schema-transition evidence."""
         fixture = FourTokenHistoricalMigrationFixture()
         try:
             payload, _path, _digest = fixture.manifest()
             current_kinds = {item["package_kind"] for item in payload["files"]}
-            # Migration 058 is the current schema transition for this profile.
+            # Migration 059 is the current schema transition for this profile.
             self.assertEqual(
                 current_kinds,
                 {
-                    git_auth.MIGRATION_058_PACKAGE_KIND,
+                    "MIGRATION_059_EVIDENCE",
                     "FOUR_TOKEN_PROOF_AUTHORIZATION_EVIDENCE",
                 },
             )
             current_paths = {item["path"] for item in payload["files"]}
             for path in fixture.historical_migration_paths():
                 self.assertNotIn(path, current_paths)
-                self.assertFalse(path.startswith(git_auth.MIGRATION_058_PACKAGE_ROOT))
+                self.assertFalse(path.startswith(MIGRATION_059_ROOT))
             for item in payload["historical_migration_evidence"]:
                 self.assertEqual(
                     item["evidence_class"],
@@ -444,14 +500,73 @@ class FourTokenHistoricalMigrationProvenanceTests(unittest.TestCase):
                     item["migration_execution_id"],
                     payload["migration_execution_id"],
                 )
-            # The authorization still binds only the current 055 transition.
+            # The disposable authorization supplies the exact current execution
+            # identity at preparation time; production source does not discover
+            # a Migration-059 execution directory.
             self.assertEqual(
                 payload["migration_execution_id"], fixture.migration_id
             )
         finally:
             fixture.close()
 
-    def test_current_equality_remains_migration055_plus_current_authorization(
+    def test_legitimate_migration059_and_pair_ready_inventory_is_classified(
+        self,
+    ) -> None:
+        """RED: exact 059 current + 058 Hm + PAIR_READY Hr must reconcile.
+
+        The break this catches is removal or omission of either exact profile
+        declaration.  The strict reconciler remains unchanged: profile data
+        must classify these legitimate paths before it is called.
+        """
+        profile = git_auth.FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE
+        authorization_id = "V2_9_8B_FOUR_TOKEN_STD4H_AUTH_TESTONLY"
+        current_paths = {
+            (
+                f"{MIGRATION_059_ROOT}/{MIGRATION_059_EXECUTION_ID}/"
+                "migration_059_application_receipt.json"
+            ),
+            (
+                f"{profile.authorization_package_root}/{authorization_id}/"
+                "final_authorization.json"
+            ),
+        }
+        historical_migration_paths = (
+            set(MIGRATION_058_PATHS)
+            if any(
+                package.package_root == MIGRATION_058_ROOT
+                and package.execution_id == MIGRATION_058_EXECUTION_ID
+                for package in profile.historical_migration_packages
+            )
+            else set()
+        )
+        historical_reconciliation_paths = {
+            member.path
+            for package in profile.historical_reconciliation_packages
+            if package.package_root == PAIR_READY_ROOT
+            and package.execution_id == PAIR_READY_EXECUTION_ID
+            for member in package.files
+        }
+        complete_inventory = (
+            current_paths | set(MIGRATION_058_PATHS) | set(PAIR_READY_PATHS)
+        )
+
+        git_auth._reconcile_evidence_sets(
+            current_manifest_paths=current_paths,
+            historical_paths=set(),
+            historical_migration_paths=historical_migration_paths,
+            historical_reconciliation_paths=historical_reconciliation_paths,
+            visible_paths=complete_inventory,
+            ignored_paths=set(),
+            tracked_paths=set(),
+            inventory_paths=complete_inventory,
+            current_package_roots=(
+                f"{MIGRATION_059_ROOT}/{MIGRATION_059_EXECUTION_ID}",
+                f"{profile.authorization_package_root}/{authorization_id}",
+            ),
+            sidecar_untracked_paths=(),
+        )
+
+    def test_current_equality_remains_migration059_plus_current_authorization(
         self,
     ) -> None:
         """GREEN 3/5: C == M only; an extra current-package file fails closed."""
@@ -462,7 +577,7 @@ class FourTokenHistoricalMigrationProvenanceTests(unittest.TestCase):
             expected_current = {
                 (
                     f"{profile.migration_package_root}/{fixture.migration_id}/"
-                    "migration_055_application_result.json"
+                    "migration_059_application_result.json"
                 ),
                 (
                     f"{profile.authorization_package_root}/"

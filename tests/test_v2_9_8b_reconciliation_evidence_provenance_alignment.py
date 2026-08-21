@@ -52,18 +52,19 @@ def _synthetic_package(
 
 
 class ReconciliationProfileBindingTests(unittest.TestCase):
-    """The operational four-token profile owns exactly two historical packages."""
+    """The operational four-token profile owns exact historical packages."""
 
-    def test_only_operational_profile_binds_two_reconciliation_packages(self) -> None:
+    def test_operational_profile_binds_pair_ready_reconciliation_package(self) -> None:
         operational = git_auth.FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE
         packages = getattr(operational, "historical_reconciliation_packages", None)
         self.assertIsNotNone(packages)
-        self.assertEqual(len(packages), 2)
+        self.assertEqual(len(packages), 3)
         self.assertEqual(
             tuple(item.package_root for item in packages),
             (
                 "operator-runs/v2-9-8b-pre-admission-2364-reconciliation",
                 "operator-runs/v2-9-8b-historical-orphan-factory-run-reconciliation",
+                "operator-runs/v2-9-8b-pair-ready-residual-reconciliation",
             ),
         )
         self.assertEqual(
@@ -71,21 +72,32 @@ class ReconciliationProfileBindingTests(unittest.TestCase):
             (
                 "RECONCILE_20260820T174324Z",
                 "RECONCILE_20260820T192309Z",
+                "RECONCILIATION_20260821T110736Z",
             ),
         )
-        self.assertEqual(len({item.evidence_class for item in packages}), 2)
+        self.assertEqual(len({item.evidence_class for item in packages}), 3)
+
+        # Complete-inventory preparation scans the same operator-runs namespace
+        # for both four-token profiles, so the proof profile needs the same
+        # exact historical reconciliation declarations.  Otherwise these
+        # legitimate bytes remain unexplained even though its current package
+        # authority is distinct.
+        self.assertEqual(
+            git_auth.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE
+            .historical_reconciliation_packages,
+            packages,
+        )
 
         for profile in (
             git_auth.ORDINARY_AUTHORIZATION_PROFILE,
             git_auth.STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE,
-            git_auth.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE,
         ):
             with self.subTest(mode=profile.command_mode):
                 self.assertEqual(
                     getattr(profile, "historical_reconciliation_packages", None), ()
                 )
 
-    def test_production_packages_bind_all_seven_real_member_identities(self) -> None:
+    def test_production_packages_bind_all_twelve_real_member_identities(self) -> None:
         packages = (
             git_auth.FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE
             .historical_reconciliation_packages
@@ -150,6 +162,38 @@ class ReconciliationProfileBindingTests(unittest.TestCase):
                         ),
                     ),
                 ),
+                (
+                    "HISTORICAL_PAIR_READY_RESIDUAL_RECONCILIATION_EVIDENCE",
+                    5,
+                    "94cb775d8f1a0d095669c3a1285b8484d7bfbae62c50bf327669516d942285d7",
+                    (
+                        (
+                            "operator-runs/v2-9-8b-pair-ready-residual-reconciliation/RECONCILIATION_20260821T110736Z/backup_and_disposable_rehearsal.json",
+                            306712,
+                            "a74406aec8e240d6627a04cf0299bbc95b35a45f2fd98261f60c040e3eb48cf0",
+                        ),
+                        (
+                            "operator-runs/v2-9-8b-pair-ready-residual-reconciliation/RECONCILIATION_20260821T110736Z/post_reconciliation_snapshot.json",
+                            92014,
+                            "633424430f850c70a58cd03a6fa4f73b6b89c8baab570946ad7bb79e899aa76c",
+                        ),
+                        (
+                            "operator-runs/v2-9-8b-pair-ready-residual-reconciliation/RECONCILIATION_20260821T110736Z/pre_reconciliation_snapshot.json",
+                            92083,
+                            "1f5a2b4b7ba16ec4f4378259bfe863f0bac5c4cd0ff5594c3154e3356b9e26e6",
+                        ),
+                        (
+                            "operator-runs/v2-9-8b-pair-ready-residual-reconciliation/RECONCILIATION_20260821T110736Z/reconcile_pair_ready_residual.py",
+                            33379,
+                            "64da79ef2cf1cae93f6fe4acb48f2c4f0c5d22214fc04ed05898776775c8c31a",
+                        ),
+                        (
+                            "operator-runs/v2-9-8b-pair-ready-residual-reconciliation/RECONCILIATION_20260821T110736Z/reconciliation_receipt.json",
+                            29684,
+                            "cbdd06a2cd33d1f1917c1b26210f9c27dc4a8b8384004cdb6462eca476544022",
+                        ),
+                    ),
+                ),
             ),
         )
 
@@ -176,6 +220,7 @@ class ReconciliationProfileBindingTests(unittest.TestCase):
                     "RECONCILE_20260820T185845Z",
                     "RECONCILE_20260820T192309Z",
                 ),
+                ("RECONCILIATION_20260821T110736Z",),
             ),
         )
 

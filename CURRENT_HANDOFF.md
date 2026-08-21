@@ -4,97 +4,76 @@ Date: 2026-08-21
 
 ## Current lane
 
-`V2-9.8B Fresh 4/2/2 Final Authorization Construction`
+`V2-9.8B Four-Token Migration-059 / PAIR_READY Provenance Classification Implementation`
 
-Status: `PRECOMMITTED_FOR_EXACT_HEAD_CONSTRUCTION`
+Status:
 
-Required readiness verdict:
+`V2_9_8B_FOUR_TOKEN_MIGRATION_059_PAIR_READY_PROVENANCE_CLASSIFICATION_IMPLEMENTATION_PASS`
 
-`V2_9_8B_FRESH_4_2_2_AUTHORIZATION_READINESS_AUDIT_PASS`
+The narrow contract-drift repair is complete. Migration 059 is current evidence
+for both four-token profiles. Migration 058 is exact immutable historical
+migration evidence. The exact PAIR_READY residual reconciliation is immutable
+historical reconciliation evidence for both four-token profiles because both
+complete-inventory preparations scan the same `operator-runs/` namespace.
 
-Expected construction verdict after successful create-once publication:
-
-`V2_9_8B_FRESH_4_2_2_FINAL_AUTHORIZATION_CONSTRUCTION_PASS`
-
-## Exact Git transaction
+## Git boundary
 
 - branch: `agent/v2-9-8b-pair-ready-parent-terminal-cancellation-repair`
-- construction starting HEAD:
-  `6d0c1d30de452af49f6a036852a5ce7148b908e3`
-- exact authorization-bound HEAD: the commit containing this handoff and
-  `docs/printer-v1-v2-9-8b-fresh-4-2-2-final-authorization-construction.md`
-- no later commit is permitted on this branch after authorization publication
+- implementation starting product HEAD:
+  `e639fb0f43338f231165b8873849f452e0a5c146`
+- design commit: `148c8d808b88ad836ca00d21fc0d8185c61b3096`
+- implementation commit: the commit containing this handoff and the
+  implementation closeout
 
-The tracked preparation decision and this handoff are committed before the
-authorization package is constructed. The final authorization ID, artifact
-path, SHA-256, byte size, issue time and expiry are therefore recorded in the
-create-once package and construction response, not retrofitted into tracked
-files after the exact HEAD has been bound.
+## Exact provenance state
 
-## Authorized construction scope
+- current migration root:
+  `operator-runs/v2-9-8b-migration-059-application`
+- current migration kind: `MIGRATION_059_EVIDENCE`
+- historical migrations: `050, 055, 056, 057, 058`
+- Migration-058 execution: `MIGRATION_058_20260818T082552Z`
+- Migration-058 file count / inventory SHA:
+  `11 / d6dc1431a3a99a8c2f521a3033948d11bbdd4e7151ddabc1127c7fb3b9138fa8`
+- PAIR_READY execution: `RECONCILIATION_20260821T110736Z`
+- PAIR_READY file count / inventory SHA:
+  `5 / 94cb775d8f1a0d095669c3a1285b8484d7bfbae62c50bf327669516d942285d7`
 
-Construct exactly one fresh final authorization package through the existing
-canonical four-token Standard-4H document owner. Bind it to:
+The trust law remains `C == M` and
+`F = T ∪ M ∪ Ha ∪ Hm ∪ Hr`. There is no wildcard or
+directory-discovery trust. Ordinary WINDOW_15M and two-token Standard-4H
+profiles are unchanged.
 
-- `four-token-standard-four-hour-run`
-- exactly four through-4h token slots
-- exactly two active cycles
-- exactly two NEW fresh governed tokens per cycle
-- exactly two total cycle admissions
-- `WINDOW_15M -> eligible WINDOW_1H -> eligible WINDOW_4H`
-- no automatic retry, endpoint rotation, rerun, restart, resume or successor
-- `WINDOW_12H` and `WINDOW_24H` locked
-- the exact committed branch/HEAD
-- the exact authoritative database identity and migration `59 / 059`
-- every one of the 39 existing authorization identities as non-reusable
+## Superseded authorization
 
-Current migration provenance remains the canonical immutable Migration-058
-application evidence package. Migration 059 is separately and exactly bound by
-the authoritative database identity and canonical ledger; it does not replace
-the profile's current schema-transition evidence root.
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260821T124505Z_8cf7ee5d` remains immutable,
+unconsumed, manifest-absent, and marker-absent. Its bytes retain SHA-256
+`644a7b16c7055334e59ab5aa4e820f712b055f8fa4e902d3b9810389fe2724b7`.
+Its diagnostic disposition is `BLOCKED_UNCONSUMED_SUPERSEDED`; it cannot
+authorize the repaired HEAD and carries no reuse authority.
 
-## Construction gates re-proved before this commit
+## Verification and non-mutation
 
-- canonical pre-authorization migration-ledger guard: PASS
-- authoritative DB SHA-256:
+- RED reproduced the exact unexplained Migration-058 plus PAIR_READY paths.
+- focused GREEN: `137 tests, 26 subtests`
+- direct production evidence enumeration: `40 Hm / 12 Hr` records
+- authoritative DB SHA unchanged:
   `87dac0d15ee32940f7dda30d0704dc252ff540c9d6f1ff6a3857e8f598c9f2fa`
-- migration count/head:
+- schema remains:
   `59 / 059_pair_ready_parent_terminal_cancellation_transition.sql`
-- `PRAGMA integrity_check`: `ok`
-- `PRAGMA foreign_key_check`: `0` rows
-- SQLite sidecars: `0`
-- active Printer runtime processes: `0`
-- canonical strict four-token zero state: all `12` domains zero
-- exact operational policy: `476 / 118 / 4 / 420`
-- prior consumed authorization:
-  `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260820T213930Z_e80f3b5c`
-- prior authorization application marker: present and consumed once
-- prior child start attempts: `1`; child exit: `1`
-- prior retries/reruns/restarts/resumes/successors: all `0`
-- prior authorization current validation: rejected as `AUTHORIZATION_EXPIRED`
-- historical authorization identities: `39`, unique and sorted
+- DB sidecars: none
+- runtime/provider/authorization activity: zero
+- protected capability delta: `NONE`
 
-## Hard stop boundary
-
-This lane may create the final authorization package only. It must leave that
-authorization unconsumed and must not create an application marker, apply a
-wrapper, create a provenance manifest, start a child, contact a provider/RPC/
-WebSocket, run Source Governor or Central Scheduler, start or continue a
-campaign/cycle, mutate authoritative business data, or activate any financial
-or retrieval capability.
-
-If construction does not complete and validate before immutable publication,
-no authorization artifact may survive. If it does complete, the branch must
-remain at the exact authorization-bound commit with no later tracked change.
+The legacy proof-wrapper fixture still supplies one Migration-050 member
+against the pre-existing exact count of 12; three tests therefore remain stale
+outside this lane. They were not weakened. The current operational four-token
+Standard-4H wrapper and direct-command fail-closed checks are green.
 
 ## Exact next permitted lane
 
-After successful immutable publication and independent readback:
+`V2-9.8B Four-Token Migration-059 / PAIR_READY Provenance Classification Bounded Proof`
 
-`V2-9.8B Fresh 4/2/2 Final Authorization Independent Review`
-
-That lane is review only. It is not authorization application or campaign
-execution.
+No replacement authorization may be constructed as part of this handoff.
 
 ## Locks
 
