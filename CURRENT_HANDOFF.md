@@ -4,123 +4,192 @@ Date: 2026-08-21
 
 ## Current lane
 
-`V2-9.8B PAIR_READY Durable Transition Contract Repair Closeout`
+`V2-9.8B Authoritative Migration 059 Application Readiness and Execution`
 
 Status: `CLOSED_PASS`
 
 Verdict:
 
-`V2_9_8B_PAIR_READY_DURABLE_TRANSITION_CONTRACT_REPAIR_CLOSEOUT_PASS`
+`V2_9_8B_AUTHORITATIVE_MIGRATION_059_APPLICATION_PASS`
 
-Implementation/proof verdict:
+## Exact branch and implementation authority
 
-`V2_9_8B_PAIR_READY_DURABLE_TRANSITION_CONTRACT_REPAIR_PASS`
+- branch: `agent/v2-9-8b-pair-ready-parent-terminal-cancellation-repair`
+- exact committed HEAD: `ec9f976a9ba115949926d54c2b53013622570690`
+- commit: `Align PAIR_READY cancellation with durable transition contract`
+- canonical migration applied:
+  `059_pair_ready_parent_terminal_cancellation_transition.sql`
+- application owner: `printer_v1.db.migrate.apply_migrations`
+- authoritative application invocations: exactly `1`
+- manual/ad-hoc SQL application: **NO**
 
-Classification:
+The local committed HEAD was preserved. It was not replaced with an older
+remote state. The tracked tree and index were clean at every pre-application
+Git gate; only preserved historical operator evidence and the current Migration
+059 evidence package were untracked.
 
-`PROVEN_COMMITTED_CODE_SCHEMA_DEFECT`
+## Authoritative database result
 
-## Exact root cause and repair
+Authoritative database:
 
-Migration 055's durable trigger
-`printer_pre_admission_attempt_transition` allowed only
-`PAIR_READY -> CONSUMED`. The already-approved dedicated parent-terminal
-Python owner lawfully issues `PAIR_READY -> CANCELLED` for an exact frozen,
-unconsumed, parent-owned pair. A database fully migrated through 058 therefore
-rejected the canonical reconciliation with:
+`data/printer_v1.sqlite3`
 
-`sqlite3.IntegrityError: invalid pre-admission attempt transition`
+Before application:
 
-The additive migration
-`059_pair_ready_parent_terminal_cancellation_transition.sql` drops and
-recreates only that transition trigger. It preserves every Migration-055 law
-and adds exactly one durable transition:
+- SHA-256:
+  `790eedb25d98534aab8521c20f952500d471185e59342ec2ea7e866d667532b8`
+- size: `113664000`
+- migration state: `58 / 058_direct_pump_migration_cursor.sql`
 
-`PAIR_READY -> CANCELLED`
+After application:
 
-`PAIR_READY -> CONSUMED` remains lawful. No table, state, historical row,
-owner-match rule, item/source-link immutability rule, first-terminal-cause rule,
-consumption rule, Source Governor behavior, Scheduler behavior, or Python
-cancellation semantic was changed.
+- SHA-256:
+  `357a1f73a6cce219ce6e431bda8d79e5117973e46d81ce42d5a158c54e5dd96f`
+- size: `113664000`
+- migration state:
+  `59 / 059_pair_ready_parent_terminal_cancellation_transition.sql`
+- Migration 059 ledger rows: exactly `1`
+- ledger applied at: `2026-08-21 10:02:47`
+- `PRAGMA integrity_check`: `ok`
+- `PRAGMA foreign_key_check`: `0` rows
+- SQLite sidecars after application: `0`
+- authoritative DB open handles after application: `0`
+- active Printer runtime processes after application: `0`
+- active Scheduler jobs/locks after application: `0`
 
-The explicit operational schema pin is now:
+The live `printer_pre_admission_attempt_transition` trigger is byte-logically
+equivalent to the exact committed Migration 059 definition. It preserves
+`PAIR_READY -> CONSUMED`, adds exactly `PAIR_READY -> CANCELLED`, and broadens
+no other transition.
 
-- count: `59`
-- head: `059_pair_ready_parent_terminal_cancellation_transition.sql`
+## Backup and disposable restore proof
 
-Migration 059 adds no new zero-state domain. A database still at 58 remains
-fail-closed until the separately authorized migration-application lane.
+The migration-58 rollback backup is outside the repository and must remain
+preserved:
 
-## Boundary evidence
+`/Users/Dtwo1/PrinterOperations/v2-9-8/migration-059-authoritative-application/MIGRATION_059_20260821T095456Z/authoritative-pre-059.sqlite3`
 
-- authoritative DB mutation in this lane: **NO**
-- historical `PAIR_READY` residue reconciled in this lane: **NO**
-- authorization created or consumed: **NO**
-- Printer/provider/RPC/WebSocket/Scheduler runtime calls: **NO**
-- Cycle 2 fabricated: **NO**
-- authoritative migration applied: **NO**
+Backup facts:
 
-The authoritative database remains:
+- SHA-256:
+  `790eedb25d98534aab8521c20f952500d471185e59342ec2ea7e866d667532b8`
+- size: `113664000`
+- byte-identical to the exact authoritative migration-58 pre-state: **YES**
+- preserved after application: **YES**
 
-- path: `data/printer_v1.sqlite3`
-- SHA-256: `790eedb25d98534aab8521c20f952500d471185e59342ec2ea7e866d667532b8`
-- migration: `58 / 058_direct_pump_migration_cursor.sql`
+Disposable restore:
 
-## Exact branch / repair baseline
+`/Users/Dtwo1/PrinterOperations/v2-9-8/migration-059-authoritative-application/MIGRATION_059_20260821T095456Z/disposable/migration-059-rehearsal.sqlite3`
 
-Branch:
+The canonical repository-owned operational backup/restore preflight began from
+the exact byte-identical migration-58 backup and applied exactly the one pending
+Migration 059 on the disposable restore. Rehearsal reached `59 / 059`, integrity
+was `ok`, foreign-key violations were `0`, every non-ledger table row hash was
+unchanged, and the exact target/parent/Scheduler evidence remained invariant.
 
-`agent/v2-9-8b-pair-ready-parent-terminal-cancellation-repair`
+## Historical PAIR_READY invariance
 
-Baseline HEAD before the repair:
+Target attempt:
 
-`228e6beab3da205311eb6c379034becd02a851a0`
+`pre-admission:20260820T214948Z-b57fd12acbcc-campaign:20260820T214948Z-b57fd12acbcc-campaign-run:bfd8b04a-b7a0-427b-9a24-4bf2b837c9b3:c0002`
 
-The accepted migration, explicit schema pin, directly affected focused tests,
-catalogue tests and this handoff are closed as one narrow repair commit. The
-exact repair commit is the Git HEAD containing this handoff.
+The lane intentionally did **not** reconcile it. It remains:
 
-## Proof summary
+- `attempt_state = PAIR_READY`
+- `first_terminal_cause = EXACT_PAIR_FROZEN`
+- `terminal_at = 2026-08-20T22:05:50.674845+00:00`
+- `consumed_cycle_id = NULL`
+- `consumed_at = NULL`
+- frozen item rows: exactly `2`, byte-logically unchanged
+- source-link rows: exactly `13`, byte-logically unchanged
+- attributable historical Scheduler rows: `55`, byte-logically unchanged
+- parent campaign/run/Cycle-1 terminal evidence: unchanged
+- Cycle-2 ownership rows: `0`
 
-RED was reproduced against a disposable database migrated through 058: the
-canonical parent-terminal reconciliation failed on the Migration-055 trigger
-and the transaction left the parent and frozen pair unchanged.
+All `116` non-ledger tables were compared with deterministic row counts and row
+hashes before and after. No historical table data changed. Only the canonical
+migration ledger and transition-trigger schema changed.
 
-GREEN proof establishes:
+## Capability and runtime boundary
 
-- full fresh migration succeeds through `59 / 059`;
-- exact 58 -> 59 upgrade applies only the additive migration;
-- the migration itself logically rewrites no existing row;
-- canonical parent-terminal reconciliation performs
-  `PAIR_READY -> CANCELLED`;
-- only `attempt_state` and `updated_at` change;
-- `EXACT_PAIR_FROZEN`, original `terminal_at`, null consumption fields, exact
-  frozen items and source links remain unchanged;
-- `PAIR_READY -> CONSUMED` remains lawful;
-- invalid `PAIR_READY`, terminal `CANCELLED`, and terminal `CONSUMED`
-  transitions remain blocked;
-- generic terminalization still rejects arbitrary `PAIR_READY` cancellation;
-- parent ownership mismatch fails closed;
-- no Cycle 2 is created;
-- existing PLANNED/RUNNING behavior remains unchanged;
-- item and source-link immutability remains unchanged;
-- `PRAGMA integrity_check = ok`;
-- `PRAGMA foreign_key_check` returns zero rows.
+- historical `PAIR_READY` reconciliation: **NO**
+- authorization created: `0`
+- authorization consumed: `0`
+- Printer/provider/RPC/WebSocket runs: `0`
+- Source Governor runs: `0`
+- Scheduler runtime runs: `0`
+- campaigns created: `0`
+- Cycle 2 created: **NO**
+- source request/response/failure row deltas: all `0`
+- Scheduler job row delta: `0`
+- retrieval row deltas: `0`
+- paper-decision/audit row deltas: `0`
+- position/trade/paper-trade-audit row deltas: `0`
+- PnL activation: **NO**
+- 12h/24h activation: **NO**
+- live execution: **NO**
 
-Focused directly affected verification: `97 passed, 14 subtests passed`.
-Compile/import and `git diff --check` also pass.
+The durable zero-state projection remains blocked specifically and only by the
+preserved unconsumed `PAIR_READY` authority. Every other active campaign, run,
+cycle, Scheduler work/job, discovery work, factory run/step, supervision, and
+pre-lifecycle refresh-work count is zero.
+
+## Evidence package
+
+Application evidence:
+
+`operator-runs/v2-9-8b-migration-059-application/MIGRATION_059_20260821T095456Z/`
+
+Immutable receipts/snapshots:
+
+- `pre_application_snapshot.json`
+- `backup_restore_rehearsal.json`
+- `post_application_snapshot.json`
+- `migration_059_application_receipt.json`
+
+The receipt verdict is:
+
+`V2_9_8B_AUTHORITATIVE_MIGRATION_059_APPLICATION_PASS`
+
+## Verification summary
+
+- read-only dry gate: PASS after correcting the receipt harness's initial
+  over-broad Cycle-2 ownership classifier;
+- lane-owned focused tests: `89 passed`;
+- broader focused run: `97 passed`, `1` unrelated pre-existing failure;
+- the unrelated failure is
+  `Phase1DatabaseSchemaTest.test_migration_runner_is_idempotent`, whose
+  historical expected list has remained pinned to migrations 001-034 since
+  2026-07-21; no test or product code was changed for it;
+- disposable exact 58 -> 59 rehearsal: PASS;
+- authoritative exact 58 -> 59 application: PASS;
+- post-application schema/health/historical-invariance/capability proof: PASS.
+
+## Functionality Risks / Setbacks / Efficiency Blockers
+
+- The preserved `PAIR_READY` row still carries unconsumed admission authority
+  and correctly blocks zero state. This is expected and is the exact subject of
+  the next separately scoped lane.
+- The migration-58 rollback backup is required recovery evidence. Do not delete,
+  overwrite, or repurpose it.
+- The stale Phase-1 hard-coded migration-list test is unrelated historical test
+  debt. It does not invalidate canonical 59/059 readiness and was not repaired
+  in this narrow lane.
+- No reconciliation, campaign, authorization, retry, provider/RPC operation, or
+  downstream capability is authorized by this PASS.
 
 ## Exact next permitted lane
 
-`V2-9.8B Authoritative Migration 059 Application Readiness and Execution`
+`V2-9.8B Historical PAIR_READY Residual Reconciliation Readiness and Execution`
 
-That lane must first byte-back up the authoritative database and restore-rehearse
-the exact 58 -> 59 upgrade on a disposable database. Only after those gates pass
-may it apply canonical Migration 059 to the authoritative database exactly once.
+That lane must separately re-prove exact branch/HEAD, authoritative `59 / 059`
+state, backup/recovery readiness, runtime quiescence, exact residual ownership,
+and its own approved reconciliation contract before any mutation.
 
-That next lane does **not** authorize reconciling the historical `PAIR_READY`
-residual, creating an authorization, running Printer/provider/RPC/WebSocket/
-Scheduler runtime, or applying any mutation other than canonical Migration 059.
+Do not perform the reconciliation automatically. Do not create or consume an
+authorization, run Printer/providers/RPC/WebSockets/Scheduler runtime, create
+Cycle 2, start a campaign, reuse historical authority, or unlock retrieval or
+financial capabilities.
 
 ## Locks
 
