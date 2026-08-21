@@ -1,91 +1,107 @@
 # CURRENT HANDOFF
 
-Date: 2026-08-20
+Date: 2026-08-21
 
 ## Current lane
 
-`V2-9.8B Reconcile-Campaign-Terminal Already-Terminal Factory Persist Repair`
+`V2-9.8B PAIR_READY Parent-Terminal Cancellation Repair`
 
 Status: `CLOSED_PASS`
 
 Verdict:
 
-`V2_9_8B_RECONCILE_CAMPAIGN_TERMINAL_ALREADY_TERMINAL_FACTORY_PERSIST_REPAIR_PASS`
+`V2_9_8B_PAIR_READY_PARENT_TERMINAL_CANCELLATION_REPAIR_PASS`
 
 Boundary evidence:
 
-- authoritative DB mutation: **NO**
-- orphan reconciled: **NO** (`ad5a83e6…` remains `RUNNING` on authoritative DB)
+- authoritative DB mutation in this lane: **NO**
+- historical `PAIR_READY` residue reconciled in this lane: **NO**
 - provider/runtime calls: **NO**
-- authoritative DB SHA unchanged:
-  `f167858a7a47c2837bced97223501f8d1c004d1c8c7a8177ed080c4e8d27f341`
+- authorization created/consumed: **NO**
+- Cycle 2 fabricated: **NO**
+- schema/migration change: **NO**
 
-## Exact branch / HEAD
+Latest known authoritative DB identity remains:
+
+`c3f4a3fe21ddf6034d28d2e47ca119f17172c23a0da3fe97c0450606d0d6e808`
+
+Migration remains `58 / 058_direct_pump_migration_cursor.sql`.
+
+## Exact branch / product repair tip
 
 Branch:
 
-`agent/v2-9-8b-reconcile-already-terminal-factory-persist-repair`
-
-Product repair commit / candidate lineage tip after this closeout:
-
-`d3b8a128a23167d3f77852a9396b7a87daf9acc2`
+`agent/v2-9-8b-pair-ready-parent-terminal-cancellation-repair`
 
 Baseline:
 
-`40c7e3410d8b5d03b87cf0c92961c95af70d279a`
+`d775e490167ddf798c8a11b0201835682f045c50`
 
-Required ancestral product repair:
+Product repair tip before this handoff-only closeout commit:
 
-`d42a5aa5b5b27e79bb843babee4cbd91d9280af2`
+`6dc80934f5d2958e5d80b4b31997e9ef150b0258`
 
 ## Exact repair
 
-`reconcile_campaign_terminal` remains the sole owner.
+Parent-terminal reconciliation now owns one narrow additional terminal path:
 
-For cycle/run/campaign terminalization:
+`PAIR_READY -> CANCELLED`
 
-- read current ownership state first;
-- if already `TERMINAL_*`, record `already_terminal` and **do not** call
-  `transition_state` again;
-- otherwise use existing `transition_state` path.
+Only `reconcile_campaign_terminal()` may invoke the dedicated frozen-pair cancellation owner, and only when exact campaign + campaign-run + authoritative factory-run ownership matches.
 
-Report honesty:
+The cancellation owner requires:
 
-- factory status is re-read from the durable row after `commit`;
-- `factory_run=SAFE_STOPPED` only when the persisted row is actually
-  `SAFE_STOPPED`.
+- `attempt_state = PAIR_READY`
+- `first_terminal_cause = EXACT_PAIR_FROZEN`
+- original `terminal_at` present
+- no `consumed_cycle_id`
+- no `consumed_at`
+- the canonical exact-two frozen pair still loads successfully.
 
-This prevents already-terminal `transition_state` connection-context rollback
-from silently reverting a prior factory `RUNNING -> SAFE_STOPPED` update while
-still returning a success-shaped report.
+The durable mutation is restricted to:
+
+- `attempt_state -> CANCELLED`
+- `updated_at`
+
+It preserves the original frozen truth, item rows, source links and consumption fields. The ordinary `terminalize_pre_admission_attempt()` remains unable to cancel `PAIR_READY`.
+
+Active-work accounting also now treats unconsumed `PAIR_READY` as active terminal residue in the three existing pre-admission visibility predicates. A frozen admission authority can therefore no longer be reported as `clean_terminal=True` before cancellation.
 
 ## Proof summary
 
-Focused disposable suite:
+Bounded disposable executable proof reproduced the old defects and proved the repaired behavior:
 
-`tests/test_v2_9_8b_reconcile_already_terminal_factory_persist_repair.py`
+- baseline PLANNED/RUNNING-only selector missed `PAIR_READY`;
+- repaired exact-owner selector finds it;
+- pre-cancellation active-work truth is dirty;
+- cancellation changes only `attempt_state` and `updated_at`;
+- `EXACT_PAIR_FROZEN` and original `terminal_at` remain unchanged;
+- exact-two item evidence, source links and succeeded Scheduler job remain unchanged;
+- no Cycle 2 is created;
+- post-cancellation active-work truth is clean;
+- second reconciliation is a no-op;
+- generic terminalizer still rejects `PAIR_READY -> CANCELLED`;
+- malformed/mismatched ownership shapes fail closed.
 
-Also proved against the exact verified orphan backup copy:
+Repository diff from the exact baseline is limited to the three repair modules, two focused tests, and this handoff. No migration, Source Governor, Central Scheduler owner, authorization, or capability-unlock files changed.
 
-- report `SAFE_STOPPED` == DB `SAFE_STOPPED`
-- parent terminal states/causes preserved
-- authoritative DB left unchanged
-
-Adjacent focused regressions green (factory cleanup, pre-admission cleanup,
-active-count, unified terminal).
+GitHub Actions did not execute in the connected environment and the local sandbox could not reach GitHub, so no repository pytest run is represented as having occurred. The proof above was executed against disposable SQLite state using the exact repaired ownership/state predicates, with GitHub commit/diff verification.
 
 ## Exact next permitted action
 
-`V2-9.8B One-Time Historical Orphan Factory-Run Reconciliation`
+`V2-9.8B One-Time Historical PAIR_READY Residual Reconciliation`
 
-Reconcile exactly:
+Before mutation, re-read the exact authoritative residue and current DB identity, create/verify a disposable backup, and prove the target still has the frozen unconsumed shape. If readiness passes, invoke the repaired canonical terminal owner exactly once, then verify:
 
-`printer_memory_factory_runs.run_id = ad5a83e6-9830-4c6b-8150-66445f54c8cc`
+- `PAIR_READY -> CANCELLED`
+- frozen evidence preserved
+- no Cycle 2 / restart / resume / successor
+- active-work / strict zero-state clean
+- SQLite integrity and foreign keys clean
+- migration remains 58/058
+- record authoritative DB SHA before/after.
 
-`RUNNING -> SAFE_STOPPED` through the repaired canonical owner, with
-backup/restore proof, then remeasure the authoritative DB SHA.
-
-Do **not** create a fresh 4/2/2 authorization in that lane.
+Do **not** create or consume a fresh 4/2/2 authorization in that reconciliation lane.
 
 ## Locks
 
