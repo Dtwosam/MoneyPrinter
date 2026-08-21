@@ -6,12 +6,16 @@ Status: `PRECOMMITTED_FOR_EXACT_HEAD_CONSTRUCTION`
 
 Required readiness verdict:
 
-`V2_9_8B_FRESH_4_2_2_AUTHORIZATION_READINESS_AUDIT_PASS`
+`V2_9_8B_FRESH_4_2_2_AUTHORIZATION_READINESS_RECHECK_PASS`
+
+Expected construction verdict after successful create-once publication:
+
+`V2_9_8B_FRESH_4_2_2_FINAL_AUTHORIZATION_CONSTRUCTION_PASS`
 
 ## 1. Decision and scope
 
-The fresh 4/2/2 authorization readiness gates pass at starting commit
-`6d0c1d30de452af49f6a036852a5ce7148b908e3` on branch
+The fresh 4/2/2 authorization readiness recheck passes at starting commit
+`e2918849afe858a94e80058899d6e93d50211d2a` on branch
 `agent/v2-9-8b-pair-ready-parent-terminal-cancellation-repair`.
 
 This decision permits exactly one create-once final authorization package for
@@ -27,11 +31,11 @@ The existing production owner remains authoritative:
   owns the exact document shape and policy;
 - `validate_four_token_standard_four_hour_authorization_document()` owns the
   production schema/policy validation;
-- `pre_authorization_migration_ledger_guard` owns immutable database identity
-  and repository-ledger agreement;
+- `pre_authorization_migration_ledger_guard.inspect_authoritative_database()`
+  owns immutable database identity measurement;
 - the existing create-once/read-only file primitives own publication.
 
-No second document constructor, hand-written final JSON schema or product-code
+No second document constructor, hand-written final JSON schema, or product-code
 change is permitted.
 
 ## 2. Exact-head transaction
@@ -39,12 +43,19 @@ change is permitted.
 The provenance contract requires the authorization's branch and HEAD to equal
 live Git state. This document and `CURRENT_HANDOFF.md` are therefore committed
 before construction. The resulting commit is the exact authorization-bound
-HEAD. No later commit may be added to this branch after publication.
+HEAD. The authorization JSON will bind that construction commit, not the
+readiness HEAD `e2918849afe858a94e80058899d6e93d50211d2a`.
 
-Because the final ID and temporal window do not exist until after that commit,
-the final artifact path, SHA-256, byte size, issue time and expiry are recorded
-in the create-once package and the construction response. They are not written
-back into tracked files and cannot move the bound HEAD.
+No later tracked commit may be added to this branch after authorization
+publication. No guessed future commit SHA is recorded here.
+
+Selected authorization identity for this lane:
+
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260821T153458Z_512f2436`
+
+Issue/expiry timestamps and the final artifact SHA-256/byte size are recorded
+in the create-once package and construction response only. They are not written
+back into tracked files after the exact HEAD has been bound.
 
 If any post-commit construction or validation step fails before immutable
 publication, no authorization package or byte may survive.
@@ -54,107 +65,119 @@ publication, no authorization package or byte may survive.
 ### 3.1 Repository and database
 
 - exact starting branch: PASS
-- exact starting HEAD: PASS
+- exact readiness HEAD `e2918849afe858a94e80058899d6e93d50211d2a`: PASS
 - tracked tree and index clean: PASS
+- ancestral design/implementation/proof/closeout commits: PASS
 - authoritative path: `data/printer_v1.sqlite3`
 - SHA-256:
   `87dac0d15ee32940f7dda30d0704dc252ff540c9d6f1ff6a3857e8f598c9f2fa`
 - size: `113664000`
+- inode: `1230526`
+- mtime_ns: `1787310849512684366`
 - migration count/head:
   `59 / 059_pair_ready_parent_terminal_cancellation_transition.sql`
-- canonical migration catalogue/ledger digest agreement: PASS
 - `PRAGMA integrity_check`: `ok`
 - foreign-key violations: `0`
 - SQLite sidecars: `0`
+- open runtime handles: `none`
 
-The operational provenance profile deliberately keeps
-`MIGRATION_058_20260818T082552Z` as the canonical current schema-transition
-evidence package. The authorization's authoritative-database binding separately
-pins the exact live Migration-59 ledger and file identity. These facts are
-compatible: Migration 059 is a bounded transition-trigger repair and does not
-replace the profile's declared Migration-058 package root.
+### 3.2 Current Migration-059 / provenance
 
-### 3.2 Runtime and strict zero state
+Current four-token profile migration evidence:
 
-The production operational zero-state gate passed read-only with:
+- root: `operator-runs/v2-9-8b-migration-059-application`
+- kind: `MIGRATION_059_EVIDENCE`
+- execution: `MIGRATION_059_20260821T095456Z`
+- exact execution directory present; five regular files; no symlink/non-regular
+  member; no unexplained sibling
 
-- live Printer runtime processes: `0`
-- active campaigns: `0`
-- active campaign runs: `0`
-- active campaign cycles: `0`
-- active campaign Scheduler work: `0`
-- active campaign supervision: `0`
-- active proof supervision: `0`
-- active discovery work: `0`
-- active factory runs: `0`
-- active factory steps: `0`
-- active pre-admission attempts: `0`
-- active pre-lifecycle refresh work: `0`
-- active Scheduler jobs: `0`
+Historical provenance remains:
 
-All 12 canonical ownership domains are exactly zero.
+- Migration 058: `MIGRATION_058_20260818T082552Z` / `11` /
+  `d6dc1431a3a99a8c2f521a3033948d11bbdd4e7151ddabc1127c7fb3b9138fa8`
+- PAIR_READY: `RECONCILIATION_20260821T110736Z` / `5` /
+  `94cb775d8f1a0d095669c3a1285b8484d7bfbae62c50bf327669516d942285d7`
+- production enumeration: `Hm=40` / `Hr=12`
+- trust law: `F = T ∪ M ∪ Ha ∪ Hm ∪ Hr` and `C == M`
+- no wildcard or directory-discovery trust
 
-### 3.3 Exact 4/2/2 policy
+### 3.3 Runtime and strict zero state
+
+All 12 canonical ownership domains are exactly zero. No active or unconsumed
+pre-admission authority and no active campaign/factory/Scheduler/discovery/
+supervision residue remain.
+
+### 3.4 Exact 4/2/2 operational policy
+
+Derived from the canonical production contract:
 
 - configured through-4h tokens: `4`
 - configured active cycles: `2`
 - tokens per cycle: `2`
-- total cycle-admission ceiling: `2`
-- shared discovery requests: `4`
-- lifecycle requests per token: `118`
-- lifecycle request outer ceiling: `476`
-- lifecycle Scheduler outer ceiling: `420`
-- minimum cycle-admission spacing: `300` seconds
-- pre-lifecycle acquisition duration: `2400` seconds
-- post-supply lifecycle duration: `18000` seconds
+- Cycle2: fresh and disjoint
+- token-slot identity: `slot-<exact-cycle-id>-1/2`
+- minimum freeze depth: `4`
+- exact-pool floor: `$3,000`
+- minimum cycle spacing: `300` seconds
+- acquisition: `2400` seconds
+- lifecycle: `18000` seconds
+- requests per token: `118`
+- governed total: `476`
+- shared discovery: `4`
+- Scheduler ceiling: `420`
+- storage: `67,108,864` bytes
 - automatic retries: `0`
 - endpoint rotation: `false`
-- root main window: `WINDOW_15M`
-- locked windows: `WINDOW_12H`, `WINDOW_24H`
+- main lifecycle: `WINDOW_15M -> WINDOW_1H -> WINDOW_4H`
+- `WINDOW_5M_MICRO_EVENT`: support-only
+- `WINDOW_12H` / `WINDOW_24H`: locked
+- allowed invocation count: `1`
+- manual rerun / resume / restart / successor: all `false`
+- operator approval: required
+- wrapper route: required
 
-The 5-minute window remains support-only. Exact identity, depth-4 discovery,
-evidence-quality, freshness, safety, continuity and the `$3000` graduated-market
-floor remain unchanged runtime admission gates and are not widened by this
-authorization.
+Stale `117` / `472` / `236` expectations are rejected.
 
 ## 4. Prior authorization non-reuse
 
-Exactly 39 existing authorization package identities were enumerated across the
-four profile-approved roots. They are unique and must be copied, sorted, into
-the new document's `prior_authorizations_non_reusable` trust root.
+Exactly 40 existing authorization package identities were enumerated across the
+profile-approved historical roots and must be copied, sorted, into the new
+document's `prior_authorizations_non_reusable` trust root.
 
-The latest prior identity is:
+That complete set includes the superseded unconsumed authorization:
 
-`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260820T213930Z_e80f3b5c`
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260821T124505Z_8cf7ee5d`
 
-Fresh readback proves:
+Fresh readback of that superseded package proves:
 
-- immutable authorization SHA-256:
-  `545b8f05153b1ef32f5ad925766a3152f268658ac5544fcd6f54e070bfab656b`
-- application marker: present
-- consumed at: `2026-08-20T21:49:46.752577+00:00`
-- allowed invocation count: `1`
-- child start attempted: `true`
-- child exit code: `1`
-- automatic retries/manual reruns/restarts/resumes/successors: all `0`
-- current production validation: fails closed as `AUTHORIZATION_EXPIRED`
+- immutable SHA-256:
+  `644a7b16c7055334e59ab5aa4e820f712b055f8fa4e902d3b9810389fe2724b7`
+- unconsumed; marker absent; manifest absent; application absent
+- authorized HEAD: `e639fb0f43338f231165b8873849f452e0a5c146`
+- diagnostic disposition: `BLOCKED_UNCONSUMED_SUPERSEDED`
+- reusable: `false`
 
-It is historical-only and cannot be reused, reinterpreted or continued.
+It cannot authorize the repaired Migration-059 profile or the construction
+HEAD created by this record.
 
 ## 5. Construction contract
 
 After this exact-head commit, the constructor must:
 
-1. re-check branch, HEAD, tracked cleanliness, database identity, ledger health,
-   sidecar absence, runtime absence and all 12 zero-state domains;
-2. generate one fresh safe authorization identity;
+1. re-check branch, `AUTHORIZED_HEAD`, tracked cleanliness, database identity,
+   Migration-059 evidence, `Hm/Hr`, zero-state, and superseded-auth invariance;
+2. use the selected authorization identity above;
 3. use the existing canonical document constructor with a 12-hour validity
-   interval and all 39 historical identities declared non-reusable;
-4. validate the in-memory document before any package exists;
-5. publish exactly one `final_authorization.json` through exclusive create-once
-   semantics, make it read-only and independently re-read and validate it;
-6. prove the matching application namespace remains absent; and
-7. stop without creating a manifest, marker, child or runtime work.
+   interval (`43200` seconds) and all 40 historical identities declared
+   non-reusable;
+4. bind `migration_execution_id = MIGRATION_059_20260821T095456Z`;
+5. validate the in-memory document before any package exists;
+6. publish exactly one `final_authorization.json` through exclusive create-once
+   semantics, make it mode `0444`, and independently re-read/validate it;
+7. run only a non-consuming pre-marker provenance proof;
+8. stop without creating a manifest, marker, child, or runtime work; and
+9. leave tracked files unchanged after publication so the bound HEAD remains
+   exact.
 
 ## 6. Failure semantics
 
@@ -164,18 +187,17 @@ After this exact-head commit, the constructor must:
   authorization in the same construction attempt.
 - Validation/readback/immutability failure: construction is BLOCKED and no
   application is permitted.
-- Database, Git, zero-state or process drift: stop before publication.
+- Database, Git, zero-state, or process drift: stop before publication.
 - Any surviving final package is never consumed by this lane.
 
 ## 7. Functionality Risks / Setbacks / Efficiency Blockers
 
-- The production profile's current migration evidence root remains Migration
-  058 while the database ledger is at 059. The distinction is intentional and
-  must remain explicit during independent review.
-- The final artifact cannot be recorded in a later tracked closeout without
-  invalidating its exact-HEAD binding. Review must derive package facts directly.
+- Exact-HEAD preservation forbids any tracked amend/commit after publication;
+  review must derive package facts directly from the untracked artifact.
+- The selected authorization ID is reserved for this lane only; collision with
+  an unexpected sibling fails closed.
 - Existing operator evidence is intentionally untracked and must not be staged,
-  rewritten, deleted or repurposed.
+  rewritten, deleted, or repurposed.
 
 ## 8. Exact next permitted lane
 
@@ -191,4 +213,5 @@ construction decision does not authorize application or execution.
 Printer remains Solana-only, Solana-memecoin-only and paper-only. Retrieval,
 BUY/SELL/HOLD, positions, trade events, paper audits, PnL, live execution,
 wallet/private-key/signing logic, paid APIs, scoring/ranking/confidence/weighted
-logic, embeddings/vectors and 12h/24h collection remain locked.
+logic, embeddings/vectors and 12h/24h collection remain locked. Source Governor
+and Central Scheduler bypass remain forbidden.
