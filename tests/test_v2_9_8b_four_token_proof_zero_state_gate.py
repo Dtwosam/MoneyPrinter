@@ -191,10 +191,10 @@ class FourTokenProofZeroStateGateTests(unittest.TestCase):
         )
         self.assertIs(evidence["zero_state_ready"], True)
         self.assertEqual(evidence["blockers"], [])
-        self.assertEqual(evidence["migration_count"], 58)
+        self.assertEqual(evidence["migration_count"], 59)
         self.assertEqual(
             evidence["migration_head"],
-            "058_direct_pump_migration_cursor.sql",
+            "059_pair_ready_parent_terminal_cancellation_transition.sql",
         )
         self.assertEqual(evidence["integrity_check"], "ok")
         self.assertEqual(evidence["foreign_key_violations"], 0)

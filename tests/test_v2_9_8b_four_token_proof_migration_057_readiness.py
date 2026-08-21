@@ -26,15 +26,15 @@ def test_four_token_current_migration_evidence_is_exactly_058() -> None:
 
 
 def test_four_token_zero_state_is_explicitly_pinned_to_the_current_head() -> None:
-    """Slice B advanced the canonical head to 058 (direct migration cursor).
+    """The durable transition repair advances the canonical head to 059.
 
-    The 057 pre-lifecycle refresh-work zero-state domain is still required;
-    only the schema pin moved, so the gate and the canonical migration-ledger
-    drift guard keep describing the same database.
+    Existing zero-state domains remain required; only the explicit schema pin
+    moves so the gate and canonical migration-ledger guard describe the same
+    fully upgraded database.
     """
-    assert zero_state.REQUIRED_MIGRATION_COUNT == 58
+    assert zero_state.REQUIRED_MIGRATION_COUNT == 59
     assert zero_state.REQUIRED_MIGRATION_HEAD == (
-        "058_direct_pump_migration_cursor.sql"
+        "059_pair_ready_parent_terminal_cancellation_transition.sql"
     )
     assert "active_pre_lifecycle_discovery_refresh_work" in (
         zero_state.REQUIRED_ZERO_STATE_DOMAINS

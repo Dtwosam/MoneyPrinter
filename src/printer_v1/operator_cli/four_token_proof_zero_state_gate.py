@@ -52,17 +52,24 @@ OPERATIONAL_ZERO_STATE_SCHEMA_VERSION = (
 # Migration 058 adds the durable direct Pump migration traversal cursor owned by
 # the canonical migration feeder. It is a mutable local projection: it carries no
 # campaign, lifecycle, authorization, selection or financial ownership, so it
-# introduces no new zero-state domain. The pin is advanced to the 058 head so the
-# authorized schema and the canonical migration-ledger drift guard continue to
-# describe the same database.
+# introduces no new zero-state domain.
+#
+# Migration 059 replaces only the pre-admission attempt transition trigger so
+# the dedicated exact parent-terminal owner can revoke frozen unconsumed
+# PAIR_READY authority. It adds no table, state, ownership domain, source path,
+# Scheduler behavior or financial capability. The pin is advanced to the 059
+# head so the authorized schema and canonical migration-ledger drift guard
+# continue to describe the same fully upgraded database.
 #
 # These are deliberately explicit literals, never derived from the migrations
 # directory. Adding a migration must not silently re-authorize bounded-proof
 # admission: a future head requires its own gate review and an explicit re-pin
 # here. The canonical migration-ledger drift guard still runs independently and
 # is not replaced by this pin.
-REQUIRED_MIGRATION_COUNT = 58
-REQUIRED_MIGRATION_HEAD = "058_direct_pump_migration_cursor.sql"
+REQUIRED_MIGRATION_COUNT = 59
+REQUIRED_MIGRATION_HEAD = (
+    "059_pair_ready_parent_terminal_cancellation_transition.sql"
+)
 LOCKED_LONG_WINDOWS = LOCKED_WINDOWS
 
 #: Every domain that must be exactly zero before this proof may start. Each

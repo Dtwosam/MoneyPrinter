@@ -22,6 +22,7 @@ from printer_v1.operator_cli import operational_campaign_recovery as recovery
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 GATE_SOURCE = REPO_ROOT / "src/printer_v1/operator_cli/four_token_proof_zero_state_gate.py"
+MIGRATION_059_NAME = "059_pair_ready_parent_terminal_cancellation_transition.sql"
 MIGRATION_058_NAME = "058_direct_pump_migration_cursor.sql"
 MIGRATION_057_NAME = "057_pre_lifecycle_discovery_refresh_work.sql"
 MIGRATION_056_NAME = "056_four_token_pre_lifecycle_terminal_provenance.sql"
@@ -70,16 +71,17 @@ def _canonical_names() -> list[str]:
 # --------------------------------------------------------------------------
 
 
-def test_zero_state_gate_admits_migration_058_only() -> None:
-    assert gate.REQUIRED_MIGRATION_COUNT == 58
-    assert gate.REQUIRED_MIGRATION_HEAD == MIGRATION_058_NAME
+def test_zero_state_gate_admits_migration_059_only() -> None:
+    assert gate.REQUIRED_MIGRATION_COUNT == 59
+    assert gate.REQUIRED_MIGRATION_HEAD == MIGRATION_059_NAME
 
 
-def test_zero_state_gate_rejects_the_superseded_055_056_and_057_pins() -> None:
-    assert gate.REQUIRED_MIGRATION_COUNT not in (55, 56, 57)
+def test_zero_state_gate_rejects_the_superseded_055_through_058_pins() -> None:
+    assert gate.REQUIRED_MIGRATION_COUNT not in (55, 56, 57, 58)
     assert gate.REQUIRED_MIGRATION_HEAD != MIGRATION_055_NAME
     assert gate.REQUIRED_MIGRATION_HEAD != MIGRATION_056_NAME
     assert gate.REQUIRED_MIGRATION_HEAD != MIGRATION_057_NAME
+    assert gate.REQUIRED_MIGRATION_HEAD != MIGRATION_058_NAME
 
 
 def test_gate_migration_pins_are_explicit_literals_not_derived() -> None:
@@ -101,8 +103,8 @@ def test_gate_migration_pins_are_explicit_literals_not_derived() -> None:
     assert set(found) == {"REQUIRED_MIGRATION_COUNT", "REQUIRED_MIGRATION_HEAD"}
     for name, value in found.items():
         assert isinstance(value, ast.Constant), f"{name} must be a literal constant"
-    assert found["REQUIRED_MIGRATION_COUNT"].value == 58
-    assert found["REQUIRED_MIGRATION_HEAD"].value == MIGRATION_058_NAME
+    assert found["REQUIRED_MIGRATION_COUNT"].value == 59
+    assert found["REQUIRED_MIGRATION_HEAD"].value == MIGRATION_059_NAME
     source = GATE_SOURCE.read_text()
     assert "canonical_migration_count" not in source
     assert "canonical_migration_names" not in source
@@ -120,19 +122,19 @@ def test_canonical_ledger_drift_guard_is_still_wired_into_the_gate() -> None:
 # --------------------------------------------------------------------------
 
 
-def test_disposable_schema_58_satisfies_the_gate_migration_pins(tmp_path) -> None:
+def test_disposable_schema_59_satisfies_the_gate_migration_pins(tmp_path) -> None:
     applied = _apply(tmp_path / "migrated.sqlite3", _canonical_names())
     assert len(applied) == gate.REQUIRED_MIGRATION_COUNT
     assert applied[-1] == gate.REQUIRED_MIGRATION_HEAD
 
 
-def test_disposable_schema_57_does_not_satisfy_the_gate_migration_pins(
+def test_disposable_schema_58_does_not_satisfy_the_gate_migration_pins(
     tmp_path,
 ) -> None:
-    names = [n for n in _canonical_names() if n != MIGRATION_058_NAME]
+    names = [n for n in _canonical_names() if n != MIGRATION_059_NAME]
     applied = _apply(tmp_path / "stale.sqlite3", names)
-    assert len(applied) == 57
-    assert applied[-1] == MIGRATION_057_NAME
+    assert len(applied) == 58
+    assert applied[-1] == MIGRATION_058_NAME
     assert len(applied) != gate.REQUIRED_MIGRATION_COUNT
     assert applied[-1] != gate.REQUIRED_MIGRATION_HEAD
 

@@ -875,11 +875,12 @@ def test_b29_no_forbidden_capability_rows(db_path) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_migration_058_is_the_canonical_head_and_edits_nothing_prior() -> None:
+def test_migration_058_precedes_059_and_edits_nothing_prior() -> None:
     names = canonical_migration_names()
-    assert names[-1] == "058_direct_pump_migration_cursor.sql"
-    assert len(names) == 58
-    sql = (MIGRATIONS_DIR / names[-1]).read_text(encoding="utf-8")
+    assert names[-2] == "058_direct_pump_migration_cursor.sql"
+    assert names[-1] == "059_pair_ready_parent_terminal_cancellation_transition.sql"
+    assert len(names) == 59
+    sql = (MIGRATIONS_DIR / names[-2]).read_text(encoding="utf-8")
     assert "CREATE TABLE printer_direct_pump_migration_cursor" in sql
     assert "ALTER TABLE" not in sql
     assert "DROP " not in sql
@@ -891,6 +892,7 @@ def test_migration_058_is_the_canonical_head_and_edits_nothing_prior() -> None:
 
 def test_migration_058_applies_after_057_and_to_an_empty_database(tmp_path) -> None:
     names = list(canonical_migration_names())
+    migration_058_index = names.index("058_direct_pump_migration_cursor.sql")
     staged = tmp_path / "staged.sqlite3"
     connection = sqlite3.connect(staged)
     try:
@@ -900,7 +902,7 @@ def test_migration_058_applies_after_057_and_to_an_empty_database(tmp_path) -> N
             "version TEXT PRIMARY KEY, applied_at TEXT NOT NULL "
             "DEFAULT (datetime('now')))"
         )
-        for name in names[:-1]:
+        for name in names[:migration_058_index]:
             connection.executescript(
                 (MIGRATIONS_DIR / name).read_text(encoding="utf-8")
             )

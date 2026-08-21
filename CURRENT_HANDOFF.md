@@ -4,107 +4,131 @@ Date: 2026-08-21
 
 ## Current lane
 
-`V2-9.8B PAIR_READY Parent-Terminal Cancellation Repair`
+`V2-9.8B PAIR_READY Durable Transition Contract Repair Closeout`
 
 Status: `CLOSED_PASS`
 
 Verdict:
 
-`V2_9_8B_PAIR_READY_PARENT_TERMINAL_CANCELLATION_REPAIR_PASS`
+`V2_9_8B_PAIR_READY_DURABLE_TRANSITION_CONTRACT_REPAIR_CLOSEOUT_PASS`
 
-Boundary evidence:
+Implementation/proof verdict:
+
+`V2_9_8B_PAIR_READY_DURABLE_TRANSITION_CONTRACT_REPAIR_PASS`
+
+Classification:
+
+`PROVEN_COMMITTED_CODE_SCHEMA_DEFECT`
+
+## Exact root cause and repair
+
+Migration 055's durable trigger
+`printer_pre_admission_attempt_transition` allowed only
+`PAIR_READY -> CONSUMED`. The already-approved dedicated parent-terminal
+Python owner lawfully issues `PAIR_READY -> CANCELLED` for an exact frozen,
+unconsumed, parent-owned pair. A database fully migrated through 058 therefore
+rejected the canonical reconciliation with:
+
+`sqlite3.IntegrityError: invalid pre-admission attempt transition`
+
+The additive migration
+`059_pair_ready_parent_terminal_cancellation_transition.sql` drops and
+recreates only that transition trigger. It preserves every Migration-055 law
+and adds exactly one durable transition:
+
+`PAIR_READY -> CANCELLED`
+
+`PAIR_READY -> CONSUMED` remains lawful. No table, state, historical row,
+owner-match rule, item/source-link immutability rule, first-terminal-cause rule,
+consumption rule, Source Governor behavior, Scheduler behavior, or Python
+cancellation semantic was changed.
+
+The explicit operational schema pin is now:
+
+- count: `59`
+- head: `059_pair_ready_parent_terminal_cancellation_transition.sql`
+
+Migration 059 adds no new zero-state domain. A database still at 58 remains
+fail-closed until the separately authorized migration-application lane.
+
+## Boundary evidence
 
 - authoritative DB mutation in this lane: **NO**
 - historical `PAIR_READY` residue reconciled in this lane: **NO**
-- provider/runtime calls: **NO**
-- authorization created/consumed: **NO**
+- authorization created or consumed: **NO**
+- Printer/provider/RPC/WebSocket/Scheduler runtime calls: **NO**
 - Cycle 2 fabricated: **NO**
-- schema/migration change: **NO**
+- authoritative migration applied: **NO**
 
-Latest known authoritative DB identity remains:
+The authoritative database remains:
 
-`c3f4a3fe21ddf6034d28d2e47ca119f17172c23a0da3fe97c0450606d0d6e808`
+- path: `data/printer_v1.sqlite3`
+- SHA-256: `790eedb25d98534aab8521c20f952500d471185e59342ec2ea7e866d667532b8`
+- migration: `58 / 058_direct_pump_migration_cursor.sql`
 
-Migration remains `58 / 058_direct_pump_migration_cursor.sql`.
-
-## Exact branch / product repair tip
+## Exact branch / repair baseline
 
 Branch:
 
 `agent/v2-9-8b-pair-ready-parent-terminal-cancellation-repair`
 
-Baseline:
+Baseline HEAD before the repair:
 
-`d775e490167ddf798c8a11b0201835682f045c50`
+`228e6beab3da205311eb6c379034becd02a851a0`
 
-Product repair tip before this handoff-only closeout commit:
-
-`6dc80934f5d2958e5d80b4b31997e9ef150b0258`
-
-## Exact repair
-
-Parent-terminal reconciliation now owns one narrow additional terminal path:
-
-`PAIR_READY -> CANCELLED`
-
-Only `reconcile_campaign_terminal()` may invoke the dedicated frozen-pair cancellation owner, and only when exact campaign + campaign-run + authoritative factory-run ownership matches.
-
-The cancellation owner requires:
-
-- `attempt_state = PAIR_READY`
-- `first_terminal_cause = EXACT_PAIR_FROZEN`
-- original `terminal_at` present
-- no `consumed_cycle_id`
-- no `consumed_at`
-- the canonical exact-two frozen pair still loads successfully.
-
-The durable mutation is restricted to:
-
-- `attempt_state -> CANCELLED`
-- `updated_at`
-
-It preserves the original frozen truth, item rows, source links and consumption fields. The ordinary `terminalize_pre_admission_attempt()` remains unable to cancel `PAIR_READY`.
-
-Active-work accounting also now treats unconsumed `PAIR_READY` as active terminal residue in the three existing pre-admission visibility predicates. A frozen admission authority can therefore no longer be reported as `clean_terminal=True` before cancellation.
+The accepted migration, explicit schema pin, directly affected focused tests,
+catalogue tests and this handoff are closed as one narrow repair commit. The
+exact repair commit is the Git HEAD containing this handoff.
 
 ## Proof summary
 
-Bounded disposable executable proof reproduced the old defects and proved the repaired behavior:
+RED was reproduced against a disposable database migrated through 058: the
+canonical parent-terminal reconciliation failed on the Migration-055 trigger
+and the transaction left the parent and frozen pair unchanged.
 
-- baseline PLANNED/RUNNING-only selector missed `PAIR_READY`;
-- repaired exact-owner selector finds it;
-- pre-cancellation active-work truth is dirty;
-- cancellation changes only `attempt_state` and `updated_at`;
-- `EXACT_PAIR_FROZEN` and original `terminal_at` remain unchanged;
-- exact-two item evidence, source links and succeeded Scheduler job remain unchanged;
+GREEN proof establishes:
+
+- full fresh migration succeeds through `59 / 059`;
+- exact 58 -> 59 upgrade applies only the additive migration;
+- the migration itself logically rewrites no existing row;
+- canonical parent-terminal reconciliation performs
+  `PAIR_READY -> CANCELLED`;
+- only `attempt_state` and `updated_at` change;
+- `EXACT_PAIR_FROZEN`, original `terminal_at`, null consumption fields, exact
+  frozen items and source links remain unchanged;
+- `PAIR_READY -> CONSUMED` remains lawful;
+- invalid `PAIR_READY`, terminal `CANCELLED`, and terminal `CONSUMED`
+  transitions remain blocked;
+- generic terminalization still rejects arbitrary `PAIR_READY` cancellation;
+- parent ownership mismatch fails closed;
 - no Cycle 2 is created;
-- post-cancellation active-work truth is clean;
-- second reconciliation is a no-op;
-- generic terminalizer still rejects `PAIR_READY -> CANCELLED`;
-- malformed/mismatched ownership shapes fail closed.
+- existing PLANNED/RUNNING behavior remains unchanged;
+- item and source-link immutability remains unchanged;
+- `PRAGMA integrity_check = ok`;
+- `PRAGMA foreign_key_check` returns zero rows.
 
-Repository diff from the exact baseline is limited to the three repair modules, two focused tests, and this handoff. No migration, Source Governor, Central Scheduler owner, authorization, or capability-unlock files changed.
+Focused directly affected verification: `97 passed, 14 subtests passed`.
+Compile/import and `git diff --check` also pass.
 
-GitHub Actions did not execute in the connected environment and the local sandbox could not reach GitHub, so no repository pytest run is represented as having occurred. The proof above was executed against disposable SQLite state using the exact repaired ownership/state predicates, with GitHub commit/diff verification.
+## Exact next permitted lane
 
-## Exact next permitted action
+`V2-9.8B Authoritative Migration 059 Application Readiness and Execution`
 
-`V2-9.8B One-Time Historical PAIR_READY Residual Reconciliation`
+That lane must first byte-back up the authoritative database and restore-rehearse
+the exact 58 -> 59 upgrade on a disposable database. Only after those gates pass
+may it apply canonical Migration 059 to the authoritative database exactly once.
 
-Before mutation, re-read the exact authoritative residue and current DB identity, create/verify a disposable backup, and prove the target still has the frozen unconsumed shape. If readiness passes, invoke the repaired canonical terminal owner exactly once, then verify:
-
-- `PAIR_READY -> CANCELLED`
-- frozen evidence preserved
-- no Cycle 2 / restart / resume / successor
-- active-work / strict zero-state clean
-- SQLite integrity and foreign keys clean
-- migration remains 58/058
-- record authoritative DB SHA before/after.
-
-Do **not** create or consume a fresh 4/2/2 authorization in that reconciliation lane.
+That next lane does **not** authorize reconciling the historical `PAIR_READY`
+residual, creating an authorization, running Printer/provider/RPC/WebSocket/
+Scheduler runtime, or applying any mutation other than canonical Migration 059.
 
 ## Locks
 
-Solana-only; Solana memecoin-only; paper-only. No live wallet/private keys/signing/real funds/live execution. No paid API dependency. No scoring/ranking/confidence/weighted logic. No embeddings/vectors. No Source Governor or Central Scheduler bypass. No dirty-memory retrieval/decision use. Retrieval, BUY/SELL/HOLD, positions, trade events, paper audits and PnL remain locked. `WINDOW_5M_MICRO_EVENT` remains support-only. 12h/24h remain locked. No Migration 059.
+Solana-only; Solana memecoin-only; paper-only. No live wallet/private keys/
+signing/real funds/live execution. No paid API dependency. No scoring/ranking/
+confidence/weighted logic. No embeddings/vectors. No Source Governor or Central
+Scheduler bypass. No dirty-memory retrieval/decision use. Retrieval,
+BUY/SELL/HOLD, positions, trade events, paper audits and PnL remain locked.
+`WINDOW_5M_MICRO_EVENT` remains support-only. 12h/24h remain locked.
 
 The active authority stack wins any conflict with this handoff.
