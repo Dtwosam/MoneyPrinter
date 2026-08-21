@@ -4,192 +4,218 @@ Date: 2026-08-21
 
 ## Current lane
 
-`V2-9.8B Authoritative Migration 059 Application Readiness and Execution`
+`V2-9.8B Historical PAIR_READY Residual Reconciliation Readiness and Execution`
 
 Status: `CLOSED_PASS`
 
 Verdict:
 
-`V2_9_8B_AUTHORITATIVE_MIGRATION_059_APPLICATION_PASS`
+`V2_9_8B_HISTORICAL_PAIR_READY_RESIDUAL_RECONCILIATION_PASS`
 
-## Exact branch and implementation authority
+## Exact Git boundary
 
 - branch: `agent/v2-9-8b-pair-ready-parent-terminal-cancellation-repair`
-- exact committed HEAD: `ec9f976a9ba115949926d54c2b53013622570690`
-- commit: `Align PAIR_READY cancellation with durable transition contract`
-- canonical migration applied:
-  `059_pair_ready_parent_terminal_cancellation_transition.sql`
-- application owner: `printer_v1.db.migrate.apply_migrations`
-- authoritative application invocations: exactly `1`
-- manual/ad-hoc SQL application: **NO**
+- reconciliation starting HEAD:
+  `26877ae572f479cf3de609e247b58e7d86ab7b63`
+- starting commit: `Close authoritative Migration 059 application lane`
+- implementation authority beneath that handoff:
+  `ec9f976a9ba115949926d54c2b53013622570690`
+- reconciliation closeout: the commit containing this handoff
 
-The local committed HEAD was preserved. It was not replaced with an older
-remote state. The tracked tree and index were clean at every pre-application
-Git gate; only preserved historical operator evidence and the current Migration
-059 evidence package were untracked.
+The tracked tree and index were clean at readiness, immediately before the
+authoritative reconciliation, and after authoritative proof. Existing operator
+evidence remained untracked and was not staged.
 
-## Authoritative database result
+## Exact authoritative reconciliation
 
 Authoritative database:
 
 `data/printer_v1.sqlite3`
 
-Before application:
-
-- SHA-256:
-  `790eedb25d98534aab8521c20f952500d471185e59342ec2ea7e866d667532b8`
-- size: `113664000`
-- migration state: `58 / 058_direct_pump_migration_cursor.sql`
-
-After application:
-
-- SHA-256:
-  `357a1f73a6cce219ce6e431bda8d79e5117973e46d81ce42d5a158c54e5dd96f`
-- size: `113664000`
-- migration state:
-  `59 / 059_pair_ready_parent_terminal_cancellation_transition.sql`
-- Migration 059 ledger rows: exactly `1`
-- ledger applied at: `2026-08-21 10:02:47`
-- `PRAGMA integrity_check`: `ok`
-- `PRAGMA foreign_key_check`: `0` rows
-- SQLite sidecars after application: `0`
-- authoritative DB open handles after application: `0`
-- active Printer runtime processes after application: `0`
-- active Scheduler jobs/locks after application: `0`
-
-The live `printer_pre_admission_attempt_transition` trigger is byte-logically
-equivalent to the exact committed Migration 059 definition. It preserves
-`PAIR_READY -> CONSUMED`, adds exactly `PAIR_READY -> CANCELLED`, and broadens
-no other transition.
-
-## Backup and disposable restore proof
-
-The migration-58 rollback backup is outside the repository and must remain
-preserved:
-
-`/Users/Dtwo1/PrinterOperations/v2-9-8/migration-059-authoritative-application/MIGRATION_059_20260821T095456Z/authoritative-pre-059.sqlite3`
-
-Backup facts:
-
-- SHA-256:
-  `790eedb25d98534aab8521c20f952500d471185e59342ec2ea7e866d667532b8`
-- size: `113664000`
-- byte-identical to the exact authoritative migration-58 pre-state: **YES**
-- preserved after application: **YES**
-
-Disposable restore:
-
-`/Users/Dtwo1/PrinterOperations/v2-9-8/migration-059-authoritative-application/MIGRATION_059_20260821T095456Z/disposable/migration-059-rehearsal.sqlite3`
-
-The canonical repository-owned operational backup/restore preflight began from
-the exact byte-identical migration-58 backup and applied exactly the one pending
-Migration 059 on the disposable restore. Rehearsal reached `59 / 059`, integrity
-was `ok`, foreign-key violations were `0`, every non-ledger table row hash was
-unchanged, and the exact target/parent/Scheduler evidence remained invariant.
-
-## Historical PAIR_READY invariance
-
 Target attempt:
 
 `pre-admission:20260820T214948Z-b57fd12acbcc-campaign:20260820T214948Z-b57fd12acbcc-campaign-run:bfd8b04a-b7a0-427b-9a24-4bf2b837c9b3:c0002`
 
-The lane intentionally did **not** reconcile it. It remains:
+Canonical owner:
 
-- `attempt_state = PAIR_READY`
+`printer_v1.operator_cli.unified_terminal_closure.reconcile_campaign_terminal`
+
+Exact historical bindings:
+
+- campaign: `20260820T214948Z-b57fd12acbcc-campaign`
+- campaign run: `20260820T214948Z-b57fd12acbcc-campaign-run`
+- Cycle 1: `20260820T214948Z-b57fd12acbcc-cycle`
+- authoritative factory run: `bfd8b04a-b7a0-427b-9a24-4bf2b837c9b3`
+- durable parent terminal cause:
+  `OPERATIONAL_CAMPAIGN_FAILED:FourTokenFactoryAdapterError`
+- reconciliation timestamp:
+  `2026-08-20T22:06:01.521522+00:00`
+
+The canonical owner was invoked twice on a disposable restore to prove the
+transition and idempotency, then exactly once on the authoritative database.
+No direct SQL update, trigger bypass/drop, manual attempt mutation, migration
+change, retry, resume, restart, or successor was used.
+
+## Exact logical mutation
+
+Only the target row in `printer_pre_admission_discovery_attempts` changed:
+
+- `attempt_state`: `PAIR_READY` -> `CANCELLED`
+- `updated_at`: `2026-08-20T22:05:50.674845+00:00` ->
+  `2026-08-20T22:06:01.521522+00:00`
+
+Every other target column remained identical:
+
 - `first_terminal_cause = EXACT_PAIR_FROZEN`
 - `terminal_at = 2026-08-20T22:05:50.674845+00:00`
 - `consumed_cycle_id = NULL`
 - `consumed_at = NULL`
-- frozen item rows: exactly `2`, byte-logically unchanged
-- source-link rows: exactly `13`, byte-logically unchanged
-- attributable historical Scheduler rows: `55`, byte-logically unchanged
-- parent campaign/run/Cycle-1 terminal evidence: unchanged
-- Cycle-2 ownership rows: `0`
 
-All `116` non-ledger tables were compared with deterministic row counts and row
-hashes before and after. No historical table data changed. Only the canonical
-migration ledger and transition-trigger schema changed.
+Deterministic all-table row-count/hash comparison proved that the target attempt
+table was the only historical business-data table whose logical hash changed.
+Its row count did not change.
+
+## Database identity and health
+
+Before reconciliation:
+
+- SHA-256:
+  `357a1f73a6cce219ce6e431bda8d79e5117973e46d81ce42d5a158c54e5dd96f`
+- size: `113664000`
+
+After reconciliation:
+
+- SHA-256:
+  `87dac0d15ee32940f7dda30d0704dc252ff540c9d6f1ff6a3857e8f598c9f2fa`
+- size: `113664000`
+- migration:
+  `59 / 059_pair_ready_parent_terminal_cancellation_transition.sql`
+- live transition trigger: exact committed Migration 059 definition
+- `PRAGMA integrity_check`: `ok`
+- `PRAGMA foreign_key_check`: `0` rows
+- SQLite sidecars: `0`
+- authoritative DB open handles: `0`
+- active Printer/Scheduler runtime processes: `0`
+
+## Frozen evidence and parent-history preservation
+
+- frozen item rows: exactly `2`, slot ordinals `1,2`, every column unchanged
+- source-link rows: exactly `13`, every column unchanged
+- exact mint/pair/evidence payloads and hashes: unchanged
+- pinned historical Scheduler rows: exactly `55`, every row unchanged
+- associated Scheduler job `2393`: remained `SUCCEEDED`, unchanged
+- campaign terminal state/cause/timestamp: unchanged
+- campaign-run terminal state/cause/timestamp: unchanged
+- Cycle-1 terminal state/cause/timestamp: unchanged
+- authoritative factory-run terminal state: unchanged
+- Cycle-2 ownership rows: `0`
+- Cycle-2 token slots: `0`
+- consumption ownership: not created
+
+## Active-work and strict zero-state result
+
+Before reconciliation, the exact PAIR_READY attempt was the sole strict
+zero-state blocker:
+
+- active pre-admission attempts: `1`
+- every other canonical zero-state domain: `0`
+- exact campaign active-work clean terminal: `false`
+
+After reconciliation:
+
+- active pre-admission attempts: `0`
+- all other active campaign/run/cycle/Scheduler/discovery/factory/refresh/
+  supervision counts: `0`
+- exact campaign active-work clean terminal: `true`
+- canonical strict four-token zero-state: all `12` domains zero / `CLEAN`
+
+## Backup and recovery evidence
+
+The prior Migration-58 rollback backup remains preserved and unchanged:
+
+`/Users/Dtwo1/PrinterOperations/v2-9-8/migration-059-authoritative-application/MIGRATION_059_20260821T095456Z/authoritative-pre-059.sqlite3`
+
+- SHA-256:
+  `790eedb25d98534aab8521c20f952500d471185e59342ec2ea7e866d667532b8`
+
+The PASS rehearsal used this new byte-identical Migration-59 backup:
+
+`/Users/Dtwo1/PrinterOperations/v2-9-8/pair-ready-residual-reconciliation/RECONCILIATION_20260821T110736Z/authoritative-pre-reconciliation-059-verified.sqlite3`
+
+- SHA-256:
+  `357a1f73a6cce219ce6e431bda8d79e5117973e46d81ce42d5a158c54e5dd96f`
+- size: `113664000`
+- byte-identical to the authoritative PRE database: **YES**
+
+The initial readiness harness also published a byte-identical Migration-59
+backup at the same evidence root before its proof-population assertion stopped.
+It remains preserved; neither backup was overwritten or deleted.
+
+Disposable PASS restore:
+
+`/Users/Dtwo1/PrinterOperations/v2-9-8/pair-ready-residual-reconciliation/RECONCILIATION_20260821T110736Z/disposable/pair-ready-reconciliation-verified-rehearsal.sqlite3`
+
+The first canonical disposable call produced the exact target-only logical
+mutation. The second disposable call produced no logical mutation, new work,
+new cycle, Scheduler-state change, restart, or successor; zero-state remained
+clean.
 
 ## Capability and runtime boundary
 
-- historical `PAIR_READY` reconciliation: **NO**
-- authorization created: `0`
-- authorization consumed: `0`
-- Printer/provider/RPC/WebSocket runs: `0`
-- Source Governor runs: `0`
-- Scheduler runtime runs: `0`
-- campaigns created: `0`
-- Cycle 2 created: **NO**
-- source request/response/failure row deltas: all `0`
-- Scheduler job row delta: `0`
-- retrieval row deltas: `0`
-- paper-decision/audit row deltas: `0`
-- position/trade/paper-trade-audit row deltas: `0`
-- PnL activation: **NO**
+- authorization created/consumed: `0 / 0`
+- Printer/provider/RPC/WebSocket/Source Governor/Scheduler runtime: `0`
+- campaigns/Cycle 2 created: `0 / 0`
+- restart/resume/successor: **NO**
+- protected retrieval/decision/position/trade/audit table delta: `NONE`
+- wallet/signing/live execution: **NO**
 - 12h/24h activation: **NO**
-- live execution: **NO**
-
-The durable zero-state projection remains blocked specifically and only by the
-preserved unconsumed `PAIR_READY` authority. Every other active campaign, run,
-cycle, Scheduler work/job, discovery work, factory run/step, supervision, and
-pre-lifecycle refresh-work count is zero.
 
 ## Evidence package
 
-Application evidence:
+`operator-runs/v2-9-8b-pair-ready-residual-reconciliation/RECONCILIATION_20260821T110736Z/`
 
-`operator-runs/v2-9-8b-migration-059-application/MIGRATION_059_20260821T095456Z/`
+Create-once immutable evidence:
 
-Immutable receipts/snapshots:
+- `pre_reconciliation_snapshot.json`
+- `backup_and_disposable_rehearsal.json`
+- `post_reconciliation_snapshot.json`
+- `reconciliation_receipt.json`
 
-- `pre_application_snapshot.json`
-- `backup_restore_rehearsal.json`
-- `post_application_snapshot.json`
-- `migration_059_application_receipt.json`
+Receipt SHA-256:
 
-The receipt verdict is:
-
-`V2_9_8B_AUTHORITATIVE_MIGRATION_059_APPLICATION_PASS`
+`cbdd06a2cd33d1f1917c1b26210f9c27dc4a8b8384004cdb6462eca476544022`
 
 ## Verification summary
 
-- read-only dry gate: PASS after correcting the receipt harness's initial
-  over-broad Cycle-2 ownership classifier;
-- lane-owned focused tests: `89 passed`;
-- broader focused run: `97 passed`, `1` unrelated pre-existing failure;
-- the unrelated failure is
-  `Phase1DatabaseSchemaTest.test_migration_runner_is_idempotent`, whose
-  historical expected list has remained pinned to migrations 001-034 since
-  2026-07-21; no test or product code was changed for it;
-- disposable exact 58 -> 59 rehearsal: PASS;
-- authoritative exact 58 -> 59 application: PASS;
-- post-application schema/health/historical-invariance/capability proof: PASS.
+- pre-mutation exact SHA/schema/trigger/health/runtime/target readiness: PASS
+- canonical operational backup/restore preflight: PASS
+- disposable canonical transition and second-call idempotency: PASS
+- authoritative canonical invocation count: exactly `1`
+- deterministic logical mutation-scope proof: PASS
+- independent durable target/Cycle-2/schema/integrity/FK readback: PASS
+- canonical strict zero-state projection: all `12` domains zero
+- focused repair/cleanup/backup regression tests: `36 passed`
 
 ## Functionality Risks / Setbacks / Efficiency Blockers
 
-- The preserved `PAIR_READY` row still carries unconsumed admission authority
-  and correctly blocks zero state. This is expected and is the exact subject of
-  the next separately scoped lane.
-- The migration-58 rollback backup is required recovery evidence. Do not delete,
-  overwrite, or repurpose it.
-- The stale Phase-1 hard-coded migration-list test is unrelated historical test
-  debt. It does not invalidate canonical 59/059 readiness and was not repaired
-  in this narrow lane.
-- No reconciliation, campaign, authorization, retry, provider/RPC operation, or
-  downstream capability is authorized by this PASS.
+- Two evidence-driver assertions stopped before authoritative mutation. The
+  first expected a separate `= 'CONSUMED'` clause although Migration 059 uses
+  one exact `IN` clause. The second compared dynamic Scheduler ownership
+  populations after the terminal attempt lawfully left active-work scope; the
+  underlying 55 pinned Scheduler rows were unchanged. Both evidence-only
+  classifications were corrected before the fresh successful rehearsal.
+- The first and second new Migration-59 backups and disposable rehearsal files
+  remain preserved. Do not overwrite, delete, or repurpose them.
+- This PASS establishes historical cleanup and zero-state only. It is not an
+  authorization and permits no campaign, provider call, or runtime.
 
 ## Exact next permitted lane
 
-`V2-9.8B Historical PAIR_READY Residual Reconciliation Readiness and Execution`
+`V2-9.8B Fresh 4/2/2 Authorization Readiness Audit`
 
-That lane must separately re-prove exact branch/HEAD, authoritative `59 / 059`
-state, backup/recovery readiness, runtime quiescence, exact residual ownership,
-and its own approved reconciliation contract before any mutation.
-
-Do not perform the reconciliation automatically. Do not create or consume an
-authorization, run Printer/providers/RPC/WebSockets/Scheduler runtime, create
-Cycle 2, start a campaign, reuse historical authority, or unlock retrieval or
-financial capabilities.
+That next lane is **READINESS ONLY**. Do not create or consume an authorization,
+start a campaign, contact providers/RPC/WebSockets, or run Printer/Scheduler
+runtime as part of this closeout.
 
 ## Locks
 
