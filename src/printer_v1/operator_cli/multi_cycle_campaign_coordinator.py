@@ -777,6 +777,29 @@ def admit_two_token_cycle_from_attempt(
         ):
             raise MultiCycleCoordinatorError("pre-admission attempt ownership mismatch")
         items = load_pre_admission_pair(connection, attempt_id=attempt_id)
+        # Shared Cycle-N cadence activation: claim exact tracking authority and
+        # project token_status before immutable slot INSERT binds tracking_queue_id.
+        from printer_v1.operator_cli.cadence_authority import (
+            CadenceAuthorityError,
+            claim_tracking_authority_for_slot_insert,
+        )
+
+        try:
+            claimed_queue_ids = tuple(
+                claim_tracking_authority_for_slot_insert(
+                    connection,
+                    token_row_id=int(item.token_row_id),
+                    pair_row_id=int(item.pair_row_id),
+                    tracking_lane="TRACK_NORMAL",
+                    now=now,
+                    priority_reason="later_cycle_slot_tracking_activation",
+                )
+                for item in items
+            )
+        except CadenceAuthorityError as exc:
+            raise MultiCycleCoordinatorError(
+                f"later-cycle tracking activation failed: {exc}"
+            ) from exc
         slots = tuple(
             {
                 "token_slot_id": cycle_scoped_token_slot_id(
@@ -790,10 +813,10 @@ def admit_two_token_cycle_from_attempt(
                 "pair_identity": item.pair_identity,
                 "pair_row_id": item.pair_row_id,
                 "lifecycle_identity": item.lifecycle_identity,
-                "tracking_queue_id": None,
+                "tracking_queue_id": queue_id,
                 "replacement_predecessor_slot_id": None,
             }
-            for item in items
+            for item, queue_id in zip(items, claimed_queue_ids, strict=True)
         )
         result = _admit_two_token_cycle_in_transaction(
             connection,

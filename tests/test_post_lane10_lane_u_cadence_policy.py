@@ -172,9 +172,17 @@ class CadencePolicyLookupTests(unittest.TestCase):
         self.assertEqual(p.max_clean_snapshot_gap_seconds, 240)
 
     def test_window_5m_support_only(self):
-        p = get_policy("WINDOW_5M_MICRO_EVENT", None)
+        p = get_policy("WINDOW_5M_MICRO_EVENT", "TRACK_FAST")
         self.assertIsNotNone(p)
         self.assertTrue(p.support_only)
+
+    def test_window_15m_none_lane_has_no_policy(self):
+        # Design Lane 1: missing lane must not fall back to TRACK_FAST by order.
+        self.assertIsNone(get_policy("WINDOW_15M", None))
+        self.assertIsNone(get_policy("WINDOW_5M_MICRO_EVENT", None))
+        self.assertIsNone(get_policy("WINDOW_1H", None))
+        self.assertIsNone(get_policy("WINDOW_12H", None))
+        self.assertIsNone(get_policy("WINDOW_24H", None))
 
     def test_window_5m_disabled_for_real_collection(self):
         p = get_policy("WINDOW_5M_MICRO_EVENT", "TRACK_FAST")
@@ -203,12 +211,12 @@ class CadencePolicyLookupTests(unittest.TestCase):
         self.assertFalse(p.enabled_for_real_collection)
 
     def test_window_12h_disabled(self):
-        p = get_policy("WINDOW_12H", None)
+        p = get_policy("WINDOW_12H", "TRACK_FAST")
         self.assertIsNotNone(p)
         self.assertFalse(p.enabled_for_real_collection)
 
     def test_window_24h_disabled(self):
-        p = get_policy("WINDOW_24H", None)
+        p = get_policy("WINDOW_24H", "TRACK_NORMAL")
         self.assertIsNotNone(p)
         self.assertFalse(p.enabled_for_real_collection)
 
@@ -349,7 +357,7 @@ class CadencePolicyEvaluateWidGapTests(unittest.TestCase):
 
     def test_support_only_blocked(self):
         snaps = [_snap(_WIN_START), _snap(_ts(_WIN_START, 30))]
-        p = get_policy("WINDOW_5M_MICRO_EVENT", None)
+        p = get_policy("WINDOW_5M_MICRO_EVENT", "TRACK_FAST")
         # 5m is disabled for real collection (and support_only); always BLOCKED
         ev = evaluate_cadence_policy(snaps, _WIN_START, _ts(_WIN_START, 30), p)
         self.assertEqual(ev.cadence_policy_status, CADENCE_POLICY_BLOCKED)
@@ -395,15 +403,190 @@ class _LaneQCoverageBase(unittest.TestCase):
         )
         return int(cur.lastrowid)
 
-    def _insert_snapshot(self, conn, token_id: int, pair_id: int, captured_at: str) -> int:
+    def _insert_snapshot(
+        self,
+        conn,
+        token_id: int,
+        pair_id: int,
+        captured_at: str,
+        *,
+        tracking_lane: str = "TRACK_FAST",
+    ) -> int:
         cur = conn.execute(
             "INSERT INTO printer_token_snapshots"
             " (token_id, pair_id, captured_at, tracking_lane, snapshot_mode,"
             "  price_usd, source_status, data_quality_label, created_at)"
-            " VALUES (?, ?, ?, 'TRACK_FAST', 'LIVE', 0.0001, 'COMPLETE', 'CLEAN_DATA', ?)",
-            (token_id, pair_id, captured_at, _NOW_STR),
+            " VALUES (?, ?, ?, ?, 'LIVE', 0.0001, 'COMPLETE', 'CLEAN_DATA', ?)",
+            (token_id, pair_id, captured_at, tracking_lane, _NOW_STR),
         )
         return int(cur.lastrowid)
+
+    def _bind_campaign_cadence_authority(
+        self,
+        conn,
+        *,
+        token_id: int,
+        pair_id: int,
+        memory_window_id: int,
+        tracking_lane: str,
+    ) -> None:
+        """Bind exact campaign-slot→queue authority required by Design Lane 1."""
+        from printer_v1.operator_cli.campaign_ownership import create_cycle_with_two_slots
+
+        if conn.execute(
+            "SELECT 1 FROM printer_memory_factory_campaigns WHERE campaign_id='camp-q'"
+        ).fetchone() is None:
+            conn.execute(
+                "INSERT INTO printer_memory_factory_campaigns("
+                "campaign_id,campaign_state,db_mode,db_target_identity,policy_version) "
+                "VALUES ('camp-q','RUNNING','OPERATIONAL_PERSISTENT','db-q','policy-q')"
+            )
+            conn.execute(
+                "INSERT INTO printer_memory_factory_campaign_configurations("
+                "configuration_id,campaign_id,configuration_hash,configuration_json,"
+                "launch_provenance_json) VALUES ('cfg-q','camp-q',?,?,?)",
+                ("b" * 64, "{}", "{}"),
+            )
+            conn.execute(
+                "INSERT INTO printer_memory_factory_runs("
+                "run_id,run_status,window_kind,db_mode,config_hash,config_json,started_at) "
+                "VALUES ('factory-q','RUNNING','WINDOW_15M','OPERATIONAL_PERSISTENT',?,?,?)",
+                ("b" * 64, "{}", _NOW_STR),
+            )
+            conn.execute(
+                "INSERT INTO printer_memory_factory_campaign_runs("
+                "run_id,campaign_id,run_ordinal,run_state,authoritative_run_id,"
+                "created_at,updated_at) VALUES ('run-q','camp-q',1,'RUNNING','factory-q',?,?)",
+                (_NOW_STR, _NOW_STR),
+            )
+        companion_token = int(token_id) + 10_000
+        companion_pair = int(pair_id) + 10_000
+        if conn.execute(
+            "SELECT 1 FROM printer_tokens WHERE id=?", (companion_token,)
+        ).fetchone() is None:
+            conn.execute(
+                "INSERT INTO printer_tokens"
+                " (id, token_mint, chain, token_status, created_at, updated_at)"
+                " VALUES (?, ?, 'solana', ?, ?, ?)",
+                (
+                    companion_token,
+                    f"companion-{companion_token}",
+                    tracking_lane,
+                    _NOW_STR,
+                    _NOW_STR,
+                ),
+            )
+            conn.execute(
+                "INSERT INTO printer_pairs"
+                " (id, token_id, pair_address, base_token_mint, created_at, updated_at)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    companion_pair,
+                    companion_token,
+                    f"companion-pair-{companion_pair}",
+                    f"companion-{companion_token}",
+                    _NOW_STR,
+                    _NOW_STR,
+                ),
+            )
+        queue_id = int(
+            conn.execute(
+                """
+                INSERT INTO printer_tracking_queue(
+                    token_id, pair_id, tracking_lane, tracking_action, priority_reason,
+                    next_check_at, queue_status, source_status, data_quality_label
+                ) VALUES (?, ?, ?, ?, 'lane-q-test', ?, 'ACTIVE', 'COMPLETE', 'CLEAN_DATA')
+                """,
+                (
+                    token_id,
+                    pair_id,
+                    tracking_lane,
+                    (
+                        "PROMOTE_TO_TRACK_FAST"
+                        if tracking_lane == "TRACK_FAST"
+                        else "PROMOTE_TO_TRACK_NORMAL"
+                    ),
+                    _NOW_STR,
+                ),
+            ).lastrowid
+        )
+        companion_queue = int(
+            conn.execute(
+                """
+                INSERT INTO printer_tracking_queue(
+                    token_id, pair_id, tracking_lane, tracking_action, priority_reason,
+                    next_check_at, queue_status, source_status, data_quality_label
+                ) VALUES (?, ?, ?, ?, 'lane-q-test', ?, 'ACTIVE', 'COMPLETE', 'CLEAN_DATA')
+                """,
+                (
+                    companion_token,
+                    companion_pair,
+                    tracking_lane,
+                    (
+                        "PROMOTE_TO_TRACK_FAST"
+                        if tracking_lane == "TRACK_FAST"
+                        else "PROMOTE_TO_TRACK_NORMAL"
+                    ),
+                    _NOW_STR,
+                ),
+            ).lastrowid
+        )
+        cycle_id = f"cycle-q-{memory_window_id}"
+        create_cycle_with_two_slots(
+            conn,
+            campaign_id="camp-q",
+            run_id="run-q",
+            cycle_id=cycle_id,
+            cycle_ordinal=1 + int(memory_window_id),
+            slots=(
+                {
+                    "token_slot_id": f"{cycle_id}-1",
+                    "slot_ordinal": 1,
+                    "token_identity": f"token-{token_id}",
+                    "token_row_id": token_id,
+                    "mint_identity": _MINT,
+                    "pair_identity": _PAIR_ADDR,
+                    "pair_row_id": pair_id,
+                    "lifecycle_identity": f"lifecycle-{token_id}",
+                    "tracking_queue_id": queue_id,
+                },
+                {
+                    "token_slot_id": f"{cycle_id}-2",
+                    "slot_ordinal": 2,
+                    "token_identity": f"token-{companion_token}",
+                    "token_row_id": companion_token,
+                    "mint_identity": f"companion-{companion_token}",
+                    "pair_identity": f"companion-pair-{companion_pair}",
+                    "pair_row_id": companion_pair,
+                    "lifecycle_identity": f"lifecycle-{companion_token}",
+                    "tracking_queue_id": companion_queue,
+                },
+            ),
+            now=_NOW_STR,
+        )
+        conn.execute(
+            """
+            INSERT INTO printer_memory_factory_campaign_windows(
+                window_id, campaign_id, run_id, cycle_id, token_slot_id,
+                token_row_id, pair_row_id, window_kind, window_state,
+                root_15m_lifecycle_identity, memory_window_row_id,
+                checkpoint_cutoff, support_only, created_at, updated_at
+            ) VALUES (?, 'camp-q', 'run-q', ?, ?, ?, ?, 'WINDOW_15M', 'AUDITING',
+                      ?, ?, ?, 0, ?, ?)
+            """,
+            (
+                f"cw-{cycle_id}-1",
+                cycle_id,
+                f"{cycle_id}-1",
+                token_id,
+                pair_id,
+                f"lifecycle-{token_id}",
+                memory_window_id,
+                _WIN_END,
+                _NOW_STR,
+                _NOW_STR,
+            ),
+        )
 
     def _insert_window(
         self,
@@ -453,12 +636,17 @@ class _LaneQCoverageBase(unittest.TestCase):
         interval_seconds: int = 60,
         count: int = 16,
         base: str = _WIN_START,
+        tracking_lane: str = "TRACK_FAST",
     ) -> tuple[int, int]:
         """Insert evenly-spaced snapshots; return (first_id, last_id)."""
         first_id = last_id = None
         for i in range(count):
             sid = self._insert_snapshot(
-                conn, token_id, pair_id, _ts(base, i * interval_seconds)
+                conn,
+                token_id,
+                pair_id,
+                _ts(base, i * interval_seconds),
+                tracking_lane=tracking_lane,
             )
             if first_id is None:
                 first_id = sid
@@ -477,7 +665,12 @@ class LaneQCoverageEvenCoverageTests(_LaneQCoverageBase):
             interval = policy.target_snapshot_interval_seconds
             count = policy.minimum_required_snapshots
             first_id, last_id = self._insert_even_snapshots(
-                conn, tid, pid, interval_seconds=interval, count=count
+                conn,
+                tid,
+                pid,
+                interval_seconds=interval,
+                count=count,
+                tracking_lane=tracking_lane,
             )
             wid = self._insert_window(
                 conn, tid, pid,
@@ -485,6 +678,13 @@ class LaneQCoverageEvenCoverageTests(_LaneQCoverageBase):
                 snapshot_end_id=last_id,
                 window_start_at=_WIN_START,
                 window_end_at=_ts(_WIN_START, (count - 1) * interval),
+            )
+            self._bind_campaign_cadence_authority(
+                conn,
+                token_id=tid,
+                pair_id=pid,
+                memory_window_id=wid,
+                tracking_lane=tracking_lane,
             )
             conn.commit()
             return wid
@@ -518,12 +718,23 @@ class LaneQCoverageWideGapTests(_LaneQCoverageBase):
         try:
             tid = self._insert_token(conn, token_status=tracking_lane)
             pid = self._insert_pair(conn, tid)
-            sid_start = self._insert_snapshot(conn, tid, pid, _WIN_START)
-            sid_end = self._insert_snapshot(conn, tid, pid, _WIN_END)
+            sid_start = self._insert_snapshot(
+                conn, tid, pid, _WIN_START, tracking_lane=tracking_lane
+            )
+            sid_end = self._insert_snapshot(
+                conn, tid, pid, _WIN_END, tracking_lane=tracking_lane
+            )
             wid = self._insert_window(
                 conn, tid, pid,
                 snapshot_start_id=sid_start,
                 snapshot_end_id=sid_end,
+            )
+            self._bind_campaign_cadence_authority(
+                conn,
+                token_id=tid,
+                pair_id=pid,
+                memory_window_id=wid,
+                tracking_lane=tracking_lane,
             )
             conn.commit()
             return wid
@@ -875,15 +1086,15 @@ class DisabledWindowKindTests(unittest.TestCase):
         self.assertEqual(ev.cadence_policy_status, CADENCE_POLICY_BLOCKED)
 
     def test_12h_any_blocked(self):
-        ev = self._eval_with_snaps("WINDOW_12H", None)
+        ev = self._eval_with_snaps("WINDOW_12H", "TRACK_FAST")
         self.assertEqual(ev.cadence_policy_status, CADENCE_POLICY_BLOCKED)
 
     def test_24h_any_blocked(self):
-        ev = self._eval_with_snaps("WINDOW_24H", None)
+        ev = self._eval_with_snaps("WINDOW_24H", "TRACK_NORMAL")
         self.assertEqual(ev.cadence_policy_status, CADENCE_POLICY_BLOCKED)
 
     def test_5m_support_blocked(self):
-        p = get_policy("WINDOW_5M_MICRO_EVENT", None)
+        p = get_policy("WINDOW_5M_MICRO_EVENT", "TRACK_FAST")
         snaps = [_snap(_WIN_START), _snap(_ts(_WIN_START, 30))]
         ev = evaluate_cadence_policy(snaps, _WIN_START, _ts(_WIN_START, 30), p)
         self.assertEqual(ev.cadence_policy_status, CADENCE_POLICY_BLOCKED)
@@ -922,7 +1133,7 @@ class TimingModelPolicyFieldTests(unittest.TestCase):
         self.assertEqual(p.minimum_required_snapshots, 9)
 
     def test_5m_window_close_interval(self):
-        p = get_policy("WINDOW_5M_MICRO_EVENT", None)
+        p = get_policy("WINDOW_5M_MICRO_EVENT", "TRACK_FAST")
         self.assertEqual(p.window_close_interval_seconds, 300)
 
 
@@ -1157,8 +1368,15 @@ class LaneQProductionModeTests(_LaneQCoverageBase):
         verdict = r["window_verdicts"][0]
         blocked_reasons = verdict["blocked_reasons"]
         self.assertTrue(
-            any("production_mode_missing_coverage" in r for r in blocked_reasons),
-            f"Expected 'production_mode_missing_coverage' in blocked_reasons, got: {blocked_reasons}",
+            any(
+                (
+                    "production_mode_missing_coverage" in reason
+                    or "CAMPAIGN_WINDOW_BINDING_MISSING" in reason
+                    or "TRACKING_QUEUE_BINDING_MISSING" in reason
+                )
+                for reason in blocked_reasons
+            ),
+            f"Expected cadence-authority or production coverage block, got: {blocked_reasons}",
         )
 
     def test_real_snapshot_window_production_mode_evaluates(self):
@@ -1168,12 +1386,19 @@ class LaneQProductionModeTests(_LaneQCoverageBase):
             tid = self._insert_token(conn)
             pid = self._insert_pair(conn, tid)
             first_id, last_id = self._insert_even_snapshots(
-                conn, tid, pid, interval_seconds=60, count=16
+                conn, tid, pid, interval_seconds=60, count=16, tracking_lane="TRACK_FAST"
             )
             wid = self._insert_window(
                 conn, tid, pid,
                 snapshot_start_id=first_id,
                 snapshot_end_id=last_id,
+            )
+            self._bind_campaign_cadence_authority(
+                conn,
+                token_id=tid,
+                pair_id=pid,
+                memory_window_id=wid,
+                tracking_lane="TRACK_FAST",
             )
             conn.commit()
         finally:

@@ -298,19 +298,20 @@ def _terminalize_unstarted_cycle_after_materialization_failure(
         or str(cycle[0]) != "PLANNED"
         or len(slots) != 2
         or any(str(row[1]) != "SELECTED" for row in slots)
-        or any(row[2] is not None for row in slots)
         or windows != 0
         or work != 0
     ):
         raise ValueError("cycle-local materialization isolation preconditions failed")
     connection.execute("BEGIN IMMEDIATE")
     try:
+        # Tracking queue may already be insert-bound by shared Cycle-N cadence
+        # activation before materialization. Isolation still applies while no
+        # campaign windows / scheduler work exist.
         slot_update = connection.execute(
             """UPDATE printer_memory_factory_campaign_token_slots
                SET token_state='MANUAL_REVIEW',first_terminal_cause=?,
                    terminal_at=?,updated_at=?
-               WHERE cycle_id=? AND token_state='SELECTED'
-                 AND tracking_queue_id IS NULL""",
+               WHERE cycle_id=? AND token_state='SELECTED'""",
             (cause, timestamp, timestamp, cycle_id),
         )
         if slot_update.rowcount != 2:
@@ -475,6 +476,27 @@ def _run_four_token_admission_boundary(
             terminal_cause,
             cycle_id,
         )
+    # Admit already claimed/bound insert-time tracking authority. Require it
+    # again before WINDOW_15M opening so unbound slots cannot schedule.
+    from printer_v1.operator_cli.cadence_authority import (
+        CadenceAuthorityError,
+        require_cycle_slot_tracking_authorities,
+    )
+
+    try:
+        require_cycle_slot_tracking_authorities(
+            connection,
+            campaign_id=binding.campaign_id,
+            run_id=binding.campaign_run_id,
+            cycle_id=cycle_id,
+            tracking_lane="TRACK_NORMAL",
+            now=post_now,
+        )
+    except CadenceAuthorityError as exc:
+        raise ValueError(
+            "campaign slot missing exact tracking cadence authority before "
+            f"WINDOW_15M opening: {exc}"
+        ) from exc
     plan_opening(cycle_id=cycle_id, cycle_ordinal=2, now=post_now)
     return FourTokenAdmissionBoundaryResult(
         post_disposition, True, attempt_id, "CONSUMED", None, cycle_id
@@ -805,24 +827,44 @@ def _cycle_targets_for_factory(
 ) -> list[dict[str, Any]]:
     rows = conn.execute(
         "SELECT s.slot_ordinal,s.token_row_id AS token_id,s.pair_row_id AS pair_id,"
-        "s.mint_identity AS token_mint,s.pair_identity AS pair_address "
+        "s.mint_identity AS token_mint,s.pair_identity AS pair_address,"
+        "s.tracking_queue_id,q.tracking_lane,q.token_id AS queue_token_id,"
+        "q.pair_id AS queue_pair_id "
         "FROM printer_memory_factory_campaign_token_slots AS s "
+        "LEFT JOIN printer_tracking_queue AS q ON q.id = s.tracking_queue_id "
         "WHERE s.campaign_id=? AND s.run_id=? AND s.cycle_id=? "
         "ORDER BY s.slot_ordinal",
         (campaign_id, campaign_run_id, cycle_id),
     ).fetchall()
     if len(rows) != 2 or tuple(int(row[0]) for row in rows) != (1, 2):
         raise ValueError("proof cycle does not own exact two factory targets")
-    return [
-        {
-            "token_id": int(row[1]),
-            "pair_id": int(row[2]),
-            "token_mint": str(row[3]),
-            "pair_address": str(row[4]),
-            "tracking_lane": "TRACK_NORMAL",
-        }
-        for row in rows
-    ]
+    targets: list[dict[str, Any]] = []
+    for row in rows:
+        queue_id = row[5]
+        lane = None if row[6] is None else str(row[6])
+        if queue_id is None or lane not in {"TRACK_FAST", "TRACK_NORMAL"}:
+            raise ValueError(
+                "campaign slot missing exact tracking cadence authority before "
+                "WINDOW_15M opening"
+            )
+        if int(row[7]) != int(row[1]) or (
+            row[8] is not None and int(row[8]) != int(row[2])
+        ):
+            raise ValueError(
+                "campaign slot tracking queue identity mismatch before "
+                "WINDOW_15M opening"
+            )
+        targets.append(
+            {
+                "token_id": int(row[1]),
+                "pair_id": int(row[2]),
+                "token_mint": str(row[3]),
+                "pair_address": str(row[4]),
+                "tracking_lane": lane,
+                "tracking_queue_id": int(queue_id),
+            }
+        )
+    return targets
 
 
 def _cancel_discovery_handoffs(conn: sqlite3.Connection, discovery: dict[str, Any]) -> None:
@@ -884,9 +926,13 @@ def _insert_step_and_job(
             if target["tracking_lane"] == "TRACK_FAST"
             else JobKind.TRACK_NORMAL_FIRST_15M
         )
+    tracking_queue_id = target.get("tracking_queue_id")
     result, job_id = enqueue_job(
         conn, job_name=f"v2_4_{run_id}_{step_key}", job_kind=job_kind,
-        target_table="printer_tracking_queue", target_id=None,
+        target_table="printer_tracking_queue",
+        target_id=(
+            None if tracking_queue_id is None else int(tracking_queue_id)
+        ),
         scheduled_for=scheduled_for,
     )
     if result != LockResult.ACQUIRED or job_id is None:
@@ -7299,6 +7345,20 @@ def run_one_command_15m_factory(
                     raise ValueError(
                         "four-token Cycle-1 planning requires campaign/run/cycle identity"
                     )
+                from printer_v1.operator_cli.cadence_authority import (
+                    require_cycle_slot_tracking_authorities,
+                )
+
+                # Same Cycle-N authority gate as Cycle 2 / later: exact
+                # slot→queue→lane must already be insert-bound before opening.
+                require_cycle_slot_tracking_authorities(
+                    conn,
+                    campaign_id=str(campaign_id),
+                    run_id=str(campaign_run_id),
+                    cycle_id=str(cycle_id),
+                    tracking_lane="TRACK_NORMAL",
+                    now=_now(),
+                )
                 planning_targets = _cycle_targets_for_factory(
                     conn,
                     campaign_id=str(campaign_id),

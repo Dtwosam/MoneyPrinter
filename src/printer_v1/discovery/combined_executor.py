@@ -3908,6 +3908,9 @@ class CombinedPumpfunCampaignExecutor:
                 if fixtures.mode == "INITIAL":
                     raise CombinedDiscoveryError("CONFLICTING_SLOT")
             slot_id = existing_slot["token_slot_id"]
+            # tracking_queue_id is identity-immutable after insert (migration 032).
+            # Replacement into an existing slot cannot rebind queue authority here;
+            # fresh Cycle-N admission must bind tracking_queue_id at INSERT time.
 
         if fixtures.memory_activation_set is not None:
             selection_reason = MEMORY_OBSERVATION_SELECTION_REASON

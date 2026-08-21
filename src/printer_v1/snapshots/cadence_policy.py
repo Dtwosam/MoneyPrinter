@@ -291,25 +291,26 @@ def get_policy(
     window_kind: str,
     tracking_lane: str | None,
 ) -> SnapshotCadencePolicy | None:
-    """Return the matching policy or None. Exact lane first, then wildcard."""
-    lane = tracking_lane or _ANY_LANE
+    """Return the matching policy or None.
+
+    Exact lane first, then an explicit wildcard (``*``) row when present.
+    ``tracking_lane=None`` must NOT fall back to the first lane-specific policy
+    (historically TRACK_FAST by table order). Missing lane authority stays
+    unresolved so callers fail closed as UNKNOWN rather than silently binding
+    the wrong cadence thresholds.
+    """
+    if tracking_lane is None:
+        for p in _POLICIES:
+            if p.window_kind == window_kind and p.tracking_lane == _ANY_LANE:
+                return p
+        return None
+    lane = str(tracking_lane)
     for p in _POLICIES:
         if p.window_kind == window_kind and p.tracking_lane == lane:
             return p
     for p in _POLICIES:
         if p.window_kind == window_kind and p.tracking_lane == _ANY_LANE:
             return p
-    # Lane-specific-only window kinds (e.g. 5m FAST/NORMAL) have no wildcard row.
-    # A *lane-less* (None) lookup still resolves to the first lane policy so
-    # support-only / enabled checks work without a lane. This fallback fires
-    # ONLY when no lane was supplied — an explicit but unmapped lane string
-    # (e.g. a generic "TRACKING" token_status that is not a cadence lane) must
-    # resolve to None so coverage stays UNKNOWN rather than being force-fit to
-    # an arbitrary lane's thresholds. Explicit mapped lanes match above.
-    if tracking_lane is None:
-        for p in _POLICIES:
-            if p.window_kind == window_kind:
-                return p
     return None
 
 

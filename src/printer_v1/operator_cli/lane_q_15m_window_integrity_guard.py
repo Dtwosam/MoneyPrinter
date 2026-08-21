@@ -52,6 +52,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from printer_v1.operator_cli.cadence_authority import (
+    CADENCE_AUTHORITY_CONFLICT,
+    CADENCE_AUTHORITY_RESOLVED,
+    CADENCE_AUTHORITY_UNKNOWN,
+    resolve_campaign_slot_cadence_authority,
+)
 from printer_v1.snapshots.cadence_policy import (
     CADENCE_POLICY_BLOCKED,
     CADENCE_POLICY_DIRTY,
@@ -248,24 +254,6 @@ def _fetch_windows(
         conn.close()
 
 
-def _get_token_tracking_lane(db_path: str | Path, token_id: int | None) -> str | None:
-    """Look up the token's current lifecycle/tracking lane from printer_tokens."""
-    if token_id is None:
-        return None
-    try:
-        conn = sqlite3.connect(str(db_path))
-        try:
-            row = conn.execute(
-                "SELECT token_status FROM printer_tokens WHERE id = ? LIMIT 1",
-                (int(token_id),),
-            ).fetchone()
-            return str(row[0]) if row and row[0] else None
-        finally:
-            conn.close()
-    except Exception:
-        return None
-
-
 def _fetch_window_snapshots(
     db_path: str | Path,
     token_id: int | None,
@@ -282,7 +270,7 @@ def _fetch_window_snapshots(
         try:
             rows = conn.execute(
                 """
-                SELECT id, captured_at
+                SELECT id, captured_at, tracking_lane
                 FROM printer_token_snapshots
                 WHERE token_id = ?
                   AND COALESCE(pair_id, -1) = COALESCE(?, -1)
@@ -296,6 +284,41 @@ def _fetch_window_snapshots(
             conn.close()
     except Exception:
         return []
+
+
+def _resolve_window_cadence_lane(
+    db_path: str | Path,
+    window_row: dict[str, Any],
+    snapshots: list[dict[str, Any]],
+) -> tuple[str | None, str | None]:
+    """Resolve campaign-slot cadence authority for one memory window.
+
+    Returns ``(tracking_lane, blocked_reason)``. Missing or conflicting
+    authority fails closed; ``printer_tokens.token_status`` alone is never
+    sufficient authority and never silently becomes TRACK_FAST.
+    """
+    window_id = window_row.get("id")
+    if window_id is None:
+        return None, CADENCE_AUTHORITY_UNKNOWN
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        try:
+            resolution = resolve_campaign_slot_cadence_authority(
+                conn,
+                memory_window_row_id=int(window_id),
+                snapshots=snapshots,
+            )
+        finally:
+            conn.close()
+    except Exception:
+        return None, CADENCE_AUTHORITY_UNKNOWN
+
+    if resolution.status == CADENCE_AUTHORITY_RESOLVED:
+        return resolution.tracking_lane, None
+    if resolution.status == CADENCE_AUTHORITY_CONFLICT:
+        return None, resolution.reason_code or CADENCE_AUTHORITY_CONFLICT
+    return None, resolution.reason_code or CADENCE_AUTHORITY_UNKNOWN
 
 
 def _evaluate_coverage_for_window(
@@ -319,10 +342,57 @@ def _evaluate_coverage_for_window(
     window_start_at = window_row.get("window_start_at")
     window_end_at = window_row.get("window_end_at")
 
-    tracking_lane = _get_token_tracking_lane(db_path, token_id)
-    policy = get_policy(window_kind, tracking_lane)
     snapshots = _fetch_window_snapshots(db_path, token_id, pair_id, snap_start, snap_end)
+    tracking_lane, authority_reason = _resolve_window_cadence_lane(
+        db_path, window_row, snapshots
+    )
+    if authority_reason is not None and tracking_lane is None:
+        # Never fall through get_policy(None) → TRACK_FAST by table order.
+        conflict_reasons = {
+            CADENCE_AUTHORITY_CONFLICT,
+            "TOKEN_STATUS_CADENCE_CONFLICT",
+            "CADENCE_EVIDENCE_CONFLICT",
+            "CAMPAIGN_WINDOW_SLOT_IDENTITY_MISMATCH",
+            "TRACKING_QUEUE_IDENTITY_MISMATCH",
+        }
+        should_block = (
+            bool(snapshots)
+            or production_mode
+            or authority_reason in conflict_reasons
+        )
+        if not should_block:
+            # Preserve disposable zero-snapshot fixtures as UNKNOWN with no
+            # blocked_reason so integrity-only Lane K paths remain usable.
+            return evaluate_cadence_policy(
+                snapshots,
+                window_start_at,
+                window_end_at,
+                None,
+                production_mode=production_mode,
+                allow_disabled_policy_evaluation=allow_disabled_policy_evaluation,
+            )
+        return CadencePolicyEvaluation(
+            policy_found=False,
+            window_kind=str(window_kind),
+            tracking_lane=None,
+            enabled_for_real_collection=False,
+            support_only=False,
+            target_snapshot_interval_seconds=None,
+            dirty_above_gap_seconds=None,
+            max_clean_snapshot_gap_seconds=None,
+            minimum_required_snapshots=None,
+            expected_minimum_snapshots=None,
+            actual_snapshot_count=len(snapshots),
+            missed_snapshots=None,
+            actual_max_gap_seconds=None,
+            actual_gaps_seconds=[],
+            clean_max_gap_seconds=None,
+            blocked_at_gap_seconds=None,
+            cadence_policy_status=CADENCE_POLICY_BLOCKED,
+            blocked_reason=str(authority_reason),
+        )
 
+    policy = get_policy(window_kind, tracking_lane)
     return evaluate_cadence_policy(
         snapshots, window_start_at, window_end_at, policy,
         production_mode=production_mode,
