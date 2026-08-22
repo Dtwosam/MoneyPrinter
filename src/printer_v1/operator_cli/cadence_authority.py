@@ -148,14 +148,18 @@ def lookup_discovery_candidate_tracking_lane(
     Requires ``discovery_batch_id`` + exact token/pair. Joins the candidate's
     ``source_response_id`` through discovery work source links so a historical
     FAST/NORMAL row from another batch/cycle cannot leak into this handoff.
-    Fail closed when no truthful current-batch TRACK_FAST/TRACK_NORMAL exists.
+
+    For the exact current batch/token/pair:
+    - no valid persisted lane -> ``DISCOVERY_TRACKING_LANE_MISSING``
+    - one unique valid lane (one or many agreeing rows) -> that lane
+    - both TRACK_FAST and TRACK_NORMAL present -> ``DISCOVERY_TRACKING_LANE_CONFLICT``
     """
     batch_id = str(discovery_batch_id or "").strip()
     if not batch_id:
         raise CadenceAuthorityError("DISCOVERY_TRACKING_LANE_MISSING")
-    row = connection.execute(
+    rows = connection.execute(
         """
-        SELECT dc.tracking_lane
+        SELECT DISTINCT dc.tracking_lane
         FROM printer_discovery_candidates AS dc
         JOIN printer_discovery_work_source_links AS wl
           ON wl.source_response_id = dc.source_response_id
@@ -166,169 +170,20 @@ def lookup_discovery_candidate_tracking_lane(
           AND dc.pair_id = ?
           AND dc.tracking_lane IN ('TRACK_FAST', 'TRACK_NORMAL')
           AND dc.source_response_id IS NOT NULL
-        ORDER BY dc.id DESC
-        LIMIT 1
         """,
         (batch_id, int(token_id), int(pair_id)),
-    ).fetchone()
-    if row is None:
-        raise CadenceAuthorityError("DISCOVERY_TRACKING_LANE_MISSING")
-    lane = _as_valid_lane(row[0] if not isinstance(row, sqlite3.Row) else row["tracking_lane"])
-    if lane is None:
-        raise CadenceAuthorityError("DISCOVERY_TRACKING_LANE_MISSING")
-    return lane
-
-
-def _classify_lane_from_source_payload(
-    *,
-    source_name: str,
-    payload: Mapping[str, Any],
-    token_mint: str,
-    pair_address: str,
-    captured_at: str,
-) -> tuple[str, Any, Mapping[str, Any]] | None:
-    """Return (lane, classification, normalized_candidate) via approved classifier.
-
-    Never invents ``source_channel`` / ``PUMPSWAP_GRADUATED``. Missing channel
-    leaves classifier defaults unchanged (no strengthened graduation floor).
-    """
-    from printer_v1.discovery.classifier import (
-        choose_tracking_lane,
-        classify_discovery_candidate,
-    )
-    from printer_v1.discovery.parser import normalize_candidates
-
-    mint = str(token_mint)
-    pair = str(pair_address)
-    for normalized in normalize_candidates(source_name, payload):
-        if str(normalized.get("token_mint") or "") != mint:
-            continue
-        if str(normalized.get("pair_address") or "") != pair:
-            continue
-        candidate = dict(normalized)
-        candidate["token_mint"] = mint
-        candidate["pair_address"] = pair
-        candidate["chain"] = "solana"
-        candidate["source_name"] = source_name
-        if not candidate.get("captured_at"):
-            candidate["captured_at"] = captured_at
-        # Preserve only an already-present source_channel from the payload.
-        # Do not invent PUMPSWAP_GRADUATED or any other channel.
-        classification = classify_discovery_candidate(candidate)
-        lane = choose_tracking_lane(candidate, classification)
-        lane_value = None if lane is None else str(lane.value)
-        if lane_value not in _VALID_CADENCE_LANES:
-            return None
-        if classification.discovery_action.value != lane_value:
-            return None
-        return lane_value, classification, candidate
-    return None
-
-
-def _classify_cycle1_lane_from_batch_evidence(
-    connection: sqlite3.Connection,
-    *,
-    discovery_batch_id: str,
-    token_mint: str,
-    pair_address: str,
-    token_id: int,
-    pair_id: int,
-    now: str,
-) -> str:
-    """Classify Cycle-1 lane from linked batch observation source payloads.
-
-    Persists the resulting current-batch discovery_candidates row so subsequent
-    lookup is batch-scoped. Never fabricates source_channel provenance.
-    """
-    from printer_v1.discovery.classifier import (
-        choose_initial_lifecycle_state,
-        build_priority_reason,
-    )
-    from printer_v1.discovery.discovery import record_discovery_candidate
-    from printer_v1.lifecycle.contracts import TokenLifecycleState
-
-    rows = connection.execute(
-        """
-        SELECT o.source_name, o.source_response_id, o.observed_at,
-               o.factual_payload_json, r.normalized_payload_json
-        FROM printer_discovery_provider_observations AS o
-        LEFT JOIN printer_source_responses AS r ON r.id = o.source_response_id
-        WHERE o.discovery_batch_id = ?
-          AND o.mint_identity = ?
-        ORDER BY o.created_at DESC, o.observation_id DESC
-        """,
-        (discovery_batch_id, token_mint),
     ).fetchall()
-    saw_payload = False
+    lanes: list[str] = []
     for row in rows:
-        source_name = str(row["source_name"] or "")
-        if row["source_response_id"] is None:
-            continue
-        payloads: list[Any] = []
-        for raw in (row["normalized_payload_json"], row["factual_payload_json"]):
-            if not raw:
-                continue
-            try:
-                parsed = json.loads(raw) if isinstance(raw, str) else raw
-            except (TypeError, json.JSONDecodeError):
-                continue
-            payloads.append(parsed)
-        captured_at = str(row["observed_at"] or now)
-        for payload in payloads:
-            saw_payload = True
-            wrapped: Mapping[str, Any] | None = None
-            if isinstance(payload, list):
-                # DexScreener fixture/list bodies are often a bare list of pairs.
-                wrapped = {"pairs": payload}
-            elif isinstance(payload, Mapping):
-                if "pairs" in payload or "data" in payload or "candidate" in payload:
-                    wrapped = payload
-                else:
-                    # Single-pair object: wrap for extract_candidate_items.
-                    wrapped = {"pairs": [payload]}
-            if wrapped is None:
-                continue
-            try:
-                classified = _classify_lane_from_source_payload(
-                    source_name=source_name or "dexscreener",
-                    payload=wrapped,
-                    token_mint=token_mint,
-                    pair_address=pair_address,
-                    captured_at=captured_at,
-                )
-            except ValueError:
-                # Unknown discovery source for normalize_candidates — skip.
-                continue
-            if classified is None:
-                continue
-            lane_value, classification, normalized = classified
-            lifecycle_state = choose_initial_lifecycle_state(normalized, classification)
-            priority_reason = build_priority_reason(normalized, classification)
-            channel = normalized.get("source_channel")
-            channel_reason = None
-            if isinstance(channel, str) and channel.strip():
-                channel_reason = "payload_source_channel"
-            record_discovery_candidate(
-                connection,
-                source_response_id=int(row["source_response_id"]),
-                token_id=int(token_id),
-                pair_id=int(pair_id),
-                source_name=str(normalized.get("source_name") or source_name or "cycle1"),
-                classification=classification,
-                raw_candidate_payload=dict(payload)
-                if isinstance(payload, Mapping)
-                else {"pairs": payload},
-                normalized_candidate=normalized,
-                lifecycle_state=lifecycle_state,
-                tracking_lane=TokenLifecycleState(lane_value),
-                priority_reason=priority_reason,
-                source_channel=channel if isinstance(channel, str) and channel.strip() else None,
-                source_channel_reason=channel_reason,
-            )
-            return lane_value
-    if saw_payload:
-        raise CadenceAuthorityError("DISCOVERY_LANE_PROVENANCE_MISSING")
-    raise CadenceAuthorityError("DISCOVERY_TRACKING_LANE_MISSING")
+        raw = row[0] if not isinstance(row, sqlite3.Row) else row["tracking_lane"]
+        lane = _as_valid_lane(raw)
+        if lane is not None and lane not in lanes:
+            lanes.append(lane)
+    if not lanes:
+        raise CadenceAuthorityError("DISCOVERY_TRACKING_LANE_MISSING")
+    if len(lanes) > 1:
+        raise CadenceAuthorityError("DISCOVERY_TRACKING_LANE_CONFLICT")
+    return lanes[0]
 
 
 def resolve_cycle1_handoff_tracking_lane(
@@ -342,42 +197,31 @@ def resolve_cycle1_handoff_tracking_lane(
     candidate_tracking_lane: str | None = None,
     now: str | None = None,
 ) -> str:
-    """Resolve exact Cycle-1 TRACK_FAST/TRACK_NORMAL without inventing defaults.
+    """Resolve Cycle-1 lane from persisted current-batch authority only.
 
-    Order:
-    1. candidate carrier lane already classified for this exact candidate;
-    2. persisted ``printer_discovery_candidates`` row bound to the CURRENT
-       ``discovery_batch_id`` (never latest historical token/pair row);
-    3. classify from current-batch observation source evidence via
-       ``classify_discovery_candidate`` → ``choose_tracking_lane``, then persist
-       under that batch's source_response linkage (no fabricated channel);
-    4. fail closed.
+    Handoff is a consumer of persisted ``printer_discovery_candidates``
+    classification. It does not classify, invent, or persist lanes.
+
+    ``candidate_tracking_lane`` is corroboration only:
+    - missing / invalid -> persisted lane is sufficient;
+    - equal to persisted lane -> ok;
+    - valid FAST/NORMAL that disagrees with persisted -> conflict fail closed.
     """
-    direct = _as_valid_lane(candidate_tracking_lane)
-    if direct is not None:
-        return direct
+    del token_mint, pair_address, now  # identity already bound via token_id/pair_id
     batch_id = str(discovery_batch_id or "").strip()
     if not batch_id:
         raise CadenceAuthorityError("DISCOVERY_TRACKING_LANE_MISSING")
-    try:
-        return lookup_discovery_candidate_tracking_lane(
-            connection,
-            token_id=token_id,
-            pair_id=pair_id,
-            discovery_batch_id=batch_id,
-        )
-    except CadenceAuthorityError:
-        pass
-    timestamp = now or datetime.now(timezone.utc).isoformat()
-    return _classify_cycle1_lane_from_batch_evidence(
+    persisted = lookup_discovery_candidate_tracking_lane(
         connection,
+        token_id=token_id,
+        pair_id=pair_id,
         discovery_batch_id=batch_id,
-        token_mint=str(token_mint),
-        pair_address=str(pair_address),
-        token_id=int(token_id),
-        pair_id=int(pair_id),
-        now=timestamp,
     )
+    carrier = _as_valid_lane(candidate_tracking_lane)
+    if carrier is not None and carrier != persisted:
+        raise CadenceAuthorityError("DISCOVERY_TRACKING_LANE_CONFLICT")
+    return persisted
+
 
 
 def resolve_campaign_slot_cadence_authority(

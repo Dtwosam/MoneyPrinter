@@ -11,7 +11,6 @@ import pytest
 from printer_v1.db import apply_migrations
 from printer_v1.operator_cli.cadence_authority import (
     CadenceAuthorityError,
-    _classify_lane_from_source_payload,
     claim_tracking_authority_for_slot_insert,
     lookup_discovery_candidate_tracking_lane,
     resolve_cycle1_handoff_tracking_lane,
@@ -565,36 +564,13 @@ def test_historical_only_lane_never_used_without_current_batch(
 
 
 def test_missing_source_channel_never_becomes_pumpswap_graduated() -> None:
-    payload = {
-        "pairs": [
-            {
-                "chainId": "solana",
-                "baseToken": {"address": "mint-x"},
-                "pairAddress": "pair-x",
-                "priceUsd": 0.01,
-                "liquidity": {"usd": 1500},
-                "volume": {"h1": 200},
-                "txns": {"h1": 5},
-            }
-        ]
-    }
-    result = _classify_lane_from_source_payload(
-        source_name="dexscreener",
-        payload=payload,
-        token_mint="mint-x",
-        pair_address="pair-x",
-        captured_at=NOW.isoformat(),
-    )
-    assert result is not None
-    lane, _classification, normalized = result
-    assert lane == "TRACK_NORMAL"
-    assert normalized.get("source_channel") in (None, "")
-    assert normalized.get("source_channel") != "PUMPSWAP_GRADUATED"
     auth_src = Path("src/printer_v1/operator_cli/cadence_authority.py").read_text(
         encoding="utf-8"
     )
     assert 'candidate["source_channel"] = "PUMPSWAP_GRADUATED"' not in auth_src
-    assert "source_channel = \"PUMPSWAP_GRADUATED\"" not in auth_src
+    assert 'source_channel = "PUMPSWAP_GRADUATED"' not in auth_src
+    assert "_classify_cycle1_lane_from_batch_evidence" not in auth_src
+    assert "record_discovery_candidate" not in auth_src
 
 
 def test_missing_truthful_lane_provenance_fails_closed(conn: sqlite3.Connection) -> None:
