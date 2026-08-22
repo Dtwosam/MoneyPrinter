@@ -41,6 +41,10 @@ from printer_v1.scheduler.scheduler import (
     enqueue_job,
     fail_job,
 )
+from printer_v1.scheduler.evidence_deadline import (
+    deadline_order_value,
+    project_scheduler_job_evidence_deadline,
+)
 from printer_v1.scheduler.two_token_fairness import (
     deterministic_token_fairness_key,
 )
@@ -6624,10 +6628,7 @@ def load_report_only(db_path: str | Path, run_id: str) -> dict[str, Any]:
 def _select_next_pending_step(
     conn: sqlite3.Connection, *, run_id: str, now: datetime,
 ) -> sqlite3.Row | None:
-    """Select through AGENTS category authority, then token fairness.
-
-    S1 intentionally does not read or order by campaign ``deadline_at``.
-    """
+    """Select by AGENTS category, truthful deadline, then token fairness."""
     candidates = conn.execute(
         """SELECT s.id AS step_id,s.token_id,j.id AS scheduler_job_id,
                   j.job_kind,j.scheduled_for,j.created_at
@@ -6685,14 +6686,23 @@ def _select_next_pending_step(
 
     selected = min(
         category_rows,
-        key=lambda row: deterministic_token_fairness_key(
-            ordinary_service_count=service_counts.get(
-                _scheduler_fairness_token_id(row["token_id"]), 0
+        key=lambda row: (
+            deadline_order_value(
+                project_scheduler_job_evidence_deadline(
+                    conn,
+                    factory_run_id=str(run_id),
+                    scheduler_job_id=int(row["scheduler_job_id"]),
+                )
             ),
-            scheduled_for=_scheduler_fairness_time(row["scheduled_for"]),
-            created_at=_scheduler_fairness_time(row["created_at"]),
-            stable_token_id=_scheduler_fairness_token_id(row["token_id"]),
-            stable_work_id=int(row["scheduler_job_id"]),
+            *deterministic_token_fairness_key(
+                ordinary_service_count=service_counts.get(
+                    _scheduler_fairness_token_id(row["token_id"]), 0
+                ),
+                scheduled_for=_scheduler_fairness_time(row["scheduled_for"]),
+                created_at=_scheduler_fairness_time(row["created_at"]),
+                stable_token_id=_scheduler_fairness_token_id(row["token_id"]),
+                stable_work_id=int(row["scheduler_job_id"]),
+            ),
         ),
     )
     selected_id = int(selected["step_id"])
