@@ -6,15 +6,20 @@ Date: 2026-08-22
 
 `V2-9.8B Design Lane 2 — Multi-Token Evidence-Deadline Scheduling`
 
-Status: `DESIGN_PASS_READY_FOR_IMPLEMENTATION` (design commit on this branch)
+Status: `DESIGN_AMENDMENT_PASS_READY_FOR_IMPLEMENTATION` (docs-only amendment)
 
 Verdict:
 
-`V2_9_8B_MULTI_TOKEN_EVIDENCE_DEADLINE_SCHEDULING_DESIGN_PASS_READY_FOR_IMPLEMENTATION`
+`V2_9_8B_MULTI_TOKEN_EVIDENCE_DEADLINE_SCHEDULING_DESIGN_AMENDMENT_PASS_READY_FOR_IMPLEMENTATION`
 
-Design document:
+Design document (amended in place):
 
 `docs/printer-v1-v2-9-8b-multi-token-evidence-deadline-scheduling-design.md`
+
+Amendment corrects only:
+
+1. AGENTS-led resource category order (close evidence must not outrank TRACK_*)
+2. clean-dispatch `deadline_at` from last actual capture (+ forced-close min)
 
 ## Handoff staleness note
 
@@ -37,10 +42,11 @@ handoff. This update is documentation-only for Design Lane 2.
 ## Exact Git transaction
 
 - branch: `agent/v2-9-8b-consumed-4-2-2-full-operational-run-forensic-audit`
-- Design Lane 2 starting HEAD:
-  `012eacd785c950367a550259d83e09957906dffe`
-  (`Close Design Lane 1 cadence authority as ready for Design Lane 2`)
-- this handoff updates only with the Design Lane 2 design commit
+- Design Lane 2 original design commit:
+  `46fc13c0f36297f8d76c24f7bbba1313a6db796e`
+- Design Lane 2 amendment starting HEAD:
+  `46fc13c0f36297f8d76c24f7bbba1313a6db796e`
+- this handoff updates only with the Design Lane 2 amendment commit
 
 ## Governing repair-lane sequence (forensic)
 
@@ -67,13 +73,13 @@ This Design Lane 2 package is design/documentation only. It must not:
 
 ## Exact next permitted lane
 
-After operator acceptance of this design:
+After operator acceptance of this amended design:
 
 `V2-9.8B Multi-Token Evidence-Deadline Scheduling Implementation`
 
-(implementation slices S1–S5 as specified in the design document), or operator
-review only. Do not start Design Lane 3 until Lane 2 implementation/closeout
-progress is explicitly authorized.
+(implementation slices S1–S5 as specified in the amended design document), or
+operator review only. Do not start Design Lane 3 until Lane 2
+implementation/closeout progress is explicitly authorized.
 
 ## Locks
 
