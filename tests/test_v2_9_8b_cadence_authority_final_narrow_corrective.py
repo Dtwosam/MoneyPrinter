@@ -569,8 +569,10 @@ def test_missing_source_channel_never_becomes_pumpswap_graduated() -> None:
     )
     assert 'candidate["source_channel"] = "PUMPSWAP_GRADUATED"' not in auth_src
     assert 'source_channel = "PUMPSWAP_GRADUATED"' not in auth_src
-    assert "_classify_cycle1_lane_from_batch_evidence" not in auth_src
-    assert "record_discovery_candidate" not in auth_src
+    resolve_start = auth_src.index("def resolve_cycle1_handoff_tracking_lane(")
+    resolve_end = auth_src.index("\ndef ", resolve_start + 1)
+    resolve_body = auth_src[resolve_start:resolve_end]
+    assert "record_discovery_candidate" not in resolve_body
 
 
 def test_missing_truthful_lane_provenance_fails_closed(conn: sqlite3.Connection) -> None:

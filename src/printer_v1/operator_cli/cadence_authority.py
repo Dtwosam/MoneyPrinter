@@ -186,6 +186,175 @@ def lookup_discovery_candidate_tracking_lane(
     return lanes[0]
 
 
+def _classify_lane_from_source_payload(
+    *,
+    source_name: str,
+    payload: Mapping[str, Any],
+    token_mint: str,
+    pair_address: str,
+    captured_at: str,
+) -> tuple[str, Any, Mapping[str, Any]] | None:
+    """Classify one source payload via the approved discovery classifier.
+
+    Never invents ``source_channel`` / ``PUMPSWAP_GRADUATED``.
+    """
+    from printer_v1.discovery.classifier import (
+        choose_tracking_lane,
+        classify_discovery_candidate,
+    )
+    from printer_v1.discovery.parser import normalize_candidates
+
+    mint = str(token_mint)
+    pair = str(pair_address)
+    for normalized in normalize_candidates(source_name, payload):
+        if str(normalized.get("token_mint") or "") != mint:
+            continue
+        if str(normalized.get("pair_address") or "") != pair:
+            continue
+        candidate = dict(normalized)
+        candidate["token_mint"] = mint
+        candidate["pair_address"] = pair
+        candidate["chain"] = "solana"
+        candidate["source_name"] = source_name
+        if not candidate.get("captured_at"):
+            candidate["captured_at"] = captured_at
+        classification = classify_discovery_candidate(candidate)
+        lane = choose_tracking_lane(candidate, classification)
+        lane_value = None if lane is None else str(lane.value)
+        if lane_value not in _VALID_CADENCE_LANES:
+            return None
+        if classification.discovery_action.value != lane_value:
+            return None
+        return lane_value, classification, candidate
+    return None
+
+
+def persist_cycle1_current_batch_discovery_lane(
+    connection: sqlite3.Connection,
+    *,
+    discovery_batch_id: str,
+    token_id: int,
+    pair_id: int,
+    token_mint: str,
+    pair_address: str,
+    now: str,
+) -> str:
+    """Persist exact current-batch TRACK_FAST/TRACK_NORMAL before Cycle-1 handoff.
+
+    Owner: existing ``classify_discovery_candidate`` + ``choose_tracking_lane`` +
+    ``record_discovery_candidate``, driven by current-batch observation source
+    payloads already linked through discovery work source responses.
+
+    Idempotent: if a unique current-batch lane already exists, return it without
+    writing another row. Never fabricates source_channel or lane defaults.
+    """
+    batch_id = str(discovery_batch_id or "").strip()
+    if not batch_id:
+        raise CadenceAuthorityError("DISCOVERY_TRACKING_LANE_MISSING")
+    try:
+        return lookup_discovery_candidate_tracking_lane(
+            connection,
+            token_id=token_id,
+            pair_id=pair_id,
+            discovery_batch_id=batch_id,
+        )
+    except CadenceAuthorityError as exc:
+        if str(exc) == "DISCOVERY_TRACKING_LANE_CONFLICT":
+            raise
+        # MISSING -> classify + persist below.
+
+    from printer_v1.discovery.classifier import (
+        build_priority_reason,
+        choose_initial_lifecycle_state,
+    )
+    from printer_v1.discovery.discovery import record_discovery_candidate
+    from printer_v1.lifecycle.contracts import TokenLifecycleState
+
+    rows = connection.execute(
+        """
+        SELECT o.source_name, o.source_response_id, o.observed_at,
+               o.factual_payload_json, r.normalized_payload_json
+        FROM printer_discovery_provider_observations AS o
+        LEFT JOIN printer_source_responses AS r ON r.id = o.source_response_id
+        WHERE o.discovery_batch_id = ?
+          AND o.mint_identity = ?
+          AND o.source_response_id IS NOT NULL
+        ORDER BY o.created_at DESC, o.observation_id DESC
+        """,
+        (batch_id, token_mint),
+    ).fetchall()
+    for row in rows:
+        source_name = str(row["source_name"] or "")
+        payloads: list[Any] = []
+        for raw in (row["normalized_payload_json"], row["factual_payload_json"]):
+            if not raw:
+                continue
+            try:
+                parsed = json.loads(raw) if isinstance(raw, str) else raw
+            except (TypeError, json.JSONDecodeError):
+                continue
+            payloads.append(parsed)
+        captured_at = str(row["observed_at"] or now)
+        for payload in payloads:
+            wrapped: Mapping[str, Any] | None = None
+            if isinstance(payload, list):
+                wrapped = {"pairs": payload}
+            elif isinstance(payload, Mapping):
+                if "pairs" in payload or "data" in payload or "candidate" in payload:
+                    wrapped = payload
+                else:
+                    wrapped = {"pairs": [payload]}
+            if wrapped is None:
+                continue
+            try:
+                classified = _classify_lane_from_source_payload(
+                    source_name=source_name or "dexscreener",
+                    payload=wrapped,
+                    token_mint=token_mint,
+                    pair_address=pair_address,
+                    captured_at=captured_at,
+                )
+            except ValueError:
+                continue
+            if classified is None:
+                continue
+            lane_value, classification, normalized = classified
+            channel = normalized.get("source_channel")
+            channel_value = (
+                channel if isinstance(channel, str) and channel.strip() else None
+            )
+            channel_reason = "payload_source_channel" if channel_value else None
+            record_discovery_candidate(
+                connection,
+                source_response_id=int(row["source_response_id"]),
+                token_id=int(token_id),
+                pair_id=int(pair_id),
+                source_name=str(
+                    normalized.get("source_name") or source_name or "dexscreener"
+                ),
+                classification=classification,
+                raw_candidate_payload=(
+                    dict(payload) if isinstance(payload, Mapping) else {"pairs": payload}
+                ),
+                normalized_candidate=normalized,
+                lifecycle_state=choose_initial_lifecycle_state(
+                    normalized, classification
+                ),
+                tracking_lane=TokenLifecycleState(lane_value),
+                priority_reason=build_priority_reason(normalized, classification),
+                source_channel=channel_value,
+                source_channel_reason=channel_reason,
+            )
+            # Re-read through the current-batch lookup contract.
+            return lookup_discovery_candidate_tracking_lane(
+                connection,
+                token_id=token_id,
+                pair_id=pair_id,
+                discovery_batch_id=batch_id,
+            )
+    raise CadenceAuthorityError("DISCOVERY_TRACKING_LANE_MISSING")
+
+
 def resolve_cycle1_handoff_tracking_lane(
     connection: sqlite3.Connection,
     *,

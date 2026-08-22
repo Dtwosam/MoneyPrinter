@@ -582,13 +582,15 @@ def test_resolve_does_not_call_classify_or_persist_helpers() -> None:
     auth = Path("src/printer_v1/operator_cli/cadence_authority.py").read_text(
         encoding="utf-8"
     )
-    # Helpers must not remain as handoff authority paths.
-    assert "_classify_cycle1_lane_from_batch_evidence" not in auth
-    assert "record_discovery_candidate" not in auth
     start = auth.index("def resolve_cycle1_handoff_tracking_lane(")
     end = auth.index("\ndef ", start + 1)
     body = auth[start:end]
     assert "lookup_discovery_candidate_tracking_lane" in body
     assert "candidate_tracking_lane" in body
     assert "DISCOVERY_TRACKING_LANE_CONFLICT" in body
+    # Consumer-only: no classify/persist inside resolve.
     assert "classify_discovery_candidate" not in body
+    assert "record_discovery_candidate" not in body
+    assert "persist_cycle1_current_batch_discovery_lane" not in body
+    # Upstream persist owner exists separately.
+    assert "def persist_cycle1_current_batch_discovery_lane(" in auth

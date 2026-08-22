@@ -3741,6 +3741,56 @@ class CombinedPumpfunCampaignExecutor:
                     f"slot ordinal {ordinal} is not vacant for initial activation",
                 )
 
+    def _prepare_cycle1_persisted_lane_before_handoff(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        discovery_batch_id: str,
+        candidate: _Merged,
+        now: str,
+    ) -> None:
+        """Persist current-batch discovery lane before consumer handoff.
+
+        Classification owner: ``classify_discovery_candidate`` /
+        ``choose_tracking_lane`` via ``persist_cycle1_current_batch_discovery_lane``.
+        Handoff remains consumer-only through ``resolve_cycle1_handoff_tracking_lane``.
+        """
+        from printer_v1.operator_cli.cadence_authority import (
+            CadenceAuthorityError,
+            persist_cycle1_current_batch_discovery_lane,
+        )
+
+        mint = candidate.mint
+        pool = candidate.market_identity.rsplit(":", 1)[-1]
+        try:
+            identity = ensure_neutral_token_pair_identity(
+                connection,
+                mint_identity=mint,
+                pair_identity=pool,
+            )
+        except TokenPairIdentityError as exc:
+            raise CombinedDiscoveryError(str(exc)) from exc
+        try:
+            lane_value = persist_cycle1_current_batch_discovery_lane(
+                connection,
+                discovery_batch_id=discovery_batch_id,
+                token_id=identity.token_row_id,
+                pair_id=identity.pair_row_id,
+                token_mint=mint,
+                pair_address=pool,
+                now=now,
+            )
+        except CadenceAuthorityError as exc:
+            code = str(exc)
+            if code not in {
+                "DISCOVERY_TRACKING_LANE_MISSING",
+                "DISCOVERY_TRACKING_LANE_CONFLICT",
+            }:
+                code = "DISCOVERY_TRACKING_LANE_MISSING"
+            raise CombinedDiscoveryError(code, str(exc)) from exc
+        # Carrier corroboration for resolve; not an authority source.
+        candidate.tracking_lane = lane_value
+
     def _handoff_one_slot(
         self,
         connection: sqlite3.Connection,
@@ -3798,8 +3848,8 @@ class CombinedPumpfunCampaignExecutor:
                 "enqueue FIRST_15M, or activate WINDOW_15M",
             )
 
-        # Exact Cycle-1 lane from truthful discovery classification — never
-        # default NORMAL/FAST.
+        # Consumer-only: exact current-batch persisted lane (already prepared
+        # upstream). Never classify/persist here.
         try:
             lane_value = resolve_cycle1_handoff_tracking_lane(
                 connection,
@@ -3812,9 +3862,13 @@ class CombinedPumpfunCampaignExecutor:
                 now=now,
             )
         except CadenceAuthorityError as exc:
-            raise CombinedDiscoveryError(
-                "DISCOVERY_TRACKING_LANE_MISSING", str(exc)
-            ) from exc
+            code = str(exc)
+            if code not in {
+                "DISCOVERY_TRACKING_LANE_MISSING",
+                "DISCOVERY_TRACKING_LANE_CONFLICT",
+            }:
+                code = "DISCOVERY_TRACKING_LANE_MISSING"
+            raise CombinedDiscoveryError(code, str(exc)) from exc
         tracking_lane = TokenLifecycleState(lane_value)
         tracking_action = (
             LifecycleEvent.PROMOTE_TO_TRACK_FAST
@@ -4089,6 +4143,12 @@ class CombinedPumpfunCampaignExecutor:
                         "DUPLICATE_ACTIVE_TRACKING",
                         "injected replacement vacancy failure",
                     )
+                self._prepare_cycle1_persisted_lane_before_handoff(
+                    connection,
+                    discovery_batch_id=discovery_batch_id,
+                    candidate=candidate,
+                    now=now,
+                )
                 self._handoff_one_slot(
                     connection,
                     command,
@@ -4166,6 +4226,12 @@ class CombinedPumpfunCampaignExecutor:
                     raise CombinedDiscoveryError(
                         "HANDOFF_DURING_SECOND", "injected failure after first handoff"
                     )
+                self._prepare_cycle1_persisted_lane_before_handoff(
+                    connection,
+                    discovery_batch_id=discovery_batch_id,
+                    candidate=candidate,
+                    now=now,
+                )
                 self._handoff_one_slot(
                     connection,
                     command,

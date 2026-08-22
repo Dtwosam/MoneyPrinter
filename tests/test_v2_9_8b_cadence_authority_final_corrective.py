@@ -509,11 +509,15 @@ def test_cycle1_operational_path_has_no_hardcoded_normal() -> None:
     assert "tracking_lane=TokenLifecycleState.TRACK_NORMAL" not in body
     assert "JobKind.TRACK_NORMAL_FIRST_15M," not in body.replace(" ", "")
     assert "resolve_cycle1_handoff_tracking_lane" in body
+    assert "_prepare_cycle1_persisted_lane_before_handoff" in handoff_src
     auth_src = Path(authority.__file__).read_text(encoding="utf-8")
-    # Handoff consumes persisted current-batch lane only — no classify/persist.
     assert "lookup_discovery_candidate_tracking_lane" in auth_src
-    assert "classify_discovery_candidate" not in auth_src
-    assert "_classify_cycle1_lane_from_batch_evidence" not in auth_src
+    assert "def persist_cycle1_current_batch_discovery_lane(" in auth_src
+    resolve_start = auth_src.index("def resolve_cycle1_handoff_tracking_lane(")
+    resolve_end = auth_src.index("\ndef ", resolve_start + 1)
+    resolve_body = auth_src[resolve_start:resolve_end]
+    assert "record_discovery_candidate" not in resolve_body
+    assert "classify_discovery_candidate" not in resolve_body
 
 
 # --- 4/5/6 later-cycle pre-freeze consistency ---
