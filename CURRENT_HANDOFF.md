@@ -1,113 +1,79 @@
 # CURRENT HANDOFF
 
-Date: 2026-08-21
+Date: 2026-08-22
 
 ## Current lane
 
-`V2-9.8B Fresh 4/2/2 Final Authorization Construction`
+`V2-9.8B Design Lane 2 — Multi-Token Evidence-Deadline Scheduling`
 
-Status: `PRECOMMITTED_FOR_EXACT_HEAD_CONSTRUCTION`
+Status: `DESIGN_PASS_READY_FOR_IMPLEMENTATION` (design commit on this branch)
 
-Required readiness verdict:
+Verdict:
 
-`V2_9_8B_FRESH_4_2_2_AUTHORIZATION_READINESS_RECHECK_PASS`
+`V2_9_8B_MULTI_TOKEN_EVIDENCE_DEADLINE_SCHEDULING_DESIGN_PASS_READY_FOR_IMPLEMENTATION`
 
-Expected construction verdict after successful create-once publication:
+Design document:
 
-`V2_9_8B_FRESH_4_2_2_FINAL_AUTHORIZATION_CONSTRUCTION_PASS`
+`docs/printer-v1-v2-9-8b-multi-token-evidence-deadline-scheduling-design.md`
+
+## Handoff staleness note
+
+The previous handoff still described
+`V2-9.8B Fresh 4/2/2 Final Authorization Construction` and an unconsumed
+authorization package. That description is stale relative to:
+
+- consumed authorization
+  `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260821T153458Z_512f2436`
+- forensic audit
+  `docs/printer-v1-v2-9-8b-consumed-4-2-2-full-operational-run-forensic-audit.md`
+  (`PASS_READY_FOR_DESIGN`)
+- Design Lane 1 closeout
+  `docs/printer-v1-v2-9-8b-cadence-authority-lane1-closeout.md`
+  (`PASS_READY_FOR_DESIGN_LANE_2`)
+
+The active authority stack and those closeouts win over the stale construction
+handoff. This update is documentation-only for Design Lane 2.
 
 ## Exact Git transaction
 
-- branch: `agent/v2-9-8b-pair-ready-parent-terminal-cancellation-repair`
-- readiness starting HEAD:
-  `e2918849afe858a94e80058899d6e93d50211d2a`
-- ancestral provenance chain:
-  design `148c8d8` / implementation `a89d1f6` / bounded proof `2a2d209` /
-  independent closeout `e2918849`
-- exact authorization-bound HEAD: the commit containing this handoff and
-  `docs/printer-v1-v2-9-8b-fresh-4-2-2-final-authorization-construction.md`
-- no later commit is permitted on this branch after authorization publication
+- branch: `agent/v2-9-8b-consumed-4-2-2-full-operational-run-forensic-audit`
+- Design Lane 2 starting HEAD:
+  `012eacd785c950367a550259d83e09957906dffe`
+  (`Close Design Lane 1 cadence authority as ready for Design Lane 2`)
+- this handoff updates only with the Design Lane 2 design commit
 
-The tracked preparation decision and this handoff are committed before the
-authorization package is constructed. The authorization JSON binds that
-construction commit, not the readiness HEAD above. Final artifact SHA-256,
-byte size, and readback facts are recorded in the create-once package and
-construction response only.
+## Governing repair-lane sequence (forensic)
 
-## Selected authorization identity
+1. Design Lane 1 cadence authority — **CLOSED PASS**
+2. Design Lane 2 multi-token evidence-deadline scheduling — **this lane**
+3. Design Lane 3 post-1H standard-four-hour progression + fault preservation —
+   **not started**
+4. Design Lane 4 multi-cycle terminal accounting/reporting — **not started**
 
-`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260821T153458Z_512f2436`
-
-## Authorized construction scope
-
-Construct exactly one fresh final authorization package through the existing
-canonical four-token Standard-4H document owner. Bind it to:
-
-- `four-token-standard-four-hour-run`
-- exactly four through-4h token slots
-- exactly two active cycles
-- exactly two NEW fresh governed tokens per cycle
-- Cycle2 fresh/disjoint; `slot-<cycle_id>-1/2`
-- freeze depth `4`; exact-pool floor `$3,000`
-- spacing `300s`; acquisition `2400s`; lifecycle `18000s`
-- `118` requests/token; governed total `476`; shared discovery `4`;
-  Scheduler ceiling `420`; storage `67,108,864`
-- `WINDOW_15M -> WINDOW_1H -> WINDOW_4H`
-- `WINDOW_5M_MICRO_EVENT` support-only; `WINDOW_12H` / `WINDOW_24H` locked
-- no automatic retry, endpoint rotation, rerun, restart, resume or successor
-- operator approval required; wrapper route required
-- the exact committed branch/HEAD
-- the exact authoritative database identity and migration `59 / 059`
-- current migration execution `MIGRATION_059_20260821T095456Z`
-- every one of the 40 existing authorization identities as non-reusable,
-  including superseded `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260821T124505Z_8cf7ee5d`
-
-Current four-token provenance uses Migration 059 as current evidence.
-Migration 058 and PAIR_READY remain exact historical packages
-(`Hm=40` / `Hr=12`). Trust law remains `C == M` and
-`F = T ∪ M ∪ Ha ∪ Hm ∪ Hr`.
-
-## Construction gates re-proved before this commit
-
-- readiness recheck:
-  `V2_9_8B_FRESH_4_2_2_AUTHORIZATION_READINESS_RECHECK_PASS`
-- authoritative DB SHA-256:
-  `87dac0d15ee32940f7dda30d0704dc252ff540c9d6f1ff6a3857e8f598c9f2fa`
-- migration count/head:
-  `59 / 059_pair_ready_parent_terminal_cancellation_transition.sql`
-- DB size/inode/mtime_ns: `113664000` / `1230526` / `1787310849512684366`
-- `PRAGMA integrity_check`: `ok`
-- `PRAGMA foreign_key_check`: `0` rows
-- SQLite sidecars / open handles: none
-- canonical strict four-token zero state: all `12` domains zero
-- exact operational policy: `118 / 476 / 4 / 420`
-- superseded authorization:
-  `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260821T124505Z_8cf7ee5d`
-  remains unconsumed, marker/manifest/application absent, disposition
-  `BLOCKED_UNCONSUMED_SUPERSEDED`
-- historical authorization identities for non-reuse: `40`, unique and sorted
+Authorization `…512f2436` remains permanently consumed and non-reusable.
+No automatic fresh authorization, retry, rerun, resume, restart, or successor.
 
 ## Hard stop boundary
 
-This lane may create the final authorization package only. It must leave that
-authorization unconsumed and must not create an application marker, apply a
-wrapper, create a provenance manifest, start a child, contact a provider/RPC/
-WebSocket, run Source Governor or Central Scheduler, start or continue a
-campaign/cycle, mutate authoritative business data, or activate any financial
-or retrieval capability.
+This Design Lane 2 package is design/documentation only. It must not:
 
-If construction does not complete and validate before immutable publication,
-no authorization artifact may survive. If it does complete, the branch must
-remain at the exact authorization-bound commit with no later tracked change.
+- implement scheduler/close-path code or migrations;
+- run Printer, Source Governor, or Central Scheduler;
+- create/reuse/apply authorization;
+- begin Design Lane 3;
+- unlock retrieval, paper decisions, BUY/SELL/HOLD, positions, trades, audits,
+  PnL, live execution, wallets/private keys, paid APIs, scoring/ranking/
+  confidence/weighted logic, or embeddings/vectors.
 
 ## Exact next permitted lane
 
-After successful immutable publication and independent readback:
+After operator acceptance of this design:
 
-`V2-9.8B Fresh 4/2/2 Final Authorization Independent Review`
+`V2-9.8B Multi-Token Evidence-Deadline Scheduling Implementation`
 
-That lane is review only. It is not authorization application or campaign
-execution.
+(implementation slices S1–S5 as specified in the design document), or operator
+review only. Do not start Design Lane 3 until Lane 2 implementation/closeout
+progress is explicitly authorized.
 
 ## Locks
 
