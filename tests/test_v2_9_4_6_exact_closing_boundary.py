@@ -496,6 +496,41 @@ class ExactClosingBoundaryTest(unittest.TestCase):
         self.assertEqual(result["sections"]["safety_rug"]["status"], "READY")
         self.assertNotIn("CLOSING_EVIDENCE_AFTER_APPROVED_CUTOFF", result["blockers"])
 
+    def test_market_regime_after_window_end_does_not_replace_window_context(self):
+        self.full_clean_fixture()
+        self.add_broad_context(self.end + timedelta(seconds=1))
+
+        result = self.report()
+
+        self.assertEqual(
+            result["sections"]["market_regime"]["row"]["captured_at"],
+            self.end.isoformat(),
+        )
+
+    def test_solana_chain_after_window_end_does_not_replace_window_context(self):
+        self.full_clean_fixture()
+        self.add_broad_context(self.end + timedelta(seconds=1))
+
+        result = self.report()
+
+        self.assertEqual(
+            result["sections"]["solana_chain_heat"]["row"]["captured_at"],
+            self.end.isoformat(),
+        )
+
+    def test_entry_quote_does_not_inherit_closing_evidence_allowance(self):
+        self.full_clean_fixture()
+        self.add_quote(FIRST_ID, "ENTRY", self.end + timedelta(seconds=1))
+
+        result = self.report()
+
+        self.assertEqual(
+            result["sections"]["liquidity_exit_realism"]["entry_quote"][
+                "evidence_captured_at"
+            ],
+            (self.start + timedelta(seconds=CADENCE_SECONDS)).isoformat(),
+        )
+
     def test_closing_evidence_outside_allowance_is_rejected(self):
         ids = self.add_window_snapshots()
         self.add_ledger(ids)

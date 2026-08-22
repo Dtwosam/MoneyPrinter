@@ -2312,11 +2312,8 @@ def _attach_context_and_gate_window(
             # this runs (see _attach_closing_snapshot_to_ledger), so the exact
             # current-run ledger identity is now safe to use here.
             #
-            # Lane-2 context now follows the persisted capture. Use the existing
-            # canonical lane's already-approved closing-evidence allowance so
-            # real post-capture context can be evaluated at its real timestamp;
-            # this does not alter the cadence evaluator or capture deadline.
-            tracking_lane=str(step["tracking_lane"]),
+            # tracking_lane remains deliberately absent: 15m has zero closing
+            # evidence allowance even though Lane-2 context executes later.
             run_id=str(step["run_id"]),
         )
     except ValueError as exc:

@@ -375,10 +375,9 @@ def _build_window_context_evidence(
         connection,
         table="printer_market_regime_snapshots",
         payload_column="normalized_market_payload_json",
-        # Lane-2 close context is collected after the closing snapshot. Admit
-        # only real governed rows inside the existing closing-evidence cutoff;
-        # never backdate them to the snapshot or logical window end.
-        target_time=closing_evidence_cutoff,
+        # Broad context characterizes the immutable logical window. A later
+        # Scheduler context phase does not extend that evidence boundary.
+        target_time=window_end,
         valid_for_memory=market_snapshot_is_valid_for_memory,
     )
     market_section = _section(
@@ -397,7 +396,7 @@ def _build_window_context_evidence(
         connection,
         table="printer_solana_chain_heat_snapshots",
         payload_column="normalized_chain_heat_payload_json",
-        target_time=closing_evidence_cutoff,
+        target_time=window_end,
         valid_for_memory=chain_heat_snapshot_is_valid_for_memory,
     )
     chain_section = _section(
@@ -537,13 +536,16 @@ def _build_window_context_evidence(
     quote_blockers: list[str] = []
     for direction in ("ENTRY", "EXIT"):
         quote_snapshot_id = entry_snapshot_id if direction == "ENTRY" else snapshot_end_id
+        # Only the exact closing EXIT quote inherits an approved closing
+        # allowance. ENTRY evidence retains the immutable window boundary.
+        quote_cutoff = window_end if direction == "ENTRY" else closing_evidence_cutoff
         quote = _latest_exact_evidence(
             connection,
             table="printer_paper_quote_evidence",
             token_id=token_id,
             pair_id=pair_id,
             snapshot_id=quote_snapshot_id,
-            target_time=closing_evidence_cutoff,
+            target_time=quote_cutoff,
             direction=direction,
         )
         quote_late = not quote and bool(

@@ -38,6 +38,8 @@ from printer_v1.db import apply_migrations  # noqa: E402
 from printer_v1.operator_cli.one_command_15m_factory import (  # noqa: E402
     _attach_closing_snapshot_to_ledger,
 )
+from printer_v1.paper_quote.evidence import insert_paper_quote_evidence  # noqa: E402
+from printer_v1.safety.evidence import insert_solana_safety_evidence  # noqa: E402
 from printer_v1.snapshots.recorder import record_token_snapshot  # noqa: E402
 
 RUN_ID = "v2-9-4-8-run"
@@ -368,6 +370,110 @@ class Exact15mLedgerRangeTest(unittest.TestCase):
             )
         return rq, rs
 
+    def evidence_trace(self, source_name, request_kind, captured_at):
+        with self.connect() as conn:
+            request_id = int(
+                conn.execute(
+                    """INSERT INTO printer_source_requests
+                       (source_name,request_kind,requested_at,source_status,data_quality_label)
+                       VALUES (?,?,?,'COMPLETE','CLEAN_DATA')""",
+                    (source_name, request_kind, captured_at.isoformat()),
+                ).lastrowid
+            )
+            response_id = int(
+                conn.execute(
+                    """INSERT INTO printer_source_responses
+                       (source_request_id,source_name,received_at,source_status,
+                        data_quality_label,normalized_payload_json)
+                       VALUES (?,?,?,'COMPLETE','CLEAN_DATA','{}')""",
+                    (request_id, source_name, captured_at.isoformat()),
+                ).lastrowid
+            )
+        return request_id, response_id
+
+    def safety(self, snapshot_id, captured_at, *, clean=True):
+        request_id, response_id = self.evidence_trace(
+            "goplus", "token_safety_context", captured_at
+        )
+        inserted = insert_solana_safety_evidence(
+            self.db_path,
+            {
+                "token_id": self.token_id,
+                "pair_id": self.pair_id,
+                "snapshot_id": snapshot_id,
+                "memory_window_id": None,
+                "evidence_window_id": None,
+                "safety_evidence_role": "TOKEN_SAFETY_CONTEXT",
+                "source_name": "goplus",
+                "source_status": "COMPLETE",
+                "data_quality_label": "CLEAN_DATA",
+                "target_status": "TARGET_MATCH",
+                "evidence_captured_at": captured_at.isoformat(),
+                "freshness_label": "SAFETY_EVIDENCE_FRESH",
+                "mint_authority_status": "MINT_AUTHORITY_RENOUNCED",
+                "freeze_authority_status": "FREEZE_AUTHORITY_DISABLED",
+                "metadata_mutability_status": "METADATA_IMMUTABLE",
+                "supply_sanity_label": "SUPPLY_SANITY_OK",
+                "holder_concentration_label": "HOLDER_CONCENTRATION_HEALTHY",
+                "liquidity_lock_or_burn_label": "LIQUIDITY_LOCK_OR_BURN_CONFIRMED",
+                "known_risk_flag_label": (
+                    "NO_KNOWN_RISK_FLAGS" if clean else "KNOWN_RISK_FLAGS_PRESENT"
+                ),
+                "token_program_label": "SPL_TOKEN_OR_TOKEN_2022_VERIFIED",
+                "safety_context_label": "SAFETY_CLEAN" if clean else "SAFETY_BLOCKED",
+                "source_request_id": request_id,
+                "source_response_id": response_id,
+                "source_failure_id": None,
+                "paper_only_context": True,
+            },
+            scheduler_boundary_label="SCHEDULER_BOUNDARY_PRESENT",
+            operator_approval_label="OPERATOR_APPROVED_MANUAL_PROOF",
+        )
+        self.assertTrue(inserted.inserted)
+
+    def quote(self, snapshot_id, captured_at, direction):
+        request_id, response_id = self.evidence_trace(
+            "jupiter", "paper_quote_realism", captured_at
+        )
+        inserted = insert_paper_quote_evidence(
+            self.db_path,
+            {
+                "token_id": self.token_id,
+                "pair_id": self.pair_id,
+                "snapshot_id": snapshot_id,
+                "memory_window_id": None,
+                "evidence_window_id": None,
+                "quote_evidence_role": f"{direction}_QUOTE_CONTEXT",
+                "quote_direction": direction,
+                "quote_purpose": "PAPER_REALISM_ONLY",
+                "source_name": "jupiter",
+                "source_status": "COMPLETE",
+                "data_quality_label": "CLEAN_DATA",
+                "target_status": "TARGET_MATCH",
+                "evidence_captured_at": captured_at.isoformat(),
+                "freshness_label": "QUOTE_FRESH",
+                "quote_context_label": "QUOTE_ROUTE_AVAILABLE",
+                "entry_realism_label": (
+                    "ENTRY_REALISTIC" if direction == "ENTRY" else "ENTRY_UNKNOWN"
+                ),
+                "exit_realism_label": (
+                    "EXIT_REALISTIC" if direction == "EXIT" else "EXIT_UNKNOWN"
+                ),
+                "route_available_label": "ROUTE_AVAILABLE",
+                "slippage_context_label": "SLIPPAGE_ACCEPTABLE",
+                "price_impact_context_label": "PRICE_IMPACT_ACCEPTABLE",
+                "liquidity_context_label": "LIQUIDITY_CONTEXT_ACCEPTABLE",
+                "quote_failure_label": None,
+                "source_request_id": request_id,
+                "source_response_id": response_id,
+                "source_failure_id": None,
+                "paper_only_context": True,
+            },
+            scheduler_boundary_label="SCHEDULER_BOUNDARY_PRESENT",
+            operator_approval_label="OPERATOR_APPROVED_MANUAL_PROOF",
+        )
+        self.assertTrue(inserted.inserted)
+
     def snapshot(self, captured_at, *, token_id=None, pair_id=None, index=0):
         payload = {
             "token_id": self.token_id if token_id is None else token_id,
@@ -483,6 +589,58 @@ class Exact15mLedgerRangeTest(unittest.TestCase):
         self.assertEqual(result["closing_evidence_allowance_seconds"], 0)
         self.assertEqual(result["closing_evidence_cutoff_at"], result["window_end_at"])
         self.assertEqual(result["window_end_at"], self.end.isoformat())
+
+    def test_observation_one_second_after_15m_end_cannot_satisfy_main_evidence(self):
+        _predecessor, ids = self.window()
+        self.ledger(ids)
+        late = self.end + timedelta(seconds=1)
+        self.safety(ids[-1], late)
+        self.quote(ids[-1], late, "ENTRY")
+        self.quote(ids[-1], late, "EXIT")
+
+        result = self.report(ids)
+
+        self.assertFalse(result["clean_memory_context_ready"])
+        self.assertFalse(result["sections"]["safety_rug"]["can_support_clean_memory"])
+        self.assertFalse(
+            result["sections"]["liquidity_exit_realism"][
+                "can_support_clean_memory"
+            ]
+        )
+        self.assertIn("CLOSING_EVIDENCE_AFTER_APPROVED_CUTOFF", result["blockers"])
+
+    def test_timely_context_resolved_after_capture_remains_admissible(self):
+        _predecessor, ids = self.window()
+        self.ledger(ids)
+        self.safety(ids[-1], self.end)
+        self.quote(ids[-1], self.end, "ENTRY")
+        self.quote(ids[-1], self.end, "EXIT")
+
+        result = self.report(ids)
+
+        self.assertTrue(result["sections"]["safety_rug"]["can_support_clean_memory"])
+        self.assertTrue(
+            result["sections"]["liquidity_exit_realism"][
+                "can_support_clean_memory"
+            ]
+        )
+        self.assertEqual(
+            result["sections"]["safety_rug"]["row"]["evidence_captured_at"],
+            self.end.isoformat(),
+        )
+
+    def test_later_worse_safety_does_not_rewrite_timely_window_truth(self):
+        _predecessor, ids = self.window()
+        self.ledger(ids)
+        self.safety(ids[-1], self.end, clean=True)
+        self.safety(ids[-1], self.end + timedelta(seconds=1), clean=False)
+
+        result = self.report(ids)
+
+        safety = result["sections"]["safety_rug"]
+        self.assertTrue(safety["can_support_clean_memory"])
+        self.assertEqual(safety["row"]["evidence_captured_at"], self.end.isoformat())
+        self.assertEqual(safety["labels"]["safety_status_label"], "SAFETY_CLEAN")
 
     # --- 12. missing/unsupported evidence still fails closed ---------------
 
