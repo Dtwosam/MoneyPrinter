@@ -378,6 +378,9 @@ class _Merged:
     first_failed_gate: str | None = None
     eligible: bool = False
     origin_route: str = "PUMP_CREATE"
+    # Optional exact cadence lane for gate/handoff consistency. Set by later-
+    # cycle truthful classification before TRACKING_HANDOFF assessment.
+    tracking_lane: str | None = None
 
 
 # Public owner-local candidate shape. The existing executor and pre-admission
@@ -437,12 +440,24 @@ def _apply_existing_discovery_gates(
                     failed = gate
             elif gate == "TRACKING_HANDOFF":
                 pool = candidate.market_identity.rsplit(":", 1)[-1]
-                handoff = assess_tracking_handoff_by_identity(
+                from printer_v1.lifecycle.tracking_queue import (
+                    assess_possible_tracking_claim_by_identity,
+                )
+
+                # Exact lane when already classified (later-cycle freeze path).
+                # Otherwise lane-agnostic possible-claim — never invent NORMAL.
+                # Exact FAST/NORMAL is resolved at handoff via classifier owner.
+                lane_value = getattr(candidate, "tracking_lane", None)
+                handoff = assess_possible_tracking_claim_by_identity(
                     connection,
                     token_mint=candidate.mint,
                     pair_address=pool,
-                    tracking_lane=TokenLifecycleState.TRACK_NORMAL,
                     assessed_at=evaluated_at,
+                    tracking_lane=(
+                        TokenLifecycleState(lane_value)
+                        if lane_value in {"TRACK_FAST", "TRACK_NORMAL"}
+                        else None
+                    ),
                 )
                 if not handoff.eligible:
                     failed = handoff.reason_code or HANDOFF_UNSUPPORTED_STATE
@@ -707,19 +722,24 @@ def persist_cycle_rooted_selected_item(
     tracking_handoff_state: str,
     first_window_15m_scheduler_job_id: int | None,
     now: str,
+    tracking_lane: str,
 ) -> int:
     """Persist one selected item and its existing cycle/handoff junction."""
+    lane = str(tracking_lane)
+    if lane not in {"TRACK_FAST", "TRACK_NORMAL"}:
+        raise CombinedDiscoveryError("DISCOVERY_TRACKING_LANE_MISSING", lane)
     item_cursor = connection.execute(
         """INSERT INTO printer_selection_batch_items(
                batch_id,item_status,token_id,pair_id,token_mint,pair_address,
                chain,tracking_lane,selection_reason,selected_at,created_at
-           ) VALUES (?,'SELECTED',?,?,?,?,'solana','TRACK_NORMAL',?,?,?)""",
+           ) VALUES (?,'SELECTED',?,?,?,?,'solana',?,?,?,?)""",
         (
             selection_batch_id,
             int(token_id),
             int(pair_id),
             token_mint,
             pair_address,
+            lane,
             selection_reason,
             now,
             now,
@@ -3425,13 +3445,22 @@ class CombinedPumpfunCampaignExecutor:
                         failed = gate
                 elif gate == "TRACKING_HANDOFF":
                     pool = candidate.market_identity.rsplit(":", 1)[-1]
-                    handoff = assess_tracking_handoff_by_identity(
+                    from printer_v1.lifecycle.tracking_queue import (
+                        assess_possible_tracking_claim_by_identity,
+                    )
+
+                    lane_value = getattr(candidate, "tracking_lane", None)
+                    handoff = assess_possible_tracking_claim_by_identity(
                         connection,
                         token_mint=candidate.mint,
                         pair_address=pool,
-                        tracking_lane=TokenLifecycleState.TRACK_NORMAL,
                         assessed_at=datetime.fromisoformat(
                             fixtures.evaluated_at.replace("Z", "+00:00")
+                        ),
+                        tracking_lane=(
+                            TokenLifecycleState(lane_value)
+                            if lane_value in {"TRACK_FAST", "TRACK_NORMAL"}
+                            else None
                         ),
                     )
                     if not handoff.eligible:
@@ -3742,12 +3771,44 @@ class CombinedPumpfunCampaignExecutor:
             raise CombinedDiscoveryError(str(exc)) from exc
         token_id = identity.token_row_id
         pair_id = identity.pair_row_id
-        # Identity projection is deliberately neutral.  This existing handoff
-        # remains the lifecycle owner and applies TRACK_NORMAL only immediately
-        # before assessing/claiming tracking activation in this transaction.
+        from printer_v1.operator_cli.cadence_authority import (
+            CadenceAuthorityError,
+            resolve_cycle1_handoff_tracking_lane,
+            validate_existing_slot_tracking_queue_for_handoff,
+        )
+
+        # Exact Cycle-1 lane from truthful discovery classification — never
+        # default NORMAL/FAST.
+        try:
+            lane_value = resolve_cycle1_handoff_tracking_lane(
+                connection,
+                token_id=token_id,
+                pair_id=pair_id,
+                token_mint=mint,
+                pair_address=pool,
+                discovery_batch_id=discovery_batch_id,
+                candidate_tracking_lane=getattr(candidate, "tracking_lane", None),
+                now=now,
+            )
+        except CadenceAuthorityError as exc:
+            raise CombinedDiscoveryError(
+                "DISCOVERY_TRACKING_LANE_MISSING", str(exc)
+            ) from exc
+        tracking_lane = TokenLifecycleState(lane_value)
+        tracking_action = (
+            LifecycleEvent.PROMOTE_TO_TRACK_FAST
+            if tracking_lane is TokenLifecycleState.TRACK_FAST
+            else LifecycleEvent.PROMOTE_TO_TRACK_NORMAL
+        )
+        first_15m_kind = (
+            JobKind.TRACK_FAST_FIRST_15M
+            if tracking_lane is TokenLifecycleState.TRACK_FAST
+            else JobKind.TRACK_NORMAL_FIRST_15M
+        )
+        # Compatibility projection at activation only.
         connection.execute(
-            "UPDATE printer_tokens SET token_status='TRACK_NORMAL',updated_at=? WHERE id=?",
-            (now, token_id),
+            "UPDATE printer_tokens SET token_status=?,updated_at=? WHERE id=?",
+            (tracking_lane.value, now, token_id),
         )
 
         if force_duplicate_active:
@@ -3757,17 +3818,17 @@ class CombinedPumpfunCampaignExecutor:
                 INSERT INTO printer_tracking_queue(
                     token_id, pair_id, tracking_lane, tracking_action, priority_reason,
                     next_check_at, queue_status, source_status, data_quality_label
-                ) VALUES (?, ?, 'TRACK_NORMAL', 'PROMOTE_TO_TRACK_NORMAL', 'inject',
+                ) VALUES (?, ?, ?, ?, 'inject',
                           ?, 'ACTIVE', 'COMPLETE', 'CLEAN_DATA')
                 """,
-                (token_id, pair_id, now),
+                (token_id, pair_id, tracking_lane.value, tracking_action.value, now),
             )
 
         handoff = assess_tracking_handoff(
             connection,
             token_id=token_id,
             pair_id=pair_id,
-            tracking_lane=TokenLifecycleState.TRACK_NORMAL,
+            tracking_lane=tracking_lane,
             assessed_at=datetime.fromisoformat(now.replace("Z", "+00:00")),
         )
         if not handoff.eligible:
@@ -3805,18 +3866,13 @@ class CombinedPumpfunCampaignExecutor:
             (fixtures.cycle_id, ordinal),
         ).fetchone()
 
-        from printer_v1.operator_cli.cadence_authority import (
-            CadenceAuthorityError,
-            validate_existing_slot_tracking_queue_for_handoff,
-        )
-
         if existing_slot is None:
             created, queue_id = claim_tracking_item(
                 connection,
                 token_id=token_id,
                 pair_id=pair_id,
-                tracking_lane=TokenLifecycleState.TRACK_NORMAL,
-                tracking_action=LifecycleEvent.PROMOTE_TO_TRACK_NORMAL,
+                tracking_lane=tracking_lane,
+                tracking_action=tracking_action,
                 priority_reason="combined_discovery_handoff",
                 next_check_at=datetime.fromisoformat(now.replace("Z", "+00:00")),
                 source_status=SourceStatus.COMPLETE,
@@ -3839,7 +3895,7 @@ class CombinedPumpfunCampaignExecutor:
                     connection,
                     token_id=token_id,
                     pair_id=pair_id,
-                    tracking_lane=TokenLifecycleState.TRACK_NORMAL,
+                    tracking_lane=tracking_lane,
                     assessed_at=datetime.fromisoformat(now.replace("Z", "+00:00")),
                 )
                 raise CombinedDiscoveryError(
@@ -3883,22 +3939,68 @@ class CombinedPumpfunCampaignExecutor:
                 if fixtures.mode == "INITIAL":
                     raise CombinedDiscoveryError("CONFLICTING_SLOT")
             slot_id = existing_slot["token_slot_id"]
-            # Immutable tracking_queue_id cannot be rebound. Existing slots may
-            # proceed only with a lawful already-bound queue; otherwise fail
-            # closed before FIRST_15M enqueue / WINDOW_15M_ACTIVE.
-            try:
-                queue_id = validate_existing_slot_tracking_queue_for_handoff(
+            existing_queue_id = existing_slot["tracking_queue_id"]
+            terminal_vacant = existing_slot["token_state"] in {
+                "FAILED",
+                "COOLDOWN",
+                "ARCHIVED",
+                "MANUAL_REVIEW",
+            }
+            if existing_queue_id is None and terminal_vacant:
+                # Migration 032 makes tracking_queue_id identity-immutable, so a
+                # terminal vacant slot with NULL binding cannot be rebound here.
+                # Historical replacement claims a fresh exact-lane queue for the
+                # FIRST_15M job without rewriting slot identity fields.
+                created, queue_id = claim_tracking_item(
                     connection,
-                    token_slot_id=str(slot_id),
-                    cycle_id=fixtures.cycle_id,
-                    token_row_id=token_id,
-                    pair_row_id=pair_id,
+                    token_id=token_id,
+                    pair_id=pair_id,
+                    tracking_lane=tracking_lane,
+                    tracking_action=tracking_action,
+                    priority_reason="combined_discovery_handoff",
+                    next_check_at=datetime.fromisoformat(now.replace("Z", "+00:00")),
+                    source_status=SourceStatus.COMPLETE,
+                    data_quality_label=DataQualityLabel.CLEAN_DATA,
+                    assessed_at=datetime.fromisoformat(now.replace("Z", "+00:00")),
+                    fresh_evidence_requalification=fresh_requalification,
+                    requalification_lineage={
+                        "campaign_id": command.campaign_id,
+                        "run_id": command.run_id,
+                        "cycle_id": fixtures.cycle_id,
+                        "discovery_batch_id": discovery_batch_id,
+                        "selection_batch_id": selection_batch_id,
+                        "fresh_evidence_evaluated_at": now,
+                        "holder_source_name": holder_fact.get("source_name"),
+                        "holder_evidence_reason": holder_fact.get("reason"),
+                    },
                 )
-            except CadenceAuthorityError as exc:
-                raise CombinedDiscoveryError(
-                    "EXISTING_SLOT_TRACKING_AUTHORITY_INVALID",
-                    str(exc),
-                ) from exc
+                if not created or queue_id is None:
+                    handoff = assess_tracking_handoff(
+                        connection,
+                        token_id=token_id,
+                        pair_id=pair_id,
+                        tracking_lane=tracking_lane,
+                        assessed_at=datetime.fromisoformat(now.replace("Z", "+00:00")),
+                    )
+                    raise CombinedDiscoveryError(
+                        handoff.reason_code or HANDOFF_UNSUPPORTED_STATE
+                    )
+            else:
+                # Already-bound slots: validate immutable queue authority before
+                # FIRST_15M / WINDOW_15M_ACTIVE. Do not invent or rebind lane.
+                try:
+                    queue_id = validate_existing_slot_tracking_queue_for_handoff(
+                        connection,
+                        token_slot_id=str(slot_id),
+                        cycle_id=fixtures.cycle_id,
+                        token_row_id=token_id,
+                        pair_row_id=pair_id,
+                    )
+                except CadenceAuthorityError as exc:
+                    raise CombinedDiscoveryError(
+                        "EXISTING_SLOT_TRACKING_AUTHORITY_INVALID",
+                        str(exc),
+                    ) from exc
 
         if force_scheduler_failure:
             raise CombinedDiscoveryError("FIRST_15M_JOB_FAILED", "injected scheduler failure")
@@ -3906,7 +4008,7 @@ class CombinedPumpfunCampaignExecutor:
         job_result, job_id = enqueue_job(
             connection,
             job_name=f"window15m:{mint}:{pool}",
-            job_kind=JobKind.TRACK_NORMAL_FIRST_15M,
+            job_kind=first_15m_kind,
             target_table="printer_tracking_queue",
             target_id=queue_id,
             scheduled_for=datetime.fromisoformat(now.replace("Z", "+00:00")),
@@ -3951,6 +4053,7 @@ class CombinedPumpfunCampaignExecutor:
             tracking_handoff_state="HANDOFF_RECORDED",
             first_window_15m_scheduler_job_id=int(job_id),
             now=now,
+            tracking_lane=tracking_lane.value,
         )
         usage.handoffs += 1
         if usage.handoffs > TRACKING_HANDOFFS:

@@ -422,6 +422,12 @@ def materialize_consumed_pre_admission_pair(
             now=timestamp,
         )
         for item, slot, merged_id in zip(items, slots, merged_ids, strict=True):
+            frozen_lane = str(item.frozen_tracking_lane or "")
+            if frozen_lane not in {"TRACK_FAST", "TRACK_NORMAL"}:
+                raise PreAdmissionMaterializationError(
+                    "FROZEN_TRACKING_LANE_MISSING",
+                    persistence_reason=frozen_lane or "null",
+                )
             persist_cycle_rooted_selected_item(
                 connection,
                 discovery_batch_id=discovery_batch_id,
@@ -439,6 +445,7 @@ def materialize_consumed_pre_admission_pair(
                 tracking_handoff_state="LINKED_ONLY",
                 first_window_15m_scheduler_job_id=None,
                 now=timestamp,
+                tracking_lane=frozen_lane,
             )
         connection.execute(
             """UPDATE printer_discovery_batches

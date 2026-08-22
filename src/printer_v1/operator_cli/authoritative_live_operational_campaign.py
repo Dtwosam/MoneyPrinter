@@ -2660,9 +2660,8 @@ class AuthoritativeLiveOperationalCampaignOwner:
             schedule_maturation,
             SequentialRequestPacer,
         )
-        from printer_v1.lifecycle.contracts import TokenLifecycleState
         from printer_v1.lifecycle.tracking_queue import (
-            assess_tracking_handoff_by_identity,
+            assess_possible_tracking_claim_by_identity,
         )
         holder_facts: dict[str, Mapping[str, Any]] = {}
         accepted_partitions: set[str] = set()
@@ -2705,13 +2704,15 @@ class AuthoritativeLiveOperationalCampaignOwner:
             partition = (partition_by_mint or {}).get(proof.mint.lower())
             if partition is not None and partition in accepted_partitions:
                 continue
-            handoff = assess_tracking_handoff_by_identity(
+            # Lane-agnostic possible-claim: do not invent NORMAL. A NORMAL-only
+            # conflict must not deny a still-claimable FAST identity. Exact lane
+            # is frozen later from truthful classification.
+            handoff = assess_possible_tracking_claim_by_identity(
                 connection,
                 token_mint=proof.mint,
                 pair_address=(tracking_pair_by_mint or {}).get(
                     proof.mint.lower(), proof.bonding_curve
                 ),
-                tracking_lane=TokenLifecycleState.TRACK_NORMAL,
                 assessed_at=evaluated,
             )
             handoff_detail = {
@@ -4243,9 +4244,8 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 # Holder concentration and unavailable evidence remain context.
                 observation_rows = []
                 tracking_exclusions: list[dict[str, Any]] = []
-                from printer_v1.lifecycle.contracts import TokenLifecycleState
                 from printer_v1.lifecycle.tracking_queue import (
-                    assess_tracking_handoff_by_identity,
+                    assess_possible_tracking_claim_by_identity,
                 )
                 for proof in graduated_candidates:
                     mint_key = proof.mint.lower()
@@ -4265,11 +4265,12 @@ class AuthoritativeLiveOperationalCampaignOwner:
                         or item.get("pumpswap_pool")
                         or proof.bonding_curve
                     )
-                    tracking_assessment = assess_tracking_handoff_by_identity(
+                    # Lane unknown pre-freeze: dual-lane possible-claim only.
+                    # Exact FAST/NORMAL is frozen later from classification.
+                    tracking_assessment = assess_possible_tracking_claim_by_identity(
                         connection,
                         token_mint=proof.mint,
                         pair_address=exact_pool,
-                        tracking_lane=TokenLifecycleState.TRACK_NORMAL,
                         assessed_at=evaluated,
                     )
                     tracking_eligible = bool(tracking_assessment.eligible)

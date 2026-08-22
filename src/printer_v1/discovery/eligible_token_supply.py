@@ -1196,10 +1196,9 @@ def run_persistent_eligible_token_supply(
             from printer_v1.discovery.later_cycle_fresh_inventory import (
                 load_campaign_fresh_moe_candidates,
             )
-            from printer_v1.lifecycle.contracts import TokenLifecycleState
             from printer_v1.lifecycle.tracking_queue import (
                 HANDOFF_COOLDOWN_REOPEN_REQUIRED,
-                assess_tracking_handoff_by_identity,
+                assess_possible_tracking_claim_by_identity,
             )
 
             for candidate in load_campaign_fresh_moe_candidates(
@@ -1209,11 +1208,12 @@ def run_persistent_eligible_token_supply(
                 pool = str(candidate["pumpswap_pool"])
                 if mint in campaign_eligible:
                     continue
-                assessment = assess_tracking_handoff_by_identity(
+                # Lane-agnostic possible-claim: never invent NORMAL. A NORMAL
+                # conflict alone must not deny a still-claimable FAST identity.
+                assessment = assess_possible_tracking_claim_by_identity(
                     connection,
                     token_mint=mint,
                     pair_address=pool,
-                    tracking_lane=TokenLifecycleState.TRACK_NORMAL,
                     assessed_at=started_at,
                 )
                 disposition = {
@@ -1654,21 +1654,20 @@ def run_persistent_eligible_token_supply(
         # Expired cooldown is only permission for fresh requalification, so it
         # remains in the evaluation walk and receives no stale-evidence credit.
         if tracking_precheck:
-            from printer_v1.lifecycle.contracts import TokenLifecycleState
             from printer_v1.lifecycle.tracking_queue import (
                 HANDOFF_COOLDOWN_REOPEN_REQUIRED,
-                assess_tracking_handoff_by_identity,
+                assess_possible_tracking_claim_by_identity,
             )
 
             prior_mints = {str(row["mint_identity"]) for row in prior_reserve}
             for inventory_row in inventory_rows:
                 mint = str(inventory_row["mint_identity"])
                 pool = str(inventory_row["pumpswap_pool"])
-                assessment = assess_tracking_handoff_by_identity(
+                # Lane-agnostic possible-claim until freeze classifies exact lane.
+                assessment = assess_possible_tracking_claim_by_identity(
                     connection,
                     token_mint=mint,
                     pair_address=pool,
-                    tracking_lane=TokenLifecycleState.TRACK_NORMAL,
                     assessed_at=started_at,
                 )
                 disposition = {

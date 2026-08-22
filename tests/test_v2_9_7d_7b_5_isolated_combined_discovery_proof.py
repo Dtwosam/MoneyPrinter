@@ -167,11 +167,15 @@ def _tracker_row(mint: str, pool: str, **extra) -> dict:
 
 def _dex_pair(mint: str, pool: str, buys: int = 2, sells: int = 1) -> dict:
     return {
+        "chainId": "solana",
         "baseToken": {"address": mint},
         "quoteToken": {"address": WSOL},
         "pairAddress": pool,
         "dexId": "pumpfun",
-        "txns": {"m5": {"buys": buys, "sells": sells}},
+        "priceUsd": 0.01,
+        "liquidity": {"usd": 1500},
+        "volume": {"m5": 50, "h1": 200, "h24": 200},
+        "txns": {"m5": {"buys": buys, "sells": sells}, "h1": 5, "h24": 10},
         "boosts": {"active": 99},
     }
 
@@ -320,7 +324,9 @@ class IsolatedCombinedDiscoveryProof(unittest.TestCase):
         dex_body = [
             _dex_pair(MINT_A, POOL_A),
             _dex_pair(MINT_B, POOL_B),
-            {"baseToken": {"address": MINT_C}, "pairAddress": POOL_C, "dexId": "pumpfun", "txns": {"m5": {"buys": 0, "sells": 0}}},
+            # Keep C observed+classifiable so Cycle-1 handoff can resolve lane
+            # without inventing TRACK_NORMAL when C is uniformly selected.
+            _dex_pair(MINT_C, POOL_C, buys=1, sells=0),
         ]
         base = CombinedDiscoveryFixtures(
             cycle_id="cycle-7b5",
@@ -1035,7 +1041,12 @@ class IsolatedCombinedDiscoveryProof(unittest.TestCase):
         dex_fail, _ = self._execute(
             self._mixed_fixtures(provider_failures_injected={"dexscreener": "provider_error"})
         )
-        self.assertEqual(dex_fail.terminal_status, "COMPLETED")
+        # Without DexScreener market payloads, Cycle-1 cannot invent TRACK_NORMAL
+        # / TRACK_FAST. Fail closed on missing truthful classification evidence.
+        self.assertEqual(dex_fail.terminal_status, "FAILED")
+        self.assertEqual(
+            dex_fail.first_terminal_cause, "DISCOVERY_TRACKING_LANE_MISSING"
+        )
         connection = self._reopen()
         try:
             dex_obs = connection.execute(
@@ -1051,7 +1062,10 @@ class IsolatedCombinedDiscoveryProof(unittest.TestCase):
                 WHERE work_type='DISCOVERY_DEXSCREENER_ACTIVE'
                 """
             ).fetchone()
-            self.assertEqual(failed[0], "DEXSCREENER_FAILED")
+            # Provider-local failure evidence may remain after campaign fail-closed
+            # rollback of later handoff work; when present it must be exact.
+            if failed is not None:
+                self.assertEqual(failed[0], "DEXSCREENER_FAILED")
         finally:
             connection.close()
 

@@ -237,14 +237,44 @@ class CombinedDiscoveryExecutorTests(unittest.TestCase):
             _tracker_row(MINT_C, POOL_C, rank=2),
         ]
         tracker_top = [_tracker_row(MINT_A, POOL_A, rank=1, promoted=True)]
+        # Classifier-sufficient market fields so Cycle-1 handoff can resolve
+        # truthful TRACK_NORMAL via classify_discovery_candidate (no NORMAL invent).
+        # txns.m5 buys/sells keep the observation activity gate; h1 fields feed
+        # choose_tracking_lane (nested_int cannot sum buys/sells dicts).
         dex_body = [
             {
+                "chainId": "solana",
                 "baseToken": {"address": MINT_A},
                 "quoteToken": {"address": WSOL},
                 "pairAddress": POOL_A,
                 "dexId": "pumpfun",
-                "txns": {"m5": {"buys": 2, "sells": 1}},
-            }
+                "priceUsd": 0.01,
+                "liquidity": {"usd": 1500},
+                "volume": {"m5": 50, "h1": 200, "h24": 200},
+                "txns": {"m5": {"buys": 2, "sells": 1}, "h1": 5, "h24": 10},
+            },
+            {
+                "chainId": "solana",
+                "baseToken": {"address": MINT_B},
+                "quoteToken": {"address": WSOL},
+                "pairAddress": POOL_B,
+                "dexId": "pumpfun",
+                "priceUsd": 0.02,
+                "liquidity": {"usd": 1600},
+                "volume": {"m5": 50, "h1": 200, "h24": 200},
+                "txns": {"m5": {"buys": 2, "sells": 1}, "h1": 5, "h24": 10},
+            },
+            {
+                "chainId": "solana",
+                "baseToken": {"address": MINT_C},
+                "quoteToken": {"address": WSOL},
+                "pairAddress": POOL_C,
+                "dexId": "pumpfun",
+                "priceUsd": 0.03,
+                "liquidity": {"usd": 1700},
+                "volume": {"m5": 50, "h1": 200, "h24": 200},
+                "txns": {"m5": {"buys": 2, "sells": 1}, "h1": 5, "h24": 10},
+            },
         ]
         base = CombinedDiscoveryFixtures(
             cycle_id="cycle-4d",

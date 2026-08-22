@@ -317,7 +317,19 @@ class SelectiveOneHourTrackingHandoffContractTests(unittest.TestCase):
         )
 
     def test_known_tracking_conflict_spends_no_holder_budget(self) -> None:
+        # Possible-claim is lane-agnostic: block BOTH claimable lanes so a
+        # NORMAL-only conflict cannot be bypassed by a still-fresh FAST lane.
         self._row(QueueStatus.COOLDOWN)
+        self.connection.execute(
+            """
+            INSERT INTO printer_tracking_queue(
+                token_id,pair_id,tracking_lane,tracking_action,priority_reason,
+                next_check_at,queue_status,source_status,data_quality_label
+            ) VALUES (?,?,'TRACK_FAST','PROMOTE_TO_TRACK_FAST','fixture',
+                      ? ,'COOLDOWN','COMPLETE','CLEAN_DATA')
+            """,
+            (self.token_id, self.pair_id, NOW.isoformat()),
+        )
         self.connection.commit()
         self.connection.execute("PRAGMA foreign_keys=OFF")
         evaluated = datetime(2026, 7, 28, 18, 0, tzinfo=timezone.utc)

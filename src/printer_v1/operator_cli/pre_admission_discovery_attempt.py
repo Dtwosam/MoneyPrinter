@@ -234,6 +234,32 @@ def _frozen_lane_evidence_hash(classifier_input: Mapping[str, Any]) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def classify_tracking_lane_from_candidate_evidence(
+    *,
+    mint_identity: str,
+    pair_identity: str,
+    canonical_evidence_json: str,
+    channel_labels: Sequence[str] = (),
+    observed_at: datetime,
+) -> tuple[str, Any]:
+    """Return (TRACK_FAST|TRACK_NORMAL, classification) or raise if unavailable."""
+    classifier_input = project_classifier_candidate_from_pre_admission_evidence(
+        mint_identity=mint_identity,
+        pair_identity=pair_identity,
+        canonical_evidence_json=canonical_evidence_json,
+        channel_labels=channel_labels,
+        observed_at=observed_at,
+    )
+    classification = classify_discovery_candidate(classifier_input)
+    lane = choose_tracking_lane(classifier_input, classification)
+    lane_value = None if lane is None else str(lane.value)
+    if lane_value not in _ALLOWED_FROZEN_TRACKING_LANES:
+        raise PreAdmissionAttemptError("FROZEN_TRACKING_LANE_UNAVAILABLE")
+    if classification.discovery_action.value != lane_value:
+        raise PreAdmissionAttemptError("FROZEN_TRACKING_LANE_UNAVAILABLE")
+    return lane_value, classification
+
+
 def attach_frozen_tracking_lane(
     item: PreAdmissionAttemptItem, *, now: datetime
 ) -> PreAdmissionAttemptItem:
@@ -245,13 +271,13 @@ def attach_frozen_tracking_lane(
         channel_labels=item.channel_labels,
         observed_at=item.observed_at,
     )
-    classification = classify_discovery_candidate(classifier_input)
-    lane = choose_tracking_lane(classifier_input, classification)
-    lane_value = None if lane is None else str(lane.value)
-    if lane_value not in _ALLOWED_FROZEN_TRACKING_LANES:
-        raise PreAdmissionAttemptError("FROZEN_TRACKING_LANE_UNAVAILABLE")
-    if classification.discovery_action.value != lane_value:
-        raise PreAdmissionAttemptError("FROZEN_TRACKING_LANE_UNAVAILABLE")
+    lane_value, classification = classify_tracking_lane_from_candidate_evidence(
+        mint_identity=item.mint_identity,
+        pair_identity=item.pair_identity,
+        canonical_evidence_json=item.canonical_evidence_json,
+        channel_labels=item.channel_labels,
+        observed_at=item.observed_at,
+    )
     return replace(
         item,
         frozen_tracking_lane=lane_value,

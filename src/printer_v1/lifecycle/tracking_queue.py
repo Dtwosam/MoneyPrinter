@@ -245,6 +245,65 @@ def assess_tracking_handoff_by_identity(
     return _handoff_assessment(row, assessed_at=assessed_at)
 
 
+# Exact lanes that can later be frozen / claimed for Memory Factory tracking.
+_CLAIMABLE_TRACKING_LANES = (
+    TokenLifecycleState.TRACK_FAST,
+    TokenLifecycleState.TRACK_NORMAL,
+)
+
+
+def assess_possible_tracking_claim_by_identity(
+    db_or_connection: str | Path | sqlite3.Connection,
+    *,
+    token_mint: str,
+    pair_address: str,
+    assessed_at: datetime | None = None,
+    tracking_lane: TokenLifecycleState | str | None = None,
+) -> TrackingHandoffAssessment:
+    """Assess claimability without inventing a NORMAL/FAST default.
+
+    When ``tracking_lane`` is an exact TRACK_FAST/TRACK_NORMAL, assess that lane
+    only (same semantics as :func:`assess_tracking_handoff_by_identity`).
+
+    When lane is unknown, assess both claimable lanes. Eligible if either lane
+    can be freshly claimed. A NORMAL-only conflict must not deny a FAST-capable
+    identity. This does not choose or freeze a lane — freeze/admit remain the
+    lane authority.
+    """
+    if tracking_lane is not None:
+        lane = TokenLifecycleState(tracking_lane)
+        if lane not in _CLAIMABLE_TRACKING_LANES:
+            raise ValueError(f"unsupported tracking lane for claim assessment: {lane}")
+        return assess_tracking_handoff_by_identity(
+            db_or_connection,
+            token_mint=token_mint,
+            pair_address=pair_address,
+            tracking_lane=lane,
+            assessed_at=assessed_at,
+        )
+
+    assessments = [
+        assess_tracking_handoff_by_identity(
+            db_or_connection,
+            token_mint=token_mint,
+            pair_address=pair_address,
+            tracking_lane=lane,
+            assessed_at=assessed_at,
+        )
+        for lane in _CLAIMABLE_TRACKING_LANES
+    ]
+    # Prefer a fresh eligible lane (FAST first) so NORMAL conflicts cannot deny
+    # a still-claimable FAST identity.
+    for assessment in assessments:
+        if assessment.eligible and not assessment.requalification_eligible:
+            return assessment
+    for assessment in assessments:
+        if assessment.eligible:
+            return assessment
+    # Both blocked: surface FAST disposition first for stable diagnostics.
+    return assessments[0]
+
+
 def has_active_tracking_duplicate(
     db_or_connection: str | Path | sqlite3.Connection,
     *,
