@@ -16,6 +16,7 @@ from printer_v1.operator_cli.close_phases import (
     close_phase_metadata,
 )
 from printer_v1.scheduler.contracts import JOB_PRIORITY_VALUE, JobKind
+from printer_v1.scheduler import LockResult, claim_due_job
 from printer_v1.snapshots.lifecycle_continuity import (
     resolve_current_run_long_predecessor,
 )
@@ -524,11 +525,29 @@ def test_partial_context_preserves_durable_evidence_timestamp(
     assert seen["context_state"] == "CONTEXT_PROVIDER_FAILED"
 
 
-def test_exact_typed_binding_failure_still_allows_honest_audit(
+def test_real_context_binding_failure_producer_preserves_snapshot_and_audit(
     connection: sqlite3.Connection,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    opening_sid = _snapshot(
+        connection, token_id=1, captured_at=NOW - timedelta(minutes=15)
+    )
     sid = _snapshot(connection, token_id=1, captured_at=NOW)
+    connection.execute(
+        """INSERT INTO printer_memory_factory_run_steps(
+               run_id,step_key,step_kind,step_status,token_id,pair_id,
+               token_mint,pair_address,tracking_lane,scheduled_for,snapshot_id,
+               result_json,created_at,updated_at)
+           VALUES ('phase-run','t1_snapshot_00','SNAPSHOT','SUCCEEDED',1,1001,
+                   'mint-1','pair-1','TRACK_FAST',?,?, '{}',?,?)""",
+        (
+            (NOW - timedelta(minutes=15)).isoformat(),
+            opening_sid,
+            (NOW - timedelta(minutes=15)).isoformat(),
+            (NOW - timedelta(minutes=15)).isoformat(),
+        ),
+    )
+    connection.commit()
     _add_phase(
         connection,
         token_id=1,
@@ -549,46 +568,132 @@ def test_exact_typed_binding_failure_still_allows_honest_audit(
         step_kind="WINDOW_CLOSE_AUDIT",
         scheduled_for=NOW,
     )
-    payload = json.loads(str(context["result_json"]))
-    preclose_step_id = int(
-        connection.execute(
-            """SELECT id FROM printer_memory_factory_run_steps
-               WHERE run_id='phase-run'
-                 AND step_kind='WINDOW_CLOSE_PRE_CLOSE_CRITICAL'"""
-        ).fetchone()[0]
-    )
-    payload.update(
-        ok=False,
-        closing_snapshot_id=sid,
-        closing_context_envelope={
-            "context_state": "CONTEXT_BINDING_FAILED",
-            "closing_snapshot_id": sid,
-            "preclose_manifest_step_id": preclose_step_id,
-            "unit_results": [],
-        },
-        blocked_reason="CONTEXT_BINDING_FAILED",
+    other_token = _add_phase(
+        connection,
+        token_id=2,
+        step_kind="WINDOW_CLOSE_EVIDENCE",
+        scheduled_for=NOW + timedelta(hours=1),
     )
     connection.execute(
         """UPDATE printer_memory_factory_run_steps
-           SET step_status='FAILED',result_json=? WHERE id=?""",
-        (json.dumps(payload, sort_keys=True), int(context["id"])),
+           SET step_status='RUNNING',started_at=?,updated_at=? WHERE id=?""",
+        (NOW.isoformat(), NOW.isoformat(), int(context["id"])),
     )
     connection.execute(
-        "UPDATE printer_scheduler_jobs SET status='FAILED' WHERE id=?",
-        (int(context["scheduler_job_id"]),),
+        """UPDATE printer_scheduler_jobs
+           SET status='RUNNING',locked_at=?,lock_owner='binding-test',updated_at=?
+           WHERE id=?""",
+        (NOW.isoformat(), NOW.isoformat(), int(context["scheduler_job_id"])),
     )
     connection.commit()
+    context = connection.execute(
+        "SELECT * FROM printer_memory_factory_run_steps WHERE id=?",
+        (int(context["id"]),),
+    ).fetchone()
 
-    assert close_phase_dependency_ready(connection, audit) is True
-    seen: dict[str, object] = {}
+    def fail_local_binding(conn, *args, **kwargs):
+        conn.execute(
+            "UPDATE printer_token_snapshots SET source_status='FAILED' WHERE id=?",
+            (sid,),
+        )
+        raise ValueError("LOCAL_SAFETY_COMPOSITION_WRITE_FAILED")
 
-    def audit_failed_binding(*args, context_result, **kwargs):
-        seen.update(context_result["closing_context_envelope"])
-        return {"ok": True, "window_audit": {"quality": "DIRTY_MEMORY"}}
+    monkeypatch.setattr(factory, "_persist_preclose_context", fail_local_binding)
 
-    monkeypatch.setattr(
-        factory, "_audit_15m_close_from_evidence", audit_failed_binding
+    produced = factory._execute_close_context_phase(
+        connection,
+        context,
+        timeout_seconds=1.0,
     )
+
+    envelope = produced["closing_context_envelope"]
+    assert produced["ok"] is False
+    assert produced["audit_preserving_context_failure"] is True
+    assert envelope["context_state"] == "CONTEXT_BINDING_FAILED"
+    assert envelope["failure_type"] == "CONTEXT_BINDING_FAILED"
+    assert envelope["factory_run_id"] == "phase-run"
+    assert envelope["token_id"] == 1
+    assert envelope["pair_id"] == 1001
+    assert envelope["token_mint"] == "mint-1"
+    assert envelope["pair_address"] == "pair-1"
+    assert envelope["tracking_lane"] == "TRACK_FAST"
+    assert envelope["window_family"] == "WINDOW_CLOSE"
+    assert envelope["context_step_id"] == int(context["id"])
+    assert envelope["context_step_key"] == str(context["step_key"])
+    assert envelope["context_step_kind"] == "WINDOW_CLOSE_CONTEXT"
+    assert envelope["context_scheduler_job_id"] == int(
+        context["scheduler_job_id"]
+    )
+    assert envelope["closing_snapshot_id"] == sid
+    assert envelope["failure_reason"] == (
+        "ValueError: LOCAL_SAFETY_COMPOSITION_WRITE_FAILED"
+    )
+    assert envelope["failed_at"]
+    snapshot = connection.execute(
+        "SELECT captured_at,source_status FROM printer_token_snapshots WHERE id=?",
+        (sid,),
+    ).fetchone()
+    assert tuple(snapshot) == (NOW.isoformat(), "COMPLETE")
+
+    mismatched = json.loads(json.dumps(produced))
+    mismatched["closing_context_envelope"]["closing_snapshot_id"] = sid + 999
+    assert factory._terminalize_typed_context_binding_failure(
+        connection,
+        step=context,
+        result=mismatched,
+        run_id="phase-run",
+    ) is False
+    assert factory._terminalize_typed_context_binding_failure(
+        connection,
+        step=context,
+        result=produced,
+        run_id="phase-run",
+    ) is True
+
+    terminal = connection.execute(
+        """SELECT s.step_status,s.result_json,j.status,j.last_error
+           FROM printer_memory_factory_run_steps AS s
+           JOIN printer_scheduler_jobs AS j ON j.id=s.scheduler_job_id
+           WHERE s.id=?""",
+        (int(context["id"]),),
+    ).fetchone()
+    audit_state = connection.execute(
+        """SELECT s.step_status,j.status
+           FROM printer_memory_factory_run_steps AS s
+           JOIN printer_scheduler_jobs AS j ON j.id=s.scheduler_job_id
+           WHERE s.id=?""",
+        (int(audit["id"]),),
+    ).fetchone()
+    assert tuple(terminal[:1]) == ("FAILED",)
+    assert terminal[2] == "FAILED"
+    assert terminal[3] == (
+        "CONTEXT_BINDING_FAILED:ValueError: "
+        "LOCAL_SAFETY_COMPOSITION_WRITE_FAILED"
+    )
+    assert tuple(audit_state) == ("PENDING", "PENDING")
+    assert connection.execute(
+        "SELECT step_status FROM printer_memory_factory_run_steps WHERE id=?",
+        (int(other_token["id"]),),
+    ).fetchone()[0] == "PENDING"
+    assert close_phase_dependency_ready(connection, audit) is True
+    selected = factory._select_next_pending_step(
+        connection, run_id="phase-run", now=NOW
+    )
+    assert selected is not None and int(selected["id"]) == int(audit["id"])
+    assert claim_due_job(
+        connection,
+        job_id=int(audit["scheduler_job_id"]),
+        lock_owner="audit-test",
+        now=NOW,
+    ) is LockResult.ACQUIRED
+    connection.execute(
+        "UPDATE printer_memory_factory_run_steps SET step_status='RUNNING' WHERE id=?",
+        (int(audit["id"]),),
+    )
+    audit = connection.execute(
+        "SELECT * FROM printer_memory_factory_run_steps WHERE id=?",
+        (int(audit["id"]),),
+    ).fetchone()
     result = factory._execute_close_audit_phase(
         connection,
         audit,
@@ -597,7 +702,15 @@ def test_exact_typed_binding_failure_still_allows_honest_audit(
     )
 
     assert result["ok"] is True
-    assert seen["context_state"] == "CONTEXT_BINDING_FAILED"
+    assert result["closing_context_envelope"] == envelope
+    memory = connection.execute(
+        """SELECT memory_status,memory_quality_label,do_not_train
+           FROM printer_memory_windows WHERE id=?""",
+        (int(result["memory_window_id"]),),
+    ).fetchone()
+    assert memory["memory_status"] != "CLEAN_MEMORY"
+    assert memory["memory_quality_label"] != "CLEAN_MEMORY"
+    assert int(memory["do_not_train"]) == 1
 
 
 @pytest.mark.parametrize(
@@ -731,6 +844,7 @@ def test_15m_planner_enqueues_four_scheduler_owned_close_phases(
 
 def test_failure_between_phases_cancels_later_phase_without_orphan_running_job(
     connection: sqlite3.Connection,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     sid = _snapshot(connection, token_id=1, captured_at=NOW)
     _add_phase(
@@ -753,9 +867,44 @@ def test_failure_between_phases_cancels_later_phase_without_orphan_running_job(
         step_kind="WINDOW_CLOSE_AUDIT",
         scheduled_for=NOW,
     )
+    other_token = _add_phase(
+        connection,
+        token_id=2,
+        step_kind="WINDOW_CLOSE_EVIDENCE",
+        scheduled_for=NOW + timedelta(hours=1),
+    )
+    connection.execute(
+        "UPDATE printer_memory_factory_run_steps SET step_status='RUNNING' WHERE id=?",
+        (int(context["id"]),),
+    )
+    connection.execute(
+        "UPDATE printer_scheduler_jobs SET status='RUNNING' WHERE id=?",
+        (int(context["scheduler_job_id"]),),
+    )
+    connection.commit()
+    context = connection.execute(
+        "SELECT * FROM printer_memory_factory_run_steps WHERE id=?",
+        (int(context["id"]),),
+    ).fetchone()
+    monkeypatch.setattr(
+        factory,
+        "_rehydrate_preclose_context_bundle",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError("UNCLASSIFIED_CONTEXT_INTEGRITY_FAILURE")
+        ),
+    )
+
+    with pytest.raises(
+        RuntimeError, match="UNCLASSIFIED_CONTEXT_INTEGRITY_FAILURE"
+    ):
+        factory._execute_close_context_phase(
+            connection,
+            context,
+            timeout_seconds=1.0,
+        )
     connection.execute(
         """UPDATE printer_memory_factory_run_steps
-           SET step_status='FAILED',error_or_skip_reason='CONTEXT_TIMEOUT'
+           SET step_status='FAILED',error_or_skip_reason='UNCLASSIFIED_CONTEXT_INTEGRITY_FAILURE'
            WHERE id=?""",
         (int(context["id"]),),
     )
@@ -778,6 +927,10 @@ def test_failure_between_phases_cancels_later_phase_without_orphan_running_job(
 
     assert cancelled == 1
     assert tuple(audit_state) == ("CANCELLED", "CANCELLED")
+    assert connection.execute(
+        "SELECT step_status FROM printer_memory_factory_run_steps WHERE id=?",
+        (int(other_token["id"]),),
+    ).fetchone()[0] == "PENDING"
     assert connection.execute(
         """SELECT COUNT(*) FROM printer_memory_factory_run_steps
            WHERE run_id='phase-run' AND step_status='RUNNING'"""
