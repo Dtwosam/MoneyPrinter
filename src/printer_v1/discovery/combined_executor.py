@@ -3792,84 +3792,59 @@ class CombinedPumpfunCampaignExecutor:
         if handoff.requalification_eligible and not fresh_requalification:
             raise CombinedDiscoveryError(handoff.category)
 
-        created, queue_id = claim_tracking_item(
-            connection,
-            token_id=token_id,
-            pair_id=pair_id,
-            tracking_lane=TokenLifecycleState.TRACK_NORMAL,
-            tracking_action=LifecycleEvent.PROMOTE_TO_TRACK_NORMAL,
-            priority_reason="combined_discovery_handoff",
-            next_check_at=datetime.fromisoformat(now.replace("Z", "+00:00")),
-            source_status=SourceStatus.COMPLETE,
-            data_quality_label=DataQualityLabel.CLEAN_DATA,
-            assessed_at=datetime.fromisoformat(now.replace("Z", "+00:00")),
-            fresh_evidence_requalification=fresh_requalification,
-            requalification_lineage={
-                "campaign_id": command.campaign_id,
-                "run_id": command.run_id,
-                "cycle_id": fixtures.cycle_id,
-                "discovery_batch_id": discovery_batch_id,
-                "selection_batch_id": selection_batch_id,
-                "fresh_evidence_evaluated_at": now,
-                "holder_source_name": holder_fact.get("source_name"),
-                "holder_evidence_reason": holder_fact.get("reason"),
-            },
-        )
-        if not created or queue_id is None:
-            handoff = assess_tracking_handoff(
-                connection,
-                token_id=token_id,
-                pair_id=pair_id,
-                tracking_lane=TokenLifecycleState.TRACK_NORMAL,
-                assessed_at=datetime.fromisoformat(now.replace("Z", "+00:00")),
-            )
-            raise CombinedDiscoveryError(
-                handoff.reason_code or HANDOFF_UNSUPPORTED_STATE
-            )
-
-        if force_scheduler_failure:
-            raise CombinedDiscoveryError("FIRST_15M_JOB_FAILED", "injected scheduler failure")
-
-        job_result, job_id = enqueue_job(
-            connection,
-            job_name=f"window15m:{mint}:{pool}",
-            job_kind=JobKind.TRACK_NORMAL_FIRST_15M,
-            target_table="printer_tracking_queue",
-            target_id=queue_id,
-            scheduled_for=datetime.fromisoformat(now.replace("Z", "+00:00")),
-        )
-        if job_id is None:
-            raise CombinedDiscoveryError("FIRST_15M_JOB_FAILED", str(job_result))
-
-        banned_kinds = {
-            JobKind.TRACK_NORMAL_1H.value,
-            JobKind.TRACK_NORMAL_4H.value,
-            JobKind.TRACK_FAST_1H.value,
-            JobKind.TRACK_FAST_4H.value,
-            JobKind.TRACK_FAST_MICRO_EVENT.value,
-        }
-        if any(
-            row[0] in banned_kinds
-            for row in connection.execute(
-                "SELECT job_kind FROM printer_scheduler_jobs WHERE id = ?",
-                (job_id,),
-            )
-        ):
-            raise CombinedDiscoveryError("FORBIDDEN_WINDOW_ACTIVATION")
-
         slot_id = cycle_scoped_token_slot_id(
             cycle_id=fixtures.cycle_id,
             slot_ordinal=ordinal,
         )
         existing_slot = connection.execute(
             """
-            SELECT token_slot_id, mint_identity, token_state
+            SELECT token_slot_id, mint_identity, token_state, tracking_queue_id
             FROM printer_memory_factory_campaign_token_slots
             WHERE cycle_id = ? AND slot_ordinal = ?
             """,
             (fixtures.cycle_id, ordinal),
         ).fetchone()
+
+        from printer_v1.operator_cli.cadence_authority import (
+            CadenceAuthorityError,
+            validate_existing_slot_tracking_queue_for_handoff,
+        )
+
         if existing_slot is None:
+            created, queue_id = claim_tracking_item(
+                connection,
+                token_id=token_id,
+                pair_id=pair_id,
+                tracking_lane=TokenLifecycleState.TRACK_NORMAL,
+                tracking_action=LifecycleEvent.PROMOTE_TO_TRACK_NORMAL,
+                priority_reason="combined_discovery_handoff",
+                next_check_at=datetime.fromisoformat(now.replace("Z", "+00:00")),
+                source_status=SourceStatus.COMPLETE,
+                data_quality_label=DataQualityLabel.CLEAN_DATA,
+                assessed_at=datetime.fromisoformat(now.replace("Z", "+00:00")),
+                fresh_evidence_requalification=fresh_requalification,
+                requalification_lineage={
+                    "campaign_id": command.campaign_id,
+                    "run_id": command.run_id,
+                    "cycle_id": fixtures.cycle_id,
+                    "discovery_batch_id": discovery_batch_id,
+                    "selection_batch_id": selection_batch_id,
+                    "fresh_evidence_evaluated_at": now,
+                    "holder_source_name": holder_fact.get("source_name"),
+                    "holder_evidence_reason": holder_fact.get("reason"),
+                },
+            )
+            if not created or queue_id is None:
+                handoff = assess_tracking_handoff(
+                    connection,
+                    token_id=token_id,
+                    pair_id=pair_id,
+                    tracking_lane=TokenLifecycleState.TRACK_NORMAL,
+                    assessed_at=datetime.fromisoformat(now.replace("Z", "+00:00")),
+                )
+                raise CombinedDiscoveryError(
+                    handoff.reason_code or HANDOFF_UNSUPPORTED_STATE
+                )
             connection.execute(
                 """
                 INSERT INTO printer_memory_factory_campaign_token_slots(
@@ -3908,9 +3883,52 @@ class CombinedPumpfunCampaignExecutor:
                 if fixtures.mode == "INITIAL":
                     raise CombinedDiscoveryError("CONFLICTING_SLOT")
             slot_id = existing_slot["token_slot_id"]
-            # tracking_queue_id is identity-immutable after insert (migration 032).
-            # Replacement into an existing slot cannot rebind queue authority here;
-            # fresh Cycle-N admission must bind tracking_queue_id at INSERT time.
+            # Immutable tracking_queue_id cannot be rebound. Existing slots may
+            # proceed only with a lawful already-bound queue; otherwise fail
+            # closed before FIRST_15M enqueue / WINDOW_15M_ACTIVE.
+            try:
+                queue_id = validate_existing_slot_tracking_queue_for_handoff(
+                    connection,
+                    token_slot_id=str(slot_id),
+                    cycle_id=fixtures.cycle_id,
+                    token_row_id=token_id,
+                    pair_row_id=pair_id,
+                )
+            except CadenceAuthorityError as exc:
+                raise CombinedDiscoveryError(
+                    "EXISTING_SLOT_TRACKING_AUTHORITY_INVALID",
+                    str(exc),
+                ) from exc
+
+        if force_scheduler_failure:
+            raise CombinedDiscoveryError("FIRST_15M_JOB_FAILED", "injected scheduler failure")
+
+        job_result, job_id = enqueue_job(
+            connection,
+            job_name=f"window15m:{mint}:{pool}",
+            job_kind=JobKind.TRACK_NORMAL_FIRST_15M,
+            target_table="printer_tracking_queue",
+            target_id=queue_id,
+            scheduled_for=datetime.fromisoformat(now.replace("Z", "+00:00")),
+        )
+        if job_id is None:
+            raise CombinedDiscoveryError("FIRST_15M_JOB_FAILED", str(job_result))
+
+        banned_kinds = {
+            JobKind.TRACK_NORMAL_1H.value,
+            JobKind.TRACK_NORMAL_4H.value,
+            JobKind.TRACK_FAST_1H.value,
+            JobKind.TRACK_FAST_4H.value,
+            JobKind.TRACK_FAST_MICRO_EVENT.value,
+        }
+        if any(
+            row[0] in banned_kinds
+            for row in connection.execute(
+                "SELECT job_kind FROM printer_scheduler_jobs WHERE id = ?",
+                (job_id,),
+            )
+        ):
+            raise CombinedDiscoveryError("FORBIDDEN_WINDOW_ACTIVATION")
 
         if fixtures.memory_activation_set is not None:
             selection_reason = MEMORY_OBSERVATION_SELECTION_REASON

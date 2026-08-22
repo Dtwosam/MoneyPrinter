@@ -1974,6 +1974,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 PreAdmissionAttemptError,
                 PreAdmissionAttemptItem,
                 PreAdmissionAttemptState,
+                attach_frozen_tracking_lane,
                 create_scheduled_pre_admission_attempt,
                 link_pre_admission_source_evidence,
                 load_pre_admission_attempt,
@@ -2375,22 +2376,27 @@ class AuthoritativeLiveOperationalCampaignOwner:
                                 connection,
                                 attempt_id=attempt_id,
                                 items=tuple(
-                                    PreAdmissionAttemptItem(
-                                        attempt_id=attempt_id,
-                                        slot_ordinal=ordinal,
-                                        token_identity=item.token_identity,
-                                        token_row_id=item.token_row_id,
-                                        mint_identity=item.mint_identity,
-                                        pair_identity=item.pair_identity,
-                                        pair_row_id=item.pair_row_id,
-                                        lifecycle_identity=item.lifecycle_identity,
-                                        canonical_market_identity=item.canonical_market_identity,
-                                        canonical_pool_identity=item.canonical_pool_identity,
-                                        canonical_evidence_json=item.canonical_evidence_json,
-                                        canonical_evidence_hash=item.canonical_evidence_hash,
-                                        evidence_version=item.evidence_version,
-                                        observed_at=item.observed_at,
-                                        channel_labels=_canonical_pre_admission_channel_labels(item),
+                                    attach_frozen_tracking_lane(
+                                        PreAdmissionAttemptItem(
+                                            attempt_id=attempt_id,
+                                            slot_ordinal=ordinal,
+                                            token_identity=item.token_identity,
+                                            token_row_id=item.token_row_id,
+                                            mint_identity=item.mint_identity,
+                                            pair_identity=item.pair_identity,
+                                            pair_row_id=item.pair_row_id,
+                                            lifecycle_identity=item.lifecycle_identity,
+                                            canonical_market_identity=item.canonical_market_identity,
+                                            canonical_pool_identity=item.canonical_pool_identity,
+                                            canonical_evidence_json=item.canonical_evidence_json,
+                                            canonical_evidence_hash=item.canonical_evidence_hash,
+                                            evidence_version=item.evidence_version,
+                                            observed_at=item.observed_at,
+                                            channel_labels=_canonical_pre_admission_channel_labels(
+                                                item
+                                            ),
+                                        ),
+                                        now=instant,
                                     )
                                     for ordinal, item in enumerate(selected, start=1)
                                 ),

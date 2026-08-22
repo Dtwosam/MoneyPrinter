@@ -914,6 +914,22 @@ def persist_standard_first_hour_handoff_set(
                         raise CampaignOwnershipError(
                             f"no valid first-hour state path from {current}"
                         )
+                    if current == "SELECTED" and next_state == "WINDOW_15M_ACTIVE":
+                        from printer_v1.operator_cli.cadence_authority import (
+                            CadenceAuthorityError,
+                            assert_slot_bound_tracking_authority_for_window_15m_active,
+                        )
+
+                        try:
+                            assert_slot_bound_tracking_authority_for_window_15m_active(
+                                connection,
+                                token_slot_id=str(info["token_slot_id"]),
+                            )
+                        except CadenceAuthorityError as exc:
+                            raise CampaignOwnershipError(
+                                "WINDOW_15M_ACTIVE requires exact slot tracking "
+                                f"authority: {exc}"
+                            ) from exc
                     cursor = connection.execute(
                         """UPDATE printer_memory_factory_campaign_token_slots
                            SET token_state=?, updated_at=?
@@ -1447,6 +1463,24 @@ def transition_state(
                 allowed |= terminal_states
             if new_state not in allowed:
                 raise CampaignOwnershipError(f"invalid {record_kind} transition: {current} -> {new_state}")
+            if (
+                record_kind == "token_slot"
+                and current == "SELECTED"
+                and new_state == "WINDOW_15M_ACTIVE"
+            ):
+                from printer_v1.operator_cli.cadence_authority import (
+                    CadenceAuthorityError,
+                    assert_slot_bound_tracking_authority_for_window_15m_active,
+                )
+
+                try:
+                    assert_slot_bound_tracking_authority_for_window_15m_active(
+                        connection, token_slot_id=identity
+                    )
+                except CadenceAuthorityError as exc:
+                    raise CampaignOwnershipError(
+                        f"WINDOW_15M_ACTIVE requires exact slot tracking authority: {exc}"
+                    ) from exc
             if new_state in terminal_states:
                 cause = _required(terminal_cause, "terminal_cause")
                 terminal_value = timestamp

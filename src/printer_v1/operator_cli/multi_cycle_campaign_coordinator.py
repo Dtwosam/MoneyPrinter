@@ -776,26 +776,40 @@ def admit_two_token_cycle_from_attempt(
             or attempt.proposed_cycle_ordinal != 2
         ):
             raise MultiCycleCoordinatorError("pre-admission attempt ownership mismatch")
-        items = load_pre_admission_pair(connection, attempt_id=attempt_id)
+        try:
+            items = load_pre_admission_pair(connection, attempt_id=attempt_id)
+        except PreAdmissionAttemptError as exc:
+            if str(exc) == "FROZEN_TRACKING_LANE_MISSING":
+                raise MultiCycleCoordinatorError(
+                    "pre-admission frozen tracking lane missing or invalid"
+                ) from exc
+            raise
         # Shared Cycle-N cadence activation: claim exact tracking authority and
         # project token_status before immutable slot INSERT binds tracking_queue_id.
+        # Lane must come from immutable PAIR_READY frozen provenance — never a default.
         from printer_v1.operator_cli.cadence_authority import (
             CadenceAuthorityError,
             claim_tracking_authority_for_slot_insert,
         )
 
+        claimed_queue_ids: list[int] = []
         try:
-            claimed_queue_ids = tuple(
-                claim_tracking_authority_for_slot_insert(
-                    connection,
-                    token_row_id=int(item.token_row_id),
-                    pair_row_id=int(item.pair_row_id),
-                    tracking_lane="TRACK_NORMAL",
-                    now=now,
-                    priority_reason="later_cycle_slot_tracking_activation",
+            for item in items:
+                frozen_lane = item.frozen_tracking_lane
+                if frozen_lane not in {"TRACK_FAST", "TRACK_NORMAL"}:
+                    raise MultiCycleCoordinatorError(
+                        "pre-admission frozen tracking lane missing or invalid"
+                    )
+                claimed_queue_ids.append(
+                    claim_tracking_authority_for_slot_insert(
+                        connection,
+                        token_row_id=int(item.token_row_id),
+                        pair_row_id=int(item.pair_row_id),
+                        tracking_lane=frozen_lane,
+                        now=now,
+                        priority_reason="later_cycle_slot_tracking_activation",
+                    )
                 )
-                for item in items
-            )
         except CadenceAuthorityError as exc:
             raise MultiCycleCoordinatorError(
                 f"later-cycle tracking activation failed: {exc}"

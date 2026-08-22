@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from enum import StrEnum
+import hashlib
 import json
 import sqlite3
-from typing import Sequence
+from typing import Any, Mapping, Sequence
 
+from printer_v1.contracts.rules import PRINTER_CHAIN
+from printer_v1.discovery.classifier import (
+    choose_tracking_lane,
+    classify_discovery_candidate,
+)
+from printer_v1.discovery.contracts import DiscoveryChannelLabel
+from printer_v1.lifecycle.contracts import TokenLifecycleState
 from printer_v1.scheduler.contracts import JobKind, JobStatus, LockResult
 from printer_v1.scheduler.scheduler import enqueue_job
 
@@ -26,6 +34,27 @@ class PreAdmissionAttemptState(StrEnum):
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
     CONSUMED = "CONSUMED"
+
+
+FROZEN_LANE_DECISION_OWNER = "classify_discovery_candidate+choose_tracking_lane"
+_ALLOWED_FROZEN_TRACKING_LANES = frozenset(
+    {
+        TokenLifecycleState.TRACK_FAST.value,
+        TokenLifecycleState.TRACK_NORMAL.value,
+    }
+)
+_DISCOVERY_CHANNEL_VALUES = frozenset(label.value for label in DiscoveryChannelLabel)
+_PROVENANCE_TO_SOURCE_CHANNEL = {
+    "LATEST_PUMPFUN": DiscoveryChannelLabel.PUMPFUN_MIGRATION.value,
+    "TOP_PUMPFUN": DiscoveryChannelLabel.PUMPFUN_MIGRATION.value,
+    "TRENDING_PUMPFUN": DiscoveryChannelLabel.PUMPFUN_MIGRATION.value,
+    "ACTIVE_PUMPFUN": DiscoveryChannelLabel.PUMPFUN_MIGRATION.value,
+    "LATEST_GRADUATED": DiscoveryChannelLabel.PUMPSWAP_GRADUATED.value,
+    "PERSISTED_GRADUATED": DiscoveryChannelLabel.PUMPSWAP_GRADUATED.value,
+    "FRESH_AGGREGATOR_PROTOCOL_CONFIRMED": (
+        DiscoveryChannelLabel.DEXSCREENER_LATEST_PROFILES.value
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -65,6 +94,16 @@ class PreAdmissionAttemptItem:
     evidence_version: str
     observed_at: datetime
     channel_labels: tuple[str, ...] = ()
+    # Frozen cadence-lane provenance. Optional only until
+    # attach_frozen_tracking_lane / persist validation; PAIR_READY rows require
+    # a complete set (migration 060 + persist fail-closed checks).
+    frozen_tracking_lane: str | None = None
+    frozen_discovery_action: str | None = None
+    frozen_discovery_label: str | None = None
+    frozen_classification_reason: str | None = None
+    frozen_lane_evidence_hash: str | None = None
+    frozen_lane_decided_at: datetime | None = None
+    frozen_lane_decision_owner: str | None = None
 
 
 def _required(value: object, label: str) -> str:
@@ -93,6 +132,166 @@ def _parse_timestamp(value: object, label: str) -> datetime:
 
 def _optional_timestamp(value: object, label: str) -> datetime | None:
     return None if value is None else _parse_timestamp(value, label)
+
+
+def _decode_evidence_candidate(canonical_evidence_json: str) -> dict[str, Any]:
+    try:
+        decoded = json.loads(canonical_evidence_json)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise PreAdmissionAttemptError("FROZEN_LANE_EVIDENCE_INVALID") from exc
+    if not isinstance(decoded, dict):
+        raise PreAdmissionAttemptError("FROZEN_LANE_EVIDENCE_INVALID")
+    nested = decoded.get("candidate")
+    if isinstance(nested, dict):
+        return dict(nested)
+    return dict(decoded)
+
+
+def _mapped_source_channel(
+    candidate: Mapping[str, Any], *, channel_labels: Sequence[str]
+) -> str | None:
+    raw_channel = candidate.get("source_channel")
+    if isinstance(raw_channel, str) and raw_channel.strip():
+        return raw_channel.strip()
+    provenance = candidate.get("provenance")
+    if isinstance(provenance, str) and provenance.strip():
+        exact = provenance.strip()
+        if exact in _DISCOVERY_CHANNEL_VALUES:
+            return exact
+        mapped = _PROVENANCE_TO_SOURCE_CHANNEL.get(exact)
+        if mapped is not None:
+            return mapped
+    for label in channel_labels:
+        if not isinstance(label, str) or not label.strip():
+            continue
+        exact = label.strip()
+        if exact in _DISCOVERY_CHANNEL_VALUES:
+            return exact
+        mapped = _PROVENANCE_TO_SOURCE_CHANNEL.get(exact)
+        if mapped is not None:
+            return mapped
+    return None
+
+
+def _candidate_liquidity_usd(candidate: Mapping[str, Any]) -> Any:
+    liquidity_usd = candidate.get("liquidity_usd")
+    if liquidity_usd is not None:
+        return liquidity_usd
+    liquidity = candidate.get("liquidity")
+    if isinstance(liquidity, Mapping):
+        return liquidity.get("liquidity_usd")
+    return None
+
+
+def project_classifier_candidate_from_pre_admission_evidence(
+    *,
+    mint_identity: str,
+    pair_identity: str,
+    canonical_evidence_json: str,
+    channel_labels: Sequence[str] = (),
+    observed_at: datetime | None = None,
+) -> dict[str, Any]:
+    """Project exact mint/pair frozen evidence into classifier input shape."""
+    mint = _required(mint_identity, "mint_identity")
+    pair = _required(pair_identity, "pair_identity")
+    evidence = _required(canonical_evidence_json, "canonical_evidence_json")
+    candidate = _decode_evidence_candidate(evidence)
+    labels = tuple(
+        label
+        for label in channel_labels
+        if isinstance(label, str) and label and label == label.strip()
+    )
+    source_name = candidate.get("source_name")
+    if not isinstance(source_name, str) or not source_name.strip():
+        source_name = "later_cycle_frozen_evidence"
+    captured_at = candidate.get("captured_at")
+    if not isinstance(captured_at, str) or not captured_at.strip():
+        captured_at = candidate.get("observed_at")
+    if not isinstance(captured_at, str) or not captured_at.strip():
+        if observed_at is None:
+            raise PreAdmissionAttemptError("FROZEN_LANE_EVIDENCE_INVALID")
+        captured_at = _timestamp(observed_at, "observed_at")
+    return {
+        "token_mint": mint,
+        "pair_address": pair,
+        "chain": PRINTER_CHAIN,
+        "source_name": source_name,
+        "captured_at": captured_at,
+        "price_usd": candidate.get("price_usd"),
+        "liquidity_usd": _candidate_liquidity_usd(candidate),
+        "volume_5m": candidate.get("volume_5m"),
+        "volume_1h": candidate.get("volume_1h"),
+        "volume_24h": candidate.get("volume_24h"),
+        "txns_5m": candidate.get("txns_5m"),
+        "txns_1h": candidate.get("txns_1h"),
+        "txns_24h": candidate.get("txns_24h"),
+        "source_channel": _mapped_source_channel(candidate, channel_labels=labels),
+    }
+
+
+def _frozen_lane_evidence_hash(classifier_input: Mapping[str, Any]) -> str:
+    encoded = json.dumps(classifier_input, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def attach_frozen_tracking_lane(
+    item: PreAdmissionAttemptItem, *, now: datetime
+) -> PreAdmissionAttemptItem:
+    """Classify exact current evidence and freeze TRACK_FAST/TRACK_NORMAL provenance."""
+    classifier_input = project_classifier_candidate_from_pre_admission_evidence(
+        mint_identity=item.mint_identity,
+        pair_identity=item.pair_identity,
+        canonical_evidence_json=item.canonical_evidence_json,
+        channel_labels=item.channel_labels,
+        observed_at=item.observed_at,
+    )
+    classification = classify_discovery_candidate(classifier_input)
+    lane = choose_tracking_lane(classifier_input, classification)
+    lane_value = None if lane is None else str(lane.value)
+    if lane_value not in _ALLOWED_FROZEN_TRACKING_LANES:
+        raise PreAdmissionAttemptError("FROZEN_TRACKING_LANE_UNAVAILABLE")
+    if classification.discovery_action.value != lane_value:
+        raise PreAdmissionAttemptError("FROZEN_TRACKING_LANE_UNAVAILABLE")
+    return replace(
+        item,
+        frozen_tracking_lane=lane_value,
+        frozen_discovery_action=classification.discovery_action.value,
+        frozen_discovery_label=classification.discovery_label.value,
+        frozen_classification_reason=classification.reason,
+        frozen_lane_evidence_hash=_frozen_lane_evidence_hash(classifier_input),
+        frozen_lane_decided_at=_utc(now, "now"),
+        frozen_lane_decision_owner=FROZEN_LANE_DECISION_OWNER,
+    )
+
+
+def _require_frozen_tracking_lane_fields(
+    item: PreAdmissionAttemptItem, *, missing_code: str
+) -> None:
+    if (
+        item.frozen_tracking_lane is None
+        or item.frozen_discovery_action is None
+        or item.frozen_discovery_label is None
+        or item.frozen_classification_reason is None
+        or item.frozen_lane_evidence_hash is None
+        or item.frozen_lane_decided_at is None
+        or item.frozen_lane_decision_owner is None
+    ):
+        raise PreAdmissionAttemptError(missing_code)
+    lane = _required(item.frozen_tracking_lane, "frozen_tracking_lane")
+    action = _required(item.frozen_discovery_action, "frozen_discovery_action")
+    if lane not in _ALLOWED_FROZEN_TRACKING_LANES:
+        raise PreAdmissionAttemptError(missing_code)
+    if action != lane:
+        raise PreAdmissionAttemptError(missing_code)
+    _required(item.frozen_discovery_label, "frozen_discovery_label")
+    _required(item.frozen_classification_reason, "frozen_classification_reason")
+    evidence_hash = _required(item.frozen_lane_evidence_hash, "frozen_lane_evidence_hash")
+    if len(evidence_hash) != 64 or any(ch not in "0123456789abcdef" for ch in evidence_hash):
+        raise PreAdmissionAttemptError(missing_code)
+    _utc(item.frozen_lane_decided_at, "frozen_lane_decided_at")
+    owner = _required(item.frozen_lane_decision_owner, "frozen_lane_decision_owner")
+    if owner != FROZEN_LANE_DECISION_OWNER:
+        raise PreAdmissionAttemptError(missing_code)
 
 
 def _attempt_from_row(row: sqlite3.Row) -> PreAdmissionDiscoveryAttempt:
@@ -427,6 +626,10 @@ def persist_pre_admission_pair(
 ) -> PreAdmissionDiscoveryAttempt:
     exact_id = _required(attempt_id, "attempt_id")
     ordered = _validate_pair(exact_id, items)
+    for item in ordered:
+        _require_frozen_tracking_lane_fields(
+            item, missing_code="FROZEN_TRACKING_LANE_MISSING"
+        )
     if load_pre_admission_attempt(connection, attempt_id=exact_id).state is not PreAdmissionAttemptState.RUNNING:
         raise PreAdmissionAttemptError("INVALID_ATTEMPT_TRANSITION")
     instant = _timestamp(now, "now")
@@ -439,8 +642,11 @@ def persist_pre_admission_pair(
                        pair_identity,pair_row_id,lifecycle_identity,
                        canonical_market_identity,canonical_pool_identity,channel_labels_json,
                        canonical_evidence_json,canonical_evidence_hash,evidence_version,
-                       observed_at,created_at
-                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       observed_at,created_at,
+                       frozen_tracking_lane,frozen_discovery_action,frozen_discovery_label,
+                       frozen_classification_reason,frozen_lane_evidence_hash,
+                       frozen_lane_decided_at,frozen_lane_decision_owner
+                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     exact_id, item.slot_ordinal, _required(item.token_identity, "token_identity"),
                     item.token_row_id, _required(item.mint_identity, "mint_identity"),
@@ -453,6 +659,17 @@ def persist_pre_admission_pair(
                     _required(item.canonical_evidence_hash, "canonical_evidence_hash"),
                     _required(item.evidence_version, "evidence_version"),
                     _timestamp(item.observed_at, "observed_at"), instant,
+                    _required(item.frozen_tracking_lane, "frozen_tracking_lane"),
+                    _required(item.frozen_discovery_action, "frozen_discovery_action"),
+                    _required(item.frozen_discovery_label, "frozen_discovery_label"),
+                    _required(
+                        item.frozen_classification_reason, "frozen_classification_reason"
+                    ),
+                    _required(item.frozen_lane_evidence_hash, "frozen_lane_evidence_hash"),
+                    _timestamp(item.frozen_lane_decided_at, "frozen_lane_decided_at"),
+                    _required(
+                        item.frozen_lane_decision_owner, "frozen_lane_decision_owner"
+                    ),
                 ),
             )
         result = _transition(
@@ -474,7 +691,10 @@ def persist_pre_admission_pair(
 
 
 def load_pre_admission_pair(
-    connection: sqlite3.Connection, *, attempt_id: str
+    connection: sqlite3.Connection,
+    *,
+    attempt_id: str,
+    require_frozen_lane: bool = True,
 ) -> tuple[PreAdmissionAttemptItem, PreAdmissionAttemptItem]:
     attempt = load_pre_admission_attempt(connection, attempt_id=attempt_id)
     if attempt.state not in {
@@ -488,8 +708,10 @@ def load_pre_admission_pair(
     ).fetchall()
     if len(rows) != 2 or tuple(int(row["slot_ordinal"]) for row in rows) != (1, 2):
         raise PreAdmissionAttemptError("EXACT_TWO_ITEMS_REQUIRED")
-    result = tuple(
-        PreAdmissionAttemptItem(
+    loaded: list[PreAdmissionAttemptItem] = []
+    for row in rows:
+        keys = set(row.keys())
+        item = PreAdmissionAttemptItem(
             attempt_id=str(row["attempt_id"]), slot_ordinal=int(row["slot_ordinal"]),
             token_identity=str(row["token_identity"]), token_row_id=int(row["token_row_id"]),
             mint_identity=str(row["mint_identity"]), pair_identity=str(row["pair_identity"]),
@@ -501,10 +723,57 @@ def load_pre_admission_pair(
             evidence_version=str(row["evidence_version"]),
             observed_at=_parse_timestamp(row["observed_at"], "observed_at"),
             channel_labels=tuple(json.loads(str(row["channel_labels_json"]))),
+            frozen_tracking_lane=(
+                None
+                if "frozen_tracking_lane" not in keys or row["frozen_tracking_lane"] is None
+                else str(row["frozen_tracking_lane"])
+            ),
+            frozen_discovery_action=(
+                None
+                if "frozen_discovery_action" not in keys
+                or row["frozen_discovery_action"] is None
+                else str(row["frozen_discovery_action"])
+            ),
+            frozen_discovery_label=(
+                None
+                if "frozen_discovery_label" not in keys
+                or row["frozen_discovery_label"] is None
+                else str(row["frozen_discovery_label"])
+            ),
+            frozen_classification_reason=(
+                None
+                if "frozen_classification_reason" not in keys
+                or row["frozen_classification_reason"] is None
+                else str(row["frozen_classification_reason"])
+            ),
+            frozen_lane_evidence_hash=(
+                None
+                if "frozen_lane_evidence_hash" not in keys
+                or row["frozen_lane_evidence_hash"] is None
+                else str(row["frozen_lane_evidence_hash"])
+            ),
+            frozen_lane_decided_at=(
+                None
+                if "frozen_lane_decided_at" not in keys
+                else _optional_timestamp(
+                    row["frozen_lane_decided_at"], "frozen_lane_decided_at"
+                )
+            ),
+            frozen_lane_decision_owner=(
+                None
+                if "frozen_lane_decision_owner" not in keys
+                or row["frozen_lane_decision_owner"] is None
+                else str(row["frozen_lane_decision_owner"])
+            ),
         )
-        for row in rows
-    )
-    return result  # type: ignore[return-value]
+        # Admit must fail closed on missing frozen provenance. Cancel/terminal
+        # paths may pass require_frozen_lane=False for pre-060 historical rows.
+        if require_frozen_lane:
+            _require_frozen_tracking_lane_fields(
+                item, missing_code="FROZEN_TRACKING_LANE_MISSING"
+            )
+        loaded.append(item)
+    return (loaded[0], loaded[1])
 
 
 def cancel_pair_ready_pre_admission_attempt_for_terminal_parent(
@@ -546,8 +815,11 @@ def cancel_pair_ready_pre_admission_attempt_for_terminal_parent(
         raise PreAdmissionAttemptError("PARENT_TERMINAL_OWNERSHIP_MISMATCH")
 
     # Canonical pair load proves the exact two immutable frozen items/ordinals
-    # still exist before the admission authority is revoked.
-    load_pre_admission_pair(connection, attempt_id=exact_id)
+    # still exist before the admission authority is revoked. Pre-060 historical
+    # rows may lack frozen-lane columns; cancel must still revoke them.
+    load_pre_admission_pair(
+        connection, attempt_id=exact_id, require_frozen_lane=False
+    )
     instant = _timestamp(now, "now")
     cursor = connection.execute(
         """UPDATE printer_pre_admission_discovery_attempts
@@ -608,12 +880,16 @@ def link_pre_admission_source_evidence(
 
 
 __all__ = [
+    "FROZEN_LANE_DECISION_OWNER",
     "PreAdmissionAttemptError", "PreAdmissionAttemptItem",
     "PreAdmissionAttemptState", "PreAdmissionDiscoveryAttempt",
+    "attach_frozen_tracking_lane",
     "cancel_pair_ready_pre_admission_attempt_for_terminal_parent",
     "create_pre_admission_attempt", "create_scheduled_pre_admission_attempt",
     "link_pre_admission_source_evidence",
     "load_pre_admission_attempt", "load_pre_admission_pair",
     "mark_pre_admission_attempt_running", "persist_pre_admission_pair",
-    "pre_admission_attempt_lock_owner", "terminalize_pre_admission_attempt",
+    "pre_admission_attempt_lock_owner",
+    "project_classifier_candidate_from_pre_admission_evidence",
+    "terminalize_pre_admission_attempt",
 ]

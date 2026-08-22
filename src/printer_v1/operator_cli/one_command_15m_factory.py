@@ -304,9 +304,16 @@ def _terminalize_unstarted_cycle_after_materialization_failure(
         raise ValueError("cycle-local materialization isolation preconditions failed")
     connection.execute("BEGIN IMMEDIATE")
     try:
+        from printer_v1.operator_cli.cadence_authority import (
+            terminalize_unstarted_cycle_tracking_claims,
+        )
+
         # Tracking queue may already be insert-bound by shared Cycle-N cadence
-        # activation before materialization. Isolation still applies while no
-        # campaign windows / scheduler work exist.
+        # activation before materialization. Archive those claims so a never-
+        # started cycle does not leave misleading active/queued authority.
+        terminalize_unstarted_cycle_tracking_claims(
+            connection, cycle_id=cycle_id, now=now
+        )
         slot_update = connection.execute(
             """UPDATE printer_memory_factory_campaign_token_slots
                SET token_state='MANUAL_REVIEW',first_terminal_cause=?,
@@ -489,7 +496,6 @@ def _run_four_token_admission_boundary(
             campaign_id=binding.campaign_id,
             run_id=binding.campaign_run_id,
             cycle_id=cycle_id,
-            tracking_lane="TRACK_NORMAL",
             now=post_now,
         )
     except CadenceAuthorityError as exc:
@@ -926,13 +932,11 @@ def _insert_step_and_job(
             if target["tracking_lane"] == "TRACK_FAST"
             else JobKind.TRACK_NORMAL_FIRST_15M
         )
-    tracking_queue_id = target.get("tracking_queue_id")
+    # Design Lane 1 cadence authority does not require Scheduler target_id
+    # binding; keep factory run-step jobs unbound to avoid Lane-2 leakage.
     result, job_id = enqueue_job(
         conn, job_name=f"v2_4_{run_id}_{step_key}", job_kind=job_kind,
-        target_table="printer_tracking_queue",
-        target_id=(
-            None if tracking_queue_id is None else int(tracking_queue_id)
-        ),
+        target_table="printer_tracking_queue", target_id=None,
         scheduled_for=scheduled_for,
     )
     if result != LockResult.ACQUIRED or job_id is None:
@@ -7356,7 +7360,6 @@ def run_one_command_15m_factory(
                     campaign_id=str(campaign_id),
                     run_id=str(campaign_run_id),
                     cycle_id=str(cycle_id),
-                    tracking_lane="TRACK_NORMAL",
                     now=_now(),
                 )
                 planning_targets = _cycle_targets_for_factory(

@@ -22,9 +22,12 @@ NOW = datetime(2026, 8, 20, 12, 0, tzinfo=timezone.utc)
 CANCEL_NOW = datetime(2026, 8, 20, 12, 5, tzinfo=timezone.utc)
 CAUSE = "OPERATIONAL_CAMPAIGN_FAILED:FourTokenFactoryAdapterError"
 MIGRATION_059 = "059_pair_ready_parent_terminal_cancellation_transition.sql"
+MIGRATION_060 = "060_pre_admission_frozen_tracking_lane_provenance.sql"
 
 
-def _seed_graph(connection: sqlite3.Connection) -> None:
+def _seed_graph(
+    connection: sqlite3.Connection, *, include_frozen_lane: bool = False
+) -> None:
     connection.execute(
         "INSERT INTO printer_memory_factory_campaigns("
         "campaign_id,campaign_state,db_mode,db_target_identity,policy_version,"
@@ -107,21 +110,45 @@ def _seed_graph(connection: sqlite3.Connection) -> None:
     )
     for slot in (1, 2):
         row_id = slot + 2
-        connection.execute(
-            """INSERT INTO printer_pre_admission_discovery_attempt_items(
-                   attempt_id,slot_ordinal,token_identity,token_row_id,mint_identity,
-                   pair_identity,pair_row_id,lifecycle_identity,canonical_market_identity,
-                   canonical_pool_identity,canonical_evidence_json,
-                   canonical_evidence_hash,evidence_version,observed_at,created_at
-               ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (
-                "attempt-pair-ready", slot, f"token-{row_id}", row_id, f"mint-{row_id}",
-                f"pair-{row_id}", 100 + row_id, f"lifecycle-{row_id}",
-                f"solana-mainnet:pumpswap:pair-{row_id}", f"pair-{row_id}",
-                json.dumps({"quality": "exact"}, sort_keys=True),
-                str(row_id) * 64, "v1", NOW.isoformat(), NOW.isoformat(),
-            ),
-        )
+        if include_frozen_lane:
+            connection.execute(
+                """INSERT INTO printer_pre_admission_discovery_attempt_items(
+                       attempt_id,slot_ordinal,token_identity,token_row_id,mint_identity,
+                       pair_identity,pair_row_id,lifecycle_identity,canonical_market_identity,
+                       canonical_pool_identity,canonical_evidence_json,
+                       canonical_evidence_hash,evidence_version,observed_at,created_at,
+                       frozen_tracking_lane,frozen_discovery_action,frozen_discovery_label,
+                       frozen_classification_reason,frozen_lane_evidence_hash,
+                       frozen_lane_decided_at,frozen_lane_decision_owner
+                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    "attempt-pair-ready", slot, f"token-{row_id}", row_id, f"mint-{row_id}",
+                    f"pair-{row_id}", 100 + row_id, f"lifecycle-{row_id}",
+                    f"solana-mainnet:pumpswap:pair-{row_id}", f"pair-{row_id}",
+                    json.dumps({"quality": "exact"}, sort_keys=True),
+                    str(row_id) * 64, "v1", NOW.isoformat(), NOW.isoformat(),
+                    "TRACK_NORMAL", "TRACK_NORMAL", "TRACK_NORMAL_CANDIDATE",
+                    "clean_solana_candidate_with_basic_market_fields",
+                    "ab" * 32, NOW.isoformat(),
+                    "classify_discovery_candidate+choose_tracking_lane",
+                ),
+            )
+        else:
+            connection.execute(
+                """INSERT INTO printer_pre_admission_discovery_attempt_items(
+                       attempt_id,slot_ordinal,token_identity,token_row_id,mint_identity,
+                       pair_identity,pair_row_id,lifecycle_identity,canonical_market_identity,
+                       canonical_pool_identity,canonical_evidence_json,
+                       canonical_evidence_hash,evidence_version,observed_at,created_at
+                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    "attempt-pair-ready", slot, f"token-{row_id}", row_id, f"mint-{row_id}",
+                    f"pair-{row_id}", 100 + row_id, f"lifecycle-{row_id}",
+                    f"solana-mainnet:pumpswap:pair-{row_id}", f"pair-{row_id}",
+                    json.dumps({"quality": "exact"}, sort_keys=True),
+                    str(row_id) * 64, "v1", NOW.isoformat(), NOW.isoformat(),
+                ),
+            )
     request_id = connection.execute(
         "INSERT INTO printer_source_requests("
         "source_name,request_kind,requested_at,source_status,data_quality_label) "
@@ -158,7 +185,7 @@ def db_path(tmp_path):
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys=ON")
     try:
-        _seed_graph(connection)
+        _seed_graph(connection, include_frozen_lane=True)
     finally:
         connection.close()
     return path
@@ -360,7 +387,19 @@ def test_migration_059_upgrades_058_without_rewriting_frozen_evidence(tmp_path) 
     finally:
         connection.close()
 
-    apply_migrations(path)
+    # Apply only migration 059 so this remains a 058→059 upgrade proof.
+    # Migration 060 is covered by the fresh full-catalogue path.
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.executescript((MIGRATIONS_DIR / MIGRATION_059).read_text())
+        connection.execute(
+            "INSERT INTO printer_schema_migrations(version) VALUES (?)",
+            (MIGRATION_059,),
+        )
+        connection.commit()
+    finally:
+        connection.close()
 
     connection = _open(path)
     try:
@@ -501,7 +540,7 @@ def test_migration_059_preserves_item_and_source_link_immutability(db_path) -> N
         connection.close()
 
 
-def test_fresh_migration_path_reaches_059_with_integrity_and_foreign_keys(db_path) -> None:
+def test_fresh_migration_path_reaches_060_with_integrity_and_foreign_keys(db_path) -> None:
     connection = _open(db_path)
     try:
         applied = tuple(
@@ -511,8 +550,8 @@ def test_fresh_migration_path_reaches_059_with_integrity_and_foreign_keys(db_pat
             )
         )
         assert applied == canonical_migration_names()
-        assert len(applied) == 59
-        assert applied[-1] == MIGRATION_059
+        assert len(applied) == 60
+        assert applied[-1] == MIGRATION_060
         assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
     finally:

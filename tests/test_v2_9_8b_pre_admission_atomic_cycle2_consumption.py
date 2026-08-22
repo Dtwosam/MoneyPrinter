@@ -138,13 +138,20 @@ def connection(tmp_path):
                    attempt_id,slot_ordinal,token_identity,token_row_id,mint_identity,
                    pair_identity,pair_row_id,lifecycle_identity,canonical_market_identity,
                    canonical_pool_identity,canonical_evidence_json,
-                   canonical_evidence_hash,evidence_version,observed_at,created_at
-               ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   canonical_evidence_hash,evidence_version,observed_at,created_at,
+                   frozen_tracking_lane,frozen_discovery_action,frozen_discovery_label,
+                   frozen_classification_reason,frozen_lane_evidence_hash,
+                   frozen_lane_decided_at,frozen_lane_decision_owner
+               ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 "attempt-1", slot, f"token-{row_id}", row_id, f"mint-{row_id}",
                 f"pair-{row_id}", 100 + row_id, f"lifecycle-{row_id}",
                 f"solana-mainnet:pumpswap:pair-{row_id}", f"pair-{row_id}",
                 '{"quality":"exact"}', str(row_id) * 64, "v1", NOW.isoformat(), NOW.isoformat(),
+                "TRACK_NORMAL", "TRACK_NORMAL", "TRACK_NORMAL_CANDIDATE",
+                "clean_solana_candidate_with_basic_market_fields",
+                "ab" * 32, NOW.isoformat(),
+                "classify_discovery_candidate+choose_tracking_lane",
             ),
         )
     connection.commit()

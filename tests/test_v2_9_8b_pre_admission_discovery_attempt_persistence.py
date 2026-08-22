@@ -8,6 +8,7 @@ import pytest
 
 from printer_v1.db import apply_migrations
 from printer_v1.operator_cli.pre_admission_discovery_attempt import (
+    FROZEN_LANE_DECISION_OWNER,
     PreAdmissionAttemptError,
     PreAdmissionAttemptItem,
     PreAdmissionAttemptState,
@@ -22,6 +23,7 @@ from printer_v1.operator_cli.pre_admission_discovery_attempt import (
 
 
 NOW = datetime(2026, 8, 13, 12, 0, tzinfo=timezone.utc)
+_FROZEN_HASH = "ab" * 32
 
 
 @pytest.fixture()
@@ -112,6 +114,13 @@ def _item(slot: int) -> PreAdmissionAttemptItem:
         evidence_version="v1",
         observed_at=NOW,
         channel_labels=("LATEST_PUMPFUN" if slot == 1 else "TOP_PUMPFUN",),
+        frozen_tracking_lane="TRACK_NORMAL",
+        frozen_discovery_action="TRACK_NORMAL",
+        frozen_discovery_label="TRACK_NORMAL_CANDIDATE",
+        frozen_classification_reason="clean_solana_candidate_with_basic_market_fields",
+        frozen_lane_evidence_hash=_FROZEN_HASH,
+        frozen_lane_decided_at=NOW,
+        frozen_lane_decision_owner=FROZEN_LANE_DECISION_OWNER,
     )
 
 
