@@ -8,11 +8,24 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import datetime, timezone
 from typing import Any, Mapping
 
 
 class FirstHourSafetyBindingError(ValueError):
     """Fail-closed first-hour safety binding contract fault."""
+
+
+def _utc(value: object) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError) as exc:
+        raise FirstHourSafetyBindingError(
+            "FIRST_HOUR_SAFETY_TIMESTAMP_INVALID"
+        ) from exc
+    if parsed.tzinfo is None:
+        raise FirstHourSafetyBindingError("FIRST_HOUR_SAFETY_TIMESTAMP_INVALID")
+    return parsed.astimezone(timezone.utc)
 
 
 def attach_first_hour_safety_overlay(
@@ -44,7 +57,7 @@ def attach_first_hour_safety_overlay(
         ) from exc
 
     window = connection.execute(
-        """SELECT id,token_id,pair_id,window_kind,snapshot_end_id,
+        """SELECT id,token_id,pair_id,window_kind,snapshot_end_id,window_end_at,
                   supporting_context_json
            FROM printer_memory_windows WHERE id=?""",
         (int(memory_window_id),),
@@ -64,7 +77,8 @@ def attach_first_hour_safety_overlay(
         raise FirstHourSafetyBindingError("FIRST_HOUR_MEMORY_CLOSE_SNAPSHOT_MISMATCH")
 
     composite = connection.execute(
-        """SELECT id,token_id,pair_id,snapshot_id,token_mint,pair_address
+        """SELECT id,token_id,pair_id,snapshot_id,token_mint,pair_address,
+                  evidence_captured_at
            FROM printer_safety_evidence_composites WHERE id=?""",
         (composite_id,),
     ).fetchone()
@@ -78,6 +92,24 @@ def attach_first_hour_safety_overlay(
         raise FirstHourSafetyBindingError("FIRST_HOUR_SAFETY_COMPOSITE_MINT_MISMATCH")
     if str(composite["pair_address"]).lower() != str(step["pair_address"]).lower():
         raise FirstHourSafetyBindingError("FIRST_HOUR_SAFETY_COMPOSITE_PAIR_MISMATCH")
+    logical_cutoff = _utc(window["window_end_at"])
+    if _utc(composite["evidence_captured_at"]) > logical_cutoff:
+        raise FirstHourSafetyBindingError(
+            "FIRST_HOUR_SAFETY_LOGICAL_CUTOFF_EXCEEDED"
+        )
+    contributions = connection.execute(
+        """SELECT captured_at FROM printer_safety_evidence_contributions
+           WHERE composite_id=? ORDER BY id""",
+        (composite_id,),
+    ).fetchall()
+    if not contributions:
+        raise FirstHourSafetyBindingError(
+            "FIRST_HOUR_SAFETY_CONTRIBUTIONS_MISSING"
+        )
+    if any(_utc(row["captured_at"]) > logical_cutoff for row in contributions):
+        raise FirstHourSafetyBindingError(
+            "FIRST_HOUR_SAFETY_LOGICAL_CUTOFF_EXCEEDED"
+        )
 
     try:
         supporting = json.loads(str(window["supporting_context_json"] or "{}"))

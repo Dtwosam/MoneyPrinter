@@ -12,6 +12,7 @@ from printer_v1.db import apply_migrations
 from printer_v1.operator_cli import one_command_15m_factory as factory
 from printer_v1.operator_cli.close_phases import (
     CLOSE_PHASE_STEP_KINDS,
+    close_phase_dependency_ready,
     close_phase_metadata,
 )
 from printer_v1.scheduler.contracts import JOB_PRIORITY_VALUE, JobKind
@@ -56,6 +57,7 @@ def _add_phase(
     family, phase = CLOSE_PHASE_STEP_KINDS[step_kind]
     prefix = f"t{token_id}_c{cycle:04d}_{family.lower()}"
     phase_keys = {
+        "PRE_CLOSE": f"{prefix}_pre_close_critical",
         "EVIDENCE": f"{prefix}_evidence",
         "CONTEXT": f"{prefix}_context",
         "AUDIT": f"{prefix}_audit",
@@ -63,9 +65,103 @@ def _add_phase(
     metadata = close_phase_metadata(
         family=family,
         phase=phase,
+        preclose_step_key=phase_keys["PRE_CLOSE"],
         evidence_step_key=phase_keys["EVIDENCE"],
         context_step_key=phase_keys["CONTEXT"],
     )
+    if phase in {"CONTEXT", "AUDIT"} and conn.execute(
+        """SELECT 1 FROM printer_memory_factory_run_steps
+           WHERE run_id='phase-run' AND step_key=?""",
+        (phase_keys["PRE_CLOSE"],),
+    ).fetchone() is None:
+        preclose_metadata = close_phase_metadata(
+            family=family,
+            phase="PRE_CLOSE",
+            preclose_step_key=phase_keys["PRE_CLOSE"],
+            evidence_step_key=phase_keys["EVIDENCE"],
+            context_step_key=phase_keys["CONTEXT"],
+        )
+        preclose_metadata.update(
+            {
+                "preclose_contract_version": factory.PRECLOSE_CONTRACT_VERSION,
+                "preclose_plan_state": "SCHEDULABLE",
+                "source_unit_manifest": [
+                    {
+                        "source_unit_identity": "SAFETY_PRIMARY",
+                        "state": "NOT_REQUIRED",
+                    }
+                ],
+                "terminal_unit_count": 1,
+            }
+        )
+        pre_job = conn.execute(
+            """INSERT INTO printer_scheduler_jobs(
+                   job_name,job_kind,target_table,priority,status,scheduled_for,
+                   created_at,updated_at)
+               VALUES (?,?,'printer_tracking_queue',?,'SUCCEEDED',?,?,?)""",
+            (
+                f"job-{phase_keys['PRE_CLOSE']}",
+                JobKind.MEMORY_WINDOW_CLOSE.value,
+                JOB_PRIORITY_VALUE[JobKind.MEMORY_WINDOW_CLOSE],
+                scheduled_for.isoformat(),
+                scheduled_for.isoformat(),
+                scheduled_for.isoformat(),
+            ),
+        )
+        pre_job_id = int(pre_job.lastrowid)
+        request_prefix = (
+            f"phase-run:{phase_keys['PRE_CLOSE']}:scheduler-{pre_job_id}:"
+            "preclose:safety_primary:attempt-1"
+        )
+        preclose_metadata.update(
+            {
+                "factory_run_id": "phase-run",
+                "token_id": token_id,
+                "pair_id": token_id + 1000,
+                "token_mint": f"mint-{token_id}",
+                "pair_address": f"pair-{token_id}",
+                "scheduler_job_id": pre_job_id,
+                "intended_close_work_identity": phase_keys["PRE_CLOSE"],
+            }
+        )
+        preclose_metadata["source_unit_manifest"][0].update(
+            {
+                "source_name": "goplus",
+                "request_kind": "safety_reference",
+                "attempt_ordinal": 1,
+                "request_key_prefix": request_prefix,
+                "request_key": f"{request_prefix}:safety",
+                "factory_run_id": "phase-run",
+                "scheduler_job_id": pre_job_id,
+                "intended_close_work_identity": phase_keys["PRE_CLOSE"],
+                "token_id": token_id,
+                "pair_id": token_id + 1000,
+                "token_mint": f"mint-{token_id}",
+                "pair_address": f"pair-{token_id}",
+                "window_family": family,
+            }
+        )
+        conn.execute(
+            """INSERT INTO printer_memory_factory_run_steps(
+                   run_id,step_key,step_kind,step_status,token_id,pair_id,
+                   token_mint,pair_address,tracking_lane,scheduled_for,
+                   scheduler_job_id,result_json,created_at,updated_at)
+               VALUES ('phase-run',?,?,'SUCCEEDED',?,?,?,?,?,?,?,?,?,?)""",
+            (
+                phase_keys["PRE_CLOSE"],
+                f"{family}_PRE_CLOSE_CRITICAL",
+                token_id,
+                token_id + 1000,
+                f"mint-{token_id}",
+                f"pair-{token_id}",
+                "TRACK_FAST",
+                scheduled_for.isoformat(),
+                pre_job_id,
+                json.dumps(preclose_metadata, sort_keys=True),
+                scheduled_for.isoformat(),
+                scheduled_for.isoformat(),
+            ),
+        )
     cursor = conn.execute(
         """INSERT INTO printer_scheduler_jobs(
                job_name,job_kind,target_table,priority,status,scheduled_for,
@@ -344,11 +440,29 @@ def test_partial_context_preserves_durable_evidence_timestamp(
         scheduled_for=NOW,
     )
     partial = {
-        "report": {"status": "PARTIAL", "timed_out": ["safety"]},
-        "responses": {},
+        "executions": {},
+        "report": {
+            "source_request_budget": 0,
+            "source_requests_attempted": 0,
+            "post_capture_main_window_provider_calls": 0,
+            "unit_results": [
+                {
+                    "source_unit_identity": "SAFETY_PRIMARY",
+                    "state": "FAILED",
+                }
+            ],
+            "items": {},
+        },
     }
     monkeypatch.setattr(
-        factory, "_collect_preclose_context", lambda *args, **kwargs: partial
+        factory,
+        "_collect_preclose_context",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("post-capture main-window source call")
+        ),
+    )
+    monkeypatch.setattr(
+        factory, "_rehydrate_preclose_context_bundle", lambda *args, **kwargs: partial
     )
     monkeypatch.setattr(
         factory,
@@ -367,9 +481,123 @@ def test_partial_context_preserves_durable_evidence_timestamp(
 
     assert result["ok"] is True
     assert result["closing_snapshot_id"] == sid
-    assert result["governed_context_collection"]["status"] == "PARTIAL"
+    assert result["preclose_context_state"] == "CONTEXT_PROVIDER_FAILED"
+    assert result["closing_context_envelope"]["context_state"] == (
+        "CONTEXT_PROVIDER_FAILED"
+    )
+    assert result["governed_context_collection"][
+        "post_capture_main_window_provider_calls"
+    ] == 0
     assert captured == NOW.isoformat()
     assert result.get("snapshot_id") is None
+
+    connection.execute(
+        """UPDATE printer_memory_factory_run_steps
+           SET step_status='SUCCEEDED',result_json=? WHERE id=?""",
+        (json.dumps(result, sort_keys=True), int(context["id"])),
+    )
+    connection.execute(
+        "UPDATE printer_scheduler_jobs SET status='SUCCEEDED' WHERE id=?",
+        (int(context["scheduler_job_id"]),),
+    )
+    audit = _add_phase(
+        connection,
+        token_id=1,
+        step_kind="WINDOW_CLOSE_AUDIT",
+        scheduled_for=NOW,
+    )
+    seen: dict[str, object] = {}
+
+    def audit_partial(*args, context_result, **kwargs):
+        seen.update(context_result["closing_context_envelope"])
+        return {"ok": True, "window_audit": {"quality": "PARTIAL_MEMORY"}}
+
+    monkeypatch.setattr(factory, "_audit_15m_close_from_evidence", audit_partial)
+    audited = factory._execute_close_audit_phase(
+        connection,
+        audit,
+        minimum_evidence_seconds=900.0,
+        execution_authority="DISABLED",
+    )
+
+    assert audited["ok"] is True
+    assert seen["context_state"] == "CONTEXT_PROVIDER_FAILED"
+
+
+def test_exact_typed_binding_failure_still_allows_honest_audit(
+    connection: sqlite3.Connection,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sid = _snapshot(connection, token_id=1, captured_at=NOW)
+    _add_phase(
+        connection,
+        token_id=1,
+        step_kind="WINDOW_CLOSE_EVIDENCE",
+        scheduled_for=NOW,
+        status="SUCCEEDED",
+        snapshot_id=sid,
+    )
+    context = _add_phase(
+        connection,
+        token_id=1,
+        step_kind="WINDOW_CLOSE_CONTEXT",
+        scheduled_for=NOW,
+    )
+    audit = _add_phase(
+        connection,
+        token_id=1,
+        step_kind="WINDOW_CLOSE_AUDIT",
+        scheduled_for=NOW,
+    )
+    payload = json.loads(str(context["result_json"]))
+    preclose_step_id = int(
+        connection.execute(
+            """SELECT id FROM printer_memory_factory_run_steps
+               WHERE run_id='phase-run'
+                 AND step_kind='WINDOW_CLOSE_PRE_CLOSE_CRITICAL'"""
+        ).fetchone()[0]
+    )
+    payload.update(
+        ok=False,
+        closing_snapshot_id=sid,
+        closing_context_envelope={
+            "context_state": "CONTEXT_BINDING_FAILED",
+            "closing_snapshot_id": sid,
+            "preclose_manifest_step_id": preclose_step_id,
+            "unit_results": [],
+        },
+        blocked_reason="CONTEXT_BINDING_FAILED",
+    )
+    connection.execute(
+        """UPDATE printer_memory_factory_run_steps
+           SET step_status='FAILED',result_json=? WHERE id=?""",
+        (json.dumps(payload, sort_keys=True), int(context["id"])),
+    )
+    connection.execute(
+        "UPDATE printer_scheduler_jobs SET status='FAILED' WHERE id=?",
+        (int(context["scheduler_job_id"]),),
+    )
+    connection.commit()
+
+    assert close_phase_dependency_ready(connection, audit) is True
+    seen: dict[str, object] = {}
+
+    def audit_failed_binding(*args, context_result, **kwargs):
+        seen.update(context_result["closing_context_envelope"])
+        return {"ok": True, "window_audit": {"quality": "DIRTY_MEMORY"}}
+
+    monkeypatch.setattr(
+        factory, "_audit_15m_close_from_evidence", audit_failed_binding
+    )
+    result = factory._execute_close_audit_phase(
+        connection,
+        audit,
+        minimum_evidence_seconds=900.0,
+        execution_authority="DISABLED",
+    )
+
+    assert result["ok"] is True
+    assert seen["context_state"] == "CONTEXT_BINDING_FAILED"
 
 
 @pytest.mark.parametrize(
@@ -423,14 +651,23 @@ def test_track_category_still_outranks_close_evidence(
     assert _selected_kind(connection) == (2, "SNAPSHOT")
 
 
-def test_all_existing_close_families_have_three_explicit_phases() -> None:
+def test_all_existing_close_families_have_four_explicit_phases() -> None:
     assert CLOSE_PHASE_STEP_KINDS == {
+        "WINDOW_CLOSE_PRE_CLOSE_CRITICAL": ("WINDOW_CLOSE", "PRE_CLOSE"),
         "WINDOW_CLOSE_EVIDENCE": ("WINDOW_CLOSE", "EVIDENCE"),
         "WINDOW_CLOSE_CONTEXT": ("WINDOW_CLOSE", "CONTEXT"),
         "WINDOW_CLOSE_AUDIT": ("WINDOW_CLOSE", "AUDIT"),
+        "CONTINUATION_CLOSE_PRE_CLOSE_CRITICAL": (
+            "CONTINUATION_CLOSE",
+            "PRE_CLOSE",
+        ),
         "CONTINUATION_CLOSE_EVIDENCE": ("CONTINUATION_CLOSE", "EVIDENCE"),
         "CONTINUATION_CLOSE_CONTEXT": ("CONTINUATION_CLOSE", "CONTEXT"),
         "CONTINUATION_CLOSE_AUDIT": ("CONTINUATION_CLOSE", "AUDIT"),
+        "LONG_CONTINUATION_CLOSE_PRE_CLOSE_CRITICAL": (
+            "LONG_CONTINUATION_CLOSE",
+            "PRE_CLOSE",
+        ),
         "LONG_CONTINUATION_CLOSE_EVIDENCE": (
             "LONG_CONTINUATION_CLOSE",
             "EVIDENCE",
@@ -446,7 +683,7 @@ def test_all_existing_close_families_have_three_explicit_phases() -> None:
     }
 
 
-def test_15m_planner_enqueues_three_scheduler_owned_close_phases(
+def test_15m_planner_enqueues_four_scheduler_owned_close_phases(
     connection: sqlite3.Connection,
 ) -> None:
     opening = {
@@ -474,6 +711,7 @@ def test_15m_planner_enqueues_three_scheduler_owned_close_phases(
     ).fetchall()
 
     assert [str(row["step_kind"]) for row in rows] == [
+        "WINDOW_CLOSE_PRE_CLOSE_CRITICAL",
         "WINDOW_CLOSE_EVIDENCE",
         "WINDOW_CLOSE_CONTEXT",
         "WINDOW_CLOSE_AUDIT",
@@ -484,6 +722,7 @@ def test_15m_planner_enqueues_three_scheduler_owned_close_phases(
         for row in rows
     )
     assert [json.loads(str(row["result_json"]))["close_phase"] for row in rows] == [
+        "PRE_CLOSE",
         "EVIDENCE",
         "CONTEXT",
         "AUDIT",

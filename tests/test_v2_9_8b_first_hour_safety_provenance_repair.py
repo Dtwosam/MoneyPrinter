@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sqlite3
 import unittest
@@ -31,6 +32,8 @@ def _binding_db(
     composite_snapshot_id: int = 900,
     composite_token_id: int = 39,
     composite_pair_id: int = 43,
+    composite_captured_at: str = "2026-08-22T13:00:00+00:00",
+    contribution_captured_at: str = "2026-08-22T13:00:00+00:00",
 ) -> sqlite3.Connection:
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
@@ -42,6 +45,7 @@ def _binding_db(
             pair_id INTEGER NOT NULL,
             window_kind TEXT NOT NULL,
             snapshot_end_id INTEGER,
+            window_end_at TEXT NOT NULL,
             supporting_context_json TEXT
         );
         CREATE TABLE printer_safety_evidence_composites (
@@ -50,17 +54,25 @@ def _binding_db(
             pair_id INTEGER NOT NULL,
             snapshot_id INTEGER NOT NULL,
             token_mint TEXT NOT NULL,
-            pair_address TEXT NOT NULL
+            pair_address TEXT NOT NULL,
+            evidence_captured_at TEXT NOT NULL
+        );
+        CREATE TABLE printer_safety_evidence_contributions (
+            id INTEGER PRIMARY KEY,
+            composite_id INTEGER NOT NULL,
+            captured_at TEXT NOT NULL
         );
         """
     )
     conn.execute(
         """INSERT INTO printer_memory_windows
-           (id,token_id,pair_id,window_kind,snapshot_end_id,supporting_context_json)
-           VALUES (1,39,43,?,?,?)""",
+           (id,token_id,pair_id,window_kind,snapshot_end_id,window_end_at,
+            supporting_context_json)
+           VALUES (1,39,43,?,?,?,?)""",
         (
             window_kind,
             memory_snapshot_id,
+            "2026-08-22T13:00:00+00:00",
             json.dumps(
                 {
                     "continuity": {"continuity_status": "CONTINUITY_CONTINUOUS"},
@@ -73,15 +85,22 @@ def _binding_db(
     )
     conn.execute(
         """INSERT INTO printer_safety_evidence_composites
-           (id,token_id,pair_id,snapshot_id,token_mint,pair_address)
-           VALUES (7,?,?,?,?,?)""",
+           (id,token_id,pair_id,snapshot_id,token_mint,pair_address,
+            evidence_captured_at)
+           VALUES (7,?,?,?,?,?,?)""",
         (
             composite_token_id,
             composite_pair_id,
             composite_snapshot_id,
             "E9jov4Pnr2F518gmcb5Br2U6fQFbMP92h3FxZSMzpump",
             "FSfTzEkr8gDvPuv7JBvH7Zj7Saw2ZTMN7AMtSYf2SJs4",
+            composite_captured_at,
         ),
+    )
+    conn.execute(
+        """INSERT INTO printer_safety_evidence_contributions(
+               composite_id,captured_at) VALUES (7,?)""",
+        (contribution_captured_at,),
     )
     return conn
 
@@ -102,9 +121,9 @@ class FirstHourSafetyRepairProof(unittest.TestCase):
             LIFECYCLE_RESERVED_OPERATIONS_BY_STEP_KIND["CONTINUATION_CLOSE"], 5
         )
         expected = {
-            ("TRACK_FAST", "TRACK_FAST"): (238, 210),
-            ("TRACK_FAST", "TRACK_NORMAL"): (190, 162),
-            ("TRACK_NORMAL", "TRACK_NORMAL"): (142, 114),
+            ("TRACK_FAST", "TRACK_FAST"): (238, 222),
+            ("TRACK_FAST", "TRACK_NORMAL"): (190, 174),
+            ("TRACK_NORMAL", "TRACK_NORMAL"): (142, 126),
         }
         for lanes, (request_ceiling, scheduler_ceiling) in expected.items():
             with self.subTest(lanes=lanes):
@@ -124,7 +143,7 @@ class FirstHourSafetyRepairProof(unittest.TestCase):
             ("TRACK_FAST", "TRACK_FAST"), (False, False)
         )
         self.assertEqual(no_4h["request_ceiling"], 100)
-        self.assertEqual(no_4h["scheduler_ceiling"], 82)
+        self.assertEqual(no_4h["scheduler_ceiling"], 94)
         self.assertNotIn("token_1_window_4h_phase", no_4h["request_components"])
         self.assertNotIn("token_2_window_4h_phase", no_4h["request_components"])
 
@@ -178,6 +197,35 @@ class FirstHourSafetyRepairProof(unittest.TestCase):
                 finally:
                     conn.close()
 
+    def test_first_hour_binding_rejects_safety_after_logical_end(self) -> None:
+        end = datetime(2026, 8, 22, 13, 0, tzinfo=timezone.utc)
+        for label, kwargs in (
+            (
+                "late_composite",
+                {"composite_captured_at": (end + timedelta(seconds=1)).isoformat()},
+            ),
+            (
+                "late_contribution",
+                {"contribution_captured_at": (end + timedelta(seconds=1)).isoformat()},
+            ),
+        ):
+            with self.subTest(label=label):
+                conn = _binding_db(**kwargs)
+                try:
+                    with self.assertRaisesRegex(
+                        FirstHourSafetyBindingError,
+                        "FIRST_HOUR_SAFETY_LOGICAL_CUTOFF_EXCEEDED",
+                    ):
+                        attach_first_hour_safety_overlay(
+                            conn,
+                            step=STEP,
+                            memory_window_id=1,
+                            closing_snapshot_id=900,
+                            persisted_context=PERSISTED,
+                        )
+                finally:
+                    conn.close()
+
     def test_factory_source_orders_fresh_safety_before_audit_and_4h_barrier(self) -> None:
         source = FACTORY.read_text(encoding="utf-8")
         start = source.index("def _execute_continuation_close(")
@@ -218,7 +266,7 @@ class FirstHourSafetyRepairProof(unittest.TestCase):
         self.assertNotIn("LIFECYCLE_REQUEST_OUTER_CEILING = 238", standard)
         self.assertIn("standard_four_hour_capacity_contract", standard)
         self.assertEqual(standard_4h.LIFECYCLE_REQUEST_OUTER_CEILING, 238)
-        self.assertEqual(standard_4h.LIFECYCLE_SCHEDULER_OUTER_CEILING, 210)
+        self.assertEqual(standard_4h.LIFECYCLE_SCHEDULER_OUTER_CEILING, 222)
         self.assertEqual(
             standard_4h.LIFECYCLE_REQUEST_OUTER_CEILING,
             standard_campaign_lifecycle_budget(

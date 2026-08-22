@@ -14,13 +14,18 @@ from types import MappingProxyType
 from typing import Any, Mapping
 
 
-CLOSE_PHASE_CONTRACT_VERSION = "LANE2_CLOSE_PHASE_V1"
+CLOSE_PHASE_CONTRACT_VERSION = "LANE2_CLOSE_PHASE_V2"
 
 CLOSE_PHASE_STEP_KINDS = MappingProxyType(
     {
+        "WINDOW_CLOSE_PRE_CLOSE_CRITICAL": ("WINDOW_CLOSE", "PRE_CLOSE"),
         "WINDOW_CLOSE_EVIDENCE": ("WINDOW_CLOSE", "EVIDENCE"),
         "WINDOW_CLOSE_CONTEXT": ("WINDOW_CLOSE", "CONTEXT"),
         "WINDOW_CLOSE_AUDIT": ("WINDOW_CLOSE", "AUDIT"),
+        "CONTINUATION_CLOSE_PRE_CLOSE_CRITICAL": (
+            "CONTINUATION_CLOSE",
+            "PRE_CLOSE",
+        ),
         "CONTINUATION_CLOSE_EVIDENCE": (
             "CONTINUATION_CLOSE",
             "EVIDENCE",
@@ -32,6 +37,10 @@ CLOSE_PHASE_STEP_KINDS = MappingProxyType(
         "CONTINUATION_CLOSE_AUDIT": (
             "CONTINUATION_CLOSE",
             "AUDIT",
+        ),
+        "LONG_CONTINUATION_CLOSE_PRE_CLOSE_CRITICAL": (
+            "LONG_CONTINUATION_CLOSE",
+            "PRE_CLOSE",
         ),
         "LONG_CONTINUATION_CLOSE_EVIDENCE": (
             "LONG_CONTINUATION_CLOSE",
@@ -46,6 +55,10 @@ CLOSE_PHASE_STEP_KINDS = MappingProxyType(
             "AUDIT",
         ),
     }
+)
+
+PRE_CLOSE_STEP_KINDS = frozenset(
+    kind for kind, (_, phase) in CLOSE_PHASE_STEP_KINDS.items() if phase == "PRE_CLOSE"
 )
 
 EVIDENCE_STEP_KINDS = frozenset(
@@ -70,24 +83,34 @@ def close_phase_metadata(
     phase: str,
     evidence_step_key: str,
     context_step_key: str,
+    preclose_step_key: str | None = None,
 ) -> dict[str, str | None]:
     """Return the immutable phase/dependency projection stored in result_json."""
     normalized_phase = str(phase).upper()
-    if normalized_phase not in {"EVIDENCE", "CONTEXT", "AUDIT"}:
+    if normalized_phase not in {"PRE_CLOSE", "EVIDENCE", "CONTEXT", "AUDIT"}:
         raise ValueError(f"unsupported close phase: {phase}")
     if family not in LEGACY_CLOSE_STEP_KINDS:
         raise ValueError(f"unsupported close family: {family}")
-    if not evidence_step_key or not context_step_key:
+    inferred_preclose_key = str(
+        preclose_step_key
+        or (
+            evidence_step_key[: -len("_evidence")] + "_pre_close_critical"
+            if evidence_step_key.endswith("_evidence")
+            else f"{evidence_step_key}_pre_close_critical"
+        )
+    )
+    if not inferred_preclose_key or not evidence_step_key or not context_step_key:
         raise ValueError("close phase dependency keys must be non-empty")
     return {
         "close_phase_contract_version": CLOSE_PHASE_CONTRACT_VERSION,
         "close_family": family,
         "close_phase": normalized_phase,
+        "preclose_step_key": inferred_preclose_key,
         "evidence_step_key": evidence_step_key,
         "context_step_key": context_step_key,
         "predecessor_step_key": (
             None
-            if normalized_phase == "EVIDENCE"
+            if normalized_phase in {"PRE_CLOSE", "EVIDENCE"}
             else evidence_step_key
             if normalized_phase == "CONTEXT"
             else context_step_key
@@ -98,7 +121,9 @@ def close_phase_metadata(
 def close_phase_order(step_kind: str) -> int:
     """Return the accepted intra-close ordering; legacy close stays compatible."""
     phase = CLOSE_PHASE_STEP_KINDS.get(str(step_kind), (None, None))[1]
-    return {"EVIDENCE": 1, "CONTEXT": 2, "AUDIT": 3}.get(phase, 3)
+    return {"EVIDENCE": 1, "PRE_CLOSE": 2, "CONTEXT": 3, "AUDIT": 4}.get(
+        phase, 4
+    )
 
 
 def is_close_phase_step(step_kind: str) -> bool:
@@ -135,9 +160,12 @@ def _exact_step(
         "token_mint",
         "pair_address",
         "tracking_lane",
-        "scheduled_for",
     )
     if any(str(row[field]) != str(current[field]) for field in identity_fields):
+        return None
+    if expected_phase != "PRE_CLOSE" and str(row["scheduled_for"]) != str(
+        current["scheduled_for"]
+    ):
         return None
     family_phase = CLOSE_PHASE_STEP_KINDS.get(str(row["step_kind"]))
     current_family_phase = CLOSE_PHASE_STEP_KINDS.get(str(current["step_kind"]))
@@ -259,6 +287,55 @@ def resolve_close_evidence(
     }
 
 
+def _preclose_manifest_is_terminal(payload: Mapping[str, Any]) -> bool:
+    if payload.get("preclose_plan_state") == "TIMELY_ACQUISITION_NOT_PRODUCIBLE":
+        return True
+    units = payload.get("source_unit_manifest")
+    if not isinstance(units, list) or not units:
+        return False
+    return all(
+        isinstance(unit, Mapping)
+        and str(unit.get("state"))
+        not in {"PENDING", "BLOCKED_DEPENDENCY", ""}
+        for unit in units
+    )
+
+
+def resolve_preclose_manifest(
+    connection: sqlite3.Connection,
+    step: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Resolve one exact terminal pre-close manifest for post-capture join."""
+    metadata = _payload(step)
+    expected = CLOSE_PHASE_STEP_KINDS.get(str(step["step_kind"]))
+    if (
+        expected is None
+        or metadata.get("close_phase_contract_version")
+        != CLOSE_PHASE_CONTRACT_VERSION
+        or metadata.get("close_family") != expected[0]
+    ):
+        return {"resolved": False, "reason": "CLOSE_PHASE_METADATA_INVALID"}
+    preclose = _exact_step(
+        connection,
+        current=step,
+        step_key=str(metadata.get("preclose_step_key") or ""),
+        expected_phase="PRE_CLOSE",
+    )
+    if preclose is None or str(preclose["step_status"]) not in {"SUCCEEDED", "SKIPPED"}:
+        return {"resolved": False, "reason": "PRE_CLOSE_MANIFEST_NOT_TERMINAL"}
+    if not _same_campaign_window_owner(connection, step, preclose):
+        return {"resolved": False, "reason": "PRE_CLOSE_OWNER_MISMATCH"}
+    payload = _payload(preclose)
+    if not _preclose_manifest_is_terminal(payload):
+        return {"resolved": False, "reason": "PRE_CLOSE_MANIFEST_NOT_TERMINAL"}
+    return {
+        "resolved": True,
+        "reason": None,
+        "preclose_step": preclose,
+        "preclose_manifest": payload,
+    }
+
+
 def resolve_close_context(
     connection: sqlite3.Connection,
     step: Mapping[str, Any],
@@ -274,11 +351,35 @@ def resolve_close_context(
         step_key=str(metadata.get("context_step_key") or ""),
         expected_phase="CONTEXT",
     )
-    if context is None or str(context["step_status"]) != "SUCCEEDED":
+    if context is None or str(context["step_status"]) not in {"SUCCEEDED", "FAILED"}:
         return {"resolved": False, "reason": "CLOSE_CONTEXT_NOT_SUCCEEDED"}
     if not _same_campaign_window_owner(connection, step, context):
         return {"resolved": False, "reason": "CLOSE_CONTEXT_OWNER_MISMATCH"}
-    return {**evidence, "context_step": context}
+    if str(context["step_status"]) == "SUCCEEDED":
+        return {**evidence, "context_step": context, "typed_context_failure": False}
+    payload = _payload(context)
+    envelope = payload.get("closing_context_envelope")
+    allowed_states = {
+        "CONTEXT_PARTIAL",
+        "CONTEXT_PROVIDER_FAILED",
+        "CONTEXT_BINDING_FAILED",
+        "CONTEXT_UNKNOWN",
+    }
+    preclose = resolve_preclose_manifest(connection, step)
+    if (
+        payload.get("ok") is not False
+        or int(payload.get("closing_snapshot_id") or -1) != int(evidence["snapshot_id"])
+        or not isinstance(envelope, Mapping)
+        or str(envelope.get("context_state") or "") not in allowed_states
+        or int(envelope.get("closing_snapshot_id") or -1)
+        != int(evidence["snapshot_id"])
+        or not isinstance(envelope.get("unit_results"), list)
+        or not preclose.get("resolved")
+        or int(envelope.get("preclose_manifest_step_id") or -1)
+        != int(preclose["preclose_step"]["id"])
+    ):
+        return {"resolved": False, "reason": "CLOSE_CONTEXT_FAILURE_ENVELOPE_INVALID"}
+    return {**evidence, "context_step": context, "typed_context_failure": True}
 
 
 def close_phase_dependency_ready(
@@ -289,6 +390,11 @@ def close_phase_dependency_ready(
     phase = CLOSE_PHASE_STEP_KINDS.get(str(step["step_kind"]), (None, None))[1]
     if phase is None or phase == "EVIDENCE":
         return True
+    if phase == "PRE_CLOSE":
+        return True
     if phase == "CONTEXT":
-        return bool(resolve_close_evidence(connection, step)["resolved"])
+        return bool(
+            resolve_close_evidence(connection, step)["resolved"]
+            and resolve_preclose_manifest(connection, step)["resolved"]
+        )
     return bool(resolve_close_context(connection, step)["resolved"])

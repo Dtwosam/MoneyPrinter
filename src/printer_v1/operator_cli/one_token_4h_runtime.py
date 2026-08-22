@@ -68,7 +68,7 @@ def runtime_budget(tracking_lane: str) -> dict[str, Any]:
         "phase_request_ceiling": REQUEST_CEILINGS[tracking_lane],
         # Compatibility aliases. These values are phase-local, never cumulative.
         "full_run_request_ceiling": REQUEST_CEILINGS[tracking_lane],
-        "planned_scheduler_rows": policy.minimum_required_snapshots + 2,
+        "planned_scheduler_rows": policy.minimum_required_snapshots + 3,
         "phase_scheduler_ceiling": SCHEDULER_CEILINGS[tracking_lane],
         "full_run_scheduler_ceiling": SCHEDULER_CEILINGS[tracking_lane],
         "automatic_retries": 0,
@@ -95,8 +95,8 @@ def cumulative_lifecycle_budget(tracking_lane: str) -> dict[str, Any]:
     }
     scheduler_components = {
         "discovery_handoff": 1,
-        "window_15m": int(fifteen.minimum_required_snapshots) + 2,
-        "window_1h": int(one_hour.minimum_required_snapshots) + 2,
+        "window_15m": int(fifteen.minimum_required_snapshots) + 3,
+        "window_1h": int(one_hour.minimum_required_snapshots) + 3,
         "window_4h_phase": int(phase["phase_scheduler_ceiling"]),
     }
     return {
@@ -146,10 +146,10 @@ def standard_campaign_lifecycle_budget(
         )
         scheduler_components[f"token_{index}_discovery_handoff"] = 1
         scheduler_components[f"token_{index}_window_15m"] = (
-            int(fifteen.minimum_required_snapshots) + 2
+            int(fifteen.minimum_required_snapshots) + 3
         )
         scheduler_components[f"token_{index}_window_1h"] = (
-            int(one_hour.minimum_required_snapshots) + 2
+            int(one_hour.minimum_required_snapshots) + 3
         )
         if continues:
             phase = runtime_budget(lane)
@@ -281,15 +281,16 @@ def _plan_token_4h_phase(
         }
         job_ids = [row["scheduler_job_id"] for row in existing_rows]
         if (
-            len(existing_rows) != expected + 2
+            len(existing_rows) != expected + 3
             or phase_kinds
             != {
+                "LONG_CONTINUATION_CLOSE_PRE_CLOSE_CRITICAL",
                 "LONG_CONTINUATION_CLOSE_EVIDENCE",
                 "LONG_CONTINUATION_CLOSE_CONTEXT",
                 "LONG_CONTINUATION_CLOSE_AUDIT",
             }
             or any(job_id is None for job_id in job_ids)
-            or len({int(job_id) for job_id in job_ids}) != expected + 2
+            or len({int(job_id) for job_id in job_ids}) != expected + 3
         ):
             return {
                 "planned": False,
@@ -301,7 +302,7 @@ def _plan_token_4h_phase(
         return {
             "planned": True,
             "replay": True,
-            "planned_jobs": expected + 2,
+            "planned_jobs": expected + 3,
             "predecessor": resolved,
             "steps": existing_rows,
         }
@@ -314,7 +315,7 @@ def _plan_token_4h_phase(
     deadline = opening + timedelta(seconds=policy.window_close_interval_seconds)
     require_projected_capacity(
         current=0,
-        projected=expected + 2,
+        projected=expected + 3,
         ceiling=int(budget["phase_scheduler_ceiling"]),
         label="4h phase scheduler",
     )
@@ -333,7 +334,7 @@ def _plan_token_4h_phase(
     ).fetchone()[0])
     require_projected_capacity(
         current=existing_jobs + 1,
-        projected=expected + 2,
+        projected=expected + 3,
         ceiling=effective_cumulative_ceiling,
         label="cumulative lifecycle scheduler",
     )
@@ -361,6 +362,38 @@ def _plan_token_4h_phase(
         )
     evidence_key = f"{prefix}_close_evidence"
     context_key = f"{prefix}_close_context"
+    from printer_v1.operator_cli.one_command_15m_factory import (
+        _preclose_phase_plan,
+    )
+
+    run_row = connection.execute(
+        "SELECT config_json FROM printer_memory_factory_runs WHERE run_id=?",
+        (run_id,),
+    ).fetchone()
+    try:
+        run_config = json.loads(str(run_row[0] or "{}")) if run_row else {}
+    except (TypeError, json.JSONDecodeError):
+        run_config = {}
+    preclose_key, preclose_kind, preclose_at, preclose_projection = (
+        _preclose_phase_plan(
+            family="LONG_CONTINUATION_CLOSE",
+            prefix=prefix,
+            run_id=run_id,
+            target={
+                "token_id": token_id,
+                "pair_id": pair_id,
+                "token_mint": token_mint,
+                "pair_address": pair_address,
+                "tracking_lane": tracking_lane,
+            },
+            window_end_at=deadline,
+            earliest_preclose_schedulable_at=datetime.now(timezone.utc),
+            timeout_seconds=float(run_config.get("timeout_seconds") or 5.0),
+        )
+    )
+    plan_rows.append(
+        (preclose_key, preclose_kind, preclose_at, preclose_projection)
+    )
     for phase in ("EVIDENCE", "CONTEXT", "AUDIT"):
         phase_key = {
             "EVIDENCE": evidence_key,
@@ -377,6 +410,7 @@ def _plan_token_4h_phase(
                     **close_phase_metadata(
                         family="LONG_CONTINUATION_CLOSE",
                         phase=phase,
+                        preclose_step_key=preclose_key,
                         evidence_step_key=evidence_key,
                         context_step_key=context_key,
                     ),
@@ -400,6 +434,36 @@ def _plan_token_4h_phase(
         )
         if result != LockResult.ACQUIRED or job_id is None:
             raise ValueError(f"4h scheduler enqueue failed for {step_key}: {result}")
+        persisted_projection = dict(result_projection)
+        if step_kind == "LONG_CONTINUATION_CLOSE_PRE_CLOSE_CRITICAL":
+            persisted_projection["scheduler_job_id"] = int(job_id)
+            persisted_projection["intended_close_work_identity"] = str(step_key)
+            for unit in persisted_projection.get("source_unit_manifest", []):
+                role = str(unit["source_unit_identity"])
+                request_suffix = {
+                    "MARKET_CHAIN": "market-chain",
+                    "SAFETY_PRIMARY": "safety",
+                    "SAFETY_CORE": "core-safety",
+                    "EXIT_QUOTE": "exit",
+                    "HOLDER_PRIMARY": "holder",
+                    "HOLDER_BACKUP": "holder_backup",
+                }[role]
+                request_prefix = (
+                    f"{run_id}:{step_key}:scheduler-{int(job_id)}:"
+                    f"preclose:{role.lower()}:attempt-1"
+                )
+                unit.update(
+                    factory_run_id=str(run_id),
+                    scheduler_job_id=int(job_id),
+                    intended_close_work_identity=str(step_key),
+                    token_id=int(token_id),
+                    pair_id=int(pair_id),
+                    token_mint=str(token_mint),
+                    pair_address=str(pair_address),
+                    window_family="LONG_CONTINUATION_CLOSE",
+                    request_key_prefix=request_prefix,
+                    request_key=f"{request_prefix}:{request_suffix}",
+                )
         cursor = connection.execute(
             """INSERT INTO printer_memory_factory_run_steps
                (run_id,step_key,step_kind,step_status,token_id,pair_id,token_mint,
@@ -416,10 +480,15 @@ def _plan_token_4h_phase(
                 tracking_lane,
                 _iso(scheduled_for),
                 job_id,
-                json.dumps(dict(result_projection), sort_keys=True),
+                json.dumps(persisted_projection, sort_keys=True),
             ),
         )
         created_step_ids.append(int(cursor.lastrowid))
+    from printer_v1.operator_cli.one_command_15m_factory import (
+        _refresh_preclose_contention_cohorts,
+    )
+
+    _refresh_preclose_contention_cohorts(connection, run_id=run_id)
     steps = _token_long_steps(
         connection,
         run_id=run_id,
@@ -427,12 +496,12 @@ def _plan_token_4h_phase(
         pair_id=pair_id,
         tracking_lane=tracking_lane,
     )
-    if len(steps) != expected + 2:
+    if len(steps) != expected + 3:
         raise ValueError("4h run-step read-back count mismatch")
     return {
         "planned": True,
         "replay": False,
-        "planned_jobs": expected + 2,
+        "planned_jobs": expected + 3,
         "expected_snapshots": expected,
         "deadline_at": _iso(deadline),
         "predecessor_window_id": int(predecessor["id"]),
@@ -522,9 +591,9 @@ def plan_current_run_4h(
         ).fetchone()
         expected = int(policy.minimum_required_snapshots)
         if (
-            int(replay_shape["total"] or 0) != expected + 2
+            int(replay_shape["total"] or 0) != expected + 3
             or int(replay_shape["closes"] or 0) != 1
-            or int(replay_shape["matching"] or 0) != expected + 2
+            or int(replay_shape["matching"] or 0) != expected + 3
         ):
             return {
                 "planned": False,
@@ -1079,6 +1148,10 @@ def plan_standard_campaign_4h_handoff(
             planned_by_slot[slot_id] = int(plan["planned_jobs"])
             for step in plan["steps"]:
                 job_id = int(step["scheduler_job_id"])
+                from printer_v1.operator_cli.one_command_15m_factory import (
+                    _campaign_work_deadline_for_scheduler_job,
+                )
+
                 campaign_ownership.project_campaign_scheduler_job(
                     connection,
                     scheduler_work_id=(
@@ -1092,13 +1165,27 @@ def plan_standard_campaign_4h_handoff(
                     window_id=window_id,
                     factory_run_id=factory_run_id,
                     work_intent=str(step["step_kind"]),
-                    deadline_at=str(step["scheduled_for"]),
+                    deadline_at=_campaign_work_deadline_for_scheduler_job(
+                        connection,
+                        scheduler_job_id=job_id,
+                        fallback=str(step["scheduled_for"]),
+                    ),
                     scheduler_job_id=job_id,
                     stage_id="WINDOW_4H",
                     target_category="CAMPAIGN_WINDOW",
                     target_identity=window_id,
                     now=timestamp,
                 )
+                if str(step["step_kind"]) == (
+                    "LONG_CONTINUATION_CLOSE_PRE_CLOSE_CRITICAL"
+                ):
+                    from printer_v1.operator_cli.one_command_15m_factory import (
+                        _attach_preclose_campaign_owner,
+                    )
+
+                    _attach_preclose_campaign_owner(
+                        connection, scheduler_job_id=job_id
+                    )
         verified = _standard_campaign_4h_plan_state(
             connection,
             campaign_id=campaign_id,

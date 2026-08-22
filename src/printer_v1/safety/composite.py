@@ -427,6 +427,14 @@ def persist_safety_composite(
     freshness_label = contributions[0]["freshness_label"]
     source_status = "COMPLETE" if not blockers else "PARTIAL"
     data_quality = "CLEAN_DATA" if not blockers else "ACCEPTABLE_PARTIAL_DATA"
+    observed_times = [
+        captured
+        for captured in (_time(item["captured_at"]) for item in contributions)
+        if captured is not None
+    ]
+    if not observed_times:
+        raise ValueError("composite safety has no truthful source observation time")
+    evidence_observed_at = max(observed_times).isoformat()
 
     connection.execute(
         """
@@ -446,7 +454,7 @@ def persist_safety_composite(
         """,
         (
             token_id, pair_id, snapshot_id, memory_window_id, POLICY_VERSION,
-            token_mint, pair_address, evaluated.isoformat(), source_status,
+            token_mint, pair_address, evidence_observed_at, source_status,
             data_quality, target_status, freshness_label,
             *(base.get(field) for field in SAFETY_FIELDS),
             base.get("safety_context_label", "SAFETY_UNKNOWN"), contract_label,
@@ -500,6 +508,8 @@ def persist_safety_composite(
         "optional_unknowns": optional_unknowns,
         "optional_unknown_reasons": optional_unknown_reason_map,
         "field_bindings": field_bindings,
+        "evidence_observed_at": evidence_observed_at,
+        "evidence_evaluated_at": evaluated.isoformat(),
         "inserted": True,
     }
 

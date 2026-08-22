@@ -120,22 +120,40 @@ class OneToken4hRuntimeTests(unittest.TestCase):
         self.conn.commit()
         self.assertTrue(result["planned"])
         self.assertEqual(result["predecessor_window_id"], predecessor_id)
-        self.assertEqual(result["planned_jobs"], 63)
+        self.assertEqual(result["planned_jobs"], 64)
         self.assertEqual(datetime.fromisoformat(result["deadline_at"]), T0 + timedelta(seconds=10800))
         rows = self.conn.execute(
             "SELECT step_kind,scheduled_for FROM printer_memory_factory_run_steps "
             "WHERE run_id=? AND step_kind LIKE 'LONG_CONTINUATION_%' ORDER BY scheduled_for,id",
             (run_id,),
         ).fetchall()
-        self.assertEqual(len(rows), 63)
-        self.assertEqual(rows[-1]["step_kind"], "LONG_CONTINUATION_CLOSE_AUDIT")
+        self.assertEqual(len(rows), 64)
+        close_rows = [
+            row
+            for row in rows
+            if str(row["step_kind"]).startswith("LONG_CONTINUATION_CLOSE_")
+        ]
         self.assertEqual(
-            {str(row["step_kind"]) for row in rows[-3:]},
+            {str(row["step_kind"]) for row in close_rows},
             {
+                "LONG_CONTINUATION_CLOSE_PRE_CLOSE_CRITICAL",
                 "LONG_CONTINUATION_CLOSE_EVIDENCE",
                 "LONG_CONTINUATION_CLOSE_CONTEXT",
                 "LONG_CONTINUATION_CLOSE_AUDIT",
             },
+        )
+        preclose = self.conn.execute(
+            """SELECT result_json FROM printer_memory_factory_run_steps
+               WHERE run_id=?
+                 AND step_kind='LONG_CONTINUATION_CLOSE_PRE_CLOSE_CRITICAL'""",
+            (run_id,),
+        ).fetchone()
+        preclose_payload = json.loads(str(preclose[0]))
+        self.assertEqual(
+            preclose_payload["evidence_step_key"], "t1_p1_4h_close_evidence"
+        )
+        self.assertEqual(
+            preclose_payload["context_step_key"], "t1_p1_4h_close_context"
         )
         replay = plan_current_run_4h(
             self.conn, run_id=run_id, token_id=token_id, pair_id=pair_id,
@@ -143,7 +161,7 @@ class OneToken4hRuntimeTests(unittest.TestCase):
             explicit_proof_mode=True,
         )
         self.assertTrue(replay["replay"])
-        self.assertEqual(replay["planned_jobs"], 63)
+        self.assertEqual(replay["planned_jobs"], 64)
 
     def test_partial_replay_plan_stops_safely(self) -> None:
         run_id, token_id, pair_id, _, _ = self._foundation()

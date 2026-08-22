@@ -315,6 +315,48 @@ def complete_job(
         )
 
 
+def skip_job(
+    db_or_connection: str | Path | sqlite3.Connection,
+    *,
+    job_id: int,
+    reason: str,
+    now: datetime | None = None,
+) -> None:
+    """Terminalize one claimed Scheduler job as an honest non-execution."""
+    current_time = now or utc_now()
+    with connect(db_or_connection) as connection:
+        row = connection.execute(
+            "SELECT status,locked_at,lock_owner FROM printer_scheduler_jobs WHERE id=?",
+            (int(job_id),),
+        ).fetchone()
+        if (
+            row is None
+            or str(row["status"]) != JobStatus.RUNNING.value
+            or row["locked_at"] is None
+            or not str(row["lock_owner"] or "")
+        ):
+            raise ValueError(f"Scheduler job is not running: {job_id}")
+        connection.execute(
+            """UPDATE printer_scheduler_jobs
+               SET status=?,finished_at=?,locked_at=NULL,lock_owner=NULL,
+                   last_error=?,updated_at=? WHERE id=?""",
+            (
+                JobStatus.SKIPPED.value,
+                to_timestamp(current_time),
+                str(reason),
+                to_timestamp(current_time),
+                int(job_id),
+            ),
+        )
+        _observe(
+            "SCHEDULER_TERMINAL",
+            scheduler_job_id=int(job_id),
+            terminal_state=JobStatus.SKIPPED.value,
+            terminal_at=to_timestamp(current_time),
+            first_terminal_cause=str(reason),
+        )
+
+
 def yield_job(
     db_or_connection: str | Path | sqlite3.Connection,
     *,
@@ -469,6 +511,17 @@ def release_stale_locks(
     current_time = now or utc_now()
     stale_before = current_time - timedelta(seconds=lock_timeout_seconds)
     with connect(db_or_connection) as connection:
+        stale_job_ids = [
+            int(row[0])
+            for row in connection.execute(
+                """SELECT id FROM printer_scheduler_jobs
+                   WHERE status=? AND locked_at IS NOT NULL AND locked_at < ?""",
+                (
+                    JobStatus.RUNNING.value,
+                    to_timestamp(stale_before),
+                ),
+            ).fetchall()
+        ]
         cursor = connection.execute(
             """
             UPDATE printer_scheduler_jobs
@@ -488,6 +541,24 @@ def release_stale_locks(
                 to_timestamp(stale_before),
             ),
         )
+        has_run_steps = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='printer_memory_factory_run_steps'"
+        ).fetchone()
+        if stale_job_ids and has_run_steps is not None:
+            placeholders = ",".join("?" for _ in stale_job_ids)
+            connection.execute(
+                f"""UPDATE printer_memory_factory_run_steps
+                    SET step_status='PENDING',started_at=NULL,updated_at=?
+                    WHERE scheduler_job_id IN ({placeholders})
+                      AND step_status='RUNNING'
+                      AND step_kind IN (
+                        'WINDOW_CLOSE_PRE_CLOSE_CRITICAL',
+                        'CONTINUATION_CLOSE_PRE_CLOSE_CRITICAL',
+                        'LONG_CONTINUATION_CLOSE_PRE_CLOSE_CRITICAL'
+                      )""",
+                (to_timestamp(current_time), *stale_job_ids),
+            )
         return int(cursor.rowcount)
 
 

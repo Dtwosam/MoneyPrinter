@@ -40,6 +40,8 @@ from printer_v1.scheduler.scheduler import (
     complete_job,
     enqueue_job,
     fail_job,
+    skip_job,
+    yield_job,
 )
 from printer_v1.scheduler.evidence_deadline import (
     deadline_order_value,
@@ -53,12 +55,14 @@ from printer_v1.operator_cli.close_phases import (
     CLOSE_PHASE_STEP_KINDS,
     CONTEXT_STEP_KINDS,
     EVIDENCE_STEP_KINDS,
+    PRE_CLOSE_STEP_KINDS,
     TERMINAL_CLOSE_STEP_KINDS,
     close_phase_dependency_ready,
     close_phase_metadata,
     close_phase_order,
     resolve_close_context,
     resolve_close_evidence,
+    resolve_preclose_manifest,
 )
 from printer_v1.sources.measured_transport import (
     FIRST_HOUR_SAFETY_CONTEXT_REQUEST_COUNT,
@@ -124,6 +128,41 @@ _MAX_HOLDER_RPC_REQUESTS_PER_TOKEN = (
 )
 _CONTINUATION_SECONDS = 2700.0
 _CONTINUOUS_MAX_SELECTED_TOKENS = 1
+
+PRECLOSE_CONTRACT_VERSION = "LANE2_TIMELY_PRECLOSE_V1"
+PRECLOSE_RESELECTION_RESERVE_SECONDS = 1.0
+_PRECLOSE_TERMINAL_STATES = frozenset(
+    {
+        "TIMELY",
+        "LATE",
+        "FAILED",
+        "DENIED",
+        "REUSED_PERIODIC",
+        "MISSED_CUTOFF",
+        "UNKNOWN_INTERRUPTED_AFTER_REQUEST",
+        "NOT_REQUIRED",
+        "CANCELLED_BEFORE_ATTEMPT",
+        "CONTEXT_INTEGRITY_BLOCKED",
+    }
+)
+
+_PRECLOSE_UNIT_DEFINITIONS = {
+    "MARKET_CHAIN": ("coingecko", "broad_market_context", "market-chain"),
+    "SAFETY_PRIMARY": ("goplus", "safety_reference", "safety"),
+    "SAFETY_CORE": ("solana_rpc", "mint_account_reference", "core-safety"),
+    "ENTRY_QUOTE": ("jupiter_quote", "paper_quote_realism", "entry"),
+    "EXIT_QUOTE": ("jupiter_quote", "paper_quote_realism", "exit"),
+    "HOLDER_PRIMARY": (
+        "solana_rpc",
+        HOLDER_CONCENTRATION_REQUEST_KIND,
+        "holder",
+    ),
+    "HOLDER_BACKUP": (
+        "helius_free",
+        HOLDER_CONCENTRATION_REQUEST_KIND,
+        "holder_backup",
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -549,7 +588,7 @@ _MAX_GOVERNED_REQUESTS_RUN = (
 )
 # Run-step jobs (one per snapshot) plus one cancelled discovery handoff per token.
 _MAX_SCHEDULER_ROWS = (
-    _V2_5_MAX_SELECTED_TOKENS * (_MAX_SNAPSHOTS_PER_TOKEN + 2)
+    _V2_5_MAX_SELECTED_TOKENS * (_MAX_SNAPSHOTS_PER_TOKEN + 3)
     + _V2_5_MAX_SELECTED_TOKENS
 )
 
@@ -571,8 +610,8 @@ _CONTINUOUS_MAX_REQUESTS_PER_TOKEN = (
 )
 _CONTINUOUS_MAX_REQUESTS_RUN = _MAX_DISCOVERY_REQUESTS + _CONTINUOUS_MAX_REQUESTS_PER_TOKEN
 _CONTINUOUS_MAX_SCHEDULER_ROWS = (
-    _MAX_SNAPSHOTS_PER_TOKEN + 2
-    + _continuation_expected_snapshots("TRACK_FAST") + 2
+    _MAX_SNAPSHOTS_PER_TOKEN + 3
+    + _continuation_expected_snapshots("TRACK_FAST") + 3
     + _CONTINUOUS_MAX_SELECTED_TOKENS
 )
 _COMPRESSED_TWO_TOKEN_MAX_REQUESTS_RUN = (
@@ -580,7 +619,7 @@ _COMPRESSED_TWO_TOKEN_MAX_REQUESTS_RUN = (
 )
 _COMPRESSED_TWO_TOKEN_MAX_SCHEDULER_ROWS = (
     _CONTINUOUS_MAX_SCHEDULER_ROWS
-    + _MAX_SNAPSHOTS_PER_TOKEN + 2
+    + _MAX_SNAPSHOTS_PER_TOKEN + 3
     + 1  # second exact activation/discovery handoff allowance
 )
 # Exact selective-1h proof ceilings for two TRACK_FAST tokens. The cadence
@@ -592,8 +631,8 @@ _SELECTIVE_1H_MAX_REQUESTS_RUN = (
     + 2 * _SELECTIVE_1H_MAX_REQUESTS_PER_TOKEN
 )
 _SELECTIVE_1H_MAX_SCHEDULER_ROWS = 2 * (
-    _MAX_SNAPSHOTS_PER_TOKEN + 2
-    + _continuation_expected_snapshots("TRACK_FAST") + 2
+    _MAX_SNAPSHOTS_PER_TOKEN + 3
+    + _continuation_expected_snapshots("TRACK_FAST") + 3
     + 1
 )
 
@@ -967,6 +1006,31 @@ def _insert_step_and_job(
     )
     if result != LockResult.ACQUIRED or job_id is None:
         raise ValueError(f"scheduler enqueue failed for {step_key}: {result}")
+    projection = dict(result_projection) if result_projection is not None else None
+    if step_kind in PRE_CLOSE_STEP_KINDS:
+        if projection is None:
+            raise ValueError("pre-close step requires frozen result projection")
+        projection["scheduler_job_id"] = int(job_id)
+        projection["intended_close_work_identity"] = str(step_key)
+        for unit in projection.get("source_unit_manifest", []):
+            role = str(unit["source_unit_identity"])
+            request_suffix = _PRECLOSE_UNIT_DEFINITIONS[role][2]
+            request_prefix = (
+                f"{run_id}:{step_key}:scheduler-{int(job_id)}:"
+                f"preclose:{role.lower()}:attempt-1"
+            )
+            unit.update(
+                factory_run_id=str(run_id),
+                scheduler_job_id=int(job_id),
+                intended_close_work_identity=str(step_key),
+                token_id=int(target["token_id"]),
+                pair_id=int(target["pair_id"]),
+                token_mint=str(target["token_mint"]),
+                pair_address=str(target["pair_address"]),
+                window_family=str(projection["close_family"]),
+                request_key_prefix=request_prefix,
+                request_key=f"{request_prefix}:{request_suffix}",
+            )
     conn.execute(
         """
         INSERT INTO printer_memory_factory_run_steps
@@ -979,7 +1043,7 @@ def _insert_step_and_job(
             run_id, step_key, step_kind, target["token_id"], target["pair_id"],
             target["token_mint"], target["pair_address"], target["tracking_lane"],
             _iso(scheduled_for), job_id,
-            _json(dict(result_projection)) if result_projection is not None else None,
+            _json(projection) if projection is not None else None,
             _iso(), _iso(),
         ),
     )
@@ -996,6 +1060,8 @@ def _insert_step_and_job(
             scheduled_for=scheduled_for,
             scheduler_job_id=int(job_id),
         )
+        if step_kind in PRE_CLOSE_STEP_KINDS:
+            _attach_preclose_campaign_owner(conn, scheduler_job_id=int(job_id))
     # V2-9.8B action-local observation at the real Scheduler-enqueue boundary.
     # Verification-only: the observer never mutates factory state and fires only
     # when a coordinator threads it through. Reports exactly what was enqueued.
@@ -1011,13 +1077,368 @@ def _insert_step_and_job(
                 "pair_id": int(target["pair_id"]),
             }
         )
+    if step_kind in PRE_CLOSE_STEP_KINDS:
+        _refresh_preclose_contention_cohorts(conn, run_id=run_id)
     return int(job_id)
+
+
+def _attach_preclose_campaign_owner(
+    conn: sqlite3.Connection, *, scheduler_job_id: int
+) -> None:
+    """Freeze an already-projected exact campaign owner into the unit manifest."""
+    rows = conn.execute(
+        """SELECT campaign_id,run_id,cycle_id,token_slot_id,window_id,
+                  factory_run_id,scheduler_work_id
+           FROM printer_memory_factory_campaign_scheduler_work
+           WHERE scheduler_job_id=? AND ownership_contract_version='V2_STAGE_SCOPED'
+             AND work_scope='WINDOW_LIFECYCLE'""",
+        (int(scheduler_job_id),),
+    ).fetchall()
+    if len(rows) != 1:
+        raise ValueError("PRE_CLOSE_CAMPAIGN_OWNER_AMBIGUOUS")
+    step = conn.execute(
+        """SELECT * FROM printer_memory_factory_run_steps
+           WHERE scheduler_job_id=?""",
+        (int(scheduler_job_id),),
+    ).fetchone()
+    if step is None or str(step["step_kind"]) not in PRE_CLOSE_STEP_KINDS:
+        raise ValueError("PRE_CLOSE_CAMPAIGN_STEP_INVALID")
+    owner = rows[0]
+    payload = _preclose_result_base(step)
+    owner_projection = {
+        "campaign_id": str(owner["campaign_id"]),
+        "campaign_run_id": str(owner["run_id"]),
+        "cycle_id": str(owner["cycle_id"]),
+        "token_slot_id": str(owner["token_slot_id"]),
+        "campaign_window_id": str(owner["window_id"]),
+        "campaign_scheduler_work_id": str(owner["scheduler_work_id"]),
+    }
+    if str(owner["factory_run_id"]) != str(step["run_id"]):
+        raise ValueError("PRE_CLOSE_CAMPAIGN_FACTORY_RUN_MISMATCH")
+    payload.update(owner_projection)
+    for unit in payload["source_unit_manifest"]:
+        unit.update(owner_projection)
+    conn.execute(
+        "UPDATE printer_memory_factory_run_steps SET result_json=?,updated_at=? WHERE id=?",
+        (_json(payload), _iso(), int(step["id"])),
+    )
+
+
+def _campaign_work_deadline_for_scheduler_job(
+    conn: sqlite3.Connection,
+    *,
+    scheduler_job_id: int,
+    fallback: datetime | str,
+) -> str:
+    """Keep campaign identity on the immutable evidence cutoff, not mutable fire time."""
+    step = conn.execute(
+        "SELECT step_kind,result_json FROM printer_memory_factory_run_steps "
+        "WHERE scheduler_job_id=?",
+        (int(scheduler_job_id),),
+    ).fetchone()
+    if step is not None and str(step["step_kind"]) in PRE_CLOSE_STEP_KINDS:
+        payload = json.loads(str(step["result_json"] or "{}"))
+        cutoffs = [
+            datetime.fromisoformat(str(unit["acquisition_cutoff_at"]))
+            for unit in payload.get("source_unit_manifest", [])
+        ]
+        if not cutoffs:
+            raise ValueError("PRE_CLOSE_CAMPAIGN_DEADLINE_MISSING")
+        return min(cutoffs).astimezone(timezone.utc).isoformat()
+    return _iso(fallback) if isinstance(fallback, datetime) else str(fallback)
+
+
+def _preclose_roles_for_family(family: str) -> tuple[str, ...]:
+    if family == "WINDOW_CLOSE":
+        return (
+            "MARKET_CHAIN",
+            "SAFETY_PRIMARY",
+            "SAFETY_CORE",
+            "ENTRY_QUOTE",
+            "EXIT_QUOTE",
+            "HOLDER_PRIMARY",
+            "HOLDER_BACKUP",
+        )
+    if family == "CONTINUATION_CLOSE":
+        return (
+            "SAFETY_PRIMARY",
+            "SAFETY_CORE",
+            "HOLDER_PRIMARY",
+            "HOLDER_BACKUP",
+        )
+    if family == "LONG_CONTINUATION_CLOSE":
+        return (
+            "MARKET_CHAIN",
+            "SAFETY_PRIMARY",
+            "SAFETY_CORE",
+            "EXIT_QUOTE",
+            "HOLDER_PRIMARY",
+            "HOLDER_BACKUP",
+        )
+    raise ValueError(f"unsupported close family: {family}")
+
+
+def _preclose_phase_plan(
+    *,
+    family: str,
+    prefix: str,
+    run_id: str,
+    target: Mapping[str, Any],
+    window_end_at: datetime,
+    earliest_preclose_schedulable_at: datetime,
+    timeout_seconds: float,
+) -> tuple[str, str, datetime, dict[str, Any]]:
+    """Freeze one exact identity-bound resumable pre-close work item."""
+    from printer_v1.operator_cli.holder_reliability_budget_control import (
+        deterministic_spacing_seconds,
+    )
+
+    if window_end_at.tzinfo is None or earliest_preclose_schedulable_at.tzinfo is None:
+        raise ValueError("pre-close planning timestamps must be timezone-aware")
+    if timeout_seconds <= 0:
+        raise ValueError("pre-close timeout must be positive")
+    stem = (
+        f"{prefix}_window_close"
+        if family == "WINDOW_CLOSE"
+        else f"{prefix}_continuation_close"
+        if family == "CONTINUATION_CLOSE"
+        else f"{prefix}_close"
+    )
+    preclose_key = f"{stem}_pre_close_critical"
+    evidence_key = f"{stem}_evidence"
+    context_key = f"{stem}_context"
+    audit_key = f"{stem}_audit"
+    roles = list(_preclose_roles_for_family(family))
+    # Equal-cutoff independent roles rotate only by immutable owner identity.
+    # Dependencies remain declared in each unit and are not altered by rotation.
+    rotation_seed = ":".join(
+        (
+            str(run_id),
+            str(target["token_id"]),
+            str(target["pair_id"]),
+            family,
+            window_end_at.astimezone(timezone.utc).isoformat(),
+        )
+    )
+    rotation = int(hashlib.sha256(rotation_seed.encode("utf-8")).hexdigest(), 16) % len(roles)
+    tie_ordinals = {
+        role: ordinal
+        for ordinal, role in enumerate(roles[rotation:] + roles[:rotation])
+    }
+    units: list[dict[str, Any]] = []
+    for role in roles:
+        source_name, request_kind, request_suffix = _PRECLOSE_UNIT_DEFINITIONS[role]
+        cutoff = window_end_at
+        if family == "LONG_CONTINUATION_CLOSE" and role in {
+            "SAFETY_PRIMARY",
+            "SAFETY_CORE",
+            "EXIT_QUOTE",
+            "HOLDER_PRIMARY",
+            "HOLDER_BACKUP",
+        }:
+            cutoff += timedelta(seconds=60)
+        bounded_claim_seconds = (
+            float(timeout_seconds)
+            + float(deterministic_spacing_seconds(source_name))
+            + PRECLOSE_RESELECTION_RESERVE_SECONDS
+        )
+        dependency = (
+            "SAFETY_PRIMARY"
+            if role == "HOLDER_PRIMARY"
+            else "HOLDER_PRIMARY"
+            if role == "HOLDER_BACKUP"
+            else None
+        )
+        request_prefix = (
+            f"{run_id}:{preclose_key}:preclose:{role.lower()}:attempt-1"
+        )
+        units.append(
+            {
+                "source_unit_identity": role,
+                "source_name": source_name,
+                "request_kind": request_kind,
+                "request_key_prefix": request_prefix,
+                "request_key": f"{request_prefix}:{request_suffix}",
+                "attempt_ordinal": 1,
+                "dependency_source_unit_identity": dependency,
+                "state": "BLOCKED_DEPENDENCY" if dependency else "PENDING",
+                "acquisition_cutoff_at": cutoff.astimezone(timezone.utc).isoformat(),
+                "bounded_claim_seconds": bounded_claim_seconds,
+                "latest_safe_claim_at": (
+                    cutoff - timedelta(seconds=bounded_claim_seconds)
+                ).astimezone(timezone.utc).isoformat(),
+                "deterministic_tie_ordinal": tie_ordinals[role],
+            }
+        )
+    desired = min(
+        datetime.fromisoformat(str(unit["acquisition_cutoff_at"])) for unit in units
+    ) - timedelta(
+        seconds=sum(float(unit["bounded_claim_seconds"]) for unit in units)
+        + len(units) * PRECLOSE_RESELECTION_RESERVE_SECONDS
+    )
+    earliest = earliest_preclose_schedulable_at.astimezone(timezone.utc)
+    schedulable = desired >= earliest
+    scheduled_for = desired if schedulable else earliest
+    if not schedulable:
+        for unit in units:
+            unit["state"] = "CANCELLED_BEFORE_ATTEMPT"
+            unit["terminal_reason"] = "TIMELY_ACQUISITION_NOT_PRODUCIBLE"
+    metadata = close_phase_metadata(
+        family=family,
+        phase="PRE_CLOSE",
+        preclose_step_key=preclose_key,
+        evidence_step_key=evidence_key,
+        context_step_key=context_key,
+    )
+    return (
+        preclose_key,
+        f"{family}_PRE_CLOSE_CRITICAL",
+        scheduled_for,
+        {
+            **metadata,
+            "preclose_contract_version": PRECLOSE_CONTRACT_VERSION,
+            "factory_run_id": str(run_id),
+            "token_id": int(target["token_id"]),
+            "pair_id": int(target["pair_id"]),
+            "token_mint": str(target["token_mint"]),
+            "pair_address": str(target["pair_address"]),
+            "tracking_lane": str(target["tracking_lane"]),
+            "window_end_at": window_end_at.astimezone(timezone.utc).isoformat(),
+            "standalone_desired_preclose_scheduled_for": desired.isoformat(),
+            "desired_preclose_scheduled_for": desired.isoformat(),
+            "earliest_preclose_schedulable_at": earliest.isoformat(),
+            "effective_preclose_scheduled_for": scheduled_for.isoformat(),
+            "preclose_plan_state": (
+                "SCHEDULABLE"
+                if schedulable
+                else "TIMELY_ACQUISITION_NOT_PRODUCIBLE"
+            ),
+            "source_unit_manifest": units,
+            "terminal_unit_count": len(units) if not schedulable else 0,
+            "provider_attempt_count": 0,
+        },
+    )
+
+
+def _refresh_preclose_contention_cohorts(
+    conn: sqlite3.Connection, *, run_id: str
+) -> None:
+    """Freeze overlap-connected single-worker pre-close lead cohorts."""
+    rows = conn.execute(
+        """SELECT s.*,j.status AS scheduler_status
+           FROM printer_memory_factory_run_steps AS s
+           JOIN printer_scheduler_jobs AS j ON j.id=s.scheduler_job_id
+           WHERE s.run_id=? AND s.step_kind IN (?,?,?)
+             AND s.step_status='PENDING' AND j.status IN ('PENDING','COOLDOWN')
+           ORDER BY s.id""",
+        (str(run_id), *sorted(PRE_CLOSE_STEP_KINDS)),
+    ).fetchall()
+    candidates: list[dict[str, Any]] = []
+    for row in rows:
+        payload = _preclose_result_base(row)
+        units = list(payload["source_unit_manifest"])
+        standalone = datetime.fromisoformat(
+            str(payload["standalone_desired_preclose_scheduled_for"])
+        )
+        cutoff = min(
+            datetime.fromisoformat(str(unit["acquisition_cutoff_at"]))
+            for unit in units
+        )
+        candidates.append(
+            {
+                "row": row,
+                "payload": payload,
+                "standalone": standalone,
+                "cutoff": cutoff,
+                "units": units,
+            }
+        )
+    candidates.sort(
+        key=lambda item: (
+            item["standalone"], item["cutoff"], int(item["row"]["id"])
+        )
+    )
+    components: list[list[dict[str, Any]]] = []
+    for item in candidates:
+        if not components:
+            components.append([item])
+            continue
+        current = components[-1]
+        current_end = max(member["cutoff"] for member in current)
+        if item["standalone"] <= current_end:
+            current.append(item)
+        else:
+            components.append([item])
+    for component in components:
+        all_units = [unit for item in component for unit in item["units"]]
+        lead_seconds = sum(
+            float(unit["bounded_claim_seconds"]) for unit in all_units
+        ) + len(all_units) * PRECLOSE_RESELECTION_RESERVE_SECONDS
+        earliest_cutoff = min(
+            datetime.fromisoformat(str(unit["acquisition_cutoff_at"]))
+            for unit in all_units
+        )
+        desired = earliest_cutoff - timedelta(seconds=lead_seconds)
+        cohort_members = sorted(
+            f"{item['row']['run_id']}:{item['row']['step_key']}:"
+            f"{int(item['row']['scheduler_job_id'])}"
+            for item in component
+        )
+        cohort_identity = hashlib.sha256(
+            "|".join(cohort_members).encode("utf-8")
+        ).hexdigest()
+        for item in component:
+            row = item["row"]
+            payload = item["payload"]
+            earliest = datetime.fromisoformat(
+                str(payload["earliest_preclose_schedulable_at"])
+            )
+            schedulable = desired >= earliest
+            effective = desired if schedulable else earliest
+            payload.update(
+                contention_cohort_identity=cohort_identity,
+                contention_cohort_members=cohort_members,
+                contention_cohort_unit_count=len(all_units),
+                cohort_required_lead_seconds=lead_seconds,
+                desired_preclose_scheduled_for=desired.isoformat(),
+                effective_preclose_scheduled_for=effective.isoformat(),
+                preclose_plan_state=(
+                    "SCHEDULABLE"
+                    if schedulable
+                    else "TIMELY_ACQUISITION_NOT_PRODUCIBLE"
+                ),
+            )
+            if not schedulable:
+                for unit in payload["source_unit_manifest"]:
+                    if str(unit.get("state")) not in _PRECLOSE_TERMINAL_STATES:
+                        unit["state"] = "CANCELLED_BEFORE_ATTEMPT"
+                        unit["terminal_reason"] = (
+                            "TIMELY_ACQUISITION_NOT_PRODUCIBLE"
+                        )
+                payload["terminal_unit_count"] = len(
+                    payload["source_unit_manifest"]
+                )
+            conn.execute(
+                """UPDATE printer_memory_factory_run_steps
+                   SET scheduled_for=?,result_json=?,updated_at=? WHERE id=?""",
+                (
+                    effective.isoformat(),
+                    _json(payload),
+                    _iso(),
+                    int(row["id"]),
+                ),
+            )
+            conn.execute(
+                """UPDATE printer_scheduler_jobs SET scheduled_for=?,updated_at=?
+                   WHERE id=? AND status IN ('PENDING','COOLDOWN')""",
+                (effective.isoformat(), _iso(), int(row["scheduler_job_id"])),
+            )
 
 
 def _close_phase_plan(
     *, family: str, prefix: str
 ) -> tuple[tuple[str, str, dict[str, Any]], ...]:
-    """Build the exact three-step dependency projection for one close."""
+    """Build the exact post-preclose dependency projection for one close."""
     stem = (
         f"{prefix}_window_close"
         if family == "WINDOW_CLOSE"
@@ -1035,6 +1456,7 @@ def _close_phase_plan(
             close_phase_metadata(
                 family=family,
                 phase=phase,
+                preclose_step_key=f"{stem}_pre_close_critical",
                 evidence_step_key=evidence_key,
                 context_step_key=context_key,
             ),
@@ -1200,7 +1622,11 @@ def _project_proof_15m_scheduler_owner(
         window_id=owner["window_id"],
         factory_run_id=run_id,
         work_intent=f"WINDOW_15M_{step_kind}",
-        deadline_at=_iso(scheduled_for),
+        deadline_at=_campaign_work_deadline_for_scheduler_job(
+            conn,
+            scheduler_job_id=scheduler_job_id,
+            fallback=scheduled_for,
+        ),
         scheduler_job_id=scheduler_job_id,
         stage_id="WINDOW_15M",
         target_category="CAMPAIGN_WINDOW",
@@ -1273,6 +1699,28 @@ def _plan_anchored_jobs(
             operation_observer=operation_observer,
         )
     close_at = anchor + timedelta(seconds=window_seconds)
+    run_config = _load_run_config(conn, run_id)
+    preclose_key, preclose_kind, preclose_at, preclose_projection = (
+        _preclose_phase_plan(
+            family="WINDOW_CLOSE",
+            prefix=prefix,
+            run_id=run_id,
+            target=target,
+            window_end_at=close_at,
+            earliest_preclose_schedulable_at=_now(),
+            timeout_seconds=float(run_config.get("timeout_seconds") or 5.0),
+        )
+    )
+    _insert_step_and_job(
+        conn,
+        run_id=run_id,
+        target=target,
+        step_key=preclose_key,
+        step_kind=preclose_kind,
+        scheduled_for=preclose_at,
+        result_projection=preclose_projection,
+        operation_observer=operation_observer,
+    )
     for step_key, step_kind, projection in _close_phase_plan(
         family="WINDOW_CLOSE", prefix=prefix
     ):
@@ -1391,13 +1839,22 @@ def _plan_continuation_jobs(
                 window_id=ownership["campaign_window_1h_id"],
                 factory_run_id=ownership["factory_run_id"],
                 work_intent=f"WINDOW_1H_{step_kind}",
-                deadline_at=_iso(scheduled_for),
+                deadline_at=_campaign_work_deadline_for_scheduler_job(
+                    conn,
+                    scheduler_job_id=int(job_id),
+                    fallback=scheduled_for,
+                ),
                 scheduler_job_id=int(job_id),
                 stage_id="WINDOW_1H",
                 target_category="CAMPAIGN_WINDOW",
                 target_identity=ownership["campaign_window_1h_id"],
                 work_state="PENDING",
             )
+            if step_kind in PRE_CLOSE_STEP_KINDS:
+                _attach_preclose_campaign_owner(
+                    conn, scheduler_job_id=int(job_id)
+                )
+                _refresh_preclose_contention_cohorts(conn, run_id=run_id)
         return int(job_id)
 
     for index in range(expected - 1):
@@ -1408,6 +1865,24 @@ def _plan_continuation_jobs(
             scheduled_for=close_at + timedelta(seconds=offset),
         )
     continuation_close_at = close_at + timedelta(seconds=continuation_seconds)
+    run_config = _load_run_config(conn, run_id)
+    preclose_key, preclose_kind, preclose_at, preclose_projection = (
+        _preclose_phase_plan(
+            family="CONTINUATION_CLOSE",
+            prefix=prefix,
+            run_id=run_id,
+            target=target,
+            window_end_at=continuation_close_at,
+            earliest_preclose_schedulable_at=_now(),
+            timeout_seconds=float(run_config.get("timeout_seconds") or 5.0),
+        )
+    )
+    insert_owned_job(
+        step_key=preclose_key,
+        step_kind=preclose_kind,
+        scheduled_for=preclose_at,
+        result_projection=preclose_projection,
+    )
     for step_key, step_kind, projection in _close_phase_plan(
         family="CONTINUATION_CLOSE", prefix=prefix
     ):
@@ -1419,9 +1894,9 @@ def _plan_continuation_jobs(
         )
     return {
         **plan,
-        "planned_jobs": expected + 2,
+        "planned_jobs": expected + 3,
         "expected_snapshots": expected,
-        "close_phase_jobs": 3,
+        "close_phase_jobs": 4,
     }
 
 def _evidence_duration_seconds(start_at: str, end_at: str) -> float:
@@ -1741,6 +2216,7 @@ def _collect_preclose_context(
     preserve_partial_executions: bool = False,
     holder_transport_ledger: Any | None = None,
     request_key_prefix: str | None = None,
+    source_unit_identity: str | None = None,
 ) -> dict[str, Any]:
     """Collect a fixed, governed context bundle before the close snapshot.
 
@@ -2063,7 +2539,98 @@ def _collect_preclose_context(
                     chosen_holder = backup_holder
             executions["holder"] = chosen_holder
 
-    if not preserve_partial_executions:
+    if source_unit_identity is not None:
+        unit = str(source_unit_identity)
+        if unit == "MARKET_CHAIN":
+            executions["market_chain"] = execute(
+                "coingecko", "broad_market_context", "market-chain", {}, market_adapter
+            )
+        elif unit == "SAFETY_PRIMARY":
+            executions["safety"] = execute(
+                "goplus", GOPLUS_SAFETY_REQUEST_KIND, "safety", {}, safety_adapter
+            )
+        elif unit == "SAFETY_CORE":
+            if core_safety_adapter is None:
+                raise ValueError("PRE_CLOSE_SAFETY_CORE_ADAPTER_UNAVAILABLE")
+            executions["core_solana_safety"] = execute(
+                "solana_rpc",
+                SOLANA_RPC_TOKEN_SAFETY_REQUEST_KIND,
+                "core-safety",
+                {},
+                core_safety_adapter,
+            )
+        elif unit in {"ENTRY_QUOTE", "EXIT_QUOTE"}:
+            direction = "ENTRY" if unit == "ENTRY_QUOTE" else "EXIT"
+            input_mint = WSOL_MINT if direction == "ENTRY" else mint
+            output_mint = mint if direction == "ENTRY" else WSOL_MINT
+            executions[f"{direction.lower()}_quote"] = execute(
+                JUPITER_SOURCE,
+                "paper_quote_realism",
+                direction.lower(),
+                {
+                    "quote_direction": direction,
+                    "input_mint": input_mint,
+                    "output_mint": output_mint,
+                    "amount_lamports": DEFAULT_PAPER_AMOUNT_LAMPORTS,
+                },
+                quote_adapter(input_mint, output_mint),
+            )
+        elif unit == "HOLDER_PRIMARY":
+            holder_factory = factories.get("solana_rpc_holder")
+            holder_adapter = require_concrete_adapter(
+                "preclose_solana_rpc_holder_primary",
+                (
+                    holder_factory_call(
+                        holder_factory,
+                        token_mint=mint,
+                        timeout_seconds=timeout_seconds,
+                        measured_transport_ledger=holder_transport_ledger,
+                    )
+                    if holder_factory
+                    else build_solana_rpc_holder_adapter(
+                        enabled=True,
+                        fixture_transport=build_solana_rpc_holder_transport(
+                            mint,
+                            timeout_seconds=timeout_seconds,
+                            measured_transport_ledger=holder_transport_ledger,
+                        ),
+                    )
+                ),
+                expected_source_name="solana_rpc",
+            )
+            executions["holder_primary"] = execute(
+                "solana_rpc",
+                HOLDER_CONCENTRATION_REQUEST_KIND,
+                "holder",
+                {},
+                holder_adapter,
+            )
+            executions["holder"] = executions["holder_primary"]
+        elif unit == "HOLDER_BACKUP":
+            from printer_v1.db.sqlite_write_contracts import release_write_transaction
+            from printer_v1.operator_cli.safety_context_source_redundancy import (
+                execute_solana_rpc_holder_backup,
+            )
+
+            release_write_transaction(conn)
+            if request_pacer is not None:
+                request_pacer.pace(backup_source_name)
+            executions["holder_backup"] = execute_solana_rpc_holder_backup(
+                conn,
+                run_id=str(step["run_id"]),
+                step_key=str(step["step_key"]),
+                token_mint=mint,
+                pair_address=pair,
+                backup_adapter_factory=holder_backup_adapter_factory,
+                timeout_seconds=timeout_seconds,
+                source_name=backup_source_name,
+                measured_transport_ledger=holder_transport_ledger,
+                request_key_prefix=request_prefix,
+            )
+            executions["holder"] = executions["holder_backup"]
+        else:
+            raise ValueError(f"unsupported pre-close source unit: {unit}")
+    elif not preserve_partial_executions:
         # Default behaviour for memory-close callers is unchanged.
         _collect_all()
     else:
@@ -2079,7 +2646,11 @@ def _collect_preclose_context(
     return {
         "executions": executions,
         "report": {
-            "source_request_budget": len(requested) + (2 if "safety" in requested else 0),
+            "source_request_budget": (
+                1
+                if source_unit_identity is not None
+                else len(requested) + (2 if "safety" in requested else 0)
+            ),
             "source_requests_attempted": len({id(value) for value in executions.values()}),
             "items": {
                 key: _context_execution_summary(value)
@@ -2505,6 +3076,648 @@ def _close_phase_result_base(step: sqlite3.Row) -> dict[str, Any]:
     return dict(planned)
 
 
+def _preclose_result_base(step: sqlite3.Row) -> dict[str, Any]:
+    payload = _close_phase_result_base(step)
+    if (
+        str(step["step_kind"]) not in PRE_CLOSE_STEP_KINDS
+        or payload.get("preclose_contract_version") != PRECLOSE_CONTRACT_VERSION
+        or payload.get("factory_run_id") != str(step["run_id"])
+        or int(payload.get("token_id", -1)) != int(step["token_id"])
+        or int(payload.get("pair_id", -1)) != int(step["pair_id"])
+        or str(payload.get("token_mint", "")).lower()
+        != str(step["token_mint"]).lower()
+        or str(payload.get("pair_address", "")).lower()
+        != str(step["pair_address"]).lower()
+        or int(payload.get("scheduler_job_id", -1))
+        != int(step["scheduler_job_id"])
+        or payload.get("intended_close_work_identity") != str(step["step_key"])
+    ):
+        raise ValueError("PRE_CLOSE_MANIFEST_IDENTITY_INVALID")
+    units = payload.get("source_unit_manifest")
+    if not isinstance(units, list) or not units:
+        raise ValueError("PRE_CLOSE_UNIT_MANIFEST_INVALID")
+    identities = [str(unit.get("source_unit_identity") or "") for unit in units]
+    if any(not identity for identity in identities) or len(set(identities)) != len(
+        identities
+    ):
+        raise ValueError("PRE_CLOSE_UNIT_IDENTITY_AMBIGUOUS")
+    exact_unit_fields = (
+        "factory_run_id",
+        "scheduler_job_id",
+        "intended_close_work_identity",
+        "token_id",
+        "pair_id",
+        "token_mint",
+        "pair_address",
+        "window_family",
+    )
+    if any(any(field not in unit for field in exact_unit_fields) for unit in units):
+        raise ValueError("PRE_CLOSE_UNIT_OWNER_IDENTITY_MISSING")
+    if any(
+        str(unit["factory_run_id"]) != str(step["run_id"])
+        or int(unit["scheduler_job_id"]) != int(step["scheduler_job_id"])
+        or str(unit["intended_close_work_identity"]) != str(step["step_key"])
+        or int(unit["token_id"]) != int(step["token_id"])
+        or int(unit["pair_id"]) != int(step["pair_id"])
+        or str(unit["token_mint"]).lower() != str(step["token_mint"]).lower()
+        or str(unit["pair_address"]).lower() != str(step["pair_address"]).lower()
+        or str(unit["window_family"]) != str(payload["close_family"])
+        for unit in units
+    ):
+        raise ValueError("PRE_CLOSE_UNIT_OWNER_IDENTITY_INVALID")
+    for unit in units:
+        role = str(unit["source_unit_identity"])
+        definition = _PRECLOSE_UNIT_DEFINITIONS.get(role)
+        if definition is None:
+            raise ValueError("PRE_CLOSE_SOURCE_UNIT_UNAUTHORIZED")
+        expected_source, expected_kind, expected_suffix = definition
+        expected_prefix = (
+            f"{step['run_id']}:{step['step_key']}:"
+            f"scheduler-{int(step['scheduler_job_id'])}:"
+            f"preclose:{role.lower()}:attempt-1"
+        )
+        if (
+            str(unit.get("source_name")) != expected_source
+            or str(unit.get("request_kind")) != expected_kind
+            or int(unit.get("attempt_ordinal") or -1) != 1
+            or str(unit.get("request_key_prefix")) != expected_prefix
+            or str(unit.get("request_key"))
+            != f"{expected_prefix}:{expected_suffix}"
+        ):
+            raise ValueError("PRE_CLOSE_SOURCE_UNIT_REQUEST_IDENTITY_INVALID")
+    return payload
+
+
+def _preclose_terminal_count(units: list[dict[str, Any]]) -> int:
+    return sum(1 for unit in units if str(unit.get("state")) in _PRECLOSE_TERMINAL_STATES)
+
+
+def _bind_preclose_source_unit_for_claim(
+    conn: sqlite3.Connection, *, step_id: int
+) -> str | None:
+    """Bind the Scheduler claim to one projected unit before execution."""
+    step = conn.execute(
+        "SELECT * FROM printer_memory_factory_run_steps WHERE id=?",
+        (int(step_id),),
+    ).fetchone()
+    if step is None or str(step["step_kind"]) not in PRE_CLOSE_STEP_KINDS:
+        raise ValueError("PRE_CLOSE_CLAIM_STEP_INVALID")
+    job = conn.execute(
+        "SELECT status,locked_at,lock_owner FROM printer_scheduler_jobs WHERE id=?",
+        (int(step["scheduler_job_id"]),),
+    ).fetchone()
+    if (
+        job is None
+        or str(job["status"]) != "RUNNING"
+        or job["locked_at"] is None
+        or not str(job["lock_owner"] or "")
+    ):
+        raise ValueError("PRE_CLOSE_CLAIM_NOT_SCHEDULER_OWNED")
+    phase = _preclose_result_base(step)
+    campaign_owners = conn.execute(
+        """SELECT campaign_id,run_id,cycle_id,token_slot_id,window_id,
+                  scheduler_work_id
+           FROM printer_memory_factory_campaign_scheduler_work
+           WHERE scheduler_job_id=? AND ownership_contract_version='V2_STAGE_SCOPED'
+             AND work_scope='WINDOW_LIFECYCLE'""",
+        (int(step["scheduler_job_id"]),),
+    ).fetchall()
+    if len(campaign_owners) > 1:
+        raise ValueError("PRE_CLOSE_CAMPAIGN_OWNER_AMBIGUOUS")
+    if campaign_owners:
+        owner = campaign_owners[0]
+        expected_owner = {
+            "campaign_id": str(owner["campaign_id"]),
+            "campaign_run_id": str(owner["run_id"]),
+            "cycle_id": str(owner["cycle_id"]),
+            "token_slot_id": str(owner["token_slot_id"]),
+            "campaign_window_id": str(owner["window_id"]),
+            "campaign_scheduler_work_id": str(owner["scheduler_work_id"]),
+        }
+        if any(phase.get(key) != value for key, value in expected_owner.items()):
+            raise ValueError("PRE_CLOSE_CAMPAIGN_OWNER_MISMATCH")
+        if any(
+            any(unit.get(key) != value for key, value in expected_owner.items())
+            for unit in phase["source_unit_manifest"]
+        ):
+            raise ValueError("PRE_CLOSE_UNIT_CAMPAIGN_OWNER_MISMATCH")
+    units = [dict(unit) for unit in phase["source_unit_manifest"]]
+    _update_preclose_dependencies(units)
+    ready = [unit for unit in units if str(unit.get("state")) == "PENDING"]
+    active_identity: str | None = None
+    if ready:
+        active = min(
+            ready,
+            key=lambda item: (
+                datetime.fromisoformat(str(item["latest_safe_claim_at"])),
+                int(item["deterministic_tie_ordinal"]),
+                str(item["source_unit_identity"]),
+            ),
+        )
+        active_identity = str(active["source_unit_identity"])
+    phase["source_unit_manifest"] = units
+    phase["active_claim_source_unit_identity"] = active_identity
+    phase["active_claim_scheduler_job_id"] = int(step["scheduler_job_id"])
+    updated = conn.execute(
+        "UPDATE printer_memory_factory_run_steps SET result_json=?,updated_at=? "
+        "WHERE id=? AND step_status IN ('PENDING','RUNNING')",
+        (_json(phase), _iso(), int(step_id)),
+    )
+    if int(updated.rowcount or 0) != 1:
+        raise ValueError("PRE_CLOSE_CLAIM_STEP_STATE_INVALID")
+    return active_identity
+
+
+def _source_execution_from_rows(
+    request: sqlite3.Row,
+    response: sqlite3.Row | None,
+    failure: sqlite3.Row | None,
+) -> Any:
+    from printer_v1.contracts.enums import DataQualityLabel, SourceStatus
+    from printer_v1.sources.contracts import (
+        NormalizedSourceResult,
+        SourceFailureRecord,
+        SourceRequestRecord,
+        SourceResponseRecord,
+    )
+    from printer_v1.sources.governed_execution import GovernedSourceExecutionResult
+
+    request_record = SourceRequestRecord(
+        id=int(request["id"]),
+        source_name=str(request["source_name"]),
+        request_kind=str(request["request_kind"]),
+        requested_at=str(request["requested_at"]),
+        request_key=request["request_key"],
+        tracking_priority=request["tracking_priority"],
+        source_status=SourceStatus(str(request["source_status"])),
+        data_quality_label=DataQualityLabel(str(request["data_quality_label"])),
+    )
+    response_record = None
+    failure_record = None
+    if response is not None:
+        response_payload = json.loads(str(response["normalized_payload_json"] or "{}"))
+        response_record = SourceResponseRecord(
+            id=int(response["id"]),
+            source_request_id=int(response["source_request_id"]),
+            source_name=str(response["source_name"]),
+            received_at=str(response["received_at"]),
+            status_code=response["status_code"],
+            source_status=SourceStatus(str(response["source_status"])),
+            data_quality_label=DataQualityLabel(str(response["data_quality_label"])),
+            response_hash=response["response_hash"],
+            normalized_payload=response_payload,
+        )
+        normalized = NormalizedSourceResult(
+            source_name=response_record.source_name,
+            request_kind=request_record.request_kind,
+            source_status=response_record.source_status,
+            data_quality_label=response_record.data_quality_label,
+            normalized_payload=response_payload,
+            status_code=response_record.status_code,
+            received_at=response_record.received_at,
+        )
+    elif failure is not None:
+        failure_payload = json.loads(str(failure["normalized_payload_json"] or "{}"))
+        failure_record = SourceFailureRecord(
+            id=int(failure["id"]),
+            source_name=str(failure["source_name"]),
+            request_kind=str(failure["request_kind"]),
+            failed_at=str(failure["failed_at"]),
+            failure_type=str(failure["failure_type"]),
+            failure_message=failure["failure_message"],
+            source_status=SourceStatus(str(failure["source_status"])),
+            data_quality_label=DataQualityLabel(str(failure["data_quality_label"])),
+            retry_after_at=failure["retry_after_at"],
+            normalized_payload=failure_payload,
+            source_request_id=int(failure["source_request_id"]),
+        )
+        normalized = NormalizedSourceResult(
+            source_name=failure_record.source_name,
+            request_kind=failure_record.request_kind,
+            source_status=failure_record.source_status,
+            data_quality_label=failure_record.data_quality_label,
+            normalized_payload=failure_payload,
+            failure_type=failure_record.failure_type,
+            failure_message=failure_record.failure_message,
+            retry_after_at=failure_record.retry_after_at,
+            received_at=failure_record.failed_at,
+        )
+    else:
+        return None
+    return GovernedSourceExecutionResult(
+        request_record=request_record,
+        normalized_result=normalized,
+        response_record=response_record,
+        failure_record=failure_record,
+    )
+
+
+def _reconcile_preclose_request(
+    conn: sqlite3.Connection, unit: Mapping[str, Any]
+) -> dict[str, Any]:
+    requests = conn.execute(
+        """SELECT * FROM printer_source_requests
+           WHERE request_key=? ORDER BY id""",
+        (str(unit["request_key"]),),
+    ).fetchall()
+    if not requests:
+        return {"state": "NO_REQUEST"}
+    if len(requests) != 1:
+        return {"state": "INTEGRITY_BLOCKED", "reason": "DUPLICATE_REQUEST_IDENTITY"}
+    request = requests[0]
+    if (
+        str(request["source_name"]) != str(unit["source_name"])
+        or str(request["request_kind"]) != str(unit["request_kind"])
+    ):
+        return {"state": "INTEGRITY_BLOCKED", "reason": "FOREIGN_REQUEST_IDENTITY"}
+    responses = conn.execute(
+        "SELECT * FROM printer_source_responses WHERE source_request_id=? ORDER BY id",
+        (int(request["id"]),),
+    ).fetchall()
+    failures = conn.execute(
+        "SELECT * FROM printer_source_failures WHERE source_request_id=? ORDER BY id",
+        (int(request["id"]),),
+    ).fetchall()
+    if len(responses) + len(failures) > 1 or (responses and failures):
+        return {"state": "INTEGRITY_BLOCKED", "reason": "AMBIGUOUS_TERMINAL_SOURCE_RESULT"}
+    if not responses and not failures:
+        return {
+            "state": "INTERRUPTED_AFTER_REQUEST",
+            "request": request,
+        }
+    execution = _source_execution_from_rows(
+        request,
+        responses[0] if responses else None,
+        failures[0] if failures else None,
+    )
+    return {
+        "state": "TERMINAL",
+        "request": request,
+        "response": responses[0] if responses else None,
+        "failure": failures[0] if failures else None,
+        "execution": execution,
+    }
+
+
+def _update_preclose_dependencies(units: list[dict[str, Any]]) -> None:
+    by_identity = {str(unit["source_unit_identity"]): unit for unit in units}
+    safety = by_identity.get("SAFETY_PRIMARY")
+    holder = by_identity.get("HOLDER_PRIMARY")
+    backup = by_identity.get("HOLDER_BACKUP")
+    if safety is not None and holder is not None and str(safety.get("state")) in _PRECLOSE_TERMINAL_STATES:
+        label = str(safety.get("holder_concentration_label") or "")
+        if label == "HOLDER_CONCENTRATION_UNKNOWN":
+            if holder.get("state") == "BLOCKED_DEPENDENCY":
+                holder["state"] = "PENDING"
+        elif holder.get("state") == "BLOCKED_DEPENDENCY":
+            holder["state"] = "NOT_REQUIRED"
+            holder["terminal_reason"] = "GOPLUS_HOLDER_CONCENTRATION_AVAILABLE"
+    if holder is not None and backup is not None and str(holder.get("state")) in _PRECLOSE_TERMINAL_STATES:
+        from printer_v1.operator_cli.safety_context_source_redundancy import (
+            ELIGIBLE_TRANSIENT_SOLANA_RPC_FAILURE_TYPES,
+        )
+
+        if str(holder.get("failure_type") or "") in ELIGIBLE_TRANSIENT_SOLANA_RPC_FAILURE_TYPES:
+            if backup.get("state") == "BLOCKED_DEPENDENCY":
+                backup["state"] = "PENDING"
+        elif backup.get("state") == "BLOCKED_DEPENDENCY":
+            backup["state"] = "NOT_REQUIRED"
+            backup["terminal_reason"] = "HOLDER_BACKUP_NOT_AUTHORIZED"
+
+
+def _execute_preclose_critical_phase(
+    conn: sqlite3.Connection,
+    step: sqlite3.Row,
+    *,
+    timeout_seconds: float,
+    context_adapter_factories: dict[str, Callable[..., Any]] | None = None,
+    cancellation_probe: Callable[[], str | None] | None = None,
+    claimed_at: datetime | None = None,
+) -> dict[str, Any]:
+    """Execute or reconcile exactly one logical pre-close source unit."""
+    phase = _preclose_result_base(step)
+    units = [dict(unit) for unit in phase["source_unit_manifest"]]
+    phase["source_unit_manifest"] = units
+    if phase.get("preclose_plan_state") == "TIMELY_ACQUISITION_NOT_PRODUCIBLE":
+        return {
+            **phase,
+            "ok": True,
+            "terminal_job_status": "SKIPPED",
+            "yield_required": False,
+            "blocked_reason": "TIMELY_ACQUISITION_NOT_PRODUCIBLE",
+        }
+    _update_preclose_dependencies(units)
+    current = (claimed_at or _now()).astimezone(timezone.utc)
+    ready = [unit for unit in units if str(unit.get("state")) == "PENDING"]
+    if not ready:
+        if _preclose_terminal_count(units) != len(units):
+            return {
+                **phase,
+                "ok": False,
+                "yield_required": False,
+                "blocked_reason": "PRE_CLOSE_DEPENDENCY_STATE_INVALID",
+            }
+        return {**phase, "ok": True, "yield_required": False}
+    active_identity = str(phase.get("active_claim_source_unit_identity") or "")
+    if int(phase.get("active_claim_scheduler_job_id") or -1) != int(
+        step["scheduler_job_id"]
+    ):
+        raise ValueError("PRE_CLOSE_CLAIM_WORK_IDENTITY_INVALID")
+    matches = [
+        unit
+        for unit in ready
+        if str(unit["source_unit_identity"]) == active_identity
+    ]
+    if len(matches) != 1:
+        raise ValueError("PRE_CLOSE_CLAIM_SOURCE_UNIT_IDENTITY_INVALID")
+    unit = matches[0]
+    role = str(unit["source_unit_identity"])
+    phase["last_claim_source_unit_identity"] = role
+    phase.pop("active_claim_source_unit_identity", None)
+    phase.pop("active_claim_scheduler_job_id", None)
+    if (
+        role == "SAFETY_CORE"
+        and context_adapter_factories is not None
+        and "solana_rpc_core_safety" not in context_adapter_factories
+    ):
+        unit["state"] = "NOT_REQUIRED"
+        unit["terminal_reason"] = "CORE_SAFETY_NOT_ACTIVE_FOR_RUN"
+        phase["last_claim_reconciliation"] = "NOT_REQUIRED_BY_ACTIVE_SOURCE_SET"
+        terminal_count = _preclose_terminal_count(units)
+        phase.update(
+            ok=True,
+            terminal_unit_count=terminal_count,
+            yield_required=terminal_count != len(units),
+            next_preclose_scheduled_for=(
+                current.isoformat() if terminal_count != len(units) else None
+            ),
+        )
+        return phase
+    if role == "MARKET_CHAIN":
+        from printer_v1.chain_heat.lookup import chain_heat_snapshot_is_valid_for_memory
+        from printer_v1.context_evidence.window_15m import _broad_context
+        from printer_v1.market_regime.lookup import market_snapshot_is_valid_for_memory
+
+        cutoff = datetime.fromisoformat(str(unit["acquisition_cutoff_at"]))
+        market = _broad_context(
+            conn,
+            table="printer_market_regime_snapshots",
+            payload_column="normalized_market_payload_json",
+            target_time=cutoff,
+            valid_for_memory=market_snapshot_is_valid_for_memory,
+        )
+        chain = _broad_context(
+            conn,
+            table="printer_solana_chain_heat_snapshots",
+            payload_column="normalized_chain_heat_payload_json",
+            target_time=cutoff,
+            valid_for_memory=chain_heat_snapshot_is_valid_for_memory,
+        )
+        if market and chain:
+            unit.update(
+                state="REUSED_PERIODIC",
+                terminal_reason="TIMELY_PERIODIC_CONTEXT_REUSED",
+                observed_at=max(
+                    datetime.fromisoformat(str(market["captured_at"])),
+                    datetime.fromisoformat(str(chain["captured_at"])),
+                ).isoformat(),
+                market_regime_row_id=int(market["id"]),
+                chain_heat_row_id=int(chain["id"]),
+            )
+            terminal_count = _preclose_terminal_count(units)
+            phase.update(
+                ok=True,
+                terminal_unit_count=terminal_count,
+                yield_required=terminal_count != len(units),
+                next_preclose_scheduled_for=(
+                    current.isoformat() if terminal_count != len(units) else None
+                ),
+                last_claim_reconciliation="REUSED_TIMELY_PERIODIC_CONTEXT",
+            )
+            return phase
+    reconciliation = _reconcile_preclose_request(conn, unit)
+    execution = None
+    if reconciliation["state"] == "INTEGRITY_BLOCKED":
+        unit["state"] = "CONTEXT_INTEGRITY_BLOCKED"
+        unit["terminal_reason"] = str(reconciliation["reason"])
+        phase.update(
+            ok=False,
+            yield_required=False,
+            blocked_reason="CONTEXT_INTEGRITY_BLOCKED",
+            terminal_unit_count=_preclose_terminal_count(units),
+        )
+        return phase
+    if reconciliation["state"] == "INTERRUPTED_AFTER_REQUEST":
+        request = reconciliation["request"]
+        unit.update(
+            state="UNKNOWN_INTERRUPTED_AFTER_REQUEST",
+            terminal_reason="UNKNOWN_INTERRUPTED_AFTER_REQUEST",
+            source_request_id=int(request["id"]),
+            observed_at=None,
+        )
+        phase["last_claim_source_request_id"] = int(request["id"])
+        phase["last_claim_reconciliation"] = "UNKNOWN_INTERRUPTED_AFTER_REQUEST"
+    else:
+        if reconciliation["state"] == "TERMINAL":
+            execution = reconciliation["execution"]
+            phase["last_claim_reconciliation"] = "REHYDRATED_TERMINAL_SOURCE_RESULT"
+        else:
+            if current > datetime.fromisoformat(str(unit["latest_safe_claim_at"])):
+                unit["state"] = "MISSED_CUTOFF"
+                unit["terminal_reason"] = "MISSED_PRE_CLOSE_START"
+                phase["last_claim_reconciliation"] = "MISSED_WITHOUT_REQUEST"
+            else:
+                _check_cancellation(cancellation_probe)
+                bundle = _collect_preclose_context(
+                    conn,
+                    step,
+                    timeout_seconds=timeout_seconds,
+                    adapter_factories=context_adapter_factories,
+                    cancellation_probe=cancellation_probe,
+                    request_key_prefix=str(unit["request_key_prefix"]),
+                    source_unit_identity=role,
+                )
+                executions = list(
+                    {
+                        id(value): value
+                        for value in bundle["executions"].values()
+                    }.values()
+                )
+                if len(executions) != 1:
+                    raise ValueError("PRE_CLOSE_CLAIM_ATTEMPT_COUNT_INVALID")
+                execution = executions[0]
+                phase["provider_attempt_count"] = int(
+                    phase.get("provider_attempt_count") or 0
+                ) + 1
+                phase["last_claim_reconciliation"] = "FIRST_GOVERNED_ATTEMPT"
+        if execution is not None:
+            from printer_v1.safety.goplus_normalizer import (
+                holder_concentration_label_from_goplus,
+            )
+
+            observed_at = str(
+                execution.response_record.received_at
+                if execution.response_record is not None
+                else execution.failure_record.failed_at
+                if execution.failure_record is not None
+                else ""
+            )
+            cutoff = datetime.fromisoformat(str(unit["acquisition_cutoff_at"]))
+            observed = datetime.fromisoformat(observed_at) if observed_at else None
+            state = (
+                "TIMELY"
+                if execution.response_record is not None
+                and observed is not None
+                and observed <= cutoff
+                else "LATE"
+                if execution.response_record is not None
+                else "DENIED"
+                if str(execution.normalized_result.failure_type or "")
+                in {"rate_limit_exceeded", "source_not_in_registry", "request_kind_not_allowed"}
+                else "FAILED"
+            )
+            payload = dict(execution.normalized_result.normalized_payload or {})
+            unit.update(
+                state=state,
+                terminal_reason=(None if state == "TIMELY" else state),
+                source_request_id=int(execution.request_record.id),
+                source_response_id=(
+                    int(execution.response_record.id)
+                    if execution.response_record is not None
+                    else None
+                ),
+                source_failure_id=(
+                    int(execution.failure_record.id)
+                    if execution.failure_record is not None
+                    else None
+                ),
+                observed_at=observed_at or None,
+                failure_type=execution.normalized_result.failure_type,
+                holder_concentration_label=(
+                    holder_concentration_label_from_goplus(payload)
+                    if role == "SAFETY_PRIMARY"
+                    else None
+                ),
+            )
+            phase["last_claim_source_request_id"] = int(execution.request_record.id)
+            phase["last_claim_source_response_id"] = unit["source_response_id"]
+            phase["last_claim_source_failure_id"] = unit["source_failure_id"]
+    _update_preclose_dependencies(units)
+    terminal_count = _preclose_terminal_count(units)
+    manifest_terminal = terminal_count == len(units)
+    phase.update(
+        ok=True,
+        terminal_unit_count=terminal_count,
+        yield_required=not manifest_terminal,
+        next_preclose_scheduled_for=(current.isoformat() if not manifest_terminal else None),
+    )
+    return phase
+
+
+def _checkpoint_and_yield_preclose_claim(
+    conn: sqlite3.Connection,
+    *,
+    step: sqlite3.Row,
+    result: Mapping[str, Any],
+    now: datetime | None = None,
+) -> None:
+    """Commit one unit checkpoint before yielding the same Scheduler work row."""
+    if str(step["step_kind"]) not in PRE_CLOSE_STEP_KINDS:
+        raise ValueError("pre-close yield received non-preclose step")
+    if result.get("yield_required") is not True:
+        raise ValueError("pre-close yield requires remaining source units")
+    stamp = (now or _now()).astimezone(timezone.utc)
+    conn.execute(
+        """UPDATE printer_memory_factory_run_steps
+           SET step_status='PENDING',source_request_id=NULL,
+               source_response_id=NULL,source_failure_id=NULL,
+               result_json=?,error_or_skip_reason=NULL,finished_at=NULL,updated_at=?
+           WHERE id=? AND step_status='RUNNING'""",
+        (_json(dict(result)), stamp.isoformat(), int(step["id"])),
+    )
+    conn.commit()
+    yield_job(
+        conn,
+        job_id=int(step["scheduler_job_id"]),
+        scheduled_for=stamp,
+        now=stamp,
+    )
+    _sync_owned_campaign_scheduler_job(
+        conn, scheduler_job_id=int(step["scheduler_job_id"])
+    )
+    conn.commit()
+
+
+def _rehydrate_preclose_context_bundle(
+    conn: sqlite3.Connection, manifest: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Rebuild the exact source execution bundle without any provider call."""
+    executions: dict[str, Any] = {}
+    unit_results: list[dict[str, Any]] = []
+    role_keys = {
+        "MARKET_CHAIN": "market_chain",
+        "SAFETY_PRIMARY": "safety",
+        "SAFETY_CORE": "core_solana_safety",
+        "ENTRY_QUOTE": "entry_quote",
+        "EXIT_QUOTE": "exit_quote",
+        "HOLDER_PRIMARY": "holder_primary",
+        "HOLDER_BACKUP": "holder_backup",
+    }
+    for raw in manifest.get("source_unit_manifest", []):
+        if not isinstance(raw, Mapping):
+            raise ValueError("PRE_CLOSE_UNIT_MANIFEST_INVALID")
+        unit = dict(raw)
+        role = str(unit.get("source_unit_identity") or "")
+        state = str(unit.get("state") or "")
+        unit_results.append(
+            {
+                "source_unit_identity": role,
+                "state": state,
+                "observed_at": unit.get("observed_at"),
+                "terminal_reason": unit.get("terminal_reason"),
+                "source_request_id": unit.get("source_request_id"),
+                "source_response_id": unit.get("source_response_id"),
+                "source_failure_id": unit.get("source_failure_id"),
+            }
+        )
+        if unit.get("source_request_id") is None:
+            continue
+        reconciled = _reconcile_preclose_request(conn, unit)
+        if reconciled.get("state") != "TERMINAL":
+            raise ValueError("CONTEXT_INTEGRITY_BLOCKED")
+        execution = reconciled["execution"]
+        if int(execution.request_record.id) != int(unit["source_request_id"]):
+            raise ValueError("CONTEXT_INTEGRITY_BLOCKED")
+        if unit.get("source_response_id") is not None and (
+            execution.response_record is None
+            or int(execution.response_record.id) != int(unit["source_response_id"])
+        ):
+            raise ValueError("CONTEXT_INTEGRITY_BLOCKED")
+        if unit.get("source_failure_id") is not None and (
+            execution.failure_record is None
+            or int(execution.failure_record.id) != int(unit["source_failure_id"])
+        ):
+            raise ValueError("CONTEXT_INTEGRITY_BLOCKED")
+        executions[role_keys[role]] = execution
+    primary_holder = executions.get("holder_primary")
+    backup_holder = executions.get("holder_backup")
+    if backup_holder is not None and backup_holder.response_record is not None:
+        executions["holder"] = backup_holder
+    elif primary_holder is not None:
+        executions["holder"] = primary_holder
+    return {
+        "executions": executions,
+        "report": {
+            "source_request_budget": 0,
+            "source_requests_attempted": 0,
+            "post_capture_main_window_provider_calls": 0,
+            "unit_results": unit_results,
+            "items": {
+                key: _context_execution_summary(value)
+                for key, value in executions.items()
+            },
+        },
+    }
 def _execute_close_evidence_phase(
     conn: sqlite3.Connection,
     step: sqlite3.Row,
@@ -2562,7 +3775,7 @@ def _execute_close_context_phase(
     context_adapter_factories: dict[str, Callable[..., Any]] | None = None,
     cancellation_probe: Callable[[], str | None] | None = None,
 ) -> dict[str, Any]:
-    """Collect governed context after, and only for, exact persisted evidence."""
+    """Bind exact terminal pre-close truth after the closing snapshot exists."""
     if str(step["step_kind"]) not in CONTEXT_STEP_KINDS:
         raise ValueError("close context executor received non-context step")
     phase = _close_phase_result_base(step)
@@ -2573,22 +3786,19 @@ def _execute_close_context_phase(
             "ok": False,
             "blocked_reason": str(evidence.get("reason")),
         }
-    family = str(phase["close_family"])
-    include = (
-        frozenset({"safety"})
-        if family == "CONTINUATION_CLOSE"
-        else frozenset({"market_chain", "safety", "exit_quote"})
-        if family == "LONG_CONTINUATION_CLOSE"
-        else None
+    preclose = resolve_preclose_manifest(conn, step)
+    if not preclose.get("resolved"):
+        return {
+            **phase,
+            "ok": False,
+            "blocked_reason": str(preclose.get("reason")),
+        }
+    validated_preclose_manifest = _preclose_result_base(
+        preclose["preclose_step"]
     )
     _check_cancellation(cancellation_probe)
-    context_bundle = _collect_preclose_context(
-        conn,
-        step,
-        timeout_seconds=timeout_seconds,
-        adapter_factories=context_adapter_factories,
-        include=include,
-        cancellation_probe=cancellation_probe,
+    context_bundle = _rehydrate_preclose_context_bundle(
+        conn, validated_preclose_manifest
     )
     _check_cancellation(cancellation_probe)
     persistence = _persist_preclose_context(
@@ -2597,6 +3807,26 @@ def _execute_close_context_phase(
         snapshot_id=int(evidence["snapshot_id"]),
         context_bundle=context_bundle,
     )
+    unit_states = {
+        str(item.get("state") or "")
+        for item in context_bundle["report"]["unit_results"]
+    }
+    if unit_states <= {"TIMELY", "REUSED_PERIODIC", "NOT_REQUIRED"}:
+        context_state = "CONTEXT_COMPLETE"
+    elif "CONTEXT_INTEGRITY_BLOCKED" in unit_states:
+        raise ValueError("CONTEXT_INTEGRITY_BLOCKED")
+    elif "UNKNOWN_INTERRUPTED_AFTER_REQUEST" in unit_states:
+        context_state = "CONTEXT_UNKNOWN"
+    elif unit_states & {"FAILED", "DENIED"}:
+        context_state = "CONTEXT_PROVIDER_FAILED"
+    else:
+        context_state = "CONTEXT_PARTIAL"
+    context_envelope = {
+        "context_state": context_state,
+        "closing_snapshot_id": int(evidence["snapshot_id"]),
+        "preclose_manifest_step_id": int(preclose["preclose_step"]["id"]),
+        "unit_results": list(context_bundle["report"]["unit_results"]),
+    }
     # Deliberately use closing_snapshot_id instead of snapshot_id.  Only the
     # evidence step is an ACTUAL-capture carrier for cadence/deadline authority.
     return {
@@ -2606,15 +3836,28 @@ def _execute_close_context_phase(
         "evidence_captured_at": str(evidence["evidence_captured_at"]),
         "governed_context_collection": context_bundle["report"],
         "governed_context_persistence": persistence,
+        "preclose_manifest_step_id": int(preclose["preclose_step"]["id"]),
+        "preclose_context_state": context_state,
+        "closing_context_envelope": context_envelope,
+        "evidence_bound_at": _iso(),
     }
 
 
-def _close_context_result(step: sqlite3.Row) -> dict[str, Any]:
+def _close_context_result(
+    step: sqlite3.Row, *, allow_typed_failure: bool = False
+) -> dict[str, Any]:
     try:
         payload = json.loads(str(step["result_json"] or "{}"))
     except (TypeError, json.JSONDecodeError) as exc:
         raise ValueError("CLOSE_CONTEXT_RESULT_MALFORMED") from exc
-    if not isinstance(payload, dict) or payload.get("ok") is not True:
+    if not isinstance(payload, dict) or (
+        payload.get("ok") is not True
+        and not (
+            allow_typed_failure
+            and payload.get("ok") is False
+            and isinstance(payload.get("closing_context_envelope"), Mapping)
+        )
+    ):
         raise ValueError("CLOSE_CONTEXT_RESULT_NOT_SUCCESSFUL")
     return payload
 
@@ -2728,6 +3971,7 @@ def _audit_1h_close_from_evidence(
 ) -> dict[str, Any]:
     from printer_v1.operator_cli.e2q_memory_window_audit import audit_15m_memory_window
     from printer_v1.operator_cli.first_hour_safety_binding import (
+        FirstHourSafetyBindingError,
         attach_first_hour_safety_overlay,
     )
     from printer_v1.operator_cli.lane_e2o_1h_window_close import (
@@ -2809,13 +4053,69 @@ def _audit_1h_close_from_evidence(
     if not isinstance(persisted_context, Mapping):
         result.update(ok=False, blocked_reason="FIRST_HOUR_CONTEXT_TRUTH_MISSING")
         return result
-    result["first_hour_safety_binding"] = attach_first_hour_safety_overlay(
-        conn,
-        step=step,
-        memory_window_id=int(window_id),
-        closing_snapshot_id=int(closing_snapshot_id),
-        persisted_context=persisted_context,
+    context_envelope = context_result.get("closing_context_envelope")
+    if not isinstance(context_envelope, Mapping):
+        result.update(ok=False, blocked_reason="FIRST_HOUR_CONTEXT_ENVELOPE_MISSING")
+        return result
+    try:
+        result["first_hour_safety_binding"] = attach_first_hour_safety_overlay(
+            conn,
+            step=step,
+            memory_window_id=int(window_id),
+            closing_snapshot_id=int(closing_snapshot_id),
+            persisted_context=persisted_context,
+        )
+    except FirstHourSafetyBindingError as exc:
+        reason = str(exc)
+        if reason not in {
+            "FIRST_HOUR_SAFETY_COMPOSITE_MISSING",
+            "FIRST_HOUR_SAFETY_LOGICAL_CUTOFF_EXCEEDED",
+        }:
+            raise
+        result["first_hour_safety_binding"] = {
+            "bound": False,
+            "memory_window_id": int(window_id),
+            "closing_snapshot_id": int(closing_snapshot_id),
+            "context_state": str(
+                context_envelope.get("context_state") or "CONTEXT_PARTIAL"
+            ),
+            "reason": reason,
+        }
+    window = conn.execute(
+        """SELECT token_id,pair_id,snapshot_end_id,supporting_context_json
+           FROM printer_memory_windows WHERE id=? AND window_kind='WINDOW_1H'""",
+        (int(window_id),),
+    ).fetchone()
+    if (
+        window is None
+        or int(window["token_id"]) != int(step["token_id"])
+        or int(window["pair_id"]) != int(step["pair_id"])
+        or int(window["snapshot_end_id"] or -1) != int(closing_snapshot_id)
+    ):
+        raise ValueError("FIRST_HOUR_CONTEXT_ENVELOPE_TARGET_MISMATCH")
+    try:
+        supporting = json.loads(str(window["supporting_context_json"] or "{}"))
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ValueError("FIRST_HOUR_CONTEXT_ENVELOPE_MALFORMED") from exc
+    if not isinstance(supporting, dict):
+        raise ValueError("FIRST_HOUR_CONTEXT_ENVELOPE_MALFORMED")
+    supporting["closing_context_envelope"] = {
+        **dict(context_envelope),
+        "safety_binding": dict(result["first_hour_safety_binding"]),
+    }
+    updated = conn.execute(
+        """UPDATE printer_memory_windows SET supporting_context_json=?
+           WHERE id=? AND token_id=? AND pair_id=? AND snapshot_end_id=?""",
+        (
+            _json(supporting),
+            int(window_id),
+            int(step["token_id"]),
+            int(step["pair_id"]),
+            int(closing_snapshot_id),
+        ),
     )
+    if int(updated.rowcount or 0) != 1:
+        raise ValueError("FIRST_HOUR_CONTEXT_ENVELOPE_UPDATE_FAILED")
     result["full_first_hour_outcome"] = _derive_and_persist_first_hour_outcome(
         conn,
         run_id=str(step["run_id"]),
@@ -2854,7 +4154,10 @@ def _execute_close_audit_phase(
             "ok": False,
             "blocked_reason": str(resolved.get("reason")),
         }
-    context_result = _close_context_result(resolved["context_step"])
+    context_result = _close_context_result(
+        resolved["context_step"],
+        allow_typed_failure=bool(resolved.get("typed_context_failure")),
+    )
     if int(context_result.get("closing_snapshot_id", -1)) != int(
         resolved["snapshot_id"]
     ):
@@ -2892,6 +4195,9 @@ def _execute_close_audit_phase(
             cancellation_probe=cancellation_probe,
         )
     result["evidence_captured_at"] = str(resolved["evidence_captured_at"])
+    result["closing_context_envelope"] = context_result.get(
+        "closing_context_envelope"
+    )
     return result
 
 
@@ -4961,6 +6267,23 @@ def _lifecycle_reservation_records_for_step(
     }
     if step_kind not in supported:
         return []
+    preclose_unit_identity: str | None = None
+    preclose_unit_ordinal = 0
+    if step_kind in PRE_CLOSE_STEP_KINDS:
+        payload = _preclose_result_base(pending)
+        preclose_unit_identity = str(
+            payload.get("active_claim_source_unit_identity") or ""
+        )
+        matching_ordinals = [
+            index
+            for index, unit in enumerate(
+                payload["source_unit_manifest"], start=1
+            )
+            if str(unit["source_unit_identity"]) == preclose_unit_identity
+        ]
+        if len(matching_ordinals) != 1:
+            raise ValueError("PRE_CLOSE_RESERVATION_UNIT_IDENTITY_INVALID")
+        preclose_unit_ordinal = matching_ordinals[0]
     records: list[dict[str, Any]] = []
     for reservation_index in range(int(projected_requests)):
         if step_kind in {"WINDOW_CLOSE", "WINDOW_CLOSE_EVIDENCE"}:
@@ -4970,6 +6293,8 @@ def _lifecycle_reservation_records_for_step(
             )
         elif step_kind == "WINDOW_CLOSE_CONTEXT":
             family = "PRECLOSE_CONTEXT"
+        elif step_kind == "WINDOW_CLOSE_PRE_CLOSE_CRITICAL":
+            family = "PRECLOSE_CONTEXT_SOURCE_UNIT"
         elif step_kind == "SNAPSHOT":
             family = "SNAPSHOT_OBSERVATION"
         elif step_kind == "CONTINUATION_SNAPSHOT":
@@ -4981,6 +6306,8 @@ def _lifecycle_reservation_records_for_step(
             )
         elif step_kind == "CONTINUATION_CLOSE_CONTEXT":
             family = "FIRST_HOUR_SAFETY_CONTEXT"
+        elif step_kind == "CONTINUATION_CLOSE_PRE_CLOSE_CRITICAL":
+            family = "FIRST_HOUR_SAFETY_SOURCE_UNIT"
         elif step_kind in {
             "LONG_CONTINUATION_CLOSE",
             "LONG_CONTINUATION_CLOSE_EVIDENCE",
@@ -4988,6 +6315,8 @@ def _lifecycle_reservation_records_for_step(
             family = "LONG_CONTINUATION_CLOSE_OBSERVATION"
         elif step_kind == "LONG_CONTINUATION_CLOSE_CONTEXT":
             family = "LONG_CONTINUATION_CLOSE_CONTEXT"
+        elif step_kind == "LONG_CONTINUATION_CLOSE_PRE_CLOSE_CRITICAL":
+            family = "LONG_CONTINUATION_CLOSE_SOURCE_UNIT"
         elif str(pending["step_key"]).endswith("_snapshot_000"):
             family = "LONG_CONTINUATION_OPENING_OBSERVATION"
         else:
@@ -5002,9 +6331,15 @@ def _lifecycle_reservation_records_for_step(
                 "token_id": int(pending["token_id"]),
                 "pair_id": int(pending["pair_id"]),
                 "reservation_ordinal": (
-                    int(pending["scheduler_job_id"]) * 100 + reservation_index
+                    int(pending["scheduler_job_id"]) * 100
+                    + (
+                        preclose_unit_ordinal
+                        if preclose_unit_identity is not None
+                        else reservation_index
+                    )
                 ),
                 "operation_family": family,
+                "source_unit_identity": preclose_unit_identity,
             }
         )
     return records
@@ -5325,16 +6660,36 @@ def _run_step_job_count(conn: sqlite3.Connection, run_id: str) -> int:
     ).fetchone()[0])
 
 
-def _projected_requests_for_step(step: sqlite3.Row) -> int:
+def _projected_requests_for_step(
+    conn_or_step: sqlite3.Connection | sqlite3.Row,
+    step: sqlite3.Row | None = None,
+) -> int:
+    conn = conn_or_step if isinstance(conn_or_step, sqlite3.Connection) else None
+    current_step = step if step is not None else conn_or_step
     # A snapshot step issues one governed request; a close step issues one
     # snapshot request plus up to five close-time context requests.
-    if step["step_kind"] in LIFECYCLE_RESERVED_OPERATIONS_BY_STEP_KIND:
-        return int(
-            LIFECYCLE_RESERVED_OPERATIONS_BY_STEP_KIND[str(step["step_kind"])]
+    if str(current_step["step_kind"]) in PRE_CLOSE_STEP_KINDS:
+        if conn is None:
+            return 1
+        phase = _preclose_result_base(current_step)
+        active_identity = str(
+            phase.get("active_claim_source_unit_identity") or ""
         )
-    if step["step_kind"] == "LONG_CONTINUATION_CLOSE":
+        units = [
+            unit
+            for unit in phase["source_unit_manifest"]
+            if str(unit["source_unit_identity"]) == active_identity
+        ]
+        if len(units) != 1:
+            return 0
+        return 0 if _reconcile_preclose_request(conn, units[0])["state"] != "NO_REQUEST" else 1
+    if current_step["step_kind"] in LIFECYCLE_RESERVED_OPERATIONS_BY_STEP_KIND:
+        return int(
+            LIFECYCLE_RESERVED_OPERATIONS_BY_STEP_KIND[str(current_step["step_kind"])]
+        )
+    if current_step["step_kind"] == "LONG_CONTINUATION_CLOSE":
         return 5
-    if step["step_kind"] == "LONG_CONTINUATION_SNAPSHOT" and str(step["step_key"]).endswith("_snapshot_000"):
+    if current_step["step_kind"] == "LONG_CONTINUATION_SNAPSHOT" and str(current_step["step_key"]).endswith("_snapshot_000"):
         return 3
     return 1
 
@@ -5463,13 +6818,23 @@ def _standard_four_hour_reporting_budget_for_run(
     }
 
 
-def _enforce_budgets_before_step(conn: sqlite3.Connection, run_id: str, step: sqlite3.Row) -> None:
+def _enforce_budgets_before_step(
+    conn: sqlite3.Connection,
+    run_id: str,
+    step: sqlite3.Row,
+    *,
+    projected_requests: int | None = None,
+) -> None:
     """Raise _GlobalStop if executing this step would breach a hard ceiling.
 
     Hard ceilings are integrity limits, not targets: a projected breach is a
     global safe stop, never a silently exceeded call.
     """
-    projected = _projected_requests_for_step(step)
+    projected = (
+        _projected_requests_for_step(conn, step)
+        if projected_requests is None
+        else int(projected_requests)
+    )
     config = _load_run_config(conn, run_id)
     if str(step["step_kind"]).startswith("LONG_CONTINUATION_"):
         from printer_v1.operator_cli.one_token_4h_runtime import (
@@ -7344,8 +8709,28 @@ def _select_next_pending_step(
     ]
 
     service_counts: dict[str, int] = {}
+
+    def fairness_owner(row: Mapping[str, Any]) -> str:
+        if str(row["step_kind"]) in PRE_CLOSE_STEP_KINDS:
+            try:
+                payload = json.loads(str(row["result_json"] or "{}"))
+            except (TypeError, json.JSONDecodeError):
+                payload = {}
+            exact = tuple(
+                str(payload.get(field) or "")
+                for field in (
+                    "campaign_run_id",
+                    "cycle_id",
+                    "token_slot_id",
+                    "campaign_window_id",
+                )
+            )
+            if all(exact):
+                return "campaign:" + ":".join(exact)
+        return "token:" + _scheduler_fairness_token_id(row["token_id"])
+
     served_rows = conn.execute(
-        """SELECT s.token_id,j.job_kind
+        """SELECT s.token_id,s.step_kind,s.result_json,j.job_kind
            FROM printer_memory_factory_run_steps AS s
            JOIN printer_scheduler_jobs AS j ON j.id=s.scheduler_job_id
            WHERE s.run_id=? AND j.started_at IS NOT NULL""",
@@ -7354,8 +8739,44 @@ def _select_next_pending_step(
     for row in served_rows:
         if job_resource_category(str(row["job_kind"])) is not winning_category:
             continue
-        token_identity = _scheduler_fairness_token_id(row["token_id"])
-        service_counts[token_identity] = service_counts.get(token_identity, 0) + 1
+        if str(row["step_kind"]) not in PRE_CLOSE_STEP_KINDS:
+            owner_identity = fairness_owner(row)
+            service_counts[owner_identity] = service_counts.get(owner_identity, 0) + 1
+    preclose_service_rows = conn.execute(
+        """SELECT token_id,step_kind,result_json
+           FROM printer_memory_factory_run_steps
+           WHERE run_id=? AND step_kind IN (?,?,?)""",
+        (str(run_id), *sorted(PRE_CLOSE_STEP_KINDS)),
+    ).fetchall()
+    for row in preclose_service_rows:
+        try:
+            payload = json.loads(str(row["result_json"] or "{}"))
+            count = int(payload.get("terminal_unit_count") or 0)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            count = 0
+        owner_identity = fairness_owner(row)
+        service_counts[owner_identity] = service_counts.get(owner_identity, 0) + count
+
+    def deadline_for(row: sqlite3.Row) -> str:
+        if str(row["step_kind"]) in PRE_CLOSE_STEP_KINDS:
+            try:
+                payload = json.loads(str(row["result_json"] or "{}"))
+                active = [
+                    datetime.fromisoformat(str(unit["latest_safe_claim_at"]))
+                    for unit in payload.get("source_unit_manifest", [])
+                    if isinstance(unit, Mapping) and unit.get("state") == "PENDING"
+                ]
+                if active:
+                    return min(active).astimezone(timezone.utc).isoformat()
+            except (TypeError, ValueError, json.JSONDecodeError):
+                pass
+        return deadline_order_value(
+            project_scheduler_job_evidence_deadline(
+                conn,
+                factory_run_id=str(run_id),
+                scheduler_job_id=int(row["scheduler_job_id"]),
+            )
+        )
 
     selected = min(
         category_rows,
@@ -7363,16 +8784,10 @@ def _select_next_pending_step(
             close_phase_order(str(row["step_kind"]))
             if winning_category is JobKind.MEMORY_WINDOW_CLOSE
             else 0,
-            deadline_order_value(
-                project_scheduler_job_evidence_deadline(
-                    conn,
-                    factory_run_id=str(run_id),
-                    scheduler_job_id=int(row["scheduler_job_id"]),
-                )
-            ),
+            deadline_for(row),
             *deterministic_token_fairness_key(
                 ordinary_service_count=service_counts.get(
-                    _scheduler_fairness_token_id(row["token_id"]), 0
+                    fairness_owner(row), 0
                 ),
                 scheduled_for=_scheduler_fairness_time(row["scheduled_for"]),
                 created_at=_scheduler_fairness_time(row["created_at"]),
@@ -8274,6 +9689,17 @@ def run_one_command_15m_factory(
             if claimed != LockResult.ACQUIRED:
                 stop_reason = STOP_AMBIGUOUS
                 break
+            active_preclose_unit: str | None = None
+            if str(pending["step_kind"]) in PRE_CLOSE_STEP_KINDS:
+                active_preclose_unit = _bind_preclose_source_unit_for_claim(
+                    conn, step_id=int(pending["id"])
+                )
+                pending = conn.execute(
+                    "SELECT * FROM printer_memory_factory_run_steps WHERE id=?",
+                    (int(pending["id"]),),
+                ).fetchone()
+                if pending is None:
+                    raise ValueError("PRE_CLOSE_CLAIM_STEP_MISSING")
             effective_lifecycle_ownership_context = lifecycle_ownership_context
             owned_proof_cycle_id: str | None = None
             if four_token_proof_controller is not None:
@@ -8342,6 +9768,7 @@ def run_one_command_15m_factory(
                         "step_kind": str(pending["step_kind"]),
                         "token_id": int(pending["token_id"]),
                         "pair_id": int(pending["pair_id"]),
+                        "source_unit_identity": active_preclose_unit,
                     }
                 )
             token_id = int(pending["token_id"])
@@ -8356,16 +9783,30 @@ def run_one_command_15m_factory(
                 _check_cancellation(cancellation_probe)
                 # Hard ceilings are integrity limits; a projected breach is a
                 # global safe stop (raises _GlobalStop), never an exceeded call.
-                _enforce_budgets_before_step(conn, run_id, pending)
+                projected_requests = _projected_requests_for_step(conn, pending)
+                _enforce_budgets_before_step(
+                    conn,
+                    run_id,
+                    pending,
+                    projected_requests=projected_requests,
+                )
                 reservation_records = _lifecycle_reservation_records_for_step(
                     run_id=run_id,
                     pending=pending,
-                    projected_requests=_projected_requests_for_step(pending),
+                    projected_requests=projected_requests,
                 )
                 if lifecycle_operation_observer is not None:
                     for reservation_record in reservation_records:
                         lifecycle_operation_observer(reservation_record)
-                if str(pending["step_kind"]) in EVIDENCE_STEP_KINDS:
+                if str(pending["step_kind"]) in PRE_CLOSE_STEP_KINDS:
+                    result = _execute_preclose_critical_phase(
+                        conn,
+                        pending,
+                        timeout_seconds=timeout_seconds,
+                        context_adapter_factories=context_adapter_factories,
+                        cancellation_probe=cancellation_probe,
+                    )
+                elif str(pending["step_kind"]) in EVIDENCE_STEP_KINDS:
                     result = _execute_close_evidence_phase(
                         conn,
                         pending,
@@ -8479,6 +9920,59 @@ def run_one_command_15m_factory(
                 if lifecycle_operation_observer is not None:
                     for validation_record in validation_records:
                         lifecycle_operation_observer(validation_record)
+                if (
+                    str(pending["step_kind"]) in PRE_CLOSE_STEP_KINDS
+                    and result.get("yield_required") is True
+                ):
+                    _checkpoint_and_yield_preclose_claim(
+                        conn,
+                        step=pending,
+                        result=result,
+                        now=_now(),
+                    )
+                    if lifecycle_operation_observer is not None:
+                        lifecycle_operation_observer(
+                            {
+                                "boundary": "SCHEDULER_YIELD",
+                                "run_id": run_id,
+                                "scheduler_job_id": job_id,
+                                "step_key": str(pending["step_key"]),
+                                "step_kind": str(pending["step_kind"]),
+                                "token_id": int(pending["token_id"]),
+                                "pair_id": int(pending["pair_id"]),
+                                "source_unit_identity": result.get(
+                                    "last_claim_source_unit_identity"
+                                ),
+                            }
+                        )
+                    continue
+                if (
+                    str(pending["step_kind"]) in PRE_CLOSE_STEP_KINDS
+                    and result.get("terminal_job_status") == "SKIPPED"
+                ):
+                    reason = str(
+                        result.get("blocked_reason")
+                        or "TIMELY_ACQUISITION_NOT_PRODUCIBLE"
+                    )
+                    _update_step(
+                        conn,
+                        int(pending["id"]),
+                        "SKIPPED",
+                        result,
+                        error=reason,
+                    )
+                    skip_job(conn, job_id=job_id, reason=reason)
+                    _sync_owned_campaign_scheduler_job(
+                        conn, scheduler_job_id=job_id
+                    )
+                    _observe_scheduler_terminal(
+                        conn,
+                        observer=lifecycle_operation_observer,
+                        run_id=run_id,
+                        step=pending,
+                    )
+                    conn.commit()
+                    continue
                 if (
                     _post_handoff_scope_recorder is not None
                     and result.get("snapshot_id") is not None
