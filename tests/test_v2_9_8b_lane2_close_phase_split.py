@@ -596,7 +596,9 @@ def test_real_context_binding_failure_producer_preserves_snapshot_and_audit(
             "UPDATE printer_token_snapshots SET source_status='FAILED' WHERE id=?",
             (sid,),
         )
-        raise ValueError("LOCAL_SAFETY_COMPOSITION_WRITE_FAILED")
+        raise factory.ContextBindingCompositionFailure(
+            "LOCAL_SAFETY_COMPOSITION_WRITE_FAILED"
+        )
 
     monkeypatch.setattr(factory, "_persist_preclose_context", fail_local_binding)
 
@@ -626,7 +628,8 @@ def test_real_context_binding_failure_producer_preserves_snapshot_and_audit(
     )
     assert envelope["closing_snapshot_id"] == sid
     assert envelope["failure_reason"] == (
-        "ValueError: LOCAL_SAFETY_COMPOSITION_WRITE_FAILED"
+        "ContextBindingCompositionFailure: "
+        "LOCAL_SAFETY_COMPOSITION_WRITE_FAILED"
     )
     assert envelope["failed_at"]
     snapshot = connection.execute(
@@ -667,7 +670,7 @@ def test_real_context_binding_failure_producer_preserves_snapshot_and_audit(
     assert tuple(terminal[:1]) == ("FAILED",)
     assert terminal[2] == "FAILED"
     assert terminal[3] == (
-        "CONTEXT_BINDING_FAILED:ValueError: "
+        "CONTEXT_BINDING_FAILED:ContextBindingCompositionFailure: "
         "LOCAL_SAFETY_COMPOSITION_WRITE_FAILED"
     )
     assert tuple(audit_state) == ("PENDING", "PENDING")
@@ -711,6 +714,109 @@ def test_real_context_binding_failure_producer_preserves_snapshot_and_audit(
     assert memory["memory_status"] != "CLEAN_MEMORY"
     assert memory["memory_quality_label"] != "CLEAN_MEMORY"
     assert int(memory["do_not_train"]) == 1
+
+
+def test_persistence_value_error_uses_ordinary_fail_closed_cancellation(
+    connection: sqlite3.Connection,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sid = _snapshot(connection, token_id=1, captured_at=NOW)
+    _add_phase(
+        connection,
+        token_id=1,
+        step_kind="WINDOW_CLOSE_EVIDENCE",
+        scheduled_for=NOW,
+        status="SUCCEEDED",
+        snapshot_id=sid,
+    )
+    context = _add_phase(
+        connection,
+        token_id=1,
+        step_kind="WINDOW_CLOSE_CONTEXT",
+        scheduled_for=NOW,
+    )
+    audit = _add_phase(
+        connection,
+        token_id=1,
+        step_kind="WINDOW_CLOSE_AUDIT",
+        scheduled_for=NOW,
+    )
+    other_token = _add_phase(
+        connection,
+        token_id=2,
+        step_kind="WINDOW_CLOSE_EVIDENCE",
+        scheduled_for=NOW + timedelta(hours=1),
+    )
+    connection.execute(
+        "UPDATE printer_memory_factory_run_steps SET step_status='RUNNING' WHERE id=?",
+        (int(context["id"]),),
+    )
+    connection.execute(
+        "UPDATE printer_scheduler_jobs SET status='RUNNING' WHERE id=?",
+        (int(context["scheduler_job_id"]),),
+    )
+    connection.commit()
+    context = connection.execute(
+        "SELECT * FROM printer_memory_factory_run_steps WHERE id=?",
+        (int(context["id"]),),
+    ).fetchone()
+
+    def fail_persistence_invariant(*args, **kwargs):
+        raise ValueError("CONTEXT_BINDING_PERSISTENCE_IDENTITY_INVARIANT_FAILED")
+
+    monkeypatch.setattr(
+        factory,
+        "_persist_preclose_context",
+        fail_persistence_invariant,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="CONTEXT_BINDING_PERSISTENCE_IDENTITY_INVARIANT_FAILED",
+    ):
+        factory._execute_close_context_phase(
+            connection,
+            context,
+            timeout_seconds=1.0,
+        )
+
+    connection.execute(
+        """UPDATE printer_memory_factory_run_steps
+           SET step_status='FAILED',
+               error_or_skip_reason='CONTEXT_BINDING_PERSISTENCE_IDENTITY_INVARIANT_FAILED'
+           WHERE id=?""",
+        (int(context["id"]),),
+    )
+    connection.execute(
+        "UPDATE printer_scheduler_jobs SET status='FAILED' WHERE id=?",
+        (int(context["scheduler_job_id"]),),
+    )
+    cancelled = factory._cancel_pending_for_token(
+        connection,
+        "phase-run",
+        1,
+        factory.TOKEN_LOCAL_CANCELLED,
+    )
+    connection.commit()
+
+    context_state = connection.execute(
+        "SELECT result_json FROM printer_memory_factory_run_steps WHERE id=?",
+        (int(context["id"]),),
+    ).fetchone()
+    audit_state = connection.execute(
+        """SELECT s.step_status,j.status
+           FROM printer_memory_factory_run_steps AS s
+           JOIN printer_scheduler_jobs AS j ON j.id=s.scheduler_job_id
+           WHERE s.id=?""",
+        (int(audit["id"]),),
+    ).fetchone()
+    assert "CONTEXT_BINDING_FAILED" not in str(context_state["result_json"] or "")
+    assert cancelled == 1
+    assert tuple(audit_state) == ("CANCELLED", "CANCELLED")
+    assert connection.execute(
+        "SELECT step_status FROM printer_memory_factory_run_steps WHERE id=?",
+        (int(other_token["id"]),),
+    ).fetchone()[0] == "PENDING"
 
 
 @pytest.mark.parametrize(

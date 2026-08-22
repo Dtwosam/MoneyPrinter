@@ -2108,6 +2108,17 @@ class PrecloseContextPartialError(RuntimeError):
         super().__init__(f"{self.code}:stage={self.failed_stage}")
 
 
+class ContextBindingCompositionFailure(RuntimeError):
+    """Exact marker for a trustworthy local context binding failure.
+
+    This exception is reserved for bounded composition or attachment work after
+    the close owner, pre-close manifest, and durable closing snapshot have been
+    validated.  Generic validation, identity, provenance, persistence, SQLite,
+    and integrity failures must retain their original exception type so the
+    ordinary token-local fail-closed path cancels dependent work.
+    """
+
+
 @dataclass(frozen=True)
 class HolderSafetyRequestPlanEntry:
     """One source-free request family in the existing holder safety path."""
@@ -3825,7 +3836,7 @@ def _execute_close_context_phase(
             snapshot_id=int(evidence["snapshot_id"]),
             context_bundle=context_bundle,
         )
-    except ValueError as exc:
+    except ContextBindingCompositionFailure as exc:
         conn.execute("ROLLBACK TO SAVEPOINT close_context_binding")
         conn.execute("RELEASE SAVEPOINT close_context_binding")
         failed_at = _iso()
