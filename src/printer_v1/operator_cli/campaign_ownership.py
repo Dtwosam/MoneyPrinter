@@ -478,9 +478,9 @@ def register_campaign_window_close(
             step_run, step_kind, step_status, step_token, step_pair, step_window, _ = (
                 step
             )
-            if str(step_kind) != "WINDOW_CLOSE":
+            if str(step_kind) not in {"WINDOW_CLOSE", "WINDOW_CLOSE_AUDIT"}:
                 raise CampaignOwnershipError(
-                    f"{CAMPAIGN_WINDOW_OWNERSHIP_CONFLICT}:step is not WINDOW_CLOSE"
+                    f"{CAMPAIGN_WINDOW_OWNERSHIP_CONFLICT}:step is not terminal WINDOW_CLOSE"
                 )
             if str(step_status) != "SUCCEEDED":
                 raise CampaignOwnershipError(

@@ -1660,8 +1660,18 @@ BOUNDARY_SOURCE_TRANSPORT = "SOURCE_TRANSPORT"
 PROJECTED_GOVERNED_OPERATIONS_BY_STEP_KIND = (
     LIFECYCLE_RESERVED_OPERATIONS_BY_STEP_KIND
 )
-# Lifecycle step kinds that carry an exact-pair source transport identity.
-_TRANSPORT_BEARING_STEP_KINDS = frozenset({"SNAPSHOT", "WINDOW_CLOSE"})
+# WINDOW_15M step kinds sealed by the existing slot-scoped action-local ledger.
+# Continuation phases retain their separate WINDOW_1H/WINDOW_4H campaign owners;
+# they must not be projected into this WINDOW_15M-only accounting stage.
+_WINDOW_15M_ACTION_LOCAL_STEP_KINDS = frozenset(
+    {
+        "SNAPSHOT",
+        "WINDOW_CLOSE",
+        "WINDOW_CLOSE_EVIDENCE",
+        "WINDOW_CLOSE_CONTEXT",
+        "WINDOW_CLOSE_AUDIT",
+    }
+)
 _EXACT_PAIR_VALIDATION_KIND = "EXACT_PAIR_VERIFICATION"
 
 
@@ -1732,14 +1742,23 @@ def _load_terminal_scheduler_correspondence(
     allowed = {
         "SNAPSHOT": "WINDOW_15M",
         "WINDOW_CLOSE": "WINDOW_15M",
+        "WINDOW_CLOSE_EVIDENCE": "WINDOW_15M",
+        "WINDOW_CLOSE_CONTEXT": "WINDOW_15M",
+        "WINDOW_CLOSE_AUDIT": "WINDOW_15M",
     }
     if standard_four_hour_campaign:
         allowed.update(
             {
                 "CONTINUATION_SNAPSHOT": "WINDOW_1H",
                 "CONTINUATION_CLOSE": "WINDOW_1H",
+                "CONTINUATION_CLOSE_EVIDENCE": "WINDOW_1H",
+                "CONTINUATION_CLOSE_CONTEXT": "WINDOW_1H",
+                "CONTINUATION_CLOSE_AUDIT": "WINDOW_1H",
                 "LONG_CONTINUATION_SNAPSHOT": "WINDOW_4H",
                 "LONG_CONTINUATION_CLOSE": "WINDOW_4H",
+                "LONG_CONTINUATION_CLOSE_EVIDENCE": "WINDOW_4H",
+                "LONG_CONTINUATION_CLOSE_CONTEXT": "WINDOW_4H",
+                "LONG_CONTINUATION_CLOSE_AUDIT": "WINDOW_4H",
             }
         )
 
@@ -2092,19 +2111,34 @@ def project_cycle_lifecycle_accounting_completeness(
         # observations (snapshots plus one close); no numeric cadence is copied
         # into this projection.
         for kind, step_kinds in (
-            ("WINDOW_15M", ("SNAPSHOT", "WINDOW_CLOSE")),
-            ("WINDOW_1H", ("CONTINUATION_SNAPSHOT", "CONTINUATION_CLOSE")),
+            (
+                "WINDOW_15M",
+                ("SNAPSHOT", "WINDOW_CLOSE", "WINDOW_CLOSE_EVIDENCE"),
+            ),
+            (
+                "WINDOW_1H",
+                (
+                    "CONTINUATION_SNAPSHOT",
+                    "CONTINUATION_CLOSE",
+                    "CONTINUATION_CLOSE_EVIDENCE",
+                ),
+            ),
             (
                 "WINDOW_4H",
-                ("LONG_CONTINUATION_SNAPSHOT", "LONG_CONTINUATION_CLOSE"),
+                (
+                    "LONG_CONTINUATION_SNAPSHOT",
+                    "LONG_CONTINUATION_CLOSE",
+                    "LONG_CONTINUATION_CLOSE_EVIDENCE",
+                ),
             ),
         ):
             if kind == "WINDOW_4H" and not eligible_4h:
                 continue
+            kind_placeholders = ",".join("?" for _ in step_kinds)
             lane_rows = connection.execute(
                 "SELECT DISTINCT tracking_lane FROM "
                 "printer_memory_factory_run_steps WHERE run_id=? AND token_id=? "
-                "AND pair_id=? AND step_kind IN (?,?) "
+                f"AND pair_id=? AND step_kind IN ({kind_placeholders}) "
                 f"AND id IN ({exact_step_placeholders})",
                 (
                     context.factory_run_id,
@@ -2124,7 +2158,7 @@ def project_cycle_lifecycle_accounting_completeness(
             actual = int(connection.execute(
                 "SELECT COUNT(*) FROM printer_memory_factory_run_steps "
                 "WHERE run_id=? AND token_id=? AND pair_id=? "
-                "AND step_kind IN (?,?) AND step_status='SUCCEEDED' "
+                f"AND step_kind IN ({kind_placeholders}) AND step_status='SUCCEEDED' "
                 "AND snapshot_id IS NOT NULL "
                 f"AND id IN ({exact_step_placeholders})",
                 (
@@ -2334,7 +2368,7 @@ def build_lifecycle_action_local_observer(
     def observe(record: Mapping[str, Any]) -> None:
         boundary = str(record.get("boundary"))
         step_kind = str(record.get("step_kind"))
-        if step_kind not in _TRANSPORT_BEARING_STEP_KINDS:
+        if step_kind not in _WINDOW_15M_ACTION_LOCAL_STEP_KINDS:
             return
         ordinal = _slot_ordinal_from_step_key(str(record.get("step_key")))
         if boundary == BOUNDARY_SCHEDULER_ENQUEUE:
@@ -2696,7 +2730,9 @@ def finalize_full_run_ownership_and_report(
         """SELECT id, token_id, pair_id, token_mint, pair_address, tracking_lane,
                   memory_window_id, step_key
            FROM printer_memory_factory_run_steps
-           WHERE run_id=? AND step_kind='WINDOW_CLOSE' AND step_status='SUCCEEDED'
+           WHERE run_id=?
+             AND step_kind IN ('WINDOW_CLOSE','WINDOW_CLOSE_AUDIT')
+             AND step_status='SUCCEEDED'
            ORDER BY id""",
         (context.factory_run_id,),
     ).fetchall()
@@ -2819,7 +2855,10 @@ def finalize_full_run_ownership_and_report(
            LEFT JOIN printer_scheduler_jobs j ON j.id = s.scheduler_job_id
            LEFT JOIN printer_source_requests q ON q.id = s.source_request_id
            LEFT JOIN printer_source_responses r ON r.id = s.source_response_id
-           WHERE s.run_id=? AND s.step_kind IN ('SNAPSHOT','WINDOW_CLOSE')
+           WHERE s.run_id=? AND s.step_kind IN (
+               'SNAPSHOT','WINDOW_CLOSE','WINDOW_CLOSE_EVIDENCE',
+               'WINDOW_CLOSE_CONTEXT','WINDOW_CLOSE_AUDIT'
+           )
              AND s.scheduler_job_id IS NOT NULL
            ORDER BY s.id""",
         (context.factory_run_id,),
@@ -3158,12 +3197,15 @@ def finalize_full_run_ownership_and_report(
                       SUM(CASE WHEN step_kind='SNAPSHOT'
                                 AND step_status='SUCCEEDED'
                                 AND snapshot_id IS NOT NULL THEN 1 ELSE 0 END),
-                      SUM(CASE WHEN step_kind='WINDOW_CLOSE'
+                      SUM(CASE WHEN step_kind IN ('WINDOW_CLOSE','WINDOW_CLOSE_AUDIT')
                                 AND step_status='SUCCEEDED'
                                 AND memory_window_id IS NOT NULL THEN 1 ELSE 0 END)
                FROM printer_memory_factory_run_steps
                WHERE run_id=? AND token_id=? AND pair_id=?
-                 AND step_kind IN ('SNAPSHOT','WINDOW_CLOSE')""",
+                 AND step_kind IN (
+                     'SNAPSHOT','WINDOW_CLOSE','WINDOW_CLOSE_EVIDENCE',
+                     'WINDOW_CLOSE_CONTEXT','WINDOW_CLOSE_AUDIT'
+                 )""",
             (context.factory_run_id, token_id, int(identity["pair_id"])),
         ).fetchone()
         snapshot_rows = connection.execute(
@@ -3224,7 +3266,7 @@ def finalize_full_run_ownership_and_report(
             """SELECT id,scheduler_job_id,memory_window_id,step_status
                FROM printer_memory_factory_run_steps
                WHERE run_id=? AND token_id=? AND pair_id=?
-                 AND step_kind='WINDOW_CLOSE'
+                 AND step_kind IN ('WINDOW_CLOSE','WINDOW_CLOSE_AUDIT')
                ORDER BY id""",
             (context.factory_run_id, token_id, int(identity["pair_id"])),
         ).fetchall()

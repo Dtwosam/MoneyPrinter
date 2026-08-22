@@ -25,9 +25,9 @@ from printer_v1.safety.composite import (
 
 MAIN_WINDOW_KINDS = frozenset({"WINDOW_15M", "WINDOW_1H", "WINDOW_4H"})
 _CLOSE_STEP_KINDS = {
-    "WINDOW_15M": "WINDOW_CLOSE",
-    "WINDOW_1H": "CONTINUATION_CLOSE",
-    "WINDOW_4H": "LONG_CONTINUATION_CLOSE",
+    "WINDOW_15M": ("WINDOW_CLOSE", "WINDOW_CLOSE_AUDIT"),
+    "WINDOW_1H": ("CONTINUATION_CLOSE", "CONTINUATION_CLOSE_AUDIT"),
+    "WINDOW_4H": ("LONG_CONTINUATION_CLOSE", "LONG_CONTINUATION_CLOSE_AUDIT"),
 }
 _PROMOTED = frozenset({CLEAN_PROMOTED, ALREADY_EXISTS_IDEMPOTENT})
 
@@ -124,12 +124,12 @@ def load_authoritative_promotion_outcome(
                 "campaign run lacks B.1 authoritative run identity"
             )
         memory_window_id = int(graph["memory_window_row_id"])
-        expected_step_kind = _CLOSE_STEP_KINDS[str(graph["window_kind"])]
+        expected_step_kinds = _CLOSE_STEP_KINDS[str(graph["window_kind"])]
         close_steps = connection.execute(
             """
             SELECT * FROM printer_memory_factory_run_steps
             WHERE run_id=? AND memory_window_id=? AND token_id=? AND pair_id=?
-              AND step_kind=?
+              AND step_kind IN (?,?)
             ORDER BY id
             """,
             (
@@ -137,7 +137,7 @@ def load_authoritative_promotion_outcome(
                 memory_window_id,
                 graph["token_row_id"],
                 graph["pair_row_id"],
-                expected_step_kind,
+                *expected_step_kinds,
             ),
         ).fetchall()
         if len(close_steps) != 1:

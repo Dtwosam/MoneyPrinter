@@ -736,7 +736,8 @@ def resolve_current_run_long_predecessor(
         return {"resolved": False, "reasons": ["unsupported_successor_kind"]}
     rows = connection.execute(
         """
-        SELECT w.*, s.id AS close_step_id, s.snapshot_id AS step_snapshot_id,
+        SELECT w.*, s.id AS close_step_id, s.step_kind AS close_step_kind,
+               s.snapshot_id AS step_snapshot_id,
                s.step_status AS close_step_status,
                s.tracking_lane AS step_lane
         FROM printer_memory_factory_run_steps s
@@ -747,7 +748,10 @@ def resolve_current_run_long_predecessor(
             s.step_status='SUCCEEDED'
             OR (s.id=? AND s.step_status='RUNNING')
           )
-          AND s.step_kind IN ('CONTINUATION_CLOSE','LONG_CONTINUATION_CLOSE')
+          AND s.step_kind IN (
+              'CONTINUATION_CLOSE','CONTINUATION_CLOSE_AUDIT',
+              'LONG_CONTINUATION_CLOSE','LONG_CONTINUATION_CLOSE_AUDIT'
+          )
           AND w.window_kind=?
         GROUP BY w.id
         """,
@@ -769,6 +773,29 @@ def resolve_current_run_long_predecessor(
             ],
         }
     row = dict(rows[0])
+    if (
+        row.get("step_snapshot_id") is None
+        and str(row.get("close_step_kind") or "").endswith("_CLOSE_AUDIT")
+    ):
+        # Split audit rows deliberately do not carry snapshot_id: only the
+        # evidence phase is an ACTUAL-capture cadence carrier. Resolve that
+        # exact predecessor through the canonical phase dependency owner.
+        from printer_v1.operator_cli.close_phases import resolve_close_evidence
+
+        audit_step = connection.execute(
+            "SELECT * FROM printer_memory_factory_run_steps WHERE id=?",
+            (int(row["close_step_id"]),),
+        ).fetchone()
+        resolved_evidence = (
+            resolve_close_evidence(connection, audit_step)
+            if audit_step is not None
+            else {"resolved": False}
+        )
+        row["step_snapshot_id"] = (
+            int(resolved_evidence["snapshot_id"])
+            if resolved_evidence.get("resolved")
+            else None
+        )
     if row.get("window_status") != "WINDOW_CLOSED":
         reasons.append("current_run_predecessor_not_terminally_closed")
     if row.get("snapshot_end_id") is None or row.get("step_snapshot_id") is None:

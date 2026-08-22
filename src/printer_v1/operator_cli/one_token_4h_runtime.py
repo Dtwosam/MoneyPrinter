@@ -14,6 +14,7 @@ from enum import StrEnum
 from typing import Any, Mapping, Sequence
 
 from printer_v1.operator_cli import campaign_ownership
+from printer_v1.operator_cli.close_phases import close_phase_metadata
 from printer_v1.scheduler.contracts import JobKind, LockResult
 from printer_v1.scheduler.scheduler import enqueue_job
 from printer_v1.snapshots.cadence_policy import (
@@ -67,7 +68,7 @@ def runtime_budget(tracking_lane: str) -> dict[str, Any]:
         "phase_request_ceiling": REQUEST_CEILINGS[tracking_lane],
         # Compatibility aliases. These values are phase-local, never cumulative.
         "full_run_request_ceiling": REQUEST_CEILINGS[tracking_lane],
-        "planned_scheduler_rows": policy.minimum_required_snapshots,
+        "planned_scheduler_rows": policy.minimum_required_snapshots + 2,
         "phase_scheduler_ceiling": SCHEDULER_CEILINGS[tracking_lane],
         "full_run_scheduler_ceiling": SCHEDULER_CEILINGS[tracking_lane],
         "automatic_retries": 0,
@@ -94,8 +95,8 @@ def cumulative_lifecycle_budget(tracking_lane: str) -> dict[str, Any]:
     }
     scheduler_components = {
         "discovery_handoff": 1,
-        "window_15m": int(fifteen.minimum_required_snapshots),
-        "window_1h": int(one_hour.minimum_required_snapshots),
+        "window_15m": int(fifteen.minimum_required_snapshots) + 2,
+        "window_1h": int(one_hour.minimum_required_snapshots) + 2,
         "window_4h_phase": int(phase["phase_scheduler_ceiling"]),
     }
     return {
@@ -144,11 +145,11 @@ def standard_campaign_lifecycle_budget(
             FIRST_HOUR_SAFETY_CONTEXT_REQUEST_COUNT
         )
         scheduler_components[f"token_{index}_discovery_handoff"] = 1
-        scheduler_components[f"token_{index}_window_15m"] = int(
-            fifteen.minimum_required_snapshots
+        scheduler_components[f"token_{index}_window_15m"] = (
+            int(fifteen.minimum_required_snapshots) + 2
         )
-        scheduler_components[f"token_{index}_window_1h"] = int(
-            one_hour.minimum_required_snapshots
+        scheduler_components[f"token_{index}_window_1h"] = (
+            int(one_hour.minimum_required_snapshots) + 2
         )
         if continues:
             phase = runtime_budget(lane)
@@ -273,15 +274,22 @@ def _plan_token_4h_phase(
         tracking_lane=tracking_lane,
     )
     if existing_rows:
-        closes = sum(
-            1 for row in existing_rows if str(row["step_kind"]) == "LONG_CONTINUATION_CLOSE"
-        )
+        phase_kinds = {
+            str(row["step_kind"])
+            for row in existing_rows
+            if str(row["step_kind"]).startswith("LONG_CONTINUATION_CLOSE_")
+        }
         job_ids = [row["scheduler_job_id"] for row in existing_rows]
         if (
-            len(existing_rows) != expected
-            or closes != 1
+            len(existing_rows) != expected + 2
+            or phase_kinds
+            != {
+                "LONG_CONTINUATION_CLOSE_EVIDENCE",
+                "LONG_CONTINUATION_CLOSE_CONTEXT",
+                "LONG_CONTINUATION_CLOSE_AUDIT",
+            }
             or any(job_id is None for job_id in job_ids)
-            or len({int(job_id) for job_id in job_ids}) != expected
+            or len({int(job_id) for job_id in job_ids}) != expected + 2
         ):
             return {
                 "planned": False,
@@ -293,7 +301,7 @@ def _plan_token_4h_phase(
         return {
             "planned": True,
             "replay": True,
-            "planned_jobs": expected,
+            "planned_jobs": expected + 2,
             "predecessor": resolved,
             "steps": existing_rows,
         }
@@ -306,7 +314,7 @@ def _plan_token_4h_phase(
     deadline = opening + timedelta(seconds=policy.window_close_interval_seconds)
     require_projected_capacity(
         current=0,
-        projected=expected,
+        projected=expected + 2,
         ceiling=int(budget["phase_scheduler_ceiling"]),
         label="4h phase scheduler",
     )
@@ -325,7 +333,7 @@ def _plan_token_4h_phase(
     ).fetchone()[0])
     require_projected_capacity(
         current=existing_jobs + 1,
-        projected=expected,
+        projected=expected + 2,
         ceiling=effective_cumulative_ceiling,
         label="cumulative lifecycle scheduler",
     )
@@ -338,14 +346,46 @@ def _plan_token_4h_phase(
     }
     prefix = f"t{token_id}_p{pair_id}_4h"
     created_step_ids: list[int] = []
-    for index in range(expected):
-        is_close = index == expected - 1
-        scheduled_for = deadline if is_close else opening + timedelta(
+    plan_rows: list[tuple[str, str, datetime, Mapping[str, Any]]] = []
+    for index in range(expected - 1):
+        scheduled_for = opening + timedelta(
             seconds=policy.target_snapshot_interval_seconds * index
         )
-        step_kind = "LONG_CONTINUATION_CLOSE" if is_close else "LONG_CONTINUATION_SNAPSHOT"
-        step_key = f"{prefix}_close" if is_close else f"{prefix}_snapshot_{index:03d}"
-        job_kind = JobKind.MEMORY_WINDOW_CLOSE if is_close else (
+        plan_rows.append(
+            (
+                f"{prefix}_snapshot_{index:03d}",
+                "LONG_CONTINUATION_SNAPSHOT",
+                scheduled_for,
+                target,
+            )
+        )
+    evidence_key = f"{prefix}_close_evidence"
+    context_key = f"{prefix}_close_context"
+    for phase in ("EVIDENCE", "CONTEXT", "AUDIT"):
+        phase_key = {
+            "EVIDENCE": evidence_key,
+            "CONTEXT": context_key,
+            "AUDIT": f"{prefix}_close_audit",
+        }[phase]
+        plan_rows.append(
+            (
+                phase_key,
+                f"LONG_CONTINUATION_CLOSE_{phase}",
+                deadline,
+                {
+                    **target,
+                    **close_phase_metadata(
+                        family="LONG_CONTINUATION_CLOSE",
+                        phase=phase,
+                        evidence_step_key=evidence_key,
+                        context_step_key=context_key,
+                    ),
+                },
+            )
+        )
+    for step_key, step_kind, scheduled_for, result_projection in plan_rows:
+        is_close_phase = step_kind.startswith("LONG_CONTINUATION_CLOSE_")
+        job_kind = JobKind.MEMORY_WINDOW_CLOSE if is_close_phase else (
             JobKind.TRACK_FAST_4H
             if tracking_lane == "TRACK_FAST"
             else JobKind.TRACK_NORMAL_4H
@@ -376,7 +416,7 @@ def _plan_token_4h_phase(
                 tracking_lane,
                 _iso(scheduled_for),
                 job_id,
-                json.dumps(target, sort_keys=True),
+                json.dumps(dict(result_projection), sort_keys=True),
             ),
         )
         created_step_ids.append(int(cursor.lastrowid))
@@ -387,12 +427,12 @@ def _plan_token_4h_phase(
         pair_id=pair_id,
         tracking_lane=tracking_lane,
     )
-    if len(steps) != expected:
+    if len(steps) != expected + 2:
         raise ValueError("4h run-step read-back count mismatch")
     return {
         "planned": True,
         "replay": False,
-        "planned_jobs": expected,
+        "planned_jobs": expected + 2,
         "expected_snapshots": expected,
         "deadline_at": _iso(deadline),
         "predecessor_window_id": int(predecessor["id"]),
@@ -453,7 +493,8 @@ def plan_current_run_4h(
         continuation_rows = connection.execute(
             """SELECT token_id,pair_id,tracking_lane,step_status
                FROM printer_memory_factory_run_steps
-               WHERE run_id=? AND step_kind='CONTINUATION_CLOSE'
+               WHERE run_id=?
+                 AND step_kind IN ('CONTINUATION_CLOSE','CONTINUATION_CLOSE_AUDIT')
                  AND step_status IN ('RUNNING','SUCCEEDED')""",
             (run_id,),
         ).fetchall()
@@ -473,7 +514,7 @@ def plan_current_run_4h(
         assert policy is not None
         replay_shape = connection.execute(
             """SELECT COUNT(*) AS total,
-                      SUM(CASE WHEN step_kind='LONG_CONTINUATION_CLOSE' THEN 1 ELSE 0 END) AS closes,
+                      SUM(CASE WHEN step_kind='LONG_CONTINUATION_CLOSE_AUDIT' THEN 1 ELSE 0 END) AS closes,
                       SUM(CASE WHEN token_id=? AND pair_id=? AND tracking_lane=? THEN 1 ELSE 0 END) AS matching
                FROM printer_memory_factory_run_steps
                WHERE run_id=? AND step_kind LIKE 'LONG_CONTINUATION_%'""",
@@ -481,9 +522,9 @@ def plan_current_run_4h(
         ).fetchone()
         expected = int(policy.minimum_required_snapshots)
         if (
-            int(replay_shape["total"] or 0) != expected
+            int(replay_shape["total"] or 0) != expected + 2
             or int(replay_shape["closes"] or 0) != 1
-            or int(replay_shape["matching"] or 0) != expected
+            or int(replay_shape["matching"] or 0) != expected + 2
         ):
             return {
                 "planned": False,
@@ -574,7 +615,8 @@ def load_standard_four_hour_eligibility_manifests(
             """SELECT id,token_id,pair_id,tracking_lane,memory_window_id,result_json
                FROM printer_memory_factory_run_steps
                WHERE run_id=? AND token_id=? AND pair_id=?
-                 AND step_kind='CONTINUATION_CLOSE' AND step_status='SUCCEEDED'
+                 AND step_kind IN ('CONTINUATION_CLOSE','CONTINUATION_CLOSE_AUDIT')
+                 AND step_status='SUCCEEDED'
                ORDER BY id""",
             (factory_run_id, int(slot["token_row_id"]), int(slot["pair_row_id"])),
         ).fetchall()
@@ -665,7 +707,8 @@ def _persist_standard_four_hour_eligibility_manifests(
             """SELECT id,token_id,pair_id,tracking_lane,memory_window_id,result_json
                FROM printer_memory_factory_run_steps
                WHERE run_id=? AND token_id=? AND pair_id=? AND tracking_lane=?
-                 AND step_kind='CONTINUATION_CLOSE' AND step_status='SUCCEEDED'
+                 AND step_kind IN ('CONTINUATION_CLOSE','CONTINUATION_CLOSE_AUDIT')
+                 AND step_status='SUCCEEDED'
                ORDER BY id""",
             (factory_run_id, token_id, pair_id, lane),
         ).fetchall()
@@ -790,8 +833,9 @@ def _standard_campaign_4h_plan_state(
         if policy is None:
             raise ValueError(f"missing WINDOW_4H policy for {lane}")
         expected = int(policy.minimum_required_snapshots)
-        total_expected += expected
-        planned_by_slot[slot_id] = expected
+        expected_work = expected + 2
+        total_expected += expected_work
+        planned_by_slot[slot_id] = expected_work
         window = connection.execute(
             """SELECT window_state,memory_window_row_id
                FROM printer_memory_factory_campaign_windows
@@ -816,10 +860,19 @@ def _standard_campaign_4h_plan_state(
             (factory_run_id, token_id, pair_id, lane),
         ).fetchall()
         if (
-            len(step_rows) != expected
-            or sum(1 for row in step_rows if str(row[0]) == "LONG_CONTINUATION_CLOSE") != 1
+            len(step_rows) != expected_work
+            or {
+                str(row[0])
+                for row in step_rows
+                if str(row[0]).startswith("LONG_CONTINUATION_CLOSE_")
+            }
+            != {
+                "LONG_CONTINUATION_CLOSE_EVIDENCE",
+                "LONG_CONTINUATION_CLOSE_CONTEXT",
+                "LONG_CONTINUATION_CLOSE_AUDIT",
+            }
             or any(row[1] is None for row in step_rows)
-            or len({int(row[1]) for row in step_rows}) != expected
+            or len({int(row[1]) for row in step_rows}) != expected_work
         ):
             raise ValueError(f"incomplete four-hour run-step plan for {slot_id}")
         ownership_count = int(connection.execute(
@@ -841,7 +894,7 @@ def _standard_campaign_4h_plan_state(
                 factory_run_id, token_id, pair_id, lane,
             ),
         ).fetchone()[0])
-        if ownership_count != expected:
+        if ownership_count != expected_work:
             raise ValueError(f"incomplete four-hour Scheduler ownership for {slot_id}")
 
     total_windows = int(connection.execute(
@@ -1119,7 +1172,7 @@ def close_current_run_4h(
     closing_link_count = int(connection.execute(
         """SELECT COUNT(*) FROM printer_memory_factory_run_steps
            WHERE run_id=? AND token_id=? AND pair_id=? AND tracking_lane=?
-             AND step_kind='LONG_CONTINUATION_CLOSE'
+             AND step_kind IN ('LONG_CONTINUATION_CLOSE','LONG_CONTINUATION_CLOSE_EVIDENCE')
              AND step_status IN ('RUNNING','SUCCEEDED') AND snapshot_id=?""",
         (run_id, token_id, pair_id, lane, closing_snapshot_id),
     ).fetchone()[0])
@@ -1159,7 +1212,10 @@ def close_current_run_4h(
         """SELECT ts.* FROM printer_memory_factory_run_steps s
            JOIN printer_token_snapshots ts ON ts.id=s.snapshot_id
            WHERE s.run_id=? AND s.token_id=? AND s.pair_id=? AND s.tracking_lane=?
-             AND s.step_kind IN ('LONG_CONTINUATION_SNAPSHOT','LONG_CONTINUATION_CLOSE')
+             AND s.step_kind IN (
+                 'LONG_CONTINUATION_SNAPSHOT','LONG_CONTINUATION_CLOSE',
+                 'LONG_CONTINUATION_CLOSE_EVIDENCE'
+             )
              AND s.step_status IN ('RUNNING','SUCCEEDED')
              AND s.snapshot_id IS NOT NULL
            ORDER BY ts.captured_at,ts.id""",

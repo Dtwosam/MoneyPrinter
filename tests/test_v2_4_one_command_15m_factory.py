@@ -231,6 +231,34 @@ class OneCommand15mFactoryTests(unittest.TestCase):
         self.assertEqual(result["table_deltas"]["printer_token_snapshots"], 16)
         self.assertEqual(len(result["selected_tokens"]), 1)
         self.assertTrue(all(step["step_status"] == "SUCCEEDED" for step in result["steps"]))
+        close_phases = [
+            step for step in result["steps"]
+            if str(step["step_kind"]).startswith("WINDOW_CLOSE_")
+        ]
+        self.assertEqual(
+            [step["step_kind"] for step in close_phases],
+            [
+                "WINDOW_CLOSE_EVIDENCE",
+                "WINDOW_CLOSE_CONTEXT",
+                "WINDOW_CLOSE_AUDIT",
+            ],
+        )
+        self.assertIsNotNone(close_phases[0]["snapshot_id"])
+        self.assertIsNone(close_phases[1]["snapshot_id"])
+        self.assertIsNone(close_phases[2]["snapshot_id"])
+        self.assertIsNotNone(close_phases[2]["memory_window_id"])
+        evidence_result = json.loads(close_phases[0]["result_json"])
+        audit_result = json.loads(close_phases[2]["result_json"])
+        self.assertEqual(
+            audit_result["evidence_captured_at"],
+            evidence_result["evidence_captured_at"],
+        )
+        self.assertEqual(
+            len({int(step["scheduler_job_id"]) for step in close_phases}), 3
+        )
+        self.assertTrue(
+            all(step["started_at"] and step["finished_at"] for step in close_phases)
+        )
         before = dict(result["counts_after"])
         replay = load_report_only(self.db, result["run_id"])
         conn = sqlite3.connect(self.db)
@@ -309,7 +337,10 @@ class OneCommand15mFactoryTests(unittest.TestCase):
 
         result, _calls = self._run(discovery_runner=delayed)
         opening = next(step for step in result["steps"] if step["step_key"].endswith("snapshot_00"))
-        close = next(step for step in result["steps"] if step["step_kind"] == "WINDOW_CLOSE")
+        close = next(
+            step for step in result["steps"]
+            if step["step_kind"] == "WINDOW_CLOSE_AUDIT"
+        )
         conn = sqlite3.connect(self.db)
         try:
             captured_at = conn.execute(
@@ -371,7 +402,7 @@ class OneCommand15mFactoryTests(unittest.TestCase):
             )
         closes = conn.execute(
             """SELECT token_id,scheduled_for FROM printer_memory_factory_run_steps
-               WHERE step_kind='WINDOW_CLOSE' ORDER BY token_id"""
+               WHERE step_kind='WINDOW_CLOSE_EVIDENCE' ORDER BY token_id"""
         ).fetchall()
         conn.close()
         self.assertEqual(len(closes), 2)
@@ -383,7 +414,10 @@ class OneCommand15mFactoryTests(unittest.TestCase):
 
     def test_exact_window_context_blocks_unknown_critical_evidence(self):
         result, _calls = self._run()
-        close = next(step for step in result["steps"] if step["step_kind"] == "WINDOW_CLOSE")
+        close = next(
+            step for step in result["steps"]
+            if step["step_kind"] == "WINDOW_CLOSE_AUDIT"
+        )
         close_result = json.loads(close["result_json"])
         quality = close_result["context_quality"]
         self.assertFalse(quality["clean_promotion_candidate"])
@@ -402,7 +436,9 @@ class OneCommand15mFactoryTests(unittest.TestCase):
         finally:
             conn.close()
         self.assertEqual(window["snapshot_start_id"], result["steps"][0]["snapshot_id"])
-        self.assertEqual(window["snapshot_end_id"], close["snapshot_id"])
+        self.assertEqual(
+            window["snapshot_end_id"], close_result["closing_snapshot_id"]
+        )
         self.assertEqual(window["do_not_train"], 1)
         self.assertEqual(context["window_5m_support_role"], "SUPPORT_ONLY_NOT_MAIN_EVIDENCE")
         self.assertEqual(result["memory_results"]["clean"], 0)
@@ -423,13 +459,18 @@ class OneCommand15mFactoryTests(unittest.TestCase):
             return_value=shared,
         ) as resolver:
             result, _calls = self._run()
-        close = next(step for step in result["steps"] if step["step_kind"] == "WINDOW_CLOSE")
+        close = next(
+            step for step in result["steps"]
+            if step["step_kind"] == "WINDOW_CLOSE_AUDIT"
+        )
         close_result = json.loads(close["result_json"])
         quality = close_result["context_quality"]
         call = resolver.call_args.kwargs
         self.assertEqual(call["token_id"], close["token_id"])
         self.assertEqual(call["pair_id"], close["pair_id"])
-        self.assertEqual(call["snapshot_end_id"], close["snapshot_id"])
+        self.assertEqual(
+            call["snapshot_end_id"], close_result["closing_snapshot_id"]
+        )
         self.assertEqual(call["snapshot_start_id"], result["steps"][0]["snapshot_id"])
         self.assertTrue(set(blockers).issubset(quality["remaining_blockers"]))
         self.assertEqual(close_result["window_audit"]["e2q_status"], "E2Q_AUDIT_DIRTY")
@@ -441,7 +482,8 @@ class OneCommand15mFactoryTests(unittest.TestCase):
                 context_adapter_factories=self._clean_context_factories()
             )
         close = next(
-            step for step in result["steps"] if step["step_kind"] == "WINDOW_CLOSE"
+            step for step in result["steps"]
+            if step["step_kind"] == "WINDOW_CLOSE_AUDIT"
         )
         close_result = json.loads(close["result_json"])
         collection = close_result["governed_context_collection"]
@@ -465,7 +507,9 @@ class OneCommand15mFactoryTests(unittest.TestCase):
         self.assertTrue(persisted["exit_quote"]["inserted"])
 
         shared = close_result["context_quality"]["shared_context_evidence"]
-        self.assertEqual(shared["snapshot_end_id"], close["snapshot_id"])
+        self.assertEqual(
+            shared["snapshot_end_id"], close_result["closing_snapshot_id"]
+        )
         self.assertEqual(shared["sections"]["market_regime"]["status"], "READY")
         self.assertEqual(shared["sections"]["solana_chain_heat"]["status"], "READY")
         self.assertEqual(shared["sections"]["safety_rug"]["status"], "READY")
@@ -520,7 +564,8 @@ class OneCommand15mFactoryTests(unittest.TestCase):
         with patch("printer_v1.context_evidence.window_15m.WINDOW_SECONDS", 0):
             result, _calls = self._run(context_adapter_factories=factories)
         close = next(
-            step for step in result["steps"] if step["step_kind"] == "WINDOW_CLOSE"
+            step for step in result["steps"]
+            if step["step_kind"] == "WINDOW_CLOSE_AUDIT"
         )
         close_result = json.loads(close["result_json"])
         collection = close_result["governed_context_collection"]
@@ -567,7 +612,8 @@ class OneCommand15mFactoryTests(unittest.TestCase):
         with patch("printer_v1.context_evidence.window_15m.WINDOW_SECONDS", 0):
             result, _calls = self._run(context_adapter_factories=factories)
         close = next(
-            step for step in result["steps"] if step["step_kind"] == "WINDOW_CLOSE"
+            step for step in result["steps"]
+            if step["step_kind"] == "WINDOW_CLOSE_AUDIT"
         )
         close_result = json.loads(close["result_json"])
         persisted = close_result["governed_context_persistence"]

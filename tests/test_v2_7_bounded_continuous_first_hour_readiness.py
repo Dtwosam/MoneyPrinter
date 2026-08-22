@@ -145,11 +145,26 @@ class ContinuousFirstHourReadinessTests(unittest.TestCase):
         self.assertEqual(plan["expected_snapshots"], 24)
         close = self.conn.execute(
             "SELECT scheduled_for FROM printer_memory_factory_run_steps "
-            "WHERE run_id=? AND step_kind='CONTINUATION_CLOSE'", (self.run_id,),
+            "WHERE run_id=? AND step_kind='CONTINUATION_CLOSE_EVIDENCE'",
+            (self.run_id,),
         ).fetchone()
         expected = datetime.fromisoformat(source["closed_at"]) + timedelta(seconds=2700)
         self.assertEqual(datetime.fromisoformat(close[0]), expected)
         self.assertEqual(int(source["id"]), window_id)
+        phases = self.conn.execute(
+            """SELECT step_kind FROM printer_memory_factory_run_steps
+               WHERE run_id=? AND step_kind LIKE 'CONTINUATION_CLOSE_%'
+               ORDER BY id""",
+            (self.run_id,),
+        ).fetchall()
+        self.assertEqual(
+            [str(row[0]) for row in phases],
+            [
+                "CONTINUATION_CLOSE_EVIDENCE",
+                "CONTINUATION_CLOSE_CONTEXT",
+                "CONTINUATION_CLOSE_AUDIT",
+            ],
+        )
 
     def test_same_stream_5m_support_uses_exact_boundaries(self) -> None:
         window_id, step_id = self._closed_15m()

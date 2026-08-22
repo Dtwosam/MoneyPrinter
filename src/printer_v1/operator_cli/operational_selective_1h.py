@@ -1302,7 +1302,8 @@ def summarize_selective_1h_reporting(
     close_counts = {str(row[0]): int(row[1]) for row in connection.execute(
         """SELECT step_status, COUNT(*)
            FROM printer_memory_factory_run_steps
-           WHERE run_id=? AND step_kind='WINDOW_CLOSE'
+           WHERE run_id=?
+             AND step_kind IN ('WINDOW_CLOSE','WINDOW_CLOSE_AUDIT')
            GROUP BY step_status""",
         (None if auth is None else auth[0],),
     ).fetchall()}

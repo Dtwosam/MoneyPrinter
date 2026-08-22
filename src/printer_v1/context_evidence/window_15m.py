@@ -375,7 +375,10 @@ def _build_window_context_evidence(
         connection,
         table="printer_market_regime_snapshots",
         payload_column="normalized_market_payload_json",
-        target_time=window_end,
+        # Lane-2 close context is collected after the closing snapshot. Admit
+        # only real governed rows inside the existing closing-evidence cutoff;
+        # never backdate them to the snapshot or logical window end.
+        target_time=closing_evidence_cutoff,
         valid_for_memory=market_snapshot_is_valid_for_memory,
     )
     market_section = _section(
@@ -394,7 +397,7 @@ def _build_window_context_evidence(
         connection,
         table="printer_solana_chain_heat_snapshots",
         payload_column="normalized_chain_heat_payload_json",
-        target_time=window_end,
+        target_time=closing_evidence_cutoff,
         valid_for_memory=chain_heat_snapshot_is_valid_for_memory,
     )
     chain_section = _section(

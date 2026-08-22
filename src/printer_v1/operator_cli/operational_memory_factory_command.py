@@ -2188,7 +2188,8 @@ def build_current_run_clean_memory_outcome(
         if not window_ids and factory_run_id:
             rows = connection.execute(
                 """SELECT memory_window_id FROM printer_memory_factory_run_steps
-                   WHERE run_id=? AND step_kind='WINDOW_CLOSE'
+                   WHERE run_id=?
+                     AND step_kind IN ('WINDOW_CLOSE','WINDOW_CLOSE_AUDIT')
                      AND step_status='SUCCEEDED' AND memory_window_id IS NOT NULL
                    ORDER BY id""",
                 (factory_run_id,),
@@ -4052,7 +4053,13 @@ def _run_operational_campaign(
             for record in lifecycle_operation_records
             if record.get("scheduler_job_id") is not None
             and str(record.get("step_kind") or "")
-            in {"SNAPSHOT", "WINDOW_CLOSE"}
+            in {
+                "SNAPSHOT",
+                "WINDOW_CLOSE",
+                "WINDOW_CLOSE_EVIDENCE",
+                "WINDOW_CLOSE_CONTEXT",
+                "WINDOW_CLOSE_AUDIT",
+            }
         }
         accountable_scheduler_ids = {
             int(item["scheduler_job_id"])

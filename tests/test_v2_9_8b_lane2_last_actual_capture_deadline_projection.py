@@ -414,7 +414,7 @@ def test_track_category_outranks_tighter_memory_close_deadline(
         tracking_lane="TRACK_FAST",
         prior_actual=NOW - timedelta(seconds=89),
         candidate_due=NOW - timedelta(seconds=1),
-        candidate_kind="WINDOW_CLOSE",
+        candidate_kind="WINDOW_CLOSE_EVIDENCE",
     )
 
     assert _selected_key(connection) == "candidate-1"

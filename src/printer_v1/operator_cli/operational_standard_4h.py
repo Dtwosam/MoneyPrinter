@@ -264,7 +264,7 @@ def _owned_first_hour_state(
         """SELECT id,step_status,tracking_lane,memory_window_id,result_json
            FROM printer_memory_factory_run_steps
            WHERE run_id=? AND token_id=? AND pair_id=?
-             AND step_kind='CONTINUATION_CLOSE'
+             AND step_kind IN ('CONTINUATION_CLOSE','CONTINUATION_CLOSE_AUDIT')
            ORDER BY id""",
         (factory_run_id, int(slot["token_row_id"]), int(slot["pair_row_id"])),
     ).fetchall()
