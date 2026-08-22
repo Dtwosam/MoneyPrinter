@@ -2,11 +2,13 @@
 
 **Design kind:** documentation-only specification
 
-**Starting and inspected HEAD:** `536c8e4bedb3a15f500c76a1de5eac21a3c6f9fa`
+**Original design starting HEAD:** `536c8e4bedb3a15f500c76a1de5eac21a3c6f9fa`
+
+**Claim-granularity amendment base HEAD:** `d28c040e1ae30946d8e405a5d5d0116eec822ae5`
 
 **Active lane:** `V2-9.8B Lane 2 — Multi-Token Evidence-Deadline Scheduling`
 
-**Design verdict:** `V2_9_8B_TIMELY_CLOSING_CONTEXT_PRODUCTION_DESIGN_PASS_READY_FOR_NARROW_IMPLEMENTATION`
+**Design verdict:** `V2_9_8B_TIMELY_CLOSING_CONTEXT_PRODUCTION_DESIGN_AMENDED_PASS_READY_FOR_INDEPENDENT_ACCEPTANCE`
 
 **Runtime status:** the current phase split and current timing corrective implementation remain unaccepted
 
@@ -15,17 +17,20 @@
 Repository evidence supports the preferred direction with one necessary
 refinement.
 
-Printer shall add one Central-Scheduler-owned pre-close critical acquisition
-step for each active close family. That step shall use the existing governed
-collector to make the already-budgeted source attempts early enough to be
-capable of satisfying each evidence class's lawful cutoff. It shall persist
-only durable source request/response/failure truth plus an exact acquisition
-envelope. It shall not create or infer a closing snapshot.
+Printer shall add one Central-Scheduler-owned logical pre-close critical
+acquisition step for each active close family. The step is one persisted,
+cooperatively resumable Scheduler job. One claim may execute exactly one
+logical source unit and at most one governed provider attempt; it must then
+checkpoint and return control to the Central Scheduler before another unit.
+The step uses the existing governed source owners early enough to make each
+evidence class lawfully producible, persists durable per-unit
+request/response/failure truth plus an exact manifest, and never creates or
+infers a closing snapshot.
 
 The exact closing snapshot remains an independently claimable,
 cadence-sensitive `CLOSE_EVIDENCE` step. After that snapshot exists, the
 existing `CLOSE_CONTEXT` phase becomes a binding/resolution phase: it validates
-the exact pre-close envelope, rehydrates its durable source records, binds
+the exact pre-close unit manifest, rehydrates its durable source records, binds
 eligible observations to the exact closing snapshot/window, resolves periodic
 broad context, and classifies late or failed results honestly. `CLOSE_AUDIT`
 then consumes either complete context or an explicit partial/failed/unknown
@@ -34,7 +39,11 @@ context result.
 The resulting normal execution sequence is:
 
 ```text
-PRE_CLOSE_CRITICAL
+PRE_CLOSE_CRITICAL unit
+-> Central Scheduler reselection
+-> PRE_CLOSE_CRITICAL unit
+-> Central Scheduler reselection
+-> ... until the exact unit manifest is terminal
 -> Central Scheduler reselection
 -> CLOSE_EVIDENCE
 -> Central Scheduler reselection
@@ -43,21 +52,29 @@ PRE_CLOSE_CRITICAL
 -> CLOSE_AUDIT
 ```
 
+That is the normal timely path, not a dependency that lets pre-close work hold
+capture. If `CLOSE_EVIDENCE` becomes due while units remain, its higher
+intra-close phase wins; the snapshot may capture independently and remaining
+units later become terminal timely, late, missed, failed or not required.
+
 The dependency model is a fork-join rather than a hard success chain:
 
 ```text
-PRE_CLOSE_CRITICAL terminal result ---------\
+PRE_CLOSE_CRITICAL exact terminal unit set --\
                                              -> CLOSE_CONTEXT_BIND -> CLOSE_AUDIT
-CLOSE_EVIDENCE exact successful snapshot ---/
+CLOSE_EVIDENCE exact successful snapshot ----/
 ```
 
 Provider failure or missing pre-close context must not suppress the closing
 snapshot. Exact evidence failure still prevents exact binding and closing
 audit under the existing integrity law.
 
-This design requires new step kinds and metadata behavior, but no new Scheduler
-category, worker loop, source adapter, provider, configuration, table, column,
-or migration.
+This design requires the three family-level pre-close step kinds and resumable
+unit metadata behavior. Beyond the one family-level pre-close row already
+designed, it requires no source-unit step kinds or Scheduler rows, new
+Scheduler category, worker loop, source adapter, provider, configuration,
+table, column, or migration. Section 24 is the controlling claim-granularity
+and safe-scheduling amendment.
 
 If the later implementation and bounded proof conform to this specification,
 the producer-capability targets are:
@@ -110,13 +127,14 @@ monolithic worker claim.
 
 ## 3. Approaches considered
 
-### 3.1 Chosen: one pre-close acquisition phase plus later exact binding
+### 3.1 Chosen: one resumable pre-close phase, one source unit per claim, plus later exact binding
 
 Advantages:
 
 - moves existing calls instead of duplicating them;
 - preserves the current source adapters and Source Governor path;
-- gives the Central Scheduler a reselection point before exact capture;
+- gives the Central Scheduler a reselection point after every bounded source
+  unit and before exact capture;
 - retains truthful source times in already-durable source rows;
 - obtains exact snapshot identity only from real capture;
 - permits complete, partial, failed, late, or missing context truth to reach
@@ -137,12 +155,16 @@ This recreates the historical monolithic claim. Serial provider work would run
 before the exact snapshot without a Scheduler reselection point, allowing one
 token to delay sibling close evidence and higher-priority cadence work.
 
-### 3.4 Rejected: one Scheduler phase per provider/evidence class
+### 3.4 Rejected: one new Scheduler step kind per provider/evidence class
 
-Per-source micro-phases would multiply Scheduler rows, dependency edges,
-partial-result states, source reservations, and exact-owner joins. The current
-collector already owns one bounded bundle and can produce a durable per-source
-envelope. The extra complexity is not required for this repair.
+Provider-specific step kinds would create a permanent provider-shaped phase
+taxonomy and multiply dependency rules. Multiple same-kind Scheduler rows would
+avoid provider-specific kinds but would still multiply Scheduler work-item
+accounting and row ceilings. The existing Scheduler supports cooperative
+`yield_job`, while run-step `result_json` can durably hold a frozen unit
+manifest. Section 24 therefore chooses one resumable family-level row whose
+individual claims are bounded to one unit. It obtains the reselection boundary
+without either provider JobKinds or additional Scheduler rows.
 
 ## 4. Exact phase architecture
 
@@ -159,6 +181,10 @@ Add exactly these close-family step kinds:
 All remain in the existing `MEMORY_WINDOW_CLOSE` AGENTS category. No new
 `JobKind`, queue, scheduler, thread, process, or worker is authorized.
 
+Each close owns one row of its family-level pre-close step kind, not one row per
+provider. Its frozen `source_unit_manifest` is the resumable representation.
+Source units are metadata and claim boundaries, not Scheduler categories.
+
 `CLOSE_CONTEXT` may retain its current step-kind name. Its responsibility
 changes from “make new required main-window calls and persist them” to
 “join, validate, bind, resolve, classify and report.” Reports should describe
@@ -168,20 +194,25 @@ it as `CLOSE_CONTEXT_BIND`; historical database vocabulary need not be renamed.
 
 The intended temporal order for one window is:
 
-1. `PRE_CLOSE_CRITICAL` is scheduled and claimed before the close boundary.
-2. Scheduler reselects globally.
-3. `CLOSE_EVIDENCE` captures only the exact closing snapshot.
-4. Scheduler reselects globally.
-5. `CLOSE_CONTEXT` joins the terminal acquisition result with the successful
+1. `PRE_CLOSE_CRITICAL` is scheduled before the close boundary.
+2. Scheduler claims it for exactly one eligible source unit, durably records
+   that unit, yields the job, and reselects globally.
+3. Step 2 may repeat only for a different nonterminal unit while pre-close work
+   remains the globally selected work. It cannot hold a due evidence claim.
+4. `CLOSE_EVIDENCE` independently captures only the exact closing snapshot;
+   context waits until both evidence and the unit manifest are terminal.
+5. Scheduler reselects globally.
+6. `CLOSE_CONTEXT` joins the terminal acquisition manifest with the successful
    evidence result and binds/resolves context.
-6. Scheduler reselects globally.
-7. `CLOSE_AUDIT` closes and audits with complete or honest incomplete context.
+7. Scheduler reselects globally.
+8. `CLOSE_AUDIT` closes and audits with complete or honest incomplete context.
 
 `CLOSE_EVIDENCE` is not success-dependent on `PRE_CLOSE_CRITICAL`. The
-pre-close step must reach a durable terminal result before context joins it,
-but that terminal result may be `TIMELY`, `PARTIAL`, `FAILED`, `LATE`,
-`MISSED_CUTOFF`, or `CANCELLED_BEFORE_ATTEMPT`. Provider/data outcome is not
-the same as Scheduler step integrity.
+pre-close manifest must reach a durable terminal result before context joins
+it, but individual unit results may be `TIMELY`, `PARTIAL`, `FAILED`, `LATE`,
+`MISSED_CUTOFF`, `UNKNOWN_INTERRUPTED_AFTER_REQUEST`, `NOT_REQUIRED`, or
+`CANCELLED_BEFORE_ATTEMPT`. Provider/data outcome is not the same as Scheduler
+step integrity.
 
 ### 4.3 Intra-category selection order
 
@@ -285,54 +316,46 @@ closing_evidence_cutoff_at = window_end_at
 
 ### 6.4 Separate pre-close fire/deadline formula
 
-Each planned pre-close step receives:
+Each planned pre-close step receives a frozen unit manifest. Each potentially
+required unit `u` receives:
 
 ```text
-class_cutoff_at
-preclose_handoff_at
-preclose_scheduled_for
-preclose_deadline_at
-bounded_attempt_seconds
+source_unit_identity
+acquisition_cutoff_at(u)
+bounded_claim_seconds(u)
+latest_safe_claim_at(u)
+desired_preclose_scheduled_for
+earliest_preclose_schedulable_at
 contention_cohort_identity
-contention_ordinal
+owner-scoped deterministic unit tie ordinal
 ```
 
-The formula is:
+The conservative lead formula is:
 
 ```text
-latest_preclose_handoff_at
-  = min(
-      unchanged CLOSE_EVIDENCE scheduled_for,
-      unchanged CLOSE_EVIDENCE deadline_at,
-      earliest lawful cutoff among source observations in this step
-    )
-    - CLOSE_EVIDENCE_RESELECTION_RESERVE_SECONDS
+bounded_claim_seconds(u)
+  = existing hard timeout for u's one governed attempt
+    + deterministic maximum Source-pacer wait for u
+    + bounded request/result/checkpoint/yield reserve
 
-preclose_handoff_at
-  = latest_preclose_handoff_at
+latest_safe_claim_at(u)
+  = acquisition_cutoff_at(u) - bounded_claim_seconds(u)
 
-bounded_attempt_seconds(step)
-  = sum(existing one-attempt adapter hard timeouts for the step's
-        worst-case moved call plan, including conditional holder fallback)
-    + sum(existing deterministic source-pacer waits)
-    + bounded local result-envelope reserve
+cohort_required_lead_seconds
+  = sum(bounded_claim_seconds(u) for every potentially required unit u
+        in the exact contention cohort)
+    + unit_count * SCHEDULER_RESELECTION_RESERVE_SECONDS
 
-preclose_scheduled_for(step_j)
-  = preclose_handoff_at
-    - sum(bounded_attempt_seconds(step_k)
-          for step_k at-or-after j in the exact contention cohort)
-
-preclose_deadline_at(step_j)
-  = preclose_scheduled_for(step_j) + bounded_attempt_seconds(step_j)
+desired_preclose_scheduled_for
+  = earliest acquisition_cutoff in the exact contention cohort
+    - cohort_required_lead_seconds
 ```
 
-For every current 15m/1h/4h close this plans the whole bundle to hand control
-back before the unchanged exact-snapshot dispatch point. For 4h, the planned
-handoff therefore remains at or before the logical end even though exact
-closing safety/holder and EXIT observations have a narrow lawful +60-second
-outer cutoff. That exception remains available to classify a real already-
-running attempt and later snapshot truthfully; it is not used to plan routine
-delay or to move market/chain past the end.
+The formula is deliberately conservative: all potentially required work is
+given a chance before the earliest cutoff, including conditional holder
+fallback. The existing 4h +60 exception remains available for truthful actual
+results; it is not used to plan routine market/chain delay. Every claim still
+checks its unit's real `latest_safe_claim_at` before making a call.
 
 The exact contention cohort contains Scheduler-owned pre-close work whose
 reserved single-worker execution intervals overlap and is frozen from exact
@@ -341,10 +364,10 @@ uses the accepted token/cycle fairness rotation and stable identity tie-breaks,
 never a score, confidence, historical latency estimate, outcome, or permanent
 cycle preference.
 
-`CLOSE_EVIDENCE_RESELECTION_RESERVE_SECONDS` is a Scheduler handoff bound, not
-an evidence allowance. The later implementation must define its exact constant
-from bounded local claim/finalize/reselection operations and prove it in
-disposable tests before runtime acceptance.
+`SCHEDULER_RESELECTION_RESERVE_SECONDS` is a per-unit Scheduler handoff bound,
+not an evidence allowance. The later implementation must define its exact
+constant from bounded local checkpoint/yield/reselection operations and prove
+it in disposable tests before runtime acceptance.
 It may not be derived from historical provider latency. If the implementation
 cannot prove a finite bound for configured one-attempt source timeouts, pacing,
 and local handoff, it must stop `BLOCKED` rather than invent or learn one.
@@ -354,12 +377,17 @@ Higher AGENTS categories, Source Governor denial, provider latency, timeout,
 or resource exhaustion may still make evidence late/missing. Actual source
 timestamps remain final authority.
 
+`desired_preclose_scheduled_for`, `earliest_preclose_schedulable_at`, and the
+fail-closed comparison between them are defined normatively in Section 24.6.
+No pre-close acquisition deadline is derived from the accepted
+`CLOSE_EVIDENCE` cadence deadline.
+
 ### 6.5 Provider response crossing a boundary
 
 - 15m or 1h safety/holder/15m quote observed after `window_end_at` is late and
   cannot support CLEAN, even if the request started earlier.
 - 4h market/chain observed after `window_end_at` is late.
-- The same single 4h safety/holder/EXIT attempt may remain eligible when its
+- Each single-attempt 4h safety/holder/EXIT unit may remain eligible when its
   real observation time is no later than `window_end_at + 60s` and all other
   gates pass. This is not a retry or broader context allowance.
 - A call still running near exact capture can delay the single worker. The
@@ -371,7 +399,8 @@ timestamps remain final authority.
 
 ### 7.1 Identity known before acquisition
 
-`PRE_CLOSE_CRITICAL` must be projected with the exact:
+Every `PRE_CLOSE_CRITICAL` unit manifest entry and every yielded claim must be
+projected with the exact:
 
 - `campaign_id`;
 - campaign `run_id`;
@@ -388,7 +417,8 @@ timestamps remain final authority.
 - pre-close/evidence/context/audit step keys;
 - close-phase contract version;
 - intended closing work identity; and
-- exact governed request-key prefix and allowed source request families.
+- exact governed request-key prefix, source-unit identity, fixed attempt
+  ordinal `1`, and allowed source request family.
 
 The acquisition envelope shall store those identities plus, per attempted
 source:
@@ -423,16 +453,18 @@ resolves it.
 
 Before any token-specific evidence row is bound, `CLOSE_CONTEXT` must prove:
 
-1. exactly one terminal pre-close step with the expected contract/version and
-   intended evidence step;
-2. exactly one successful evidence step with an actual exact snapshot;
-3. identical campaign/run/cycle/slot/window/factory-run/stage/work-scope owner;
-4. identical token/mint/pair/pair-address/tracking-lane/window family;
-5. exact source request/response/failure linkage and request-key prefix;
-6. returned source target matches the immutable intended target;
-7. each real observation time satisfies its own class cutoff before it is
+1. exactly one terminal pre-close step with the expected contract/version,
+   exact frozen unit manifest, and intended evidence step;
+2. every expected unit has exactly one terminal result or an exact typed
+   `NOT_REQUIRED`/unschedulable result, with no duplicate request identity;
+3. exactly one successful evidence step with an actual exact snapshot;
+4. identical campaign/run/cycle/slot/window/factory-run/stage/work-scope owner;
+5. identical token/mint/pair/pair-address/tracking-lane/window family;
+6. exact source request/response/failure linkage and request-key prefix;
+7. returned source target matches the immutable intended target;
+8. each real observation time satisfies its own class cutoff before it is
    marked main-window eligible; and
-8. no source record is substituted from another token, pair, cycle, window,
+9. no source record is substituted from another token, pair, cycle, window,
    historical close, or nearby snapshot.
 
 Binding writes the actual closing snapshot id but never rewrites source
@@ -458,15 +490,21 @@ JSON surfaces are sufficient; no schema migration is required.
 
 ## 8. `WINDOW_15M` behavior
 
-The 15m pre-close step uses this order:
+The 15m pre-close manifest contains logical units for market/chain reuse with
+at most one fallback call, GoPlus safety, optional core safety, ENTRY, EXIT,
+conditional holder primary, and the single approved conditional holder backup.
+Independent units do not have a fixed provider order. Only these real
+acquisition dependencies apply:
 
-1. resolve an already-persisted, provenance-clean, fresh market/chain row at or
-   before the intended end;
-2. only if broad context is absent, perform the already-budgeted single
-   governed broad-context call;
-3. perform the existing governed GoPlus/core safety attempts;
-4. perform the existing governed ENTRY and EXIT quote attempts; and
-5. perform conditional holder primary/approved backup exactly as today.
+1. holder primary becomes required only after the GoPlus unit truthfully
+   reports holder concentration unknown; and
+2. holder backup becomes required only after the primary holder unit ends in
+   an existing backup-eligible transient failure.
+
+Safety composition happens after capture and therefore imposes no acquisition
+order on independent safety/core/quote/market units. Market/chain periodic
+resolution and its possible one-call fallback are one bounded logical unit;
+that claim never proceeds to a second unit even when no fallback call is made.
 
 All token-specific results remain unbound source records until the exact
 snapshot exists. `CLOSE_EVIDENCE` then captures only the closing snapshot.
@@ -481,7 +519,7 @@ it without changing the context cutoff.
 
 ## 9. `WINDOW_1H` behavior
 
-The 1h pre-close step moves the existing required safety-only bundle earlier:
+The 1h pre-close manifest moves the existing required safety-only units earlier:
 
 - GoPlus safety;
 - existing core Solana safety where active;
@@ -510,15 +548,17 @@ as late/missing/invalid context. It does not erase the closing snapshot.
 
 ## 10. `WINDOW_4H` behavior
 
-The 4h pre-close step first resolves valid periodic market/chain rows. If
-either required shared row is absent, it uses the existing single governed
-broad-context request before close and later persists both supported contexts
-from that one response. Market/chain remain eligible only when observed no
-later than `window_end_at` and within existing freshness/provenance rules.
+The 4h pre-close market/chain unit first resolves valid periodic rows. If
+either required shared row is absent, that same bounded unit may make the
+existing single governed broad-context request before close and later persist
+both supported contexts from that one response. It then yields. Market/chain
+remain eligible only when observed no later than `window_end_at` and within
+existing freshness/provenance rules.
 
-The same pre-close step also makes the existing one-attempt closing safety,
-conditional holder, and EXIT quote requests. It does not duplicate them after
-capture. Their existing exact-closing allowance remains `window_end_at + 60s`.
+Separate claims of the same resumable pre-close step make the existing
+one-attempt closing safety, conditional holder, and EXIT quote requests. They
+are not duplicated after capture. Their existing exact-closing allowance
+remains `window_end_at + 60s`.
 A pre-close request whose response truthfully arrives in that narrow interval
 may be bound after the exact snapshot and may qualify; a response after +60s
 is support only.
@@ -532,7 +572,7 @@ ENTRY, or unrelated evidence never inherit the 4h closing allowance.
 For the minimum implementation slice, `CLOSE_CONTEXT` shall perform only:
 
 1. exact evidence-step resolution;
-2. exact terminal pre-close-envelope resolution;
+2. exact terminal pre-close unit-manifest/envelope resolution;
 3. durable source-row rehydration and provenance validation;
 4. class-specific cutoff classification;
 5. exact snapshot binding for eligible token-specific evidence;
@@ -559,10 +599,11 @@ rescue.
 ### 12.1 Pre-close provider/data outcomes
 
 Provider timeout, rate denial, source failure, partial response, stale result,
-target mismatch, or evidence genuinely unavailable is a terminal acquisition
-outcome, not permission to retry and not necessarily a Scheduler integrity
-failure. Preserve every created source row and the exact envelope, then allow
-the exact snapshot phase to proceed independently.
+target mismatch, or evidence genuinely unavailable is a terminal unit outcome,
+not permission to retry and not necessarily a Scheduler integrity failure.
+Preserve every created source row and exact unit envelope, yield without
+repeating the unit, and allow the exact snapshot phase to proceed
+independently.
 
 ### 12.2 Evidence failure
 
@@ -572,7 +613,7 @@ If `CLOSE_EVIDENCE` does not produce one valid exact closing snapshot:
 - no preassigned or nearby snapshot is substituted;
 - no token-specific pre-close result is bound as closing evidence;
 - dependent binding/audit stops under existing exact-evidence integrity law;
-- raw source rows and the pre-close envelope remain as unbound diagnostic or
+- raw source rows and the pre-close unit manifest remain as unbound diagnostic or
   later-risk truth tied to the failed intended close; and
 - those token-specific rows may not be reused by another token/cycle/window.
 
@@ -670,18 +711,20 @@ No outcome, score, confidence, weighted urgency, profitability, or permanent
 cycle preference is permitted. Cycle 1, Cycle 2, and future Cycle 3 propose
 eligible work under the same category/phase/deadline/fairness rules.
 
-After every pre-close source bundle, evidence capture, context bind, or audit,
-the single worker returns to global Scheduler selection. No phase recursively
-executes the next phase.
+After every single pre-close unit, evidence capture, context bind, or audit,
+the single worker returns to global Scheduler selection. A pre-close executor
+may not recursively execute the next unit or next phase.
 
 ### 14.3 Missed pre-close slot
 
-If a pre-close job is still pending at its deadline, it becomes an exact
-`MISSED_CUTOFF`/not-attempted terminal envelope through the Scheduler owner;
-it may not start late and pretend to be timely. Already-due `CLOSE_EVIDENCE`
-wins the intra-close collision. A running source attempt retains its hard
-one-attempt timeout; there is no second worker or unsafe preemption. Any real
-overrun and resulting capture delay is reported honestly.
+If the active pre-close unit reaches `latest_safe_claim_at` before claim, that
+unit becomes exact `MISSED_CUTOFF`/not-attempted truth through the Scheduler
+owner; it may not start late and pretend to be timely. The resumable step may
+yield/terminalize other units without a provider call. Already-due
+`CLOSE_EVIDENCE` wins the intra-close collision. A running single source
+attempt retains its hard one-attempt timeout; there is no second worker or
+unsafe preemption. Any real overrun and resulting capture delay is reported
+honestly.
 
 ## 15. Budget implications
 
@@ -689,9 +732,9 @@ The intended source-cost delta is zero.
 
 | Family | Existing close-context calls | New disposition |
 | --- | --- | --- |
-| 15m | current six-unit preclose/context reservation | move to `WINDOW_CLOSE_PRE_CLOSE_CRITICAL`; context bind owns zero new provider attempts |
-| 1h | current four-unit safety reservation | move to `CONTINUATION_CLOSE_PRE_CLOSE_CRITICAL`; context bind owns zero new provider attempts |
-| 4h | current long-close context reservation | move the same broad/safety/holder/EXIT attempts to `LONG_CONTINUATION_CLOSE_PRE_CLOSE_CRITICAL`; context bind owns zero new provider attempts |
+| 15m | current six-request preclose/context reservation | move unchanged to the resumable `WINDOW_CLOSE_PRE_CLOSE_CRITICAL` row and debit it one unit claim at a time; context bind owns zero new provider attempts |
+| 1h | current four-request safety reservation | move unchanged to the resumable `CONTINUATION_CLOSE_PRE_CLOSE_CRITICAL` row and debit it one unit claim at a time; context bind owns zero new provider attempts |
+| 4h | current long-close context reservation | move the same broad/safety/holder/EXIT attempts to the resumable `LONG_CONTINUATION_CLOSE_PRE_CLOSE_CRITICAL` row; context bind owns zero new provider attempts |
 
 Valid pre-existing market/chain context may avoid the broad request. It does
 not create a spare budget that can be spent on retries or new providers.
@@ -706,20 +749,32 @@ reassignment, implementation stops `BLOCKED` for a separate budget design.
 No automatic retry, endpoint rotation, capacity increase, paid fallback, or
 duplicate post-close refresh is authorized.
 
+Finer claims increase claim/yield events, not Scheduler rows or provider
+attempts. For identical source outcomes and conditional branches:
+
+```text
+old intended governed source attempt count
+== new intended governed source attempt count
+```
+
+An interrupted unit with any durable exact request row is never called again.
+Section 24.8 freezes the crash reconciliation rule.
+
 ## 16. Required scenario walkthroughs
 
 ### A. 15m normal timely close
 
-1. Scheduler claims the exact token/window pre-close step at its deterministic
-   fire time.
-2. Safety, required quote and any necessary broad/holder observations finish
-   no later than `window_end_at`; source rows and envelope persist real times.
-3. Scheduler reselects.
-4. Evidence captures the exact closing snapshot at the lawful boundary and
-   attaches it to the run ledger.
-5. Context validates both owners, binds frozen observations to the exact
+1. Scheduler claims the exact token/window pre-close step for one unit at its
+   deterministic fire time.
+2. Each unit checkpoints and yields; after global reselection, later units may
+   run. Safety, required quote and any necessary broad/holder observations
+   finish no later than `window_end_at`; source rows and manifest persist real
+   times.
+3. Evidence independently captures the exact closing snapshot at the lawful
+   boundary and attaches it to the run ledger.
+4. Context validates both owners, binds frozen observations to the exact
    snapshot, resolves broad context, and emits `CONTEXT_COMPLETE`.
-6. Audit runs unchanged quality gates. CLEAN remains possible, never promised.
+5. Audit runs unchanged quality gates. CLEAN remains possible, never promised.
 
 ### B. 15m provider response crosses `window_end_at`
 
@@ -735,9 +790,10 @@ cadence/evidence owners classify the delayed capture.
 
 ### D. Pre-close succeeds but closing snapshot fails
 
-Source rows and envelope remain durable and unbound to a closing snapshot. No
-window is fabricated. Context binding and close audit stop for missing exact
-evidence. Token-specific observations cannot migrate to another close.
+Source rows and the unit manifest remain durable and unbound to a closing
+snapshot. No window is fabricated. Context binding and close audit stop for
+missing exact evidence. Token-specific observations cannot migrate to another
+close.
 
 ### E. Snapshot succeeds but context binding fails
 
@@ -749,8 +805,9 @@ reports capture-only terminal residue.
 
 ### F. 1h normal close
 
-The safety/holder bundle is observed before the fixed logical 1h end. The
-forced snapshot may occur at the deadline or within its independent +60s
+The safety/holder units are observed through separate bounded claims before the
+fixed logical 1h end. The forced snapshot may occur at the deadline or within
+its independent +60s
 freshness band. Context binds the frozen safety composite afterward. The 1h
 overlay verifies every required contribution against `window_end_at`, not the
 later snapshot time. Snapshot +60 is never borrowed by context.
@@ -758,9 +815,9 @@ later snapshot time. Snapshot +60 is never borrowed by context.
 ### G. 4h close
 
 Periodic or fallback broad context must be observed no later than
-`window_end_at`. The single safety/holder/EXIT attempt may qualify only through
-its existing end +60 cutoff. The exact snapshot independently uses its existing
-+60 rule. Later market/chain cannot qualify.
+`window_end_at`. Separate single-attempt safety/holder/EXIT units may qualify
+only through their existing end +60 cutoff. The exact snapshot independently
+uses its existing +60 rule. Later market/chain cannot qualify.
 
 ### H. Multiple tokens/cycles close near each other
 
@@ -788,9 +845,10 @@ The smallest likely implementation surfaces are:
 
 | Surface | Minimum change |
 | --- | --- |
-| `src/printer_v1/operator_cli/close_phases.py` | Add three pre-close step kinds, contract version/metadata, exact pre-close resolver, fork-join dependency rules, terminal context failure resolution, and phase-order mapping |
-| `src/printer_v1/operator_cli/one_command_15m_factory.py` | Plan deterministic pre-close slots; execute the existing governed collector there; persist acquisition envelopes; make context rehydrate/bind without duplicate calls; keep evidence snapshot-only; preserve global reselection |
-| `src/printer_v1/sources/measured_transport.py` | Reassign existing close-context reservations to pre-close step kinds and set binding phases to zero provider operations; do not raise ceilings |
+| `src/printer_v1/operator_cli/close_phases.py` | Add three family-level pre-close step kinds, unit-manifest contract/metadata, exact terminal-manifest resolver, fork-join dependency rules, terminal context failure resolution, and phase-order mapping; add no source-unit kinds |
+| `src/printer_v1/operator_cli/one_command_15m_factory.py` | Plan one resumable pre-close row per window; execute exactly one eligible unit per claim; durably checkpoint/yield; reconcile interruption without duplicate calls; make context rehydrate/bind without provider calls; keep evidence snapshot-only and preserve global reselection |
+| Scheduler step planning/selection metadata | Use the active unit's acquisition deadline for intra-close selection, count each terminal unit as one ordinary service for fairness, and use existing `yield_job`; do not alter `CLOSE_EVIDENCE` deadline projection |
+| `src/printer_v1/sources/measured_transport.py` | Reassign existing close-context reservations to pre-close step kinds, debit the same reservation per terminal unit attempt, and set binding phases to zero provider operations; do not raise ceilings |
 | `src/printer_v1/safety/composite.py` | Separate latest underlying observation time from later deterministic evaluation/binding truth using existing row plus JSON reporting semantics |
 | `src/printer_v1/operator_cli/first_hour_safety_binding.py` | Enforce exact 1h `window_end_at` against composite and every required contribution; reject borrowing snapshot +60 |
 | `src/printer_v1/context_evidence/window_15m.py` | Preserve existing cutoffs; accept only the clarified composite observation semantics; no threshold change |
@@ -804,9 +862,13 @@ engine or authority.
 Expected shape:
 
 - new Scheduler step kinds: **yes**;
+- source-unit step kinds: **no**;
+- same pre-close step kind with multiple Scheduler rows: **no**;
+- one same-kind resumable row with multiple bounded claims: **yes**;
 - reuse existing `CLOSE_EVIDENCE`, `CLOSE_CONTEXT`, `CLOSE_AUDIT`: **yes**;
 - new `JobKind` or category: **no**;
 - result/ownership metadata changes: **yes**;
+- existing Scheduler cooperative yield/reclaim: **yes**;
 - persistence behavior changes: **yes, within existing source/evidence/JSON
   surfaces**;
 - schema migration: **no**;
@@ -836,7 +898,7 @@ authorization is permitted.
 | P9 — evidence failure | Pre-close succeeds, snapshot fails. No bound token-specific closing evidence, memory close, or fabricated snapshot/window appears. |
 | P10 — binding failure after capture | Exact snapshot remains durable; a typed exact binding-failure envelope makes audit claimable and yields non-CLEAN truth. Ambiguous identity blocks audit. |
 | P11 — audit after partial context | Context provider result is partial/failed/unknown; audit executes, records blockers and cannot promote CLEAN. |
-| P12 — no duplicate calls | For each family, source request counts equal the existing bounded bundle after movement; context binding makes zero duplicate provider calls. |
+| P12 — no duplicate calls | For each family, source request counts equal the existing intended call set after movement; yielding/reclaiming and context binding make zero duplicate provider calls. |
 | P13 — multi-token close fairness | Two tokens/cycles with overlapping pre-close slots and closes: no permanent cycle priority, ordinary service remains fair, and due evidence outranks sibling pending pre-close/context/audit. |
 | P14 — global category priority | Due TRACK_FAST and TRACK_NORMAL work independently outrank all pre-close/evidence/context/audit close work exactly as accepted. |
 | P15 — accepted deadline regression | Existing last-ACTUAL-capture evidence `deadline_at`, forced-close min, and block boundary projections are byte-for-byte unchanged. |
@@ -861,6 +923,9 @@ This design explicitly forbids:
   (including required holder contributions), and exact closing EXIT;
 - broad market/chain observations after `window_end_at` supporting CLEAN;
 - putting slow source calls back inside the evidence claim;
+- one claimed pre-close job executing two source units or two governed
+  provider attempts before Scheduler reselection;
+- a hidden in-memory loop advancing across the source-unit manifest;
 - a second worker, thread pool, private source loop, or engine-owned scheduler;
 - Central Scheduler or Source Governor bypass;
 - historical-latency scores, confidence, weights, ranking or probabilistic fire
@@ -882,8 +947,9 @@ This design explicitly forbids:
 - A public provider may still be too slow or unavailable. This yields honest
   late/missing evidence, not a design defect or fabricated CLEAN result.
 - A running one-attempt source call cannot be safely preempted by a single
-  worker. The deterministic lead/hard-timeout contract reduces planned
-  collisions but does not promise provider behavior.
+  worker. Claim granularity is therefore exactly one bounded source unit; the
+  deterministic lead/hard-timeout contract bounds that hold but does not
+  promise provider behavior.
 - Pre-close observations taken too early may fail existing freshness gates.
   The implementation proof must demonstrate that deterministic slots are both
   schedulable and fresh; it may not loosen freshness.
@@ -927,13 +993,14 @@ After independent acceptance of this design, the exact next permitted work is:
 
 ```text
 V2-9.8B Timely Closing-Context Production —
-Pre-Close Acquisition and Post-Capture Binding Implementation
+Bounded Resumable Pre-Close Acquisition and Post-Capture Binding Implementation
 ```
 
-That slice may modify only the minimum surfaces in Section 17 and their nearest
-focused tests. It must implement the fork-join phase contract, move rather than
-duplicate existing calls, preserve all timing/category/deadline locks, and run
-the bounded offline proof matrix appropriate to the changed surfaces.
+That slice may modify only the minimum surfaces in Sections 17/24.13 and their
+nearest focused tests. It must implement the one-unit-per-claim resumable
+contract, fork/join phase contract, move rather than duplicate existing calls,
+preserve all timing/category/deadline locks, and run the bounded offline proof
+matrix appropriate to the changed surfaces.
 
 It may not start observability/saturation or Lane 3. It may not run a live
 campaign or provider. If design acceptance is withheld, the next action is
@@ -941,10 +1008,522 @@ operator review or a corrected documentation-only design—not implementation.
 
 ## 23. Design closeout
 
-**Status:** `PASS_READY_FOR_NARROW_IMPLEMENTATION_AFTER_INDEPENDENT_ACCEPTANCE`.
+**Status:** `AMENDED_PASS_READY_FOR_INDEPENDENT_ACCEPTANCE`.
 
 The chosen architecture makes timely main-window context production possible
 without promising provider success, fabricating a snapshot, backdating
 evidence, widening a threshold, duplicating calls, bypassing central owners, or
 reintroducing the monolithic close claim. No implementation is performed or
 accepted by this document.
+
+## 24. Controlling amendment — pre-close claim granularity and safe scheduling
+
+This section amends Sections 1, 3, 4, 6, 7, 8–10, 14–18 and 20 only where they
+previously treated `PRE_CLOSE_CRITICAL` as one multi-source claim. All evidence
+identity, observation-time, cutoff, binding, audit and capability contracts
+outside that claim boundary remain unchanged. If earlier wording can be read
+as permitting a source bundle inside one claim, this section controls.
+
+### 24.1 Blocker and amendment verdict
+
+The remaining blocker is proven: a single worker cannot reconsider newly due
+`TRACK_FAST` or `TRACK_NORMAL` work while a claimed pre-close executor serially
+advances across market/chain, safety, holder and quotes. Moving that bundle
+before close would relocate, not remove, Lane-2 contention.
+
+**Amendment verdict:** use one persisted, resumable family-level
+`PRE_CLOSE_CRITICAL` run-step/Scheduler-job row per exact window. Freeze its
+source-unit manifest in `result_json`. Each Scheduler claim may execute exactly
+one selected logical unit and at most one governed provider attempt. It must
+durably checkpoint the unit and cooperatively yield the existing job before
+another unit can run.
+
+This yields the required execution shape:
+
+```text
+Central Scheduler claim PRE_CLOSE_CRITICAL for one exact window
+-> execute/checkpoint exactly one bounded source unit
+-> yield job and run step
+-> global Scheduler reselection
+-> possibly claim one later unit
+-> ...
+-> terminal exact unit manifest
+
+terminal manifest --------------------------\
+                                             -> CLOSE_CONTEXT_BIND -> CLOSE_AUDIT
+exact successful CLOSE_EVIDENCE snapshot ---/
+```
+
+A running provider attempt remains bounded by its existing hard timeout and
+cannot be safely preempted inside the call. The mandatory preemption boundary
+is before every subsequent logical unit.
+
+### 24.2 Options compared
+
+| Option | Repository fit | Decision |
+| --- | --- | --- |
+| A. Multiple Scheduler rows using one family-level step kind plus source-unit metadata | `(run_id, step_key)` permits multiple same-kind rows and each could be terminal independently. However this multiplies Scheduler-job/campaign-work rows and the measured `SCHEDULER_WORK_ITEM` unit, requiring new row-ceiling accounting solely to obtain a yield boundary. | Rejected as larger than necessary. |
+| B. Small fixed categorical pre-close subphases | Makes source roles look like permanent Scheduler categories, creates extra step kinds/dependency edges, and risks encoding provider order as phase priority. | Rejected. |
+| C. One persisted resumable row using the existing Scheduler cooperative-yield boundary plus frozen `result_json` unit state | Existing run-step status/result fields, Scheduler `PENDING`/`RUNNING` and `yield_job`, immutable campaign ownership, and durable source rows can represent each checkpoint without another table or row family. | **Chosen: minimum sufficient.** |
+
+The chosen row keeps the new family-level step kinds already specified:
+
+- `WINDOW_CLOSE_PRE_CLOSE_CRITICAL`;
+- `CONTINUATION_CLOSE_PRE_CLOSE_CRITICAL`; and
+- `LONG_CONTINUATION_CLOSE_PRE_CLOSE_CRITICAL`.
+
+There is no provider JobKind, no source-unit step kind, and no additional
+Scheduler row per source.
+
+### 24.3 Frozen source-unit manifest
+
+The pre-close row's planned `result_json` shall contain an immutable identity
+header and a frozen `source_unit_manifest`. Each unit entry contains:
+
+- exact `source_unit_identity` and logical evidence role;
+- exact campaign/factory run/cycle/token slot/window/step/work identity;
+- token id, immutable mint, pair id and pair address;
+- window family and intended evidence/context/audit step keys;
+- allowed source name and request kind, or the exact zero-source periodic
+  resolution role;
+- deterministic request-key prefix and fixed attempt ordinal `1`;
+- real dependency unit identities, if any;
+- lawful `acquisition_cutoff_at`;
+- deterministic `bounded_claim_seconds` and `latest_safe_claim_at`;
+- unit state and terminal reason;
+- source request/response/failure ids and actual timestamps when present; and
+- returned-target/provenance/quality disposition needed by later binding.
+
+The manifest's membership, identities, dependencies, cutoffs and attempt
+ordinal are frozen before the step becomes claimable. Only unit state/result
+fields may change, and only through the declared state machine:
+
+```text
+WAITING_DEPENDENCY or PENDING
+-> RUNNING
+-> TIMELY | PARTIAL | FAILED | LATE | MISSED_CUTOFF
+   | NOT_REQUIRED | DENIED | UNKNOWN_INTERRUPTED_AFTER_REQUEST
+```
+
+Terminal states never return to `PENDING`. A contradictory transition or a
+source identity outside the manifest is `CONTEXT_INTEGRITY_BLOCKED`, not a new
+attempt.
+
+The run-step and campaign-work scalar `source_request_id`/
+`source_response_id`/`source_failure_id` fields cannot represent multiple
+units and must not be overwritten as a rolling cursor. They may remain null for
+the resumable aggregate row. The exact per-unit references live in the
+manifest and point to the existing authoritative source tables. Request keys
+include exact Scheduler work and unit identity. If later implementation proves
+that existing provenance consumers require every unit in those scalar columns,
+it must stop `BLOCKED`; this amendment does not authorize a migration.
+
+When every unit is terminal, the Scheduler step may be operationally
+`SUCCEEDED` because its bounded work completed even when one or more unit
+quality outcomes are failed/late/unknown. That status never means context is
+complete. A safely unschedulable whole plan is instead exact `SKIPPED` with its
+typed envelope. `CLOSE_CONTEXT_BIND` accepts either trustworthy terminal form;
+it does not require every unit quality outcome to be successful.
+
+### 24.4 Maximum work in one claim
+
+One pre-close Scheduler claim may perform only:
+
+1. exact ownership/manifest validation;
+2. validation of the one eligible nonterminal unit identity selected and bound
+   by the Central Scheduler claim;
+3. that unit's bounded local precondition or periodic-context lookup;
+4. at most one Source-Governed provider attempt for that unit;
+5. persistence/reconciliation of that unit's request/response/failure truth;
+6. deterministic eligibility/`NOT_REQUIRED` updates to declared dependent
+   units without calling their sources;
+7. one atomic manifest checkpoint; and
+8. either terminal completion of the whole manifest or cooperative Scheduler
+   yield.
+
+It may not execute a second logical unit, make a second governed provider
+attempt, compose/bind safety, call context binding, or recursively claim the
+next phase. Even a zero-call periodic reuse unit must checkpoint and yield; it
+cannot spend its unused call opportunity on another unit.
+
+The maximum worker hold for one claim is therefore:
+
+```text
+one deterministic Source-pacer wait
++ one existing adapter hard timeout
++ bounded local validation/request/result/checkpoint/yield work
+```
+
+No loop over `source_unit_manifest` is permitted inside a claim.
+
+### 24.5 Logical units and real dependencies
+
+The manifest uses evidence-role units, not provider priority classes:
+
+| Logical unit | Maximum provider work in its claim | Acquisition dependency |
+| --- | --- | --- |
+| `MARKET_CHAIN` where currently required | Resolve exact timely periodic context; if absent, at most the existing one governed broad request | None |
+| `SAFETY_PRIMARY` | One existing GoPlus attempt | None |
+| `SAFETY_CORE` where currently active | One existing core Solana RPC attempt | None |
+| `ENTRY_QUOTE` where currently required | One existing governed Jupiter ENTRY attempt | None |
+| `EXIT_QUOTE` where currently required | One existing governed Jupiter EXIT attempt | None |
+| `HOLDER_PRIMARY` when required | One existing governed primary holder attempt | `SAFETY_PRIMARY` must terminally show holder concentration unknown |
+| `HOLDER_BACKUP` when authorized | One existing governed fixed backup attempt | `HOLDER_PRIMARY` must terminally show an existing backup-eligible transient failure |
+
+No fixed acquisition order exists among independent market, safety, core,
+ENTRY and EXIT units. Safety composite composition occurs after capture and
+does not make those acquisitions depend on one another.
+
+Before global comparison, the Central Scheduler's read-only pre-close
+projection derives the row's one next unit categorically by:
+
+```text
+dependency-ready
+-> earliest latest_safe_claim_at
+-> owner-scoped deterministic rotation among equal-deadline independent roles
+-> stable source_unit_identity tie
+```
+
+That projected unit supplies the row's active acquisition deadline to the
+global selection key. The resulting claim binds the exact
+`source_unit_identity`; the executor may validate and execute that unit only,
+not choose another after claim. This remains Central-Scheduler-owned selection,
+not an engine-local scheduler.
+
+The rotation is derived only from exact campaign/run/cycle/slot/window identity
+and the frozen logical-role set. It is not provider performance, latency,
+quality, score, confidence or weight. Consequently no provider is permanently
+first across tokens/windows. Bind/composition order remains a separate later
+contract.
+
+### 24.6 Safe schedulability and earliest identity boundary
+
+No pre-close row or unit may be owned before its exact ownership graph exists.
+Define:
+
+```text
+ownership_graph_committed_at
+  = the first commit after which exactly one persisted factory run,
+    campaign, campaign run, cycle, token slot, token/pair, window family/window,
+    and intended pre-close/evidence/context/audit work identity can be resolved
+
+earliest_preclose_schedulable_at
+  = the planner's truthful now observed after ownership_graph_committed_at
+    and after the frozen pre-close unit manifest is valid
+```
+
+Creating the close plan and manifest may be one transaction, but no Scheduler
+claim is visible until it commits. The persisted
+`earliest_preclose_schedulable_at` is never earlier than that post-commit
+planner observation.
+
+The desired lead remains Section 6.4's deterministic conservative result:
+
+```text
+desired_preclose_scheduled_for
+  = earliest acquisition cutoff in the exact contention cohort
+    - sum(all potentially required bounded unit holds)
+    - one reselection reserve per unit
+```
+
+The hard boundary is:
+
+```text
+if desired_preclose_scheduled_for < earliest_preclose_schedulable_at:
+    effective scheduled_for = earliest_preclose_schedulable_at
+    make no pre-close provider call
+    terminalize the pre-close step/job/work as SKIPPED
+    result reason = TIMELY_ACQUISITION_NOT_PRODUCIBLE
+    preserve desired and earliest times in result_json
+```
+
+`SKIPPED` is existing row vocabulary;
+`TIMELY_ACQUISITION_NOT_PRODUCIBLE` is a typed result/error reason, not a new
+schema enum. `CLOSE_EVIDENCE` remains independently eligible. Later context
+and audit receive the exact missing-context reason and cannot promote CLEAN.
+No ownership is fabricated, no `scheduled_for` is backdated, and no evidence
+cutoff changes.
+
+### 24.7 Acquisition deadline versus evidence deadline
+
+Each unit has both a fire opportunity and an acquisition boundary:
+
+```text
+desired_preclose_scheduled_for
+  = conservative earliest time the resumable job should first become due
+
+acquisition_cutoff_at(u)
+  = existing lawful latest observation time for unit u's evidence class
+
+latest_safe_claim_at(u)
+  = acquisition_cutoff_at(u) - bounded_claim_seconds(u)
+```
+
+The projected active unit's `latest_safe_claim_at` is the pre-close deadline
+used for deadline ordering inside `MEMORY_WINDOW_CLOSE`. It may be stored in
+existing step `result_json` and projected by the Central Scheduler selector;
+no new column is required.
+The campaign work row retains exact plan ownership, while the active-unit
+deadline—not an expired earlier unit deadline—governs each later claim.
+
+These remain distinct:
+
+```text
+pre-close acquisition_cutoff_at
+!= pre-close latest_safe_claim_at
+!= accepted CLOSE_EVIDENCE dispatch deadline_at
+!= window_end_at identity boundary
+!= actual Scheduler claimed_at
+```
+
+The accepted last-ACTUAL-capture `CLOSE_EVIDENCE` deadline formula is unchanged
+and is never used to derive a pre-close source deadline. A unit not claimed by
+its `latest_safe_claim_at` is terminal `MISSED_CUTOFF` without a provider call.
+A timely claim cannot make a response timely: the real response/observation
+must still satisfy `acquisition_cutoff_at`.
+
+The family cutoffs remain exactly:
+
+- 15m: every required closing context observation `<= window_end_at`; allowance
+  remains zero;
+- 1h: safety/holder `<= window_end_at`; snapshot-only +60 is not borrowed; and
+- 4h: market/chain `<= window_end_at`; only exact closing snapshot, closing
+  safety composite including its required contributions, and exact EXIT may
+  use the existing +60 allowance.
+
+### 24.8 Checkpoint, yield, interruption and no-duplicate rule
+
+After the selected unit finishes or becomes terminal without a call, the owner
+must commit its exact unit envelope before releasing the claim. If units remain:
+
+1. set the run step back to `PENDING` with the checkpointed manifest;
+2. cooperatively release the same Scheduler job through the existing yield
+   owner with the next truthful due time;
+3. synchronize campaign work back to its existing nonterminal state; and
+4. return to the outer single-worker Scheduler loop.
+
+The next source unit can run only after a new global Scheduler selection and
+claim. Each terminal unit claim counts as one ordinary service for token/cycle
+fairness even though the same Scheduler row is reused. The selector reads the
+manifest's durable terminal-unit count; yielding must not erase that service
+history.
+
+Interruption reconciliation uses the governed persistence order: the source
+request row is committed before adapter I/O, and response/failure is committed
+after it. For the active unit's exact deterministic request key and attempt
+ordinal:
+
+| Durable state after interruption | Lawful reconciliation |
+| --- | --- |
+| Unit already terminal in manifest | Never call; release/reterminalize the stale claim from existing truth. |
+| Exactly one request and exactly one linked response or failure | Rehydrate and checkpoint that result; never call again. |
+| Exactly one request and no linked response/failure | Terminalize `UNKNOWN_INTERRUPTED_AFTER_REQUEST`; never retry because provider outcome is unknowable. |
+| No request row | The governed adapter cannot have been called because request persistence precedes I/O; after exact stale-lock/owner reconciliation, the same unit may make its one first attempt. |
+| Duplicate requests, multiple terminal rows, foreign request key or owner mismatch | `CONTEXT_INTEGRITY_BLOCKED`; no call and no automatic repair. |
+
+This is crash reconciliation for the same already-authorized active run, not a
+campaign retry surface. If exact stale-lock ownership cannot be proven, safe
+stop remains required. A completed, failed, late, denied, unknown or not-
+required unit is never repeated.
+
+### 24.9 Scheduler reselection and fork/join
+
+The global selector remains:
+
+```text
+eligible due work
+-> AGENTS category
+-> phase / active-unit deadline inside category
+-> token/cycle ordinary-service fairness
+-> deterministic tie
+-> Central Scheduler claim
+```
+
+Globally:
+
+```text
+TRACK_FAST > TRACK_NORMAL > MEMORY_WINDOW_CLOSE
+```
+
+Inside `MEMORY_WINDOW_CLOSE`, simultaneously due work remains:
+
+```text
+CLOSE_EVIDENCE
+-> PRE_CLOSE_CRITICAL active unit
+-> CLOSE_CONTEXT_BIND
+-> CLOSE_AUDIT
+```
+
+After one pre-close unit yields, all categories are reconsidered. A
+`TRACK_FAST` or `TRACK_NORMAL` snapshot that became due during the one bounded
+attempt therefore wins before another pre-close unit. `CLOSE_CONTEXT_BIND`
+joins the exact terminal unit manifest, exact successful snapshot, timely
+periodic context, and typed late/failure/unknown envelopes. It makes no new
+main-window provider call. The existing audit-after-context-failure decision
+remains unchanged.
+
+### 24.10 Multi-token and multi-cycle fairness
+
+- **Two FAST tokens near close:** both expose the same global category. After
+  token A receives one pre-close unit service and yields, token B has fewer
+  ordinary unit services and wins the next otherwise-equal opportunity. Exact
+  deadlines may lawfully order them; token identity is only a deterministic
+  tie.
+- **FAST plus NORMAL:** due `TRACK_FAST` and then due `TRACK_NORMAL` cadence
+  work outrank both tokens' pre-close work. Within close work, lane does not
+  create an extra priority; deadline and ordinary-service fairness apply.
+- **Cycle 1 plus Cycle 2:** cycle is readiness/tie identity only. Terminal unit
+  counts and accepted fairness apply across both; neither cycle is permanently
+  first.
+- **Future Cycle 3:** if a later lane authorizes it, it enters the same category,
+  active-unit deadline and ordinary-service rules. This amendment does not
+  activate it or reserve a superior position.
+- **Track work becomes due during a unit:** the current one-attempt claim runs
+  only to its hard bound, checkpoints and yields. Before another unit, global
+  selection occurs and due track work wins.
+- **Independent providers:** equal-deadline roles use owner-scoped deterministic
+  rotation; no `provider A > provider B` policy exists. Only the two real
+  holder dependencies constrain acquisition order.
+
+There is no permanent `Cycle1 > Cycle2`, `Cycle2 > Cycle1`, `token1 > token2`,
+or provider ordering.
+
+### 24.11 Required amendment scenarios
+
+**A. Safety unit running when TRACK_FAST becomes due.** The one governed safety
+attempt reaches its existing hard bound, its exact result is checkpointed, and
+the job yields. The outer Scheduler sees TRACK_FAST before any core/holder/quote
+unit and selects it globally.
+
+**B. Two units succeed; third times out.** Each success is already terminal in
+the manifest. The third unit persists its real request/failure and becomes
+`FAILED`; none of the three can return to pending. Later units may continue one
+claim at a time. Context binding sees all exact terminal states.
+
+**C. Process interruption between units.** The preceding unit checkpoint is
+durable. Stale-claim reconciliation follows Section 24.8. A terminal unit or
+any exact request already made is never called again. Only a unit with no
+request row may make its first attempt after exact owner recovery.
+
+**D. Desired start predates identity.** The planner persists truthful desired
+and earliest times, schedules nothing in the past, makes no source call, and
+terminalizes `SKIPPED / TIMELY_ACQUISITION_NOT_PRODUCIBLE`. Evidence may still
+capture; later quality fails closed.
+
+**E. Two tokens have simultaneously due units.** The Central Scheduler first
+applies category/active-unit deadline, then fewer terminal unit services,
+accepted token/cycle fairness, owner-scoped deterministic tie and stable work
+identity. One token yields after one unit, so no permanent preference emerges.
+
+**F. PRE_CLOSE and TRACK_NORMAL are due.** `TRACK_NORMAL` wins because AGENTS
+category selection occurs before close phase/deadline/fairness.
+
+**G. 15m response arrives after end.** Its real response time remains late even
+if dispatch was timely. The unit terminal state is `LATE`/support-only; zero
+allowance and audit blockers remain.
+
+**H. 4h safety/EXIT complete inside +60.** Their exact real observations may
+qualify under the existing narrow allowance. A market/chain response after end
+remains late and cannot inherit +60.
+
+### 24.12 Request-budget preservation
+
+Unit splitting changes claim count only. Every provider-capable unit maps
+one-for-one to an attempt already authorized by the existing close path and
+retains the same conditional rules:
+
+```text
+new attempts for exact close/outcome branch
+  = count(manifest units that actually make their fixed ordinal-1 request)
+
+old intended attempts for the same close/outcome branch
+  = count(the same existing governed calls in the former collector)
+
+new attempts == old intended attempts
+```
+
+Periodic reuse, `NOT_REQUIRED`, missed, denied, unknown and unschedulable units
+make no provider call. Holder backup remains one maximum and only after the
+existing eligible primary failure. Reclaiming/yielding never refreshes or
+retries a terminal unit. `CLOSE_CONTEXT_BIND` makes zero main-window provider
+calls. No reservation, transport, response-byte, row or source ceiling is
+raised.
+
+### 24.13 Amended minimum implementation map
+
+The exact later surfaces remain narrow:
+
+| Surface | Amendment-specific minimum |
+| --- | --- |
+| `src/printer_v1/operator_cli/close_phases.py` | Represent one family-level resumable pre-close phase, validate the frozen unit manifest and terminal set, retain fork/join and audit failure semantics; no source-unit step kinds. |
+| `src/printer_v1/operator_cli/one_command_15m_factory.py` | Project safe identity-bound manifests; execute/checkpoint exactly one unit; yield/reclaim the same row; reconcile stale/interrupted requests without duplicates; expose terminal unit service counts to selection. |
+| Scheduler planning/selection metadata and existing `yield_job` integration | Use active-unit acquisition deadline, global category ordering and durable per-unit service count; never recurse to the next unit. |
+| `src/printer_v1/sources/measured_transport.py` or nearest existing accounting boundary | Move/debit the unchanged reservation one attempt at a time and prove call-count equality; no ceiling increase. |
+| `src/printer_v1/safety/composite.py` | Preserve the already-designed post-capture deterministic composition and truthful observation/evaluation separation. |
+| `src/printer_v1/operator_cli/first_hour_safety_binding.py` | Preserve exact 1h end enforcement; no snapshot-allowance borrowing. |
+| Focused Lane-2/15m/1h/4h tests | Exercise the real resumable executor, Scheduler yield/reselection, crash reconciliation, identity boundary, budgets, cutoffs, binding and audit. |
+
+Implementation shape is frozen as:
+
+- new family-level pre-close step kinds: **yes, the existing design's three**;
+- new source-unit step kinds: **no**;
+- same step kind with multiple Scheduler rows: **no**;
+- one same-kind row with multiple bounded claims: **yes**;
+- unit distinction: **existing `result_json`/metadata only**;
+- existing Scheduler cooperative yield: **yes**;
+- new table/column/index/trigger/migration: **no**.
+
+If exact unit state, stale-claim reconciliation or no-duplicate proof cannot be
+represented with the existing step/job/work/source rows and `result_json`, the
+implementation must stop `BLOCKED`. This amendment authorizes no migration.
+
+### 24.14 Additional bounded proof requirements
+
+The future implementation proof must add these real-executor tests to Section
+18; manually seeded resolver rows are insufficient:
+
+1. one claimed pre-close job executes exactly one logical unit and no more than
+   one governed request;
+2. the job checkpoints/yields and the Scheduler reselects before a second unit;
+3. TRACK_FAST and TRACK_NORMAL becoming due between units win globally;
+4. a terminal successful unit cannot execute again on later claims;
+5. provider timeout/failure is durable, typed and not retried;
+6. old intended request count equals new actual request count for identical
+   success, conditional-holder and failure branches;
+7. two-token unit service alternation obeys accepted deadline/fairness rules;
+8. Cycle 1/Cycle 2 overlap has no permanent cycle preference, with a dormant
+   Cycle 3 fixture proving identical future treatment without activation;
+9. desired start before earliest exact identity produces
+   `SKIPPED / TIMELY_ACQUISITION_NOT_PRODUCIBLE` and zero requests;
+10. interruption after terminal checkpoint, after request+response, after
+    request-only, and before request follows every Section 24.8 branch with no
+    duplicate provider call or timestamp rewrite;
+11. real 15m end and end +1 observations preserve zero allowance;
+12. 1h safety/holder end +1 fails while the independent forced snapshot +60
+    contract remains unchanged;
+13. 4h market/chain end +1 fails while exact safety/EXIT +60 and +61 retain
+    their existing pass/fail boundary;
+14. terminal unit manifest joins only the exact post-capture snapshot and
+    preserves real observation versus binding time;
+15. successful capture remains durable when units or binding are partial,
+    failed, late, unknown or unschedulable;
+16. audit receives the exact typed context envelope and cannot promote CLEAN;
+    ambiguous/shared integrity still blocks; and
+17. accepted last-ACTUAL-capture `CLOSE_EVIDENCE` deadline projection and
+    TRACK/global category tests remain byte-for-byte behaviorally unchanged.
+
+### 24.15 Amendment closeout and locks
+
+The pre-close monopoly blocker and the early-identity schedulability blocker
+are resolved at design level. Timely acquisition is made possible, never
+guaranteed. A public provider may still respond late or fail; Printer records
+that truth and does not retry, backdate, widen or substitute.
+
+All Section 19 non-solutions and Section 21 locks remain in force. In
+particular, this amendment does not accept the current implementation, start
+observability/saturation, start Lane 3, activate Cycle 3, add a worker, create
+provider priority, change evidence cutoffs, modify `CLOSE_EVIDENCE` deadline
+math, or authorize implementation before independent design acceptance.
+
+**Amended status:**
+`V2_9_8B_TIMELY_CLOSING_CONTEXT_PRODUCTION_DESIGN_AMENDED_PASS_READY_FOR_INDEPENDENT_ACCEPTANCE`.
