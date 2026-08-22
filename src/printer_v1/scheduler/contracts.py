@@ -41,6 +41,53 @@ JOB_PRIORITY_ORDER: tuple[JobKind, ...] = (
     JobKind.BACKUP_SOURCE_CHECK,
 )
 
+
+TRACK_FAST_JOB_KINDS = frozenset(
+    {
+        JobKind.TRACK_FAST_MICRO_EVENT,
+        JobKind.TRACK_FAST_FIRST_15M,
+        JobKind.TRACK_FAST_1H,
+        JobKind.TRACK_FAST_4H,
+    }
+)
+
+TRACK_NORMAL_JOB_KINDS = frozenset(
+    {
+        JobKind.TRACK_NORMAL_FIRST_15M,
+        JobKind.TRACK_NORMAL_1H,
+        JobKind.TRACK_NORMAL_4H,
+    }
+)
+
+DISCOVERY_JOB_KINDS = frozenset(
+    {
+        JobKind.DISCOVERY_REFRESH,
+        JobKind.PRE_ADMISSION_DISCOVERY_SELECTION,
+    }
+)
+
+
+def job_resource_category(job_kind: JobKind | str) -> JobKind:
+    """Return the canonical AGENTS resource-category representative.
+
+    The representative is the first member of that category already present
+    in ``JOB_PRIORITY_ORDER``.  This groups only the JobKinds that AGENTS names
+    as one resource category and does not create a second priority value.
+    """
+    kind = job_kind if isinstance(job_kind, JobKind) else JobKind(job_kind)
+    if kind in TRACK_FAST_JOB_KINDS:
+        return JobKind.TRACK_FAST_MICRO_EVENT
+    if kind in TRACK_NORMAL_JOB_KINDS:
+        return JobKind.TRACK_NORMAL_FIRST_15M
+    if kind in DISCOVERY_JOB_KINDS:
+        return JobKind.DISCOVERY_REFRESH
+    return kind
+
+
+JOB_RESOURCE_CATEGORY_ORDER: tuple[JobKind, ...] = tuple(
+    dict.fromkeys(job_resource_category(job_kind) for job_kind in JOB_PRIORITY_ORDER)
+)
+
 JOB_PRIORITY_VALUE = {
     job_kind: index + 1 for index, job_kind in enumerate(JOB_PRIORITY_ORDER)
 }

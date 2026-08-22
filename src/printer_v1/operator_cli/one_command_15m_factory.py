@@ -28,13 +28,21 @@ from printer_v1.operator_cli.git_provenance import (
     capture_git_provenance,
     validate_launch_provenance,
 )
-from printer_v1.scheduler.contracts import JobKind, LockResult
+from printer_v1.scheduler.contracts import (
+    JOB_RESOURCE_CATEGORY_ORDER,
+    JobKind,
+    LockResult,
+    job_resource_category,
+)
 from printer_v1.scheduler.scheduler import (
     cancel_job,
     claim_due_job,
     complete_job,
     enqueue_job,
     fail_job,
+)
+from printer_v1.scheduler.two_token_fairness import (
+    deterministic_token_fairness_key,
 )
 from printer_v1.sources.measured_transport import (
     FIRST_HOUR_SAFETY_CONTEXT_REQUEST_COUNT,
@@ -6616,114 +6624,93 @@ def load_report_only(db_path: str | Path, run_id: str) -> dict[str, Any]:
 def _select_next_pending_step(
     conn: sqlite3.Connection, *, run_id: str, now: datetime,
 ) -> sqlite3.Row | None:
-    """Select the next step, adding categorical fairness only for exact owned 4h work."""
-    fallback = conn.execute(
-        """SELECT s.* FROM printer_memory_factory_run_steps AS s
-           WHERE s.run_id=? AND s.step_status='PENDING'
-           ORDER BY s.scheduled_for,s.id LIMIT 1""",
-        (str(run_id),),
-    ).fetchone()
-    if fallback is None:
-        return None
-    due_at = datetime.fromisoformat(str(fallback["scheduled_for"]))
-    if due_at > now:
-        return fallback
-    owner = _owned_campaign_scheduler_row(
-        conn, scheduler_job_id=int(fallback["scheduler_job_id"])
-    )
-    if owner is None or not (
-        str(owner["work_scope"]) == "WINDOW_LIFECYCLE"
-        and str(owner["stage_id"]) == "WINDOW_4H"
-        and str(owner["target_category"]) == "CAMPAIGN_WINDOW"
-        and owner["window_id"] is not None
-        and owner["token_slot_id"] is not None
-        and owner["factory_run_id"] is not None
-        and str(owner["factory_run_id"]) == str(run_id)
-        and str(owner["target_identity"]) == str(owner["window_id"])
-        and str(fallback["step_kind"]).startswith("LONG_CONTINUATION_")
-    ):
-        return fallback
+    """Select through AGENTS category authority, then token fairness.
 
-    due_rows = conn.execute(
-        """SELECT s.*,sw.window_id,sw.token_slot_id,slot.slot_ordinal,
-                  j.id AS canonical_scheduler_job_id
+    S1 intentionally does not read or order by campaign ``deadline_at``.
+    """
+    candidates = conn.execute(
+        """SELECT s.id AS step_id,s.token_id,j.id AS scheduler_job_id,
+                  j.job_kind,j.scheduled_for,j.created_at
            FROM printer_memory_factory_run_steps AS s
            JOIN printer_scheduler_jobs AS j ON j.id=s.scheduler_job_id
-           JOIN printer_memory_factory_campaign_scheduler_work AS sw
-             ON sw.scheduler_job_id=j.id
-           JOIN printer_memory_factory_campaign_windows AS w
-             ON w.window_id=sw.window_id
-            AND w.campaign_id=sw.campaign_id
-            AND w.run_id=sw.run_id
-            AND w.cycle_id=sw.cycle_id
-            AND w.token_slot_id=sw.token_slot_id
-           JOIN printer_memory_factory_campaign_token_slots AS slot
-             ON slot.token_slot_id=sw.token_slot_id
-            AND slot.campaign_id=sw.campaign_id
-            AND slot.run_id=sw.run_id
-            AND slot.cycle_id=sw.cycle_id
            WHERE s.run_id=? AND s.step_status='PENDING'
-             AND s.step_kind IN ('LONG_CONTINUATION_SNAPSHOT','LONG_CONTINUATION_CLOSE')
-             AND j.status='PENDING' AND j.scheduled_for<=?
-             AND sw.ownership_contract_version='V2_STAGE_SCOPED'
-             AND sw.work_scope='WINDOW_LIFECYCLE'
-             AND sw.stage_id='WINDOW_4H'
-             AND sw.target_category='CAMPAIGN_WINDOW'
-             AND sw.target_identity=sw.window_id
-             AND sw.factory_run_id=s.run_id
-             AND w.window_kind='WINDOW_4H'
-           ORDER BY j.scheduled_for,j.id,slot.slot_ordinal""",
-        (str(run_id), now.isoformat()),
+             AND j.status IN ('PENDING','COOLDOWN')
+           ORDER BY j.scheduled_for,j.created_at,j.id,s.id""",
+        (str(run_id),),
     ).fetchall()
-    if not due_rows:
-        return fallback
-    closes = [
-        row for row in due_rows
-        if str(row["step_kind"]) == "LONG_CONTINUATION_CLOSE"
+    lawful = [
+        row for row in candidates
+        if JobKind(str(row["job_kind"])) is not JobKind.OPEN_PAPER_TRADE_MONITOR
     ]
-    if closes:
-        selected = min(
-            closes,
-            key=lambda row: (
-                str(row["scheduled_for"]),
-                int(row["canonical_scheduler_job_id"]),
-                int(row["slot_ordinal"]),
+    if not lawful:
+        return None
+
+    current_time = _scheduler_fairness_time(now)
+    due = [
+        row for row in lawful
+        if _scheduler_fairness_time(row["scheduled_for"]) <= current_time
+    ]
+    if not due:
+        selected_id = int(lawful[0]["step_id"])
+        return conn.execute(
+            "SELECT * FROM printer_memory_factory_run_steps WHERE id=?",
+            (selected_id,),
+        ).fetchone()
+
+    winning_category: JobKind | None = None
+    for category in JOB_RESOURCE_CATEGORY_ORDER:
+        if any(job_resource_category(str(row["job_kind"])) is category for row in due):
+            winning_category = category
+            break
+    if winning_category is None:
+        raise ValueError("due Scheduler work has no canonical AGENTS category")
+    category_rows = [
+        row for row in due
+        if job_resource_category(str(row["job_kind"])) is winning_category
+    ]
+
+    service_counts: dict[str, int] = {}
+    served_rows = conn.execute(
+        """SELECT s.token_id,j.job_kind
+           FROM printer_memory_factory_run_steps AS s
+           JOIN printer_scheduler_jobs AS j ON j.id=s.scheduler_job_id
+           WHERE s.run_id=? AND j.started_at IS NOT NULL""",
+        (str(run_id),),
+    ).fetchall()
+    for row in served_rows:
+        if job_resource_category(str(row["job_kind"])) is not winning_category:
+            continue
+        token_identity = _scheduler_fairness_token_id(row["token_id"])
+        service_counts[token_identity] = service_counts.get(token_identity, 0) + 1
+
+    selected = min(
+        category_rows,
+        key=lambda row: deterministic_token_fairness_key(
+            ordinary_service_count=service_counts.get(
+                _scheduler_fairness_token_id(row["token_id"]), 0
             ),
-        )
-    else:
-        service_counts: dict[str, int] = {}
-        for row in due_rows:
-            window_id = str(row["window_id"])
-            if window_id not in service_counts:
-                service_counts[window_id] = int(conn.execute(
-                    """SELECT COUNT(DISTINCT j2.id)
-                       FROM printer_memory_factory_campaign_scheduler_work AS sw2
-                       JOIN printer_scheduler_jobs AS j2
-                         ON j2.id=sw2.scheduler_job_id
-                       JOIN printer_memory_factory_run_steps AS s2
-                         ON s2.scheduler_job_id=j2.id
-                       WHERE sw2.window_id=?
-                         AND sw2.ownership_contract_version='V2_STAGE_SCOPED'
-                         AND sw2.work_scope='WINDOW_LIFECYCLE'
-                         AND sw2.stage_id='WINDOW_4H'
-                         AND s2.run_id=?
-                         AND s2.step_kind='LONG_CONTINUATION_SNAPSHOT'
-                         AND j2.started_at IS NOT NULL""",
-                    (window_id, str(run_id)),
-                ).fetchone()[0])
-        selected = min(
-            due_rows,
-            key=lambda row: (
-                service_counts[str(row["window_id"])],
-                int(row["canonical_scheduler_job_id"]),
-                int(row["slot_ordinal"]),
-            ),
-        )
-    selected_id = int(selected["id"])
+            scheduled_for=_scheduler_fairness_time(row["scheduled_for"]),
+            created_at=_scheduler_fairness_time(row["created_at"]),
+            stable_token_id=_scheduler_fairness_token_id(row["token_id"]),
+            stable_work_id=int(row["scheduler_job_id"]),
+        ),
+    )
+    selected_id = int(selected["step_id"])
     return conn.execute(
         "SELECT * FROM printer_memory_factory_run_steps WHERE id=?",
         (selected_id,),
     ).fetchone()
+
+
+def _scheduler_fairness_time(value: object) -> datetime:
+    parsed = datetime.fromisoformat(str(value))
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _scheduler_fairness_token_id(value: object) -> str:
+    return "" if value is None else str(value)
 
 
 def run_one_command_15m_factory(

@@ -189,6 +189,53 @@ def _normalize_time(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
 
 
+def deterministic_token_fairness_key(
+    *,
+    ordinary_service_count: int,
+    scheduled_for: datetime | None,
+    created_at: datetime | None,
+    stable_token_id: str,
+    stable_work_id: str | int,
+    cycle_ordinal: int | None = None,
+    slot_ordinal: int | None = None,
+) -> tuple[object, ...]:
+    """Return the reusable deterministic token/cycle fairness key.
+
+    Category selection and safety gates are deliberately outside this helper.
+    Cycle and slot ordinals are final tie-breaks only; omitting them uses a
+    stable sentinel and never manufactures ownership.
+    """
+    if ordinary_service_count < 0:
+        raise ValueError("negative_ordinary_service_count")
+    for label, ordinal in (
+        ("cycle_ordinal", cycle_ordinal),
+        ("slot_ordinal", slot_ordinal),
+    ):
+        if ordinal is not None and (type(ordinal) is not int or ordinal <= 0):
+            raise ValueError(f"invalid_{label}")
+    return (
+        ordinary_service_count,
+        _fairness_time_value(scheduled_for),
+        _fairness_time_value(created_at),
+        cycle_ordinal if cycle_ordinal is not None else 2**63 - 1,
+        slot_ordinal if slot_ordinal is not None else 2**63 - 1,
+        stable_token_id,
+        _stable_work_value(stable_work_id),
+    )
+
+
+def _fairness_time_value(value: datetime | None) -> str:
+    if value is None:
+        return "9999-12-31T23:59:59+00:00"
+    return _normalize_time(value).isoformat()
+
+
+def _stable_work_value(value: str | int) -> tuple[int, int | str]:
+    if type(value) is int:
+        return (0, value)
+    return (1, str(value))
+
+
 def _validated_slots(slots: tuple[TwoTokenSlot, ...]) -> dict[str, tuple[int, TwoTokenSlot]]:
     by_slot: dict[str, tuple[int, TwoTokenSlot]] = {}
     token_ids: set[str] = set()
@@ -263,13 +310,18 @@ def _selection_key(
     slot_index, slot = slot_by_id[item.token_slot_id]
     category = _category_value(item)
     deadline = _deadline_value(item) if category == 0 else "9999-12-31T23:59:59+00:00"
+    fairness = deterministic_token_fairness_key(
+        ordinary_service_count=slot.ordinary_service_count,
+        scheduled_for=item.scheduled_for,
+        created_at=item.created_at,
+        stable_token_id=slot.token_id,
+        stable_work_id=item.scheduler_work_id,
+        slot_ordinal=slot_index + 1,
+    )
     return (
         category,
         deadline,
-        slot.ordinary_service_count,
-        _created_value(item),
-        slot_index,
-        item.scheduler_work_id,
+        *fairness,
     )
 
 
@@ -289,12 +341,6 @@ def _deadline_value(item: SchedulerWorkItem) -> str:
     if item.scheduled_for is not None:
         return _normalize_time(item.scheduled_for).isoformat()
     return "9999-12-31T23:59:59+00:00"
-
-
-def _created_value(item: SchedulerWorkItem) -> str:
-    if item.created_at is None:
-        return "9999-12-31T23:59:59+00:00"
-    return _normalize_time(item.created_at).isoformat()
 
 
 def _exhausted_ceiling_reason(ceilings: CampaignSchedulerCeilings) -> str | None:

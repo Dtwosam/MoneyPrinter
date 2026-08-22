@@ -297,7 +297,7 @@ class StandardFourHourCollectionStateAccountingTests(unittest.TestCase):
         self.assertEqual(str(selected["tracking_lane"]), "TRACK_FAST")
         self.assertNotEqual(int(selected["id"]), int(token1_second["id"]))
 
-    def test_due_long_close_preempts_due_ordinary_long_snapshot(self) -> None:
+    def test_due_long_track_snapshot_preserves_agents_priority_over_close(self) -> None:
         self._isolate_4h_fairness_scope()
         ordinary = self._step(2, "LONG_CONTINUATION_SNAPSHOT", index=0)
         close = self._step(1, "LONG_CONTINUATION_CLOSE")
@@ -311,8 +311,8 @@ class StandardFourHourCollectionStateAccountingTests(unittest.TestCase):
                 (_iso(T1H), int(close["id"])),
             )
         selected = self._selector()
-        self.assertEqual(int(selected["id"]), int(close["id"]))
-        self.assertNotEqual(int(selected["id"]), int(ordinary["id"]))
+        self.assertEqual(int(selected["id"]), int(ordinary["id"]))
+        self.assertNotEqual(int(selected["id"]), int(close["id"]))
 
     def test_no_due_4h_work_preserves_earliest_future_pending_step(self) -> None:
         future = T1H + timedelta(hours=1)
