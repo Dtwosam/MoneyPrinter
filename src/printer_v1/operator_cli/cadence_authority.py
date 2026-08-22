@@ -141,23 +141,35 @@ def lookup_discovery_candidate_tracking_lane(
     *,
     token_id: int,
     pair_id: int,
+    discovery_batch_id: str,
 ) -> str:
-    """Exact persisted discovery classification for Cycle-1 handoff.
+    """Exact persisted discovery classification for the CURRENT discovery batch.
 
-    Reads the latest ``printer_discovery_candidates`` row for this token/pair.
-    Fail closed when no truthful TRACK_FAST/TRACK_NORMAL is persisted.
+    Requires ``discovery_batch_id`` + exact token/pair. Joins the candidate's
+    ``source_response_id`` through discovery work source links so a historical
+    FAST/NORMAL row from another batch/cycle cannot leak into this handoff.
+    Fail closed when no truthful current-batch TRACK_FAST/TRACK_NORMAL exists.
     """
+    batch_id = str(discovery_batch_id or "").strip()
+    if not batch_id:
+        raise CadenceAuthorityError("DISCOVERY_TRACKING_LANE_MISSING")
     row = connection.execute(
         """
-        SELECT tracking_lane
-        FROM printer_discovery_candidates
-        WHERE token_id = ?
-          AND pair_id = ?
-          AND tracking_lane IN ('TRACK_FAST', 'TRACK_NORMAL')
-        ORDER BY id DESC
+        SELECT dc.tracking_lane
+        FROM printer_discovery_candidates AS dc
+        JOIN printer_discovery_work_source_links AS wl
+          ON wl.source_response_id = dc.source_response_id
+        JOIN printer_discovery_work AS w
+          ON w.discovery_work_id = wl.discovery_work_id
+        WHERE w.discovery_batch_id = ?
+          AND dc.token_id = ?
+          AND dc.pair_id = ?
+          AND dc.tracking_lane IN ('TRACK_FAST', 'TRACK_NORMAL')
+          AND dc.source_response_id IS NOT NULL
+        ORDER BY dc.id DESC
         LIMIT 1
         """,
-        (int(token_id), int(pair_id)),
+        (batch_id, int(token_id), int(pair_id)),
     ).fetchone()
     if row is None:
         raise CadenceAuthorityError("DISCOVERY_TRACKING_LANE_MISSING")
@@ -175,7 +187,11 @@ def _classify_lane_from_source_payload(
     pair_address: str,
     captured_at: str,
 ) -> tuple[str, Any, Mapping[str, Any]] | None:
-    """Return (lane, classification, normalized_candidate) via approved classifier."""
+    """Return (lane, classification, normalized_candidate) via approved classifier.
+
+    Never invents ``source_channel`` / ``PUMPSWAP_GRADUATED``. Missing channel
+    leaves classifier defaults unchanged (no strengthened graduation floor).
+    """
     from printer_v1.discovery.classifier import (
         choose_tracking_lane,
         classify_discovery_candidate,
@@ -196,9 +212,8 @@ def _classify_lane_from_source_payload(
         candidate["source_name"] = source_name
         if not candidate.get("captured_at"):
             candidate["captured_at"] = captured_at
-        # Graduation / PumpSwap Cycle-1 observations use graduation channel floor.
-        if not candidate.get("source_channel"):
-            candidate["source_channel"] = "PUMPSWAP_GRADUATED"
+        # Preserve only an already-present source_channel from the payload.
+        # Do not invent PUMPSWAP_GRADUATED or any other channel.
         classification = classify_discovery_candidate(candidate)
         lane = choose_tracking_lane(candidate, classification)
         lane_value = None if lane is None else str(lane.value)
@@ -220,7 +235,11 @@ def _classify_cycle1_lane_from_batch_evidence(
     pair_id: int,
     now: str,
 ) -> str:
-    """Classify Cycle-1 lane from linked batch observation source payloads."""
+    """Classify Cycle-1 lane from linked batch observation source payloads.
+
+    Persists the resulting current-batch discovery_candidates row so subsequent
+    lookup is batch-scoped. Never fabricates source_channel provenance.
+    """
     from printer_v1.discovery.classifier import (
         choose_initial_lifecycle_state,
         build_priority_reason,
@@ -240,8 +259,11 @@ def _classify_cycle1_lane_from_batch_evidence(
         """,
         (discovery_batch_id, token_mint),
     ).fetchall()
+    saw_payload = False
     for row in rows:
         source_name = str(row["source_name"] or "")
+        if row["source_response_id"] is None:
+            continue
         payloads: list[Any] = []
         for raw in (row["normalized_payload_json"], row["factual_payload_json"]):
             if not raw:
@@ -253,6 +275,7 @@ def _classify_cycle1_lane_from_batch_evidence(
             payloads.append(parsed)
         captured_at = str(row["observed_at"] or now)
         for payload in payloads:
+            saw_payload = True
             wrapped: Mapping[str, Any] | None = None
             if isinstance(payload, list):
                 # DexScreener fixture/list bodies are often a bare list of pairs.
@@ -281,13 +304,13 @@ def _classify_cycle1_lane_from_batch_evidence(
             lane_value, classification, normalized = classified
             lifecycle_state = choose_initial_lifecycle_state(normalized, classification)
             priority_reason = build_priority_reason(normalized, classification)
+            channel = normalized.get("source_channel")
+            channel_reason = None
+            if isinstance(channel, str) and channel.strip():
+                channel_reason = "payload_source_channel"
             record_discovery_candidate(
                 connection,
-                source_response_id=(
-                    None
-                    if row["source_response_id"] is None
-                    else int(row["source_response_id"])
-                ),
+                source_response_id=int(row["source_response_id"]),
                 token_id=int(token_id),
                 pair_id=int(pair_id),
                 source_name=str(normalized.get("source_name") or source_name or "cycle1"),
@@ -299,10 +322,12 @@ def _classify_cycle1_lane_from_batch_evidence(
                 lifecycle_state=lifecycle_state,
                 tracking_lane=TokenLifecycleState(lane_value),
                 priority_reason=priority_reason,
-                source_channel=normalized.get("source_channel"),
-                source_channel_reason="cycle1_handoff_classification",
+                source_channel=channel if isinstance(channel, str) and channel.strip() else None,
+                source_channel_reason=channel_reason,
             )
             return lane_value
+    if saw_payload:
+        raise CadenceAuthorityError("DISCOVERY_LANE_PROVENANCE_MISSING")
     raise CadenceAuthorityError("DISCOVERY_TRACKING_LANE_MISSING")
 
 
@@ -321,26 +346,32 @@ def resolve_cycle1_handoff_tracking_lane(
 
     Order:
     1. candidate carrier lane already classified for this exact candidate;
-    2. persisted ``printer_discovery_candidates`` row for token/pair;
-    3. classify from current batch observation source evidence via
-       ``classify_discovery_candidate`` → ``choose_tracking_lane``, then persist;
+    2. persisted ``printer_discovery_candidates`` row bound to the CURRENT
+       ``discovery_batch_id`` (never latest historical token/pair row);
+    3. classify from current-batch observation source evidence via
+       ``classify_discovery_candidate`` → ``choose_tracking_lane``, then persist
+       under that batch's source_response linkage (no fabricated channel);
     4. fail closed.
     """
     direct = _as_valid_lane(candidate_tracking_lane)
     if direct is not None:
         return direct
+    batch_id = str(discovery_batch_id or "").strip()
+    if not batch_id:
+        raise CadenceAuthorityError("DISCOVERY_TRACKING_LANE_MISSING")
     try:
         return lookup_discovery_candidate_tracking_lane(
-            connection, token_id=token_id, pair_id=pair_id
+            connection,
+            token_id=token_id,
+            pair_id=pair_id,
+            discovery_batch_id=batch_id,
         )
     except CadenceAuthorityError:
         pass
-    if not discovery_batch_id:
-        raise CadenceAuthorityError("DISCOVERY_TRACKING_LANE_MISSING")
     timestamp = now or datetime.now(timezone.utc).isoformat()
     return _classify_cycle1_lane_from_batch_evidence(
         connection,
-        discovery_batch_id=str(discovery_batch_id),
+        discovery_batch_id=batch_id,
         token_mint=str(token_mint),
         pair_address=str(pair_address),
         token_id=int(token_id),

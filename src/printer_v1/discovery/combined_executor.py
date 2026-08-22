@@ -3777,6 +3777,27 @@ class CombinedPumpfunCampaignExecutor:
             validate_existing_slot_tracking_queue_for_handoff,
         )
 
+        slot_id = cycle_scoped_token_slot_id(
+            cycle_id=fixtures.cycle_id,
+            slot_ordinal=ordinal,
+        )
+        existing_slot = connection.execute(
+            """
+            SELECT token_slot_id, mint_identity, token_state, tracking_queue_id
+            FROM printer_memory_factory_campaign_token_slots
+            WHERE cycle_id = ? AND slot_ordinal = ?
+            """,
+            (fixtures.cycle_id, ordinal),
+        ).fetchone()
+        # Fail closed before any queue claim / FIRST_15M / token_status mutation
+        # when an existing slot cannot lawfully bind tracking authority.
+        if existing_slot is not None and existing_slot["tracking_queue_id"] is None:
+            raise CombinedDiscoveryError(
+                "EXISTING_SLOT_TRACKING_QUEUE_UNBOUND",
+                "existing slot tracking_queue_id is NULL; cannot claim, "
+                "enqueue FIRST_15M, or activate WINDOW_15M",
+            )
+
         # Exact Cycle-1 lane from truthful discovery classification — never
         # default NORMAL/FAST.
         try:
@@ -3853,19 +3874,6 @@ class CombinedPumpfunCampaignExecutor:
         if handoff.requalification_eligible and not fresh_requalification:
             raise CombinedDiscoveryError(handoff.category)
 
-        slot_id = cycle_scoped_token_slot_id(
-            cycle_id=fixtures.cycle_id,
-            slot_ordinal=ordinal,
-        )
-        existing_slot = connection.execute(
-            """
-            SELECT token_slot_id, mint_identity, token_state, tracking_queue_id
-            FROM printer_memory_factory_campaign_token_slots
-            WHERE cycle_id = ? AND slot_ordinal = ?
-            """,
-            (fixtures.cycle_id, ordinal),
-        ).fetchone()
-
         if existing_slot is None:
             created, queue_id = claim_tracking_item(
                 connection,
@@ -3939,68 +3947,21 @@ class CombinedPumpfunCampaignExecutor:
                 if fixtures.mode == "INITIAL":
                     raise CombinedDiscoveryError("CONFLICTING_SLOT")
             slot_id = existing_slot["token_slot_id"]
-            existing_queue_id = existing_slot["tracking_queue_id"]
-            terminal_vacant = existing_slot["token_state"] in {
-                "FAILED",
-                "COOLDOWN",
-                "ARCHIVED",
-                "MANUAL_REVIEW",
-            }
-            if existing_queue_id is None and terminal_vacant:
-                # Migration 032 makes tracking_queue_id identity-immutable, so a
-                # terminal vacant slot with NULL binding cannot be rebound here.
-                # Historical replacement claims a fresh exact-lane queue for the
-                # FIRST_15M job without rewriting slot identity fields.
-                created, queue_id = claim_tracking_item(
+            # NULL binding already rejected above. Validate the immutable bound
+            # queue before FIRST_15M / WINDOW_15M_ACTIVE.
+            try:
+                queue_id = validate_existing_slot_tracking_queue_for_handoff(
                     connection,
-                    token_id=token_id,
-                    pair_id=pair_id,
-                    tracking_lane=tracking_lane,
-                    tracking_action=tracking_action,
-                    priority_reason="combined_discovery_handoff",
-                    next_check_at=datetime.fromisoformat(now.replace("Z", "+00:00")),
-                    source_status=SourceStatus.COMPLETE,
-                    data_quality_label=DataQualityLabel.CLEAN_DATA,
-                    assessed_at=datetime.fromisoformat(now.replace("Z", "+00:00")),
-                    fresh_evidence_requalification=fresh_requalification,
-                    requalification_lineage={
-                        "campaign_id": command.campaign_id,
-                        "run_id": command.run_id,
-                        "cycle_id": fixtures.cycle_id,
-                        "discovery_batch_id": discovery_batch_id,
-                        "selection_batch_id": selection_batch_id,
-                        "fresh_evidence_evaluated_at": now,
-                        "holder_source_name": holder_fact.get("source_name"),
-                        "holder_evidence_reason": holder_fact.get("reason"),
-                    },
+                    token_slot_id=str(slot_id),
+                    cycle_id=fixtures.cycle_id,
+                    token_row_id=token_id,
+                    pair_row_id=pair_id,
                 )
-                if not created or queue_id is None:
-                    handoff = assess_tracking_handoff(
-                        connection,
-                        token_id=token_id,
-                        pair_id=pair_id,
-                        tracking_lane=tracking_lane,
-                        assessed_at=datetime.fromisoformat(now.replace("Z", "+00:00")),
-                    )
-                    raise CombinedDiscoveryError(
-                        handoff.reason_code or HANDOFF_UNSUPPORTED_STATE
-                    )
-            else:
-                # Already-bound slots: validate immutable queue authority before
-                # FIRST_15M / WINDOW_15M_ACTIVE. Do not invent or rebind lane.
-                try:
-                    queue_id = validate_existing_slot_tracking_queue_for_handoff(
-                        connection,
-                        token_slot_id=str(slot_id),
-                        cycle_id=fixtures.cycle_id,
-                        token_row_id=token_id,
-                        pair_row_id=pair_id,
-                    )
-                except CadenceAuthorityError as exc:
-                    raise CombinedDiscoveryError(
-                        "EXISTING_SLOT_TRACKING_AUTHORITY_INVALID",
-                        str(exc),
-                    ) from exc
+            except CadenceAuthorityError as exc:
+                raise CombinedDiscoveryError(
+                    "EXISTING_SLOT_TRACKING_AUTHORITY_INVALID",
+                    str(exc),
+                ) from exc
 
         if force_scheduler_failure:
             raise CombinedDiscoveryError("FIRST_15M_JOB_FAILED", "injected scheduler failure")

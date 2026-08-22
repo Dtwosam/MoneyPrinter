@@ -966,7 +966,12 @@ class IsolatedCombinedDiscoveryProof(unittest.TestCase):
             source_governor=self.ports[0],
             central_scheduler=self.ports[1],
         )
-        self.assertEqual(ok_result.terminal_status, "COMPLETED")
+        # Existing terminal vacant slot with tracking_queue_id=NULL cannot claim a
+        # replacement queue or enqueue FIRST_15M (immutable bind invariant).
+        self.assertEqual(ok_result.terminal_status, "FAILED")
+        self.assertEqual(
+            ok_result.first_terminal_cause, "EXISTING_SLOT_TRACKING_QUEUE_UNBOUND"
+        )
         connection = self._reopen()
         try:
             healthy = connection.execute(
@@ -978,14 +983,26 @@ class IsolatedCombinedDiscoveryProof(unittest.TestCase):
             ).fetchone()
             self.assertEqual(healthy["mint_identity"], MINT_A)
             self.assertEqual(healthy["token_state"], "SELECTED")
-            # Exactly one vacancy fill for this cycle (slot 2 updated or new handoff link).
             selected_links = connection.execute(
                 """
                 SELECT COUNT(*) FROM printer_discovery_selected_item_links
                 WHERE cycle_id='cycle-replace-ok'
                 """
             ).fetchone()[0]
-            self.assertEqual(selected_links, 1)
+            self.assertEqual(selected_links, 0)
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM printer_tracking_queue"
+                ).fetchone()[0],
+                0,
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM printer_scheduler_jobs "
+                    "WHERE job_kind LIKE '%FIRST_15M%'"
+                ).fetchone()[0],
+                0,
+            )
         finally:
             connection.close()
 
