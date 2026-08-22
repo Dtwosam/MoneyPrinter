@@ -9,6 +9,9 @@ import pytest
 
 from printer_v1.db import apply_migrations
 from printer_v1.operator_cli import one_command_15m_factory as factory
+from printer_v1.operator_cli.cadence_authority import (
+    claim_tracking_authority_for_slot_insert,
+)
 from printer_v1.scheduler.contracts import JOB_PRIORITY_VALUE, JobKind
 from printer_v1.scheduler.evidence_deadline import (
     project_last_actual_capture_deadline,
@@ -223,16 +226,36 @@ def _attach_exact_owner(
     *,
     step: sqlite3.Row,
     window_kind: str,
+    canonical_tracking_lane: str | None = None,
+    bind_tracking_queue: bool = True,
 ) -> None:
     token_id = int(step["token_id"])
     slot_id = f"slot-{token_id}"
     window_id = f"window-{token_id}-{window_kind}"
+    existing_slot = conn.execute(
+        "SELECT tracking_queue_id FROM printer_memory_factory_campaign_token_slots "
+        "WHERE token_slot_id=?",
+        (slot_id,),
+    ).fetchone()
+    tracking_queue_id = None
+    if existing_slot is not None:
+        tracking_queue_id = existing_slot["tracking_queue_id"]
+    elif bind_tracking_queue:
+        queue_lane = canonical_tracking_lane or str(step["tracking_lane"] or "")
+        tracking_queue_id = claim_tracking_authority_for_slot_insert(
+            conn,
+            token_row_id=token_id,
+            pair_row_id=token_id + 1000,
+            tracking_lane=queue_lane,
+            now=NOW,
+        )
     conn.execute(
         """INSERT OR IGNORE INTO printer_memory_factory_campaign_token_slots(
                token_slot_id,campaign_id,run_id,cycle_id,slot_ordinal,
                token_identity,token_row_id,mint_identity,pair_identity,pair_row_id,
-               lifecycle_identity,token_state,created_at,updated_at
-           ) VALUES (?,'campaign','campaign-run','cycle',?,?,?,?,?,?,?,'SELECTED',?,?)""",
+               lifecycle_identity,tracking_queue_id,token_state,created_at,updated_at
+           ) VALUES (?,'campaign','campaign-run','cycle',?,?,?,?,?,?,?,?,
+                     'SELECTED',?,?)""",
         (
             slot_id,
             token_id,
@@ -242,6 +265,7 @@ def _attach_exact_owner(
             f"pair-{token_id}",
             token_id + 1000,
             f"lifecycle-{token_id}",
+            tracking_queue_id,
             NOW.isoformat(),
             NOW.isoformat(),
         ),
@@ -304,6 +328,8 @@ def _add_candidate_with_prior_actual(
     candidate_due: datetime,
     candidate_kind: str = "SNAPSHOT",
     window_kind: str = "WINDOW_15M",
+    canonical_tracking_lane: str | None = None,
+    bind_tracking_queue: bool = True,
 ) -> sqlite3.Row:
     prior = _add_step(
         conn,
@@ -323,8 +349,12 @@ def _add_candidate_with_prior_actual(
         scheduled_for=candidate_due,
         step_kind=candidate_kind,
     )
-    _attach_exact_owner(conn, step=prior, window_kind=window_kind)
-    _attach_exact_owner(conn, step=candidate, window_kind=window_kind)
+    owner_args = {
+        "canonical_tracking_lane": canonical_tracking_lane,
+        "bind_tracking_queue": bind_tracking_queue,
+    }
+    _attach_exact_owner(conn, step=prior, window_kind=window_kind, **owner_args)
+    _attach_exact_owner(conn, step=candidate, window_kind=window_kind, **owner_args)
     return candidate
 
 
@@ -413,6 +443,172 @@ def test_exact_resolver_missing_prior_actual_never_uses_persisted_nominal_deadli
     assert projection.reason_code == "MISSING_PRIOR_ACTUAL_CAPTURE"
     assert projection.deadline_at is None
     assert projection.block_boundary_at is None
+
+
+@pytest.mark.parametrize(
+    ("canonical_lane", "expected_gap_seconds", "expected_block_seconds"),
+    (
+        ("TRACK_FAST", 90, 120),
+        ("TRACK_NORMAL", 180, 240),
+    ),
+)
+def test_exact_bound_queue_lane_is_canonical_deadline_authority(
+    connection: sqlite3.Connection,
+    canonical_lane: str,
+    expected_gap_seconds: int,
+    expected_block_seconds: int,
+) -> None:
+    prior_actual = NOW - timedelta(seconds=45)
+    candidate = _add_candidate_with_prior_actual(
+        connection,
+        token_id=1,
+        kind=(
+            JobKind.TRACK_FAST_FIRST_15M
+            if canonical_lane == "TRACK_FAST"
+            else JobKind.TRACK_NORMAL_FIRST_15M
+        ),
+        tracking_lane=canonical_lane,
+        canonical_tracking_lane=canonical_lane,
+        prior_actual=prior_actual,
+        candidate_due=NOW - timedelta(seconds=1),
+    )
+
+    projection = project_scheduler_job_evidence_deadline(
+        connection,
+        factory_run_id="factory-run",
+        scheduler_job_id=int(candidate["scheduler_job_id"]),
+    )
+
+    assert projection.status == "RESOLVED"
+    assert projection.deadline_at == prior_actual + timedelta(
+        seconds=expected_gap_seconds
+    )
+    assert projection.block_boundary_at == prior_actual + timedelta(
+        seconds=expected_block_seconds
+    )
+
+
+def test_null_slot_tracking_queue_binding_fails_closed_unknown(
+    connection: sqlite3.Connection,
+) -> None:
+    candidate = _add_candidate_with_prior_actual(
+        connection,
+        token_id=1,
+        kind=JobKind.TRACK_FAST_FIRST_15M,
+        tracking_lane="TRACK_FAST",
+        bind_tracking_queue=False,
+        prior_actual=NOW - timedelta(seconds=45),
+        candidate_due=NOW - timedelta(seconds=1),
+    )
+
+    projection = project_scheduler_job_evidence_deadline(
+        connection,
+        factory_run_id="factory-run",
+        scheduler_job_id=int(candidate["scheduler_job_id"]),
+    )
+
+    assert projection.status == "UNKNOWN"
+    assert projection.reason_code == "TRACKING_QUEUE_BINDING_MISSING"
+    assert projection.deadline_at is None
+
+
+@pytest.mark.parametrize(
+    ("carrier_lane", "canonical_lane"),
+    (
+        ("TRACK_FAST", "TRACK_NORMAL"),
+        ("TRACK_NORMAL", "TRACK_FAST"),
+    ),
+)
+def test_opposite_valid_carrier_and_canonical_queue_lane_fail_closed(
+    connection: sqlite3.Connection,
+    carrier_lane: str,
+    canonical_lane: str,
+) -> None:
+    candidate = _add_candidate_with_prior_actual(
+        connection,
+        token_id=1,
+        kind=JobKind.TRACK_FAST_FIRST_15M,
+        tracking_lane=carrier_lane,
+        canonical_tracking_lane=canonical_lane,
+        prior_actual=NOW - timedelta(seconds=45),
+        candidate_due=NOW - timedelta(seconds=1),
+    )
+
+    projection = project_scheduler_job_evidence_deadline(
+        connection,
+        factory_run_id="factory-run",
+        scheduler_job_id=int(candidate["scheduler_job_id"]),
+    )
+
+    assert projection.status == "UNKNOWN"
+    assert projection.reason_code == "CADENCE_EVIDENCE_CONFLICT"
+    assert projection.deadline_at is None
+
+
+def test_campaign_window_token_pair_mismatch_fails_closed(
+    connection: sqlite3.Connection,
+) -> None:
+    candidate = _add_candidate_with_prior_actual(
+        connection,
+        token_id=1,
+        kind=JobKind.TRACK_FAST_FIRST_15M,
+        tracking_lane="TRACK_FAST",
+        canonical_tracking_lane="TRACK_FAST",
+        prior_actual=NOW - timedelta(seconds=45),
+        candidate_due=NOW - timedelta(seconds=1),
+    )
+    # The production schema prevents this corruption. Drop only the disposable
+    # fixture's immutability trigger so the consumer-level fail-closed check is
+    # independently exercised against a pre-existing malformed row.
+    connection.execute(
+        "INSERT INTO printer_pairs(id,token_id,pair_address) "
+        "VALUES (2001,1,'other-pair-1')"
+    )
+    connection.execute("DROP TRIGGER printer_campaign_window_identity_immutable")
+    connection.execute(
+        "UPDATE printer_memory_factory_campaign_windows SET pair_row_id=2001 "
+        "WHERE window_id='window-1-WINDOW_15M'"
+    )
+    connection.commit()
+
+    projection = project_scheduler_job_evidence_deadline(
+        connection,
+        factory_run_id="factory-run",
+        scheduler_job_id=int(candidate["scheduler_job_id"]),
+    )
+
+    assert projection.status == "UNKNOWN"
+    assert projection.reason_code == "CAMPAIGN_WINDOW_SLOT_IDENTITY_MISMATCH"
+    assert projection.deadline_at is None
+
+
+def test_missing_current_carrier_uses_sufficient_persisted_queue_authority(
+    connection: sqlite3.Connection,
+) -> None:
+    prior_actual = NOW - timedelta(seconds=45)
+    candidate = _add_candidate_with_prior_actual(
+        connection,
+        token_id=1,
+        kind=JobKind.TRACK_NORMAL_FIRST_15M,
+        tracking_lane="TRACK_NORMAL",
+        canonical_tracking_lane="TRACK_NORMAL",
+        prior_actual=prior_actual,
+        candidate_due=NOW - timedelta(seconds=1),
+    )
+    connection.execute(
+        "UPDATE printer_memory_factory_run_steps SET tracking_lane=NULL WHERE id=?",
+        (int(candidate["id"]),),
+    )
+    connection.commit()
+
+    projection = project_scheduler_job_evidence_deadline(
+        connection,
+        factory_run_id="factory-run",
+        scheduler_job_id=int(candidate["scheduler_job_id"]),
+    )
+
+    assert projection.status == "RESOLVED"
+    assert projection.deadline_at == prior_actual + timedelta(seconds=180)
 
 
 def test_exact_resolver_uses_actual_capture_even_if_later_step_work_failed(

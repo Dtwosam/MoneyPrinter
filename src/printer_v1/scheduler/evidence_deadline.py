@@ -12,6 +12,10 @@ from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 import sqlite3
 
+from printer_v1.operator_cli.cadence_authority import (
+    CADENCE_AUTHORITY_RESOLVED,
+    resolve_campaign_slot_cadence_authority,
+)
 from printer_v1.snapshots.cadence_policy import get_policy
 
 
@@ -109,9 +113,10 @@ def project_scheduler_job_evidence_deadline(
     """Resolve and project from the prior exact Scheduler-owned ACTUAL capture.
 
     The current job must have one exact V2 WINDOW_LIFECYCLE owner.  Candidate
-    prior captures must share campaign/run/cycle/token-slot/factory-run,
-    token/pair/lane, and precede the current Scheduler plan position.  A token
-    snapshot without that complete linkage is never used as a substitute.
+    prior captures must share the exact campaign window, campaign/run/cycle/
+    token-slot/factory-run, canonical Lane-1 cadence authority, token/pair, and
+    precede the current Scheduler plan position. A token snapshot without that
+    complete linkage is never used as a substitute.
     """
     current_rows = connection.execute(
         """SELECT s.id AS step_id,s.run_id AS factory_run_id,s.step_kind,
@@ -155,9 +160,32 @@ def project_scheduler_job_evidence_deadline(
         or current["pair_id"] is None
         or int(current["token_id"]) != int(current["slot_token_id"])
         or int(current["pair_id"]) != int(current["slot_pair_id"])
-        or not str(current["tracking_lane"] or "")
     ):
         return _unknown("EXACT_SCHEDULER_WORK_IDENTITY_MISMATCH")
+
+    cadence_authority = resolve_campaign_slot_cadence_authority(
+        connection,
+        campaign_window_id=str(current["window_id"]),
+        campaign_id=str(current["campaign_id"]),
+        campaign_run_id=str(current["campaign_run_id"]),
+        cycle_id=str(current["cycle_id"]),
+        token_slot_id=str(current["token_slot_id"]),
+    )
+    if (
+        cadence_authority.status != CADENCE_AUTHORITY_RESOLVED
+        or cadence_authority.tracking_lane is None
+        or cadence_authority.tracking_queue_id is None
+    ):
+        return _unknown(
+            cadence_authority.reason_code or "CADENCE_AUTHORITY_UNKNOWN"
+        )
+    canonical_tracking_lane = str(cadence_authority.tracking_lane)
+    carrier_tracking_lane = str(current["tracking_lane"] or "").strip()
+    if (
+        carrier_tracking_lane in {"TRACK_FAST", "TRACK_NORMAL"}
+        and carrier_tracking_lane != canonical_tracking_lane
+    ):
+        return _unknown("CADENCE_EVIDENCE_CONFLICT")
 
     try:
         current_scheduled_for = _utc(str(current["scheduled_for"]))
@@ -179,12 +207,21 @@ def project_scheduler_job_evidence_deadline(
             AND pw.run_id=psw.run_id
             AND pw.cycle_id=psw.cycle_id
             AND pw.token_slot_id=psw.token_slot_id
+           JOIN printer_memory_factory_campaign_token_slots AS pslot
+             ON pslot.token_slot_id=psw.token_slot_id
+            AND pslot.campaign_id=psw.campaign_id
+            AND pslot.run_id=psw.run_id
+            AND pslot.cycle_id=psw.cycle_id
            WHERE ps.run_id=? AND ps.snapshot_id IS NOT NULL
              AND ps.token_id=? AND ps.pair_id=? AND ps.tracking_lane=?
              AND ts.token_id=ps.token_id AND ts.pair_id=ps.pair_id
              AND ts.tracking_lane=ps.tracking_lane
              AND psw.campaign_id=? AND psw.run_id=? AND psw.cycle_id=?
-             AND psw.token_slot_id=? AND psw.factory_run_id=ps.run_id
+             AND psw.token_slot_id=? AND psw.window_id=?
+             AND psw.factory_run_id=ps.run_id
+             AND pw.token_row_id=? AND pw.pair_row_id=?
+             AND pslot.token_row_id=? AND pslot.pair_row_id=?
+             AND pslot.tracking_queue_id=?
              AND psw.ownership_contract_version='V2_STAGE_SCOPED'
              AND psw.work_scope='WINDOW_LIFECYCLE'
              AND psw.target_category='CAMPAIGN_WINDOW'
@@ -194,11 +231,17 @@ def project_scheduler_job_evidence_deadline(
             str(factory_run_id),
             int(current["token_id"]),
             int(current["pair_id"]),
-            str(current["tracking_lane"]),
+            canonical_tracking_lane,
             str(current["campaign_id"]),
             str(current["campaign_run_id"]),
             str(current["cycle_id"]),
             str(current["token_slot_id"]),
+            str(current["window_id"]),
+            int(current["token_id"]),
+            int(current["pair_id"]),
+            int(current["token_id"]),
+            int(current["pair_id"]),
+            int(cadence_authority.tracking_queue_id),
         ),
     ).fetchall()
 
@@ -226,7 +269,7 @@ def project_scheduler_job_evidence_deadline(
     return project_last_actual_capture_deadline(
         last_actual_snapshot_captured_at=last_actual,
         window_kind=str(current["window_kind"]),
-        tracking_lane=str(current["tracking_lane"]),
+        tracking_lane=canonical_tracking_lane,
         forced_close=forced_close,
         window_end_at=current_scheduled_for if forced_close else None,
     )

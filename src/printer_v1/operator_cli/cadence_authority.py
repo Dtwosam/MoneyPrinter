@@ -396,21 +396,63 @@ def resolve_cycle1_handoff_tracking_lane(
 def resolve_campaign_slot_cadence_authority(
     connection: sqlite3.Connection,
     *,
-    memory_window_row_id: int,
+    memory_window_row_id: int | None = None,
+    campaign_window_id: str | None = None,
+    campaign_id: str | None = None,
+    campaign_run_id: str | None = None,
+    cycle_id: str | None = None,
+    token_slot_id: str | None = None,
     snapshots: Sequence[Mapping[str, Any]] | None = None,
 ) -> CadenceAuthorityResolution:
-    """Resolve cadence lane from exact campaign-slot tracking ownership."""
-    window_id = int(memory_window_row_id)
-    campaign_window = connection.execute(
-        """
-        SELECT window_id, campaign_id, run_id, cycle_id, token_slot_id,
-               token_row_id, pair_row_id
-        FROM printer_memory_factory_campaign_windows
-        WHERE memory_window_row_id = ?
-        LIMIT 1
-        """,
-        (window_id,),
-    ).fetchone()
+    """Resolve cadence lane from exact campaign-window/slot tracking ownership.
+
+    Closed memory evaluation selects by ``memory_window_row_id``. Active
+    Scheduler consumers that do not yet have a physical memory-window row may
+    instead supply the complete immutable campaign-window identity. Both paths
+    enter the same Lane-1 authority chain below.
+    """
+    exact_selector = (
+        campaign_window_id,
+        campaign_id,
+        campaign_run_id,
+        cycle_id,
+        token_slot_id,
+    )
+    has_exact_selector = all(value is not None for value in exact_selector)
+    if memory_window_row_id is not None and has_exact_selector:
+        return CadenceAuthorityResolution(
+            status=CADENCE_AUTHORITY_UNKNOWN,
+            tracking_lane=None,
+            reason_code="CADENCE_AUTHORITY_SELECTOR_AMBIGUOUS",
+        )
+    if memory_window_row_id is not None:
+        campaign_window = connection.execute(
+            """
+            SELECT window_id, campaign_id, run_id, cycle_id, token_slot_id,
+                   token_row_id, pair_row_id, memory_window_row_id
+            FROM printer_memory_factory_campaign_windows
+            WHERE memory_window_row_id = ?
+            LIMIT 1
+            """,
+            (int(memory_window_row_id),),
+        ).fetchone()
+    elif has_exact_selector:
+        campaign_window = connection.execute(
+            """
+            SELECT window_id, campaign_id, run_id, cycle_id, token_slot_id,
+                   token_row_id, pair_row_id, memory_window_row_id
+            FROM printer_memory_factory_campaign_windows
+            WHERE window_id = ?
+              AND campaign_id = ?
+              AND run_id = ?
+              AND cycle_id = ?
+              AND token_slot_id = ?
+            LIMIT 1
+            """,
+            tuple(str(value) for value in exact_selector),
+        ).fetchone()
+    else:
+        campaign_window = None
     if campaign_window is None:
         return CadenceAuthorityResolution(
             status=CADENCE_AUTHORITY_UNKNOWN,
@@ -534,10 +576,15 @@ def resolve_campaign_slot_cadence_authority(
     token_lane = _as_valid_lane(token_status)
     compatibility_missing = token_lane is None
 
-    memory_window = connection.execute(
-        "SELECT supporting_context_json FROM printer_memory_windows WHERE id = ?",
-        (window_id,),
-    ).fetchone()
+    physical_window_id = campaign_window["memory_window_row_id"]
+    memory_window = (
+        None
+        if physical_window_id is None
+        else connection.execute(
+            "SELECT supporting_context_json FROM printer_memory_windows WHERE id = ?",
+            (int(physical_window_id),),
+        ).fetchone()
+    )
     context_lane = _parse_supporting_context_lane(
         None if memory_window is None else memory_window[0]
     )
