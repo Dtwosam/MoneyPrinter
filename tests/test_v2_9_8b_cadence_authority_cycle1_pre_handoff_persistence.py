@@ -348,3 +348,284 @@ def test_persist_fast_then_resolve_consumer_no_extra_row(conn: sqlite3.Connectio
         conn.execute("SELECT COUNT(*) FROM printer_discovery_candidates").fetchone()[0]
         == count
     )
+
+
+def _merged(mint: str, pair: str, *, tracking_lane: str | None):
+    from printer_v1.discovery.combined_executor import _Merged
+
+    return _Merged(
+        merged_candidate_id=f"cand:{mint}",
+        mint=mint,
+        market_identity=f"solana:pumpswap:{pair}",
+        lifecycle="PUMPSWAP_GRADUATED_CONFIRMED",
+        channels={"ACTIVE_PUMPFUN"},
+        observation_ids=["obs-1"],
+        conflicts=[],
+        gaps=[],
+        origin_state="CONFIRMED",
+        pumpswap_state="CONFIRMED",
+        eligible=True,
+        tracking_lane=tracking_lane,
+    )
+
+
+def _executor():
+    from printer_v1.discovery.combined_executor import (
+        CombinedDiscoveryFixtures,
+        CombinedPumpfunCampaignExecutor,
+    )
+
+    fixtures = CombinedDiscoveryFixtures(
+        cycle_id="cycle-1",
+        cycle_cutoff=NOW.isoformat(),
+        campaign_selection_seed="seed",
+        provider_contract_versions={"dexscreener": "test"},
+        git_provenance_identity="git-test",
+        evaluated_at=NOW.isoformat(),
+    )
+    return CombinedPumpfunCampaignExecutor(fixtures)
+
+
+def test_prepare_does_not_mutate_candidate_tracking_lane(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        "INSERT INTO printer_tokens(id,token_mint,chain) VALUES (1,'mint-c','solana')"
+    )
+    conn.execute(
+        "INSERT INTO printer_pairs(id,token_id,pair_address,base_token_mint) "
+        "VALUES (101,1,'pair-c','mint-c')"
+    )
+    _seed_batch_market_observation(
+        conn,
+        mint="mint-c",
+        pair="pair-c",
+        liquidity_usd=1500,
+        volume_5m=50,
+        txns_5m=2,
+    )
+    conn.commit()
+    candidate = _merged("mint-c", "pair-c", tracking_lane="TRACK_FAST")
+    before = candidate.tracking_lane
+    _executor()._prepare_cycle1_persisted_lane_before_handoff(
+        conn,
+        discovery_batch_id=BATCH,
+        candidate=candidate,
+        now=NOW.isoformat(),
+    )
+    assert candidate.tracking_lane == before == "TRACK_FAST"
+
+
+def test_a_carrier_fast_persisted_normal_conflicts_no_opening(
+    conn: sqlite3.Connection,
+) -> None:
+    from printer_v1.operator_cli.cadence_authority import CadenceAuthorityError
+
+    conn.execute(
+        "INSERT INTO printer_tokens(id,token_mint,chain) VALUES (1,'mint-a','solana')"
+    )
+    conn.execute(
+        "INSERT INTO printer_pairs(id,token_id,pair_address,base_token_mint) "
+        "VALUES (101,1,'pair-a','mint-a')"
+    )
+    _seed_batch_market_observation(
+        conn,
+        mint="mint-a",
+        pair="pair-a",
+        liquidity_usd=1500,
+        volume_5m=50,
+        txns_5m=2,
+    )
+    conn.commit()
+    candidate = _merged("mint-a", "pair-a", tracking_lane="TRACK_FAST")
+    queues_before = conn.execute("SELECT COUNT(*) FROM printer_tracking_queue").fetchone()[0]
+    jobs_before = conn.execute(
+        "SELECT COUNT(*) FROM printer_scheduler_jobs WHERE job_kind LIKE '%FIRST_15M%'"
+    ).fetchone()[0]
+    _executor()._prepare_cycle1_persisted_lane_before_handoff(
+        conn,
+        discovery_batch_id=BATCH,
+        candidate=candidate,
+        now=NOW.isoformat(),
+    )
+    assert candidate.tracking_lane == "TRACK_FAST"
+    with pytest.raises(CadenceAuthorityError, match="DISCOVERY_TRACKING_LANE_CONFLICT"):
+        resolve_cycle1_handoff_tracking_lane(
+            conn,
+            token_id=1,
+            pair_id=101,
+            token_mint="mint-a",
+            pair_address="pair-a",
+            discovery_batch_id=BATCH,
+            candidate_tracking_lane=candidate.tracking_lane,
+        )
+    assert conn.execute("SELECT COUNT(*) FROM printer_tracking_queue").fetchone()[0] == queues_before
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM printer_scheduler_jobs WHERE job_kind LIKE '%FIRST_15M%'"
+        ).fetchone()[0]
+        == jobs_before
+    )
+
+
+def test_b_carrier_normal_persisted_fast_conflicts(conn: sqlite3.Connection) -> None:
+    from printer_v1.operator_cli.cadence_authority import CadenceAuthorityError
+
+    conn.execute(
+        "INSERT INTO printer_tokens(id,token_mint,chain) VALUES (1,'mint-b','solana')"
+    )
+    conn.execute(
+        "INSERT INTO printer_pairs(id,token_id,pair_address,base_token_mint) "
+        "VALUES (101,1,'pair-b','mint-b')"
+    )
+    _seed_batch_market_observation(
+        conn,
+        mint="mint-b",
+        pair="pair-b",
+        liquidity_usd=6000,
+        volume_5m=2000,
+        txns_5m=20,
+    )
+    conn.commit()
+    candidate = _merged("mint-b", "pair-b", tracking_lane="TRACK_NORMAL")
+    _executor()._prepare_cycle1_persisted_lane_before_handoff(
+        conn,
+        discovery_batch_id=BATCH,
+        candidate=candidate,
+        now=NOW.isoformat(),
+    )
+    assert candidate.tracking_lane == "TRACK_NORMAL"
+    with pytest.raises(CadenceAuthorityError, match="DISCOVERY_TRACKING_LANE_CONFLICT"):
+        resolve_cycle1_handoff_tracking_lane(
+            conn,
+            token_id=1,
+            pair_id=101,
+            token_mint="mint-b",
+            pair_address="pair-b",
+            discovery_batch_id=BATCH,
+            candidate_tracking_lane=candidate.tracking_lane,
+        )
+
+
+def test_c_carrier_fast_persisted_fast_passes(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        "INSERT INTO printer_tokens(id,token_mint,chain) VALUES (1,'mint-cf','solana')"
+    )
+    conn.execute(
+        "INSERT INTO printer_pairs(id,token_id,pair_address,base_token_mint) "
+        "VALUES (101,1,'pair-cf','mint-cf')"
+    )
+    _seed_batch_market_observation(
+        conn,
+        mint="mint-cf",
+        pair="pair-cf",
+        liquidity_usd=6000,
+        volume_5m=2000,
+        txns_5m=20,
+    )
+    conn.commit()
+    candidate = _merged("mint-cf", "pair-cf", tracking_lane="TRACK_FAST")
+    _executor()._prepare_cycle1_persisted_lane_before_handoff(
+        conn,
+        discovery_batch_id=BATCH,
+        candidate=candidate,
+        now=NOW.isoformat(),
+    )
+    assert candidate.tracking_lane == "TRACK_FAST"
+    assert (
+        resolve_cycle1_handoff_tracking_lane(
+            conn,
+            token_id=1,
+            pair_id=101,
+            token_mint="mint-cf",
+            pair_address="pair-cf",
+            discovery_batch_id=BATCH,
+            candidate_tracking_lane=candidate.tracking_lane,
+        )
+        == "TRACK_FAST"
+    )
+
+
+def test_d_carrier_normal_persisted_normal_passes(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        "INSERT INTO printer_tokens(id,token_mint,chain) VALUES (1,'mint-dn','solana')"
+    )
+    conn.execute(
+        "INSERT INTO printer_pairs(id,token_id,pair_address,base_token_mint) "
+        "VALUES (101,1,'pair-dn','mint-dn')"
+    )
+    _seed_batch_market_observation(
+        conn,
+        mint="mint-dn",
+        pair="pair-dn",
+        liquidity_usd=1500,
+        volume_5m=50,
+        txns_5m=2,
+    )
+    conn.commit()
+    candidate = _merged("mint-dn", "pair-dn", tracking_lane="TRACK_NORMAL")
+    _executor()._prepare_cycle1_persisted_lane_before_handoff(
+        conn,
+        discovery_batch_id=BATCH,
+        candidate=candidate,
+        now=NOW.isoformat(),
+    )
+    assert candidate.tracking_lane == "TRACK_NORMAL"
+    assert (
+        resolve_cycle1_handoff_tracking_lane(
+            conn,
+            token_id=1,
+            pair_id=101,
+            token_mint="mint-dn",
+            pair_address="pair-dn",
+            discovery_batch_id=BATCH,
+            candidate_tracking_lane=candidate.tracking_lane,
+        )
+        == "TRACK_NORMAL"
+    )
+
+
+def test_e_carrier_none_unique_persisted_sufficient(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        "INSERT INTO printer_tokens(id,token_mint,chain) VALUES (1,'mint-e','solana')"
+    )
+    conn.execute(
+        "INSERT INTO printer_pairs(id,token_id,pair_address,base_token_mint) "
+        "VALUES (101,1,'pair-e','mint-e')"
+    )
+    _seed_batch_market_observation(
+        conn,
+        mint="mint-e",
+        pair="pair-e",
+        liquidity_usd=6000,
+        volume_5m=2000,
+        txns_5m=20,
+    )
+    conn.commit()
+    candidate = _merged("mint-e", "pair-e", tracking_lane=None)
+    _executor()._prepare_cycle1_persisted_lane_before_handoff(
+        conn,
+        discovery_batch_id=BATCH,
+        candidate=candidate,
+        now=NOW.isoformat(),
+    )
+    assert candidate.tracking_lane is None
+    assert (
+        resolve_cycle1_handoff_tracking_lane(
+            conn,
+            token_id=1,
+            pair_id=101,
+            token_mint="mint-e",
+            pair_address="pair-e",
+            discovery_batch_id=BATCH,
+            candidate_tracking_lane=candidate.tracking_lane,
+        )
+        == "TRACK_FAST"
+    )
+
+
+def test_prepare_source_does_not_assign_candidate_tracking_lane() -> None:
+    handoff_src = Path(executor_mod.__file__).read_text(encoding="utf-8")
+    start = handoff_src.index("def _prepare_cycle1_persisted_lane_before_handoff(")
+    end = handoff_src.index("\n    def ", start + 1)
+    body = handoff_src[start:end]
+    assert "candidate.tracking_lane =" not in body
+    assert "persist_cycle1_current_batch_discovery_lane" in body

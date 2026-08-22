@@ -3771,7 +3771,7 @@ class CombinedPumpfunCampaignExecutor:
         except TokenPairIdentityError as exc:
             raise CombinedDiscoveryError(str(exc)) from exc
         try:
-            lane_value = persist_cycle1_current_batch_discovery_lane(
+            persist_cycle1_current_batch_discovery_lane(
                 connection,
                 discovery_batch_id=discovery_batch_id,
                 token_id=identity.token_row_id,
@@ -3788,8 +3788,8 @@ class CombinedPumpfunCampaignExecutor:
             }:
                 code = "DISCOVERY_TRACKING_LANE_MISSING"
             raise CombinedDiscoveryError(code, str(exc)) from exc
-        # Carrier corroboration for resolve; not an authority source.
-        candidate.tracking_lane = lane_value
+        # Do NOT rewrite candidate.tracking_lane from persisted authority.
+        # Carrier remains corroboration-only for resolve_cycle1_handoff_tracking_lane.
 
     def _handoff_one_slot(
         self,
