@@ -1,12 +1,13 @@
 # V2-9.8B Design Lane 2 — Multi-Token Evidence-Deadline Scheduling
 
-**Document status:** `DESIGN` (amended)  
+**Document status:** `DESIGN` (post-capture timing amendment)
 **Date:** 2026-08-22  
 **Original design HEAD:** `012eacd785c950367a550259d83e09957906dffe`  
 **Amendment starting HEAD:** `46fc13c0f36297f8d76c24f7bbba1313a6db796e`  
+**Post-capture timing amendment starting HEAD:** `7d24bcbb7fdd781f4ac628662d89a65c1621bbd6`
 **Governing forensic audit:** `docs/printer-v1-v2-9-8b-consumed-4-2-2-full-operational-run-forensic-audit.md`  
 **Prerequisite Lane 1 closeout:** `docs/printer-v1-v2-9-8b-cadence-authority-lane1-closeout.md`  
-**Verdict:** `V2_9_8B_MULTI_TOKEN_EVIDENCE_DEADLINE_SCHEDULING_DESIGN_AMENDMENT_PASS_READY_FOR_IMPLEMENTATION`
+**Verdict:** `V2_9_8B_POST_CAPTURE_CONTEXT_TIMING_DESIGN_AMENDMENT_PASS_READY_FOR_CORRECTIVE_IMPLEMENTATION`
 
 ### Amendment scope (docs-only)
 
@@ -18,7 +19,7 @@ Retains the core Lane-2 architecture:
 - Source Governor preservation
 - bounded overload behavior
 
-Corrects only two design defects:
+The first amendment corrected two design defects:
 
 1. **Canonical AGENTS resource priority must lead selection.** Protection /
    phase classes must not globally outrank `TRACK_FAST` / `TRACK_NORMAL`
@@ -27,6 +28,11 @@ Corrects only two design defects:
 2. **`deadline_at` must protect the Lane-1 clean-gap contract** from the
    previous **actual** captured snapshot, not from `scheduled_for` or
    `window_end_at + closing_clean_late_seconds` alone.
+
+The post-capture timing amendment in Section 20 corrects one additional design
+ambiguity exposed by the phase-split implementation: executing
+`CLOSE_CONTEXT` after `CLOSE_EVIDENCE` does not extend a window's lawful
+evidence boundary or backdate later context into the closed window.
 
 ---
 
@@ -478,6 +484,9 @@ Ordering constraints:
    `deadline_at` derivation (or fail closed / UNKNOWN if prior capture missing).
 2. Context phase must not run ahead of evidence for that window by default
    (**capture before context**; reorder vs today’s preclose-before-capture).
+   This is an execution-order rule, not evidence-boundary authority. Section 20
+   governs whether context resolved or collected later is admissible to the
+   just-closed window.
 3. Audit phase requires persisted closing snapshot identity for that window.
 4. No phase may create an independent API loop or bypass Source Governor.
 5. No close phase may outrank due TRACK_FAST / TRACK_NORMAL snapshots.
@@ -773,8 +782,9 @@ No scores. No confidence percentages.
 ## 18. Authority notes
 
 - `CURRENT_HANDOFF.md` was stale relative to the consumed 4/2/2 forensic path
-  and was minimally updated for Design Lane 2; this amendment updates it again
-  only as docs-only lane status.
+  and was minimally updated during the first Design Lane 2 amendment. The
+  post-capture timing amendment relies on the active source stack and does not
+  modify the handoff.
 - Lane 1 remains closed PASS and is a prerequisite, not reopened.
 - This amended design does not authorize implementation, proof execution, or
   Lane 3.
@@ -785,15 +795,410 @@ No scores. No confidence percentages.
 
 ## 19. Verdict
 
-The amended design preserves the sound Lane-2 architecture while correcting:
+The first amended design preserved the sound Lane-2 architecture while
+correcting:
 
 1. global selection to remain AGENTS resource-category–led; and
 2. clean-dispatch `deadline_at` to anchor on last actual capture (+ forced-close
    freshness min), keeping block boundary distinct and never synthesizing
    deadlines or CLEAN status.
 
-`V2_9_8B_MULTI_TOKEN_EVIDENCE_DEADLINE_SCHEDULING_DESIGN_AMENDMENT_PASS_READY_FOR_IMPLEMENTATION`
+Its implementation-ready verdict is superseded for the unaccepted phase-split
+slice by the post-capture evidence-boundary amendment below. The accepted S1
+category/fairness and last-actual-capture deadline slices remain unchanged.
 
-Exact next permitted work after this amendment commit: **implementation of this
-amended design’s approved slices** under a separate implementation lane, or
-operator review. **Do not start Design Lane 3 in this task.**
+---
+
+## 20. Post-capture context timing / evidence-boundary amendment
+
+### 20.1 Discovered conflict and authority
+
+The phase split lawfully changes worker execution order to:
+
+```text
+CLOSE_EVIDENCE
+-> Central Scheduler reselection
+-> CLOSE_CONTEXT
+-> Central Scheduler reselection
+-> CLOSE_AUDIT
+```
+
+That architecture is retained. The unaccepted implementation nevertheless
+attempted to make later context usable by passing `tracking_lane` into the 15m
+shared context resolver and by moving broad market/chain lookups from
+`window_end_at` to `closing_evidence_cutoff_at`. Those changes conflate worker
+execution time with evidence admissibility.
+
+Existing authority already resolves the conflict:
+
+1. `window_end_at` is the immutable logical boundary of the memory window.
+2. The V2-9.4.8 15m close-ordering closeout deliberately passes `run_id` but
+   not `tracking_lane`; therefore its effective
+   `closing_evidence_allowance_seconds` is zero and its
+   `closing_evidence_cutoff_at` is exactly `window_end_at`.
+3. The V2-9.8B first-hour checkpoint-4 contract authorizes the existing
+   60-second forced-closing-snapshot freshness allowance for `WINDOW_1H`. It
+   does not authorize a blanket extension for newly fetched context.
+4. The V2-9.4.6 exact-closing-boundary contract authorizes the existing
+   60-second allowance for the exact `WINDOW_4H` closing snapshot and its exact
+   snapshot-bound closing safety and exit-quote evidence. It expressly does
+   not move the logical deadline.
+5. No reviewed authority allows later broad market-regime or Solana-chain
+   observations to characterize an already-closed main window.
+
+The cadence policy model currently carries a 60-second
+`closing_clean_late_seconds` default, including on policy objects for several
+families. The existence of that field is not family-independent evidence
+authority. A caller may consume it only where the relevant window and evidence
+class has an approved contract. In particular, the phase split alone cannot
+activate that field for 15m context.
+
+### 20.2 Binding three-clock and anti-look-ahead contract
+
+These times are separate facts:
+
+```text
+Scheduler execution time
+!= evidence observation/evaluation time
+!= logical window boundary
+```
+
+- `window_end_at` says when the logical window ends.
+- `captured_at`, `observed_at`, `evaluated_at`, or the existing equivalent says
+  when evidence was actually known.
+- Scheduler claim/start/finish timestamps say when a phase ran.
+
+Delayed execution of `CLOSE_CONTEXT` is allowed for fairness and resource
+control. It does not extend `window_end_at`, create an evidence allowance, or
+change an observation timestamp.
+
+Binding anti-look-ahead rule:
+
+> Evidence first observed after a window's lawful evidence boundary cannot be
+> treated as if known inside that window merely because a later Scheduler
+> phase collected it, even when the later value would make the window appear
+> safer, cleaner, or more profitable.
+
+Exact binding to the closing snapshot proves identity; it does not backdate the
+bound evidence. All evidence retains its real observation/evaluation time.
+
+### 20.3 Final per-window-family boundary
+
+The narrow contract is evidence-class-specific; there is no common late
+allowance for every close input.
+
+| Window family | Closing snapshot boundary | Other exact close evidence | Broad market / chain boundary | Result |
+| --- | --- | --- | --- | --- |
+| `WINDOW_5M_MICRO_EVENT` | Existing support-only cadence law | Existing support-only law only | `window_end_at` | Never a main outcome window and never independently CLEAN or continuation-authorizing |
+| `WINDOW_15M` | Effective allowance `0`; cutoff exactly `window_end_at` | Cutoff exactly `window_end_at` | Cutoff exactly `window_end_at` | Do not pass `tracking_lane` merely to obtain the policy default |
+| `WINDOW_1H` | Existing forced-closing freshness allowance: at deadline through 60 seconds late may be freshness-clean; over 60 seconds but below nominal interval is dirty; nominal-or-later is blocked, subject to the existing evaluator | No reviewed contract extends newly observed safety, holder, quote, market, or chain context past `window_end_at`; those classes remain bounded by their existing time law | Cutoff exactly `window_end_at` | The 60 seconds belongs to forced snapshot freshness, not all context |
+| `WINDOW_4H` | Existing 60-second closing allowance | Existing 60-second allowance only for exact closing safety and exact closing exit quote bound to the closing snapshot; entry evidence keeps its original boundary | Cutoff exactly `window_end_at` | Preserve V2-9.4.6 exactly; do not generalize its exception |
+| `WINDOW_12H` / `WINDOW_24H` | Locked | Locked | Locked | This amendment creates no authority or activation |
+
+For `WINDOW_15M`, the binding decision is therefore:
+
+```text
+closing_evidence_allowance_seconds = 0
+closing_evidence_cutoff_at = window_end_at
+```
+
+This amendment does not alter how the accepted deadline projection uses
+`closing_clean_late_seconds` while protecting dispatch. Dispatch protection
+and evidence admissibility are different contracts.
+
+### 20.4 Per-context-class treatment
+
+Every row used by the closed-window audit must satisfy both exact identity and
+its class-specific time boundary.
+
+| Context class | Required identity binding | Time truth | Admissibility cutoff | Post-window use | May satisfy main-window CLEAN evidence? |
+| --- | --- | --- | --- | --- | --- |
+| Closing snapshot | Exact campaign/run/cycle/slot/token/pair/window/queue and persisted snapshot id | Actual `captured_at` | Per-family closing-snapshot rule in Section 20.3 | Durable capture fact; later phases may reference but never rewrite it | Only when the existing cadence and family boundary gates pass |
+| Market regime | Exact governed observation/source provenance associated with the owning close | Actual `captured_at` / `observed_at` | `<= window_end_at` for every active main-window family | Diagnostic post-close support or later-lifecycle context only | No, if first observed after `window_end_at` |
+| Solana chain heat | Exact governed observation/source provenance associated with the owning close | Actual `captured_at` / `observed_at` | `<= window_end_at` for every active main-window family | Diagnostic post-close support or later-lifecycle context only | No, if first observed after `window_end_at` |
+| Safety / rug evidence | Exact token, mint, pair where applicable, and exact target closing snapshot; no nearby-snapshot substitution | Every underlying source observation time plus the actual composite `evaluated_at`; neither may be backdated | Underlying observations must be within the class cutoff: 15m and 1h `<= window_end_at`; 4h `<= window_end_at + 60s` only under the V2-9.4.6 closing-safety contract | Later risk/support truth; must not be backdated | Only when exact identity, class cutoff, source status, and existing safety gates all pass |
+| Holder context | Exact token/mint and exact safety/composite or target-snapshot contribution | Actual underlying observation time and actual derivation/evaluation time | Underlying observations inherit the authorized safety-composite cutoff; holder context has no independent late allowance | Later support or later-lifecycle truth | Only as part of a timely, exact, otherwise-valid existing composite |
+| Closing exit quote / liquidity realism | Exact token/pair, base/quote identity, direction, target closing snapshot, and governed quote provenance | Actual quote observation time | 15m and 1h: `<= window_end_at`; 4h: `<= window_end_at + 60s` only for the approved exact closing exit quote | Later support; may describe subsequent exit conditions but not the earlier window | Only within the applicable family/class cutoff and existing quote gates |
+| Entry quote / opening realism | Exact opening snapshot/checkpoint and exact token/pair/direction | Actual quote observation time | The original entry/opening evidence boundary | Later closing allowance never extends it retroactively | Only under its original timely-entry contract |
+| Trading-flow / chart evidence | Exact admitted ledger snapshot ids for the owning token/pair/run/window; no foreign or nearby snapshot | Each snapshot's actual `captured_at`; derived evaluation retains actual evaluation time | Derived only from the exact snapshot set admitted by the existing family boundary | A new later refresh is support only; it cannot be inserted into the closed set | Yes only when the derivation uses the exact admissible set and all existing quality gates pass |
+
+The 4h exception is deliberately narrow. A closing snapshot captured within its
+approved allowance may contribute to ledger-derived flow/chart facts because
+the snapshot itself is lawful closing evidence. That does not admit an
+independent market, chain, entry, or other refresh merely because it arrived
+during the same 60 seconds.
+
+A deterministic resolver or composite evaluation may execute after the cutoff
+without creating look-ahead only when every underlying observation was already
+persisted, exact, and timely and the evaluation adds no post-cutoff fact. Its
+real later `evaluated_at` is still retained. When `evaluated_at` is itself the
+time of a fresh source evaluation or observation, it is evidence time and must
+satisfy the class cutoff. Execution time is never silently copied onto timely
+inputs, and timely input timestamps are never copied onto a later refresh.
+
+### 20.5 Meaning of `CLOSE_CONTEXT`
+
+After exact `CLOSE_EVIDENCE`, `CLOSE_CONTEXT` may perform three distinct acts:
+
+**A. Resolve already-existing governed context.** It may resolve rows already
+persisted through lawful owners. A row remains admissible when its own evidence
+timestamp, exact identity, source status, and class-specific cutoff pass. The
+later time at which the resolver reads it does not make timely evidence late.
+
+**B. Perform a new governed post-capture refresh.** It may request only sources
+already authorized by the existing close path, only through Source Governor,
+and without a private loop or new retry policy. The refresh's actual evidence
+time controls admissibility.
+
+**C. Persist/report the later refresh truthfully.** A later result may be kept
+as diagnostic support or later-lifecycle truth. Persistence does not make it
+main-window evidence and must not rewrite `evidence_captured_at`, snapshot
+`captured_at`, `window_end_at`, or any source observation timestamp.
+
+The existing schema is sufficient for the later corrective slice: use exact
+foreign keys/provenance, existing actual evidence/evaluation timestamps,
+`closing_evidence_cutoff_at`, `closing_evidence_allowance_seconds`, existing
+eligibility/blocker fields, and existing supporting-context/report JSON. The
+implementation may describe the concepts "timely/in-window", "post-close
+support/late for main window", and "unknown" without adding a new table,
+column, migration, or mandatory enum vocabulary. No schema change is authorized
+or required by this amendment; if later implementation evidence disproves that
+sufficiency, the corrective slice must stop BLOCKED rather than invent one.
+
+The invariant is:
+
+```text
+later observation
+!= historical evidence that it existed at window_end_at
+```
+
+### 20.6 Audit, promotion, and memory-quality behavior
+
+`CLOSE_AUDIT` consumes the exact persisted closing snapshot plus context with
+its identity and timing relationship intact.
+
+| Audit input state | Required result |
+| --- | --- |
+| Valid closing capture and all required timely context present | Apply the unchanged cadence, evidence, quality, and promotion gates |
+| Valid capture plus a successful refresh that is too late for its main-window class | Retain the refresh as post-close support; do not count it toward CLEAN |
+| Valid capture plus context timeout/provider failure/budget denial | Keep the capture durable; record truthful failed/partial/unknown context; apply existing fail-closed quality gates |
+| Valid capture plus partial context | Preserve partial truth; do not manufacture completeness |
+| Valid capture but required timely main-window context absent | Treat that requirement as missing/late under its existing owner; it cannot be rescued by later context |
+| Missing or mismatched exact closing snapshot | Audit is ineligible; do not manufacture a close or later phase success |
+
+Consequences for existing memory-quality outcomes:
+
+- `CLEAN_MEMORY` remains possible only when every required evidence class is
+  exact, timely under its own boundary, source-valid, cadence-valid, and passes
+  every unchanged quality gate.
+- `PARTIAL_MEMORY` may be used only where the existing quality owner already
+  permits a partial outcome. A late refresh may explain the partial state but
+  cannot promote it to CLEAN.
+- Existing `DIRTY_MEMORY` and cadence `DIRTY` / `BLOCKED` results remain honest
+  and are never hidden by later support.
+- Any outcome lacking required lawful evidence remains non-training under the
+  existing `DO_NOT_TRAIN` / `can_support_clean_memory=false` rules.
+- Existing continuation prerequisites remain unchanged. Post-close support
+  cannot satisfy a missing timely prerequisite or independently authorize
+  continuation. A valid closing capture also is not erased merely because a
+  later context request failed.
+
+This amendment does not invent a new mapping from each missing field to
+PARTIAL, DIRTY, or BLOCKED. The current cadence and evidence-quality owners
+remain final authority; the amendment only prevents late evidence from being
+misclassified as timely input to those owners.
+
+### 20.7 Required scenarios
+
+#### Scenario A — 15m exact close, later context
+
+```text
+window_end_at                  = 12:15:00
+closing snapshot captured_at  = 12:15:00
+context refresh completes     = 12:15:08
+```
+
+The exact closing snapshot may count, subject to all unchanged gates. Completion
+at `12:15:08` alone is not the admissibility test. A new refresh whose evidence
+was first observed/evaluated at `12:15:08` cannot count toward 15m main-window
+market, chain, safety, holder, quote, flow, or chart requirements because 15m
+has zero closing-evidence allowance. It may be persisted as truthful post-close
+support. If `CLOSE_CONTEXT` instead completes at `12:15:08` by resolving exact
+governed observations already persisted at or before `12:15:00`, those timely
+inputs may count; any later deterministic evaluation retains its real
+evaluation time and may add no later fact. Audit must retain snapshot time
+`12:15:00` and cannot use a later refresh to rescue missing timely evidence.
+
+#### Scenario B — slightly late closing snapshot
+
+- **5m:** remains support-only; no main-memory promotion follows.
+- **15m:** no late evidence allowance is activated. A capture after
+  `window_end_at` is retained at its real time and classified by the unchanged
+  cadence/evidence owners; it cannot widen the context cutoff or synthesize
+  CLEAN.
+- **1h:** the forced closing snapshot may use the existing 60-second freshness
+  allowance and its existing clean/dirty/blocked bands. That allowance does not
+  admit post-window context.
+- **4h:** the exact closing snapshot may use the existing 60-second allowance;
+  exact closing safety and exact closing exit quote may use only the same
+  V2-9.4.6 boundary. Broad context and entry evidence do not.
+- **12h/24h:** locked; no scenario creates runtime authority.
+
+#### Scenario C — pre-existing timely context
+
+The closing snapshot is captured, and `CLOSE_CONTEXT` later resolves an exact
+governed row with an evidence timestamp within its lawful cutoff. It remains
+admissible because evidence observation time, not resolver execution time,
+controls. Exact token/pair/snapshot/window/source provenance and every existing
+quality gate still must pass.
+
+#### Scenario D — post-close market shift
+
+If market regime changes after `window_end_at` before `CLOSE_CONTEXT`, the new
+regime may be reported as post-close support. The window-end resolver must use
+the latest exact governed observation at or before `window_end_at`; the later
+row cannot overwrite or replace the closed-window market state.
+
+#### Scenario E — context timeout
+
+A valid closing snapshot remains durable with its real capture timestamp.
+Source timeout, partial response, or budget denial in `CLOSE_CONTEXT` is recorded
+honestly. Audit sees the failure/partial/unknown state and applies unchanged
+fail-closed quality gates. It neither deletes the capture nor fabricates
+context, CLEAN status, continuation, or phase success.
+
+#### Scenario F — post-close safety deterioration
+
+Worse safety first observed after the class's lawful cutoff is not evidence
+that the worse condition existed inside the closed window. It is truthful
+post-close risk/support or later-lifecycle evidence. It cannot rewrite the
+window's history. Any separate existing safety authority may act on current
+risk for later lifecycle work, but this amendment adds no such capability or
+continuation rule.
+
+#### Scenario G — post-close context looks better
+
+Better context first observed after the lawful cutoff cannot rescue a window
+that lacked required timely evidence. It remains post-close support and cannot
+change `can_support_clean_memory` from false to true for the closed window.
+
+#### Scenario H — existing longer-window lawful allowance
+
+For an exact 4h close at `window_end_at + 8s`, the exact closing snapshot,
+closing safety composite, and closing exit quote may remain admissible under
+the existing 60-second V2-9.4.6 contract when all other gates pass. A market or
+chain observation at `+8s`, an entry quote refreshed at `+8s`, or unrelated
+snapshot context does not inherit that allowance. For 1h, the same `+8s`
+allowance applies to forced closing-snapshot freshness only; it does not become
+a blanket context cutoff.
+
+### 20.8 Exact corrective implementation map
+
+After this amendment is independently accepted, the narrow corrective code
+slice should:
+
+1. Stop passing `tracking_lane` from the 15m close path into
+   `build_window_15m_context_evidence`; continue passing the exact `run_id` so
+   the V2-9.4.8 ledger ordering/provenance repair remains intact.
+2. Restore the 15m resolver result to
+   `closing_evidence_allowance_seconds == 0` and
+   `closing_evidence_cutoff_at == window_end_at`.
+3. Restore broad market-regime and Solana-chain lookups to
+   `target_time=window_end_at`, rather than the closing-evidence cutoff, for
+   every shared active main-window use.
+4. Preserve the 1h 60-second forced-closing-snapshot freshness policy without
+   extending newly observed context past `window_end_at`.
+5. Preserve the already-lawful 4h 60-second cutoff only for the exact closing
+   snapshot, exact closing safety, and exact closing exit quote; keep entry,
+   broad context, and other classes at their original boundaries.
+6. Use real source observation/evaluation timestamps when deciding whether a
+   context row is timely. Treat an exact identity match as corroboration, not
+   a substitute for time truth.
+7. Carry later refreshes, timeouts, and partial results through existing
+   supporting metadata and eligibility/blocker fields as post-close support or
+   truthful unknown/failed context. Do not add schema; if the corrective
+   implementation disproves the documented sufficiency, stop BLOCKED.
+8. Keep the three Scheduler-owned phase kinds, dependencies, claims, and
+   reselection points intact. Do not revert the phase split or recursively run
+   context/audit after evidence.
+9. Keep the accepted last-actual-capture deadline projection, separate block
+   boundary, category-first ordering, and Source Governor path byte-for-byte in
+   contract.
+
+The current phase-split implementation remains unaccepted until a separate
+corrective code commit proves this map. This document makes no production
+change.
+
+### 20.9 Bounded proof matrix for the later correction
+
+Disposable fixtures only; no live campaign or provider dependency.
+
+| Proof ID | Scenario | Binding expectation |
+| --- | --- | --- |
+| T1 | 15m resolver called with exact run provenance | No `tracking_lane` allowance; cutoff equals `window_end_at` |
+| T2 | 15m exact close, new context observed at `+8s` | Capture remains durable; later context cannot satisfy main-window CLEAN requirements |
+| T3 | `CLOSE_CONTEXT` runs late but resolves exact context observed `<= window_end_at` | Timely row remains admissible; resolution time does not disqualify it |
+| T4 | Market/chain state changes after close | Closed-window resolver selects only observations `<= window_end_at`; later state cannot overwrite it |
+| T5 | Context timeout/partial/budget denial after valid capture | Capture id/time unchanged; context truthful; audit fail-closed under existing gates |
+| T6 | Late safety becomes worse or better | Retained as support; neither rewrites earlier truth nor rescues missing timely evidence |
+| T7 | 1h closing snapshot at deadline, `+60s`, and beyond `+60s` | Existing forced-snapshot freshness classifications remain exact; context receives no blanket allowance |
+| T8 | 4h exact closing snapshot/safety/exit quote inside and outside `+60s` | Existing V2-9.4.6 acceptance and late blockers remain exact |
+| T9 | 4h market/chain observation inside the snapshot's `+60s` allowance but after window end | Rejected as main-window broad context; may remain support |
+| T10 | Entry quote refreshed during close allowance | Original entry boundary remains binding; no retroactive extension |
+| T11 | Exact snapshot-bound context persisted after capture | Real evidence/evaluation timestamp retained; no backdating to snapshot time |
+| T12 | Accepted deadline, category, fairness, and Lane-1 provenance regressions | Remain green; context timing does not alter deadline or cadence authority |
+| T13 | Two sibling closes and slow context | Scheduler reselection/interleaving remains intact; correction does not recreate atomic close |
+| T14 | Persistence/source/capability review | No new schema, source, retry loop, independent worker, or locked capability |
+
+### 20.10 Interaction with deadline scheduling and remaining locks
+
+`CLOSE_EVIDENCE` remains the cadence-sensitive phase. The accepted projection
+remains unchanged:
+
+```text
+ordinary deadline_at =
+    last_actual_snapshot_captured_at + dirty_above_gap_seconds
+
+forced-close deadline_at = min(
+    last_actual_snapshot_captured_at + dirty_above_gap_seconds,
+    window_end_at + closing_clean_late_seconds
+)
+
+block_boundary_at =
+    last_actual_snapshot_captured_at + max_clean_snapshot_gap_seconds
+```
+
+Missing truthful prior ACTUAL capture still produces UNKNOWN and no synthesized
+deadline or CLEAN status. Context/audit timing cannot replace the prior capture,
+modify `deadline_at`, alter cadence dirty/block thresholds, or become cadence
+timing. Category-first selection remains:
+
+```text
+TRACK_FAST
+> TRACK_NORMAL
+> MEMORY_WINDOW_CLOSE
+```
+
+Within `MEMORY_WINDOW_CLOSE`, due evidence remains protected over context and
+audit. That intra-category protection never lets close work leapfrog due
+TRACK_FAST or TRACK_NORMAL work globally.
+
+Still locked: observability/saturation implementation, Lane 3, Lane 4, Cycle 3,
+new progression, 12h/24h, independent 5m memory, retrieval, BUY/SELL/HOLD,
+positions, trades, paper-trade audits/PnL, wallet/private-key/signing/live
+execution, paid APIs, scoring/ranking/confidence/weighted logic,
+embeddings/vectors, new providers, new retries, schema/migrations, live
+campaigns, and any Source Governor or Central Scheduler bypass.
+
+### 20.11 Amended verdict
+
+The post-capture timing contract is resolved without widening 15m, weakening
+longer-window evidence law, changing accepted deadline projection, or reverting
+the Scheduler-owned phase split:
+
+`V2_9_8B_POST_CAPTURE_CONTEXT_TIMING_DESIGN_AMENDMENT_PASS_READY_FOR_CORRECTIVE_IMPLEMENTATION`
+
+Exact next permitted work after independent acceptance of this documentation
+commit is one narrow corrective implementation commit following Section 20.8,
+or operator review. The current phase-split implementation is **not accepted**
+by this verdict. Do not start observability/saturation or Lane 3.
