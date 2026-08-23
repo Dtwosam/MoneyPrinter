@@ -4,25 +4,25 @@ Date: 2026-08-23
 
 ## Current lane
 
-`V2-9.8B Lane 3 — Post-1H Standard-4H Progression + Fault Preservation Readiness Audit`
+`V2-9.8B Lane 3 — Post-1H Standard-4H Progression + Fault Preservation Design`
 
-Status: `CLOSED_PASS_READY_FOR_DESIGN`
+Status: `CLOSED_PASS_READY_FOR_NARROW_IMPLEMENTATION`
 
 Verdict:
 
-`V2_9_8B_LANE3_POST_1H_STANDARD_4H_PROGRESSION_FAULT_PRESERVATION_READINESS_AUDIT_PASS_READY_FOR_DESIGN`
+`V2_9_8B_LANE3_POST_1H_STANDARD_4H_PROGRESSION_FAULT_PRESERVATION_DESIGN_PASS_READY_FOR_NARROW_IMPLEMENTATION`
 
-Lane-3 readiness audit:
+Lane-3 design:
 
-`docs/printer-v1-v2-9-8b-post-1h-standard-4h-progression-fault-preservation-lane3-readiness-audit.md`
+`docs/printer-v1-v2-9-8b-post-1h-standard-4h-progression-fault-preservation-lane3-design.md`
 
 Accepted final state:
 
-The real Scheduler-owned, Source-Governed 1h->4h production route exists, but
-its pre-plan progression/fault boundary is incomplete. A separate design must
-address durable progression disposition, real health/budget/queue authority,
-post-commit first-cause preservation, failed-peer isolation, and absence-versus-
-completion truth. No repair is designed or implemented by this audit.
+The minimum complete repair is designed: one durable attempt plus two exact
+token dispositions, real existing authority inputs, immutable committed 1h
+truth, first-primary/secondary-fault preservation, isolated 0/1/2 eligibility,
+and an extension of the existing atomic handoff. A migration is required but
+was not created. No production code, test, schema, or runtime was changed.
 
 ## Exact Git transaction
 
@@ -31,7 +31,9 @@ completion truth. No repair is designed or implemented by this audit.
   `ae4d5d55abc9486372115a9fb21d976b46f67a54`
 - Lane-3 audit starting HEAD:
   `30db8a89a761e3b1b894e393a9c70c46e84311c9`
-- resulting new HEAD: this documentation-only Lane-3 audit commit (the exact
+- Lane-3 design starting HEAD:
+  `eefc1df8ffee3b91f85571511f97c0d6c9b9811c`
+- resulting new HEAD: this documentation-only Lane-3 design commit (the exact
   commit SHA is the repository HEAD containing this handoff)
 
 ## Lane-2 disposition
@@ -47,7 +49,7 @@ remaining proven Lane-2 blocker.
 1. Design Lane 1 cadence authority — **CLOSED PASS**
 2. Design Lane 2 multi-token evidence-deadline scheduling — **CLOSED PASS**
 3. Lane 3 post-1H standard-four-hour progression + fault preservation —
-   **READINESS AUDIT CLOSED PASS; design permitted but not started**
+   **DESIGN CLOSED PASS; narrow implementation/focused proof permitted but not started**
 4. Design Lane 4 multi-cycle terminal accounting/reporting — **not started**
 
 Authorization `…512f2436` remains permanently consumed and non-reusable.
@@ -55,12 +57,12 @@ No automatic fresh authorization, retry, rerun, resume, restart, or successor.
 
 ## Hard stop boundary
 
-This Lane-3 audit package is documentation only. It must not:
+This Lane-3 design package is documentation only. It must not:
 
 - modify scheduler/close-path production, tests, schemas, migrations, or config;
 - run Printer, Source Governor, or Central Scheduler;
 - create/reuse/apply authorization;
-- begin Lane-3 design or implementation in this run;
+- begin Lane-3 implementation in this run;
 - unlock retrieval, paper decisions, BUY/SELL/HOLD, positions, trades, audits,
   PnL, live execution, wallets/private keys, paid APIs, scoring/ranking/
   confidence/weighted logic, or embeddings/vectors.
@@ -70,11 +72,11 @@ This Lane-3 audit package is documentation only. It must not:
 ```text
 LANE 3:
 Post-1H Standard-4H Progression + Fault Preservation
-DESIGN / SPECIFICATION ONLY.
+NARROW IMPLEMENTATION + FOCUSED PROOF ONLY.
 ```
 
-This authorizes only a separate Lane-3 design/specification task. It does not
-authorize implementation, a campaign, retry/restart/successor, or Cycle 3.
+This permits only a separate narrow Lane-3 implementation/proof task. It does
+not authorize a campaign, retry/restart/successor, recovery, or Cycle 3.
 
 ## Locks
 
