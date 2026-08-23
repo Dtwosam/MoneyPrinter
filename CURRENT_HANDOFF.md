@@ -4,25 +4,25 @@ Date: 2026-08-23
 
 ## Current lane
 
-`V2-9.8B Lane 3 — Post-1H Standard-4H Progression + Fault Preservation`
+`V2-9.8B Lane 4 — Multi-Cycle Terminal Accounting / Reporting Readiness Audit`
 
 Status: `CLOSED PASS`
 
 Verdict:
 
-`V2_9_8B_LANE3_POST_1H_STANDARD_4H_PROGRESSION_FAULT_PRESERVATION_CLOSEOUT_PASS_READY_FOR_LANE4_READINESS_AUDIT`
+`V2_9_8B_LANE4_MULTI_CYCLE_TERMINAL_ACCOUNTING_REPORTING_READINESS_AUDIT_PASS_READY_FOR_DESIGN`
 
-Lane-3 closeout:
+Lane-4 readiness audit:
 
-`docs/printer-v1-v2-9-8b-post-1h-standard-4h-progression-fault-preservation-lane3-closeout.md`
+`docs/printer-v1-v2-9-8b-lane4-multi-cycle-terminal-accounting-reporting-readiness-audit.md`
 
 Accepted final state:
 
-The implemented production path owns one durable attempt plus exactly two
-token dispositions, consumes real existing authorities, preserves committed
-1h truth and first-primary/secondary-fault order, isolates 0/1/2 eligibility,
-and extends the existing atomic Standard-4H handoff. Focused implementation and
-post-commit wiring proof pass. No remaining proven Lane-3 blocker exists.
+The audit traced the real Cycle-1/Cycle-2 runtime, Lane-3 progression,
+cycle/shared terminal owners, full-run accounting, canonical report, and
+terminal summary. It proves current Cycle-1 scoping/shared-terminal/reporting
+defects and separates them from unused synthetic adapter fixture debt. The
+production path is sufficiently resolved for a separate Lane-4 design only.
 
 ## Exact Git transaction
 
@@ -36,7 +36,9 @@ post-commit wiring proof pass. No remaining proven Lane-3 blocker exists.
 - Lane-3 amended design: `93903dc3d743594120409f7cb6fa563ddd10098d`
 - Lane-3 implementation: `899c69fd1322d06355bcf9f3a0c2e1c7d99a6a7b`
 - Lane-3 wiring repair: `01fe653b27f3d8d5101d675d4848fb5de85d0e38`
-- resulting new HEAD: this documentation-only Lane-3 closeout commit (the
+- Lane-3 closeout / Lane-4 audit starting HEAD:
+  `e70b2faf4906f73faec2adf9321d04385e362e81`
+- resulting new HEAD: this documentation-only Lane-4 audit commit (the
   exact commit SHA is the repository HEAD containing this handoff)
 
 ## Lane-2 disposition
@@ -53,14 +55,15 @@ remaining proven Lane-2 blocker.
 2. Design Lane 2 multi-token evidence-deadline scheduling — **CLOSED PASS**
 3. Lane 3 post-1H standard-four-hour progression + fault preservation —
    **CLOSED PASS; no remaining proven blocker**
-4. Lane 4 multi-cycle terminal accounting/reporting — **readiness audit not started**
+4. Lane 4 multi-cycle terminal accounting/reporting — **readiness audit CLOSED
+   PASS; design not started**
 
 Authorization `…512f2436` remains permanently consumed and non-reusable.
 No automatic fresh authorization, retry, rerun, resume, restart, or successor.
 
 ## Hard stop boundary
 
-This Lane-3 closeout package is documentation only. It must not:
+This Lane-4 readiness package is documentation only. It must not:
 
 - modify production, tests, schemas, migrations, runtime, or config;
 - run Printer, Source Governor, or Central Scheduler;
@@ -76,12 +79,12 @@ This Lane-3 closeout package is documentation only. It must not:
 ```text
 LANE 4:
 Multi-Cycle Terminal Accounting / Reporting
-AUDIT / READINESS ONLY.
+DESIGN / SPECIFICATION ONLY.
 ```
 
-This permits only a separate Lane-4 audit/readiness task. It does not authorize
-Lane-4 design or implementation, a campaign, retry/restart/successor, recovery,
-or Cycle 3.
+This permits only a separate Lane-4 design/specification task grounded in the
+readiness audit. It does not authorize implementation, a campaign,
+retry/restart/successor, report regeneration, recovery, or Cycle 3.
 
 ## Locks
 
