@@ -80,14 +80,17 @@ MIGRATION_057_PACKAGE_ROOT = "operator-runs/v2-9-8b-migration-057-application"
 MIGRATION_058_PACKAGE_KIND = "MIGRATION_058_EVIDENCE"
 MIGRATION_058_PACKAGE_ROOT = "operator-runs/v2-9-8b-migration-058-application"
 
-# The controlled migration-059 application is the current schema transition for
-# every four-token authority after PAIR_READY parent-terminal cancellation
-# ownership was added. Only the package root/kind are committed here. The exact
-# execution identity remains authorization/preparation-time input and is hashed
-# through the existing manifest mechanism; filesystem discovery never creates
-# current authority.
+# Migration 059 remains a distinct evidence identity after it is demoted to
+# preserved historical schema-transition evidence by Migration 061.
 MIGRATION_059_PACKAGE_KIND = "MIGRATION_059_EVIDENCE"
 MIGRATION_059_PACKAGE_ROOT = "operator-runs/v2-9-8b-migration-059-application"
+
+# The controlled migration-061 application is the singular current schema
+# transition for both four-token authorities. Its exact execution and complete
+# inventory identity are committed on the profiles below; filesystem discovery
+# may only prove equality or fail closed.
+MIGRATION_061_PACKAGE_KIND = "MIGRATION_061_EVIDENCE"
+MIGRATION_061_PACKAGE_ROOT = "operator-runs/v2-9-8b-migration-061-application"
 
 # Preserved historical schema-transition evidence. This class explains how the
 # current database evolved; it never becomes current schema-transition authority
@@ -121,6 +124,19 @@ FOUR_TOKEN_HISTORICAL_MIGRATION_057_EXECUTION_ID = "MIGRATION_057_20260816T19155
 HISTORICAL_MIGRATION_058_EVIDENCE_CLASS = "HISTORICAL_MIGRATION_058_EVIDENCE"
 FOUR_TOKEN_HISTORICAL_MIGRATION_058_EXECUTION_ID = "MIGRATION_058_20260818T082552Z"
 
+# Migration 059 became preserved historical evidence once Migration 061 took
+# over current schema-transition authority. It keeps its own historical class
+# and exact execution identity; it is demoted, never renamed or absorbed.
+HISTORICAL_MIGRATION_059_EVIDENCE_CLASS = "HISTORICAL_MIGRATION_059_EVIDENCE"
+FOUR_TOKEN_HISTORICAL_MIGRATION_059_EXECUTION_ID = "MIGRATION_059_20260821T095456Z"
+
+# Immutable COMPLETE current inventory identity for both four-token profiles.
+FOUR_TOKEN_CURRENT_MIGRATION_061_EXECUTION_ID = "MIGRATION_061_20260823T200709Z"
+FOUR_TOKEN_CURRENT_MIGRATION_061_EXPECTED_FILE_COUNT = 5
+FOUR_TOKEN_CURRENT_MIGRATION_061_EXPECTED_INVENTORY_SHA256 = (
+    "a6eac8d12e30e9f134c137f79a8b72bbe4f9af9d62e65e159a025c5c87108bd6"
+)
+
 # Immutable COMPLETE inventory identity for every declared historical migration
 # package. These are committed constants bound by the authorization's Git HEAD.
 # Filesystem discovery may only prove equality against them or fail closed; it
@@ -144,6 +160,10 @@ FOUR_TOKEN_HISTORICAL_MIGRATION_057_EXPECTED_INVENTORY_SHA256 = (
 FOUR_TOKEN_HISTORICAL_MIGRATION_058_EXPECTED_FILE_COUNT = 11
 FOUR_TOKEN_HISTORICAL_MIGRATION_058_EXPECTED_INVENTORY_SHA256 = (
     "d6dc1431a3a99a8c2f521a3033948d11bbdd4e7151ddabc1127c7fb3b9138fa8"
+)
+FOUR_TOKEN_HISTORICAL_MIGRATION_059_EXPECTED_FILE_COUNT = 5
+FOUR_TOKEN_HISTORICAL_MIGRATION_059_EXPECTED_INVENTORY_SHA256 = (
+    "d23c4f4bbf2b4683c69038bb6fc372f85c52e280b24662cb46c133690b1479c6"
 )
 
 # Preserved historical reconciliation evidence is neither schema-transition
@@ -370,6 +390,12 @@ class GitAuthorizationProfile:
     # identical migration-050 behavior for every previously defined profile.
     migration_package_root: str = MIGRATION_PACKAGE_ROOT
     migration_package_kind: str = MIGRATION_PACKAGE_KIND
+    # Optional immutable current-package identity. All three fields are either
+    # populated together or all None. Ordinary profiles intentionally keep None
+    # and preserve their caller-supplied execution-ID semantics.
+    current_migration_execution_id: str | None = None
+    current_migration_expected_file_count: int | None = None
+    current_migration_expected_inventory_sha256: str | None = None
     # Exact preserved historical migration evidence for this profile. The empty
     # default keeps ordinary and standard-four-hour manifest semantics, schema
     # key sets, and reconciliation behavior byte-for-byte unchanged.
@@ -406,10 +432,10 @@ STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE = GitAuthorizationProfile(
 
 # The preserved historical migration chain shared by every four-token authority.
 #
-# Migrations 050, 055, 056, 057 and 058 are the declared *required* historical
+# Migrations 050, 055, 056, 057, 058 and 059 are the declared *required* historical
 # packages. Each was demoted in turn when its successor took over current
 # schema-transition authority; none is renamed, absorbed, or promoted back to
-# current authority, which is migration 059 alone.
+# current authority, which is Migration 061 alone.
 #
 # Every entry is mandatory for every manifest build, so declaring them requires
 # their operator evidence to exist. That obligation is deliberate: it is the only
@@ -472,6 +498,17 @@ FOUR_TOKEN_HISTORICAL_MIGRATION_PACKAGES: tuple[HistoricalMigrationPackage, ...]
         ),
         expected_inventory_sha256=(
             FOUR_TOKEN_HISTORICAL_MIGRATION_058_EXPECTED_INVENTORY_SHA256
+        ),
+    ),
+    HistoricalMigrationPackage(
+        package_root=MIGRATION_059_PACKAGE_ROOT,
+        execution_id=FOUR_TOKEN_HISTORICAL_MIGRATION_059_EXECUTION_ID,
+        evidence_class=HISTORICAL_MIGRATION_059_EVIDENCE_CLASS,
+        expected_file_count=(
+            FOUR_TOKEN_HISTORICAL_MIGRATION_059_EXPECTED_FILE_COUNT
+        ),
+        expected_inventory_sha256=(
+            FOUR_TOKEN_HISTORICAL_MIGRATION_059_EXPECTED_INVENTORY_SHA256
         ),
     ),
 )
@@ -675,8 +712,15 @@ FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE = GitAuthorizationProfile(
         "operator-runs/v2-9-8b-standard-four-hour-final-authorization",
         "operator-runs/v2-9-8b-four-token-final-authorization",
     ),
-    migration_package_root=MIGRATION_059_PACKAGE_ROOT,
-    migration_package_kind=MIGRATION_059_PACKAGE_KIND,
+    migration_package_root=MIGRATION_061_PACKAGE_ROOT,
+    migration_package_kind=MIGRATION_061_PACKAGE_KIND,
+    current_migration_execution_id=FOUR_TOKEN_CURRENT_MIGRATION_061_EXECUTION_ID,
+    current_migration_expected_file_count=(
+        FOUR_TOKEN_CURRENT_MIGRATION_061_EXPECTED_FILE_COUNT
+    ),
+    current_migration_expected_inventory_sha256=(
+        FOUR_TOKEN_CURRENT_MIGRATION_061_EXPECTED_INVENTORY_SHA256
+    ),
     historical_migration_packages=FOUR_TOKEN_HISTORICAL_MIGRATION_PACKAGES,
     historical_reconciliation_packages=(
         FOUR_TOKEN_OPERATIONAL_HISTORICAL_RECONCILIATION_PACKAGES
@@ -710,8 +754,15 @@ FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE = GitAuthorizationProfile(
         "operator-runs/v2-9-8b-four-token-final-authorization",
         "operator-runs/v2-9-8b-four-token-standard-four-hour-final-authorization",
     ),
-    migration_package_root=MIGRATION_059_PACKAGE_ROOT,
-    migration_package_kind=MIGRATION_059_PACKAGE_KIND,
+    migration_package_root=MIGRATION_061_PACKAGE_ROOT,
+    migration_package_kind=MIGRATION_061_PACKAGE_KIND,
+    current_migration_execution_id=FOUR_TOKEN_CURRENT_MIGRATION_061_EXECUTION_ID,
+    current_migration_expected_file_count=(
+        FOUR_TOKEN_CURRENT_MIGRATION_061_EXPECTED_FILE_COUNT
+    ),
+    current_migration_expected_inventory_sha256=(
+        FOUR_TOKEN_CURRENT_MIGRATION_061_EXPECTED_INVENTORY_SHA256
+    ),
     historical_migration_packages=FOUR_TOKEN_HISTORICAL_MIGRATION_PACKAGES,
     historical_reconciliation_packages=(
         FOUR_TOKEN_OPERATIONAL_HISTORICAL_RECONCILIATION_PACKAGES
@@ -850,12 +901,14 @@ _NON_RECONCILIATION_EVIDENCE_CLASSES = frozenset(
         HISTORICAL_MIGRATION_056_EVIDENCE_CLASS,
         HISTORICAL_MIGRATION_057_EVIDENCE_CLASS,
         HISTORICAL_MIGRATION_058_EVIDENCE_CLASS,
+        HISTORICAL_MIGRATION_059_EVIDENCE_CLASS,
         MIGRATION_PACKAGE_KIND,
         MIGRATION_055_PACKAGE_KIND,
         MIGRATION_056_PACKAGE_KIND,
         MIGRATION_057_PACKAGE_KIND,
         MIGRATION_058_PACKAGE_KIND,
         MIGRATION_059_PACKAGE_KIND,
+        MIGRATION_061_PACKAGE_KIND,
         AUTHORIZATION_PACKAGE_KIND,
     }
 )
@@ -2399,6 +2452,99 @@ def _inventory_bound_package_files(
     return collected
 
 
+def _validated_current_migration_identity(
+    profile: GitAuthorizationProfile,
+) -> tuple[str, int, str] | None:
+    """Validate the optional all-or-nothing current-package declaration."""
+    values = (
+        profile.current_migration_execution_id,
+        profile.current_migration_expected_file_count,
+        profile.current_migration_expected_inventory_sha256,
+    )
+    populated = tuple(value is not None for value in values)
+    if not any(populated):
+        return None
+    if not all(populated):
+        raise GitProvenanceAuthorizationError(
+            "current migration identity fields must be all populated or all None"
+        )
+    execution_id = require_safe_authorization_id(
+        profile.current_migration_execution_id,
+        label="current migration execution_id",
+    )
+    expected_file_count = profile.current_migration_expected_file_count
+    if (
+        type(expected_file_count) is not int
+        or type(expected_file_count) is bool
+        or expected_file_count < 1
+    ):
+        raise GitProvenanceAuthorizationError(
+            "current migration expected file count must be a positive integer"
+        )
+    expected_inventory_sha256 = _require_hex64(
+        profile.current_migration_expected_inventory_sha256,
+        label="current migration expected inventory sha256",
+    )
+    return execution_id, expected_file_count, expected_inventory_sha256
+
+
+def _validate_current_migration_package_identity(
+    *,
+    root: Path,
+    profile: GitAuthorizationProfile,
+    identity: tuple[str, int, str],
+) -> None:
+    """Require the complete current package to equal its committed identity."""
+    execution_id, expected_file_count, expected_inventory_sha256 = identity
+    package_root = root / profile.migration_package_root
+    package_prefix = f"{profile.migration_package_root}/{execution_id}"
+    package_dir = package_root / execution_id
+    if os.path.islink(package_root) or os.path.islink(package_dir):
+        raise GitProvenanceAuthorizationError(
+            "current migration package identity must not contain a symlink: "
+            + package_prefix
+        )
+    if not package_dir.exists():
+        raise GitProvenanceAuthorizationError(
+            "current migration package execution directory is missing: "
+            + package_prefix
+        )
+    if not package_dir.is_dir():
+        raise GitProvenanceAuthorizationError(
+            "current migration package execution path is not a directory: "
+            + package_prefix
+        )
+    if not os.access(package_dir, os.R_OK | os.X_OK):
+        raise GitProvenanceAuthorizationError(
+            "current migration package execution directory is not readable: "
+            + package_prefix
+        )
+    files = _inventory_bound_package_files(
+        root=root,
+        package_dir=package_dir,
+        package_prefix=package_prefix,
+        label="current migration package",
+    )
+    if len(files) != expected_file_count:
+        raise GitProvenanceAuthorizationError(
+            "current migration package inventory file count does not match its "
+            f"immutable declaration: {package_prefix} "
+            f"(expected {expected_file_count}, found {len(files)})"
+        )
+    inventory_sha256 = compute_historical_migration_inventory_sha256(
+        package_root=profile.migration_package_root,
+        execution_id=execution_id,
+        evidence_class=profile.migration_package_kind,
+        files=files,
+    )
+    if inventory_sha256 != expected_inventory_sha256:
+        raise GitProvenanceAuthorizationError(
+            "current migration package inventory digest does not match its "
+            f"immutable declaration: {package_prefix} "
+            f"(expected {expected_inventory_sha256}, computed {inventory_sha256})"
+        )
+
+
 def _inventory_authorization_package_files(
     *,
     root: Path,
@@ -2575,6 +2721,14 @@ def _validate_authorization_document(
     if document.get("migration_execution_id") != migration_execution_id:
         raise GitProvenanceAuthorizationError(
             "final authorization migration_execution_id mismatch"
+        )
+    if (
+        profile.current_migration_execution_id is not None
+        and document.get("migration_execution_id")
+        != profile.current_migration_execution_id
+    ):
+        raise GitProvenanceAuthorizationError(
+            "final authorization current migration_execution_id mismatch"
         )
     approved_historical_ids = extract_approved_historical_authorization_ids(
         document, current_authorization_id=authorization_id
@@ -3109,6 +3263,9 @@ def validate_git_provenance_manifest_pre_marker(
 ) -> PreparedGitProvenanceAuthorization:
     """Validate the full manifest/Git/filesystem boundary before consumption."""
     active_profile = _resolved_profile(profile)
+    current_migration_identity = _validated_current_migration_identity(
+        active_profile
+    )
     if not 0 < timeout_seconds <= GIT_COMMAND_TIMEOUT_SECONDS:
         raise GitProvenanceAuthorizationError(
             "Git provenance timeout is outside the fixed ceiling"
@@ -3131,6 +3288,14 @@ def validate_git_provenance_manifest_pre_marker(
     migration_execution_id = _require_str(
         manifest.get("migration_execution_id"), label="manifest migration_execution_id"
     )
+    if (
+        current_migration_identity is not None
+        and migration_execution_id != current_migration_identity[0]
+    ):
+        raise GitProvenanceAuthorizationError(
+            "manifest current migration execution_id does not match the exact "
+            "profile identity"
+        )
     _require_tz_aware(manifest.get("created_at"), label="manifest created_at")
     repository = manifest.get("repository")
     if not isinstance(repository, Mapping):
@@ -3161,6 +3326,12 @@ def validate_git_provenance_manifest_pre_marker(
             profile=active_profile,
         )
     )
+    if current_migration_identity is not None:
+        _validate_current_migration_package_identity(
+            root=root,
+            profile=active_profile,
+            identity=current_migration_identity,
+        )
     current_paths = _validate_files(
         manifest,
         root=root,
@@ -3357,10 +3528,15 @@ __all__ = [
     "HISTORICAL_MIGRATION_055_EVIDENCE_CLASS",
     "HISTORICAL_MIGRATION_056_EVIDENCE_CLASS",
     "HISTORICAL_MIGRATION_058_EVIDENCE_CLASS",
+    "HISTORICAL_MIGRATION_059_EVIDENCE_CLASS",
+    "FOUR_TOKEN_CURRENT_MIGRATION_061_EXECUTION_ID",
+    "FOUR_TOKEN_CURRENT_MIGRATION_061_EXPECTED_FILE_COUNT",
+    "FOUR_TOKEN_CURRENT_MIGRATION_061_EXPECTED_INVENTORY_SHA256",
     "FOUR_TOKEN_HISTORICAL_MIGRATION_EXECUTION_ID",
     "FOUR_TOKEN_HISTORICAL_MIGRATION_055_EXECUTION_ID",
     "FOUR_TOKEN_HISTORICAL_MIGRATION_056_EXECUTION_ID",
     "FOUR_TOKEN_HISTORICAL_MIGRATION_058_EXECUTION_ID",
+    "FOUR_TOKEN_HISTORICAL_MIGRATION_059_EXECUTION_ID",
     "FOUR_TOKEN_HISTORICAL_MIGRATION_EXPECTED_FILE_COUNT",
     "FOUR_TOKEN_HISTORICAL_MIGRATION_EXPECTED_INVENTORY_SHA256",
     "FOUR_TOKEN_HISTORICAL_MIGRATION_055_EXPECTED_FILE_COUNT",
@@ -3369,6 +3545,8 @@ __all__ = [
     "FOUR_TOKEN_HISTORICAL_MIGRATION_056_EXPECTED_INVENTORY_SHA256",
     "FOUR_TOKEN_HISTORICAL_MIGRATION_058_EXPECTED_FILE_COUNT",
     "FOUR_TOKEN_HISTORICAL_MIGRATION_058_EXPECTED_INVENTORY_SHA256",
+    "FOUR_TOKEN_HISTORICAL_MIGRATION_059_EXPECTED_FILE_COUNT",
+    "FOUR_TOKEN_HISTORICAL_MIGRATION_059_EXPECTED_INVENTORY_SHA256",
     "compute_historical_migration_inventory_sha256",
     "compute_historical_reconciliation_inventory_sha256",
     "MANIFEST_SCHEMA_VERSION",
@@ -3376,6 +3554,8 @@ __all__ = [
     "MIGRATION_PACKAGE_ROOT",
     "MIGRATION_059_PACKAGE_KIND",
     "MIGRATION_059_PACKAGE_ROOT",
+    "MIGRATION_061_PACKAGE_KIND",
+    "MIGRATION_061_PACKAGE_ROOT",
     "FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE",
     "FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE",
     "supported_profiles",

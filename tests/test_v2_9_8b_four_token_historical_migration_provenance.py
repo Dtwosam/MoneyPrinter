@@ -62,8 +62,8 @@ MIGRATION_058_PATHS = frozenset(
     )
 )
 
-MIGRATION_059_ROOT = "operator-runs/v2-9-8b-migration-059-application"
-MIGRATION_059_EXECUTION_ID = "MIGRATION_059_20260821T095456Z"
+MIGRATION_061_ROOT = "operator-runs/v2-9-8b-migration-061-application"
+MIGRATION_061_EXECUTION_ID = "MIGRATION_061_20260823T200709Z"
 
 PAIR_READY_ROOT = (
     "operator-runs/v2-9-8b-pair-ready-residual-reconciliation"
@@ -155,7 +155,7 @@ class FourTokenHistoricalMigrationFixture:
     """Disposable repository carrying M, Ha and the exact preserved Hm package."""
 
     authorization_id = "V2_9_8B_FOUR_TOKEN_AUTH_TESTONLY"
-    migration_id = "MIGRATION_059_TESTONLY"
+    migration_id = "MIGRATION_061_TESTONLY"
     historical_authorization_id = "V2_9_8B_STANDARD_4H_AUTH_TESTONLY"
 
     def __init__(
@@ -186,7 +186,7 @@ class FourTokenHistoricalMigrationFixture:
             self.repo / profile.migration_package_root / self.migration_id
         )
         self.migration_root.mkdir(parents=True)
-        (self.migration_root / "migration_059_application_result.json").write_text(
+        (self.migration_root / "migration_061_application_result.json").write_text(
             json.dumps({"migration": self.migration_id}) + "\n", encoding="utf-8"
         )
 
@@ -397,9 +397,9 @@ class FourTokenHistoricalMigrationProvenanceTests(unittest.TestCase):
     def test_historical_migration_binding_is_exact_and_profile_scoped(self) -> None:
         """GREEN 1: only the four-token profile carries the exact binding."""
         profile = git_auth.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE
-        # 050, 055, 056, 057 and 058 are all required immutable historical
-        # packages after migration 059 becomes current authority.
-        self.assertEqual(len(profile.historical_migration_packages), 5)
+        # 050, 055, 056, 057, 058 and 059 are immutable historical packages
+        # after migration 061 becomes current authority.
+        self.assertEqual(len(profile.historical_migration_packages), 6)
         by_root = {
             item.package_root: item
             for item in profile.historical_migration_packages
@@ -426,6 +426,7 @@ class FourTokenHistoricalMigrationProvenanceTests(unittest.TestCase):
                 git_auth.MIGRATION_056_PACKAGE_ROOT,
                 git_auth.MIGRATION_057_PACKAGE_ROOT,
                 MIGRATION_058_ROOT,
+                git_auth.MIGRATION_059_PACKAGE_ROOT,
             },
         )
         self.assertEqual(
@@ -436,9 +437,10 @@ class FourTokenHistoricalMigrationProvenanceTests(unittest.TestCase):
                 git_auth.HISTORICAL_MIGRATION_056_EVIDENCE_CLASS,
                 git_auth.HISTORICAL_MIGRATION_057_EVIDENCE_CLASS,
                 "HISTORICAL_MIGRATION_058_EVIDENCE",
+                "HISTORICAL_MIGRATION_059_EVIDENCE",
             },
         )
-        # None of them is the current schema transition, which is now 059.
+        # None of them is the current schema transition, which is now 061.
         self.assertNotIn(
             profile.migration_package_root, set(by_root)
         )
@@ -453,14 +455,14 @@ class FourTokenHistoricalMigrationProvenanceTests(unittest.TestCase):
             profile.historical_authorization_package_roots,
         )
 
-    def test_migration059_identity_is_preparation_bound_and_old_auth_is_superseded(
+    def test_migration061_identity_is_committed_and_old_auth_is_superseded(
         self,
     ) -> None:
         profile = git_auth.FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE
-        self.assertEqual(profile.migration_package_root, MIGRATION_059_ROOT)
-        self.assertEqual(profile.migration_package_kind, "MIGRATION_059_EVIDENCE")
-        self.assertFalse(
-            hasattr(git_auth, "FOUR_TOKEN_CURRENT_MIGRATION_059_EXECUTION_ID")
+        self.assertEqual(profile.migration_package_root, MIGRATION_061_ROOT)
+        self.assertEqual(profile.migration_package_kind, "MIGRATION_061_EVIDENCE")
+        self.assertEqual(
+            profile.current_migration_execution_id, MIGRATION_061_EXECUTION_ID
         )
         self.assertEqual(
             git_auth._terminal_disposition_for(
@@ -475,18 +477,19 @@ class FourTokenHistoricalMigrationProvenanceTests(unittest.TestCase):
         try:
             payload, _path, _digest = fixture.manifest()
             current_kinds = {item["package_kind"] for item in payload["files"]}
-            # Migration 059 is the current schema transition for this profile.
+            # The synthetic profile keeps flexible execution identity on the
+            # current Migration-061 root/kind.
             self.assertEqual(
                 current_kinds,
                 {
-                    "MIGRATION_059_EVIDENCE",
+                    "MIGRATION_061_EVIDENCE",
                     "FOUR_TOKEN_PROOF_AUTHORIZATION_EVIDENCE",
                 },
             )
             current_paths = {item["path"] for item in payload["files"]}
             for path in fixture.historical_migration_paths():
                 self.assertNotIn(path, current_paths)
-                self.assertFalse(path.startswith(MIGRATION_059_ROOT))
+                self.assertFalse(path.startswith(MIGRATION_061_ROOT))
             for item in payload["historical_migration_evidence"]:
                 self.assertEqual(
                     item["evidence_class"],
@@ -501,18 +504,18 @@ class FourTokenHistoricalMigrationProvenanceTests(unittest.TestCase):
                     payload["migration_execution_id"],
                 )
             # The disposable authorization supplies the exact current execution
-            # identity at preparation time; production source does not discover
-            # a Migration-059 execution directory.
+            # identity at preparation time because its current identity fields
+            # are intentionally unconstrained for this synthetic fixture.
             self.assertEqual(
                 payload["migration_execution_id"], fixture.migration_id
             )
         finally:
             fixture.close()
 
-    def test_legitimate_migration059_and_pair_ready_inventory_is_classified(
+    def test_legitimate_migration061_and_pair_ready_inventory_is_classified(
         self,
     ) -> None:
-        """RED: exact 059 current + 058 Hm + PAIR_READY Hr must reconcile.
+        """Exact 061 current + 058 Hm + PAIR_READY Hr must reconcile.
 
         The break this catches is removal or omission of either exact profile
         declaration.  The strict reconciler remains unchanged: profile data
@@ -522,8 +525,8 @@ class FourTokenHistoricalMigrationProvenanceTests(unittest.TestCase):
         authorization_id = "V2_9_8B_FOUR_TOKEN_STD4H_AUTH_TESTONLY"
         current_paths = {
             (
-                f"{MIGRATION_059_ROOT}/{MIGRATION_059_EXECUTION_ID}/"
-                "migration_059_application_receipt.json"
+                f"{MIGRATION_061_ROOT}/{MIGRATION_061_EXECUTION_ID}/"
+                "migration_060_061_application_receipt.json"
             ),
             (
                 f"{profile.authorization_package_root}/{authorization_id}/"
@@ -560,13 +563,13 @@ class FourTokenHistoricalMigrationProvenanceTests(unittest.TestCase):
             tracked_paths=set(),
             inventory_paths=complete_inventory,
             current_package_roots=(
-                f"{MIGRATION_059_ROOT}/{MIGRATION_059_EXECUTION_ID}",
+                f"{MIGRATION_061_ROOT}/{MIGRATION_061_EXECUTION_ID}",
                 f"{profile.authorization_package_root}/{authorization_id}",
             ),
             sidecar_untracked_paths=(),
         )
 
-    def test_current_equality_remains_migration059_plus_current_authorization(
+    def test_current_equality_remains_migration061_plus_current_authorization(
         self,
     ) -> None:
         """GREEN 3/5: C == M only; an extra current-package file fails closed."""
@@ -577,7 +580,7 @@ class FourTokenHistoricalMigrationProvenanceTests(unittest.TestCase):
             expected_current = {
                 (
                     f"{profile.migration_package_root}/{fixture.migration_id}/"
-                    "migration_059_application_result.json"
+                    "migration_061_application_result.json"
                 ),
                 (
                     f"{profile.authorization_package_root}/"

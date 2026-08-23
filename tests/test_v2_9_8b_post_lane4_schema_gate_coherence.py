@@ -389,16 +389,17 @@ def test_k_consumed_authorization_binding_unusable_against_61(tmp_path) -> None:
     assert result.to_dict()["authorization_created"] is False
 
 
-def test_l_four_token_current_git_evidence_remains_059() -> None:
+def test_l_four_token_current_git_evidence_is_exact_061() -> None:
     for profile in (
         git_auth.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE,
         git_auth.FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE,
     ):
-        assert profile.migration_package_kind == "MIGRATION_059_EVIDENCE"
-        assert profile.migration_package_root == git_auth.MIGRATION_059_PACKAGE_ROOT
-    source = Path(git_auth.__file__).read_text(encoding="utf-8")
-    assert "MIGRATION_061_PACKAGE_KIND" not in source
-    assert "MIGRATION_061_PACKAGE_ROOT" not in source
+        assert profile.migration_package_kind == "MIGRATION_061_EVIDENCE"
+        assert profile.migration_package_root == git_auth.MIGRATION_061_PACKAGE_ROOT
+        assert profile.current_migration_execution_id == (
+            git_auth.FOUR_TOKEN_CURRENT_MIGRATION_061_EXECUTION_ID
+        )
+        assert profile.current_migration_expected_file_count == 5
 
 
 def test_m_cycle3_and_long_window_locks_unchanged() -> None:

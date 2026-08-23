@@ -251,13 +251,13 @@ class FourTokenProofMigration055EvidenceTests(unittest.TestCase):
         # over current schema-transition authority. It was demoted, never renamed.
         profile = git_auth.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE
         self.assertEqual(
-            profile.migration_package_root, git_auth.MIGRATION_059_PACKAGE_ROOT
+            profile.migration_package_root, git_auth.MIGRATION_061_PACKAGE_ROOT
         )
         self.assertEqual(
-            profile.migration_package_kind, git_auth.MIGRATION_059_PACKAGE_KIND
+            profile.migration_package_kind, git_auth.MIGRATION_061_PACKAGE_KIND
         )
         self.assertNotEqual(
-            git_auth.MIGRATION_055_PACKAGE_ROOT, git_auth.MIGRATION_059_PACKAGE_ROOT
+            git_auth.MIGRATION_055_PACKAGE_ROOT, git_auth.MIGRATION_061_PACKAGE_ROOT
         )
         self.assertNotEqual(
             git_auth.MIGRATION_055_PACKAGE_ROOT, git_auth.MIGRATION_057_PACKAGE_ROOT
@@ -294,19 +294,19 @@ class FourTokenProofMigration055EvidenceTests(unittest.TestCase):
             self.assertEqual(
                 kinds,
                 {
-                    git_auth.MIGRATION_059_PACKAGE_KIND,
+                    git_auth.MIGRATION_061_PACKAGE_KIND,
                     "FOUR_TOKEN_PROOF_AUTHORIZATION_EVIDENCE",
                 },
             )
             migration_files = [
                 item
                 for item in payload["files"]
-                if item["package_kind"] == git_auth.MIGRATION_059_PACKAGE_KIND
+                if item["package_kind"] == git_auth.MIGRATION_061_PACKAGE_KIND
             ]
             self.assertEqual(len(migration_files), 1)
             self.assertTrue(
                 migration_files[0]["path"].startswith(
-                    f"{git_auth.MIGRATION_059_PACKAGE_ROOT}/{fixture.migration_id}/"
+                    f"{git_auth.MIGRATION_061_PACKAGE_ROOT}/{fixture.migration_id}/"
                 )
             )
             self.assertEqual(

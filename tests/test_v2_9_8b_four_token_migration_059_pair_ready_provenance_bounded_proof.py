@@ -336,9 +336,9 @@ class FullShapePositiveProofTests(unittest.TestCase):
 
             self.assertEqual(len(current), 2)
             self.assertEqual(len(historical_authorization), 1)
-            self.assertEqual(len(historical_migration), 40)
+            self.assertEqual(len(historical_migration), 45)
             self.assertEqual(len(historical_reconciliation), 12)
-            self.assertEqual(prepared.file_count, 55)
+            self.assertEqual(prepared.file_count, 60)
             self.assertEqual(
                 set(prepared.allowed_untracked_paths),
                 current
@@ -348,7 +348,7 @@ class FullShapePositiveProofTests(unittest.TestCase):
             )
             self.assertTrue(
                 any(
-                    item["package_kind"] == git_auth.MIGRATION_059_PACKAGE_KIND
+                    item["package_kind"] == git_auth.MIGRATION_061_PACKAGE_KIND
                     for item in payload["files"]
                 )
             )
@@ -373,7 +373,7 @@ class FullShapePositiveProofTests(unittest.TestCase):
             full.close()
 
 
-class CurrentMigration059NegativeProofTests(unittest.TestCase):
+class CurrentMigration061NegativeProofTests(unittest.TestCase):
     def _post_manifest_failure(self, mutation) -> None:
         full = _FullShapeFixture()
         try:
@@ -388,7 +388,7 @@ class CurrentMigration059NegativeProofTests(unittest.TestCase):
         def current_file(full: _FullShapeFixture) -> Path:
             return (
                 full.fixture.migration_root
-                / "migration_059_application_result.json"
+                / "migration_061_application_result.json"
             )
 
         mutations = {
@@ -415,7 +415,7 @@ class CurrentMigration059NegativeProofTests(unittest.TestCase):
         full = _FullShapeFixture()
         try:
             document = json.loads(full.fixture.authorization_path.read_text())
-            document["migration_execution_id"] = "MIGRATION_059_WRONG"
+            document["migration_execution_id"] = "MIGRATION_061_WRONG"
             full.fixture.authorization_path.write_text(
                 json.dumps(document, indent=2, sort_keys=True) + "\n"
             )
@@ -738,7 +738,7 @@ class WrapperConsumptionRegressionProofTests(unittest.TestCase):
 
 
 class ProfileScopeProofTests(unittest.TestCase):
-    def test_only_four_token_profiles_receive_059_058_and_pair_ready(self) -> None:
+    def test_only_four_token_profiles_receive_061_059_and_pair_ready(self) -> None:
         pair_root = git_auth.PAIR_READY_RESIDUAL_RECONCILIATION_PACKAGE_ROOT
         for profile in (
             git_auth.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE,
@@ -747,14 +747,14 @@ class ProfileScopeProofTests(unittest.TestCase):
             with self.subTest(mode=profile.command_mode):
                 self.assertEqual(
                     profile.migration_package_root,
-                    git_auth.MIGRATION_059_PACKAGE_ROOT,
+                    git_auth.MIGRATION_061_PACKAGE_ROOT,
                 )
                 self.assertEqual(
                     profile.migration_package_kind,
-                    git_auth.MIGRATION_059_PACKAGE_KIND,
+                    git_auth.MIGRATION_061_PACKAGE_KIND,
                 )
                 self.assertIn(
-                    git_auth.MIGRATION_058_PACKAGE_ROOT,
+                    git_auth.MIGRATION_059_PACKAGE_ROOT,
                     {item.package_root for item in profile.historical_migration_packages},
                 )
                 self.assertIn(
@@ -774,7 +774,7 @@ class ProfileScopeProofTests(unittest.TestCase):
                 self.assertEqual(profile.historical_reconciliation_packages, ())
                 self.assertNotEqual(
                     profile.migration_package_root,
-                    git_auth.MIGRATION_059_PACKAGE_ROOT,
+                    git_auth.MIGRATION_061_PACKAGE_ROOT,
                 )
 
 
