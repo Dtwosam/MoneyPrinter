@@ -17,7 +17,9 @@ import sqlite3
 from typing import Any, Callable, Mapping
 
 from printer_v1.operator_cli.campaign_full_run_accounting import (
+    CAMPAIGN_STOPPED_AFTER_PEER_CYCLE_TERMINAL,
     OperationalLifecycleOwnershipContext,
+    derive_cycle_terminal_accounting_result,
     load_attributable_lifecycle_source_attempts,
     project_cycle_lifecycle_accounting_completeness,
 )
@@ -34,6 +36,70 @@ from printer_v1.operator_cli.multi_cycle_memory_growth import (
 
 class FourTokenFactoryAdapterError(ValueError):
     """Fail-closed four-token proof adapter violation."""
+
+
+def derive_peer_cycle_stop_effect(
+    connection: sqlite3.Connection,
+    *,
+    campaign_id: str,
+    campaign_run_id: str,
+    configuration_id: str,
+    factory_run_id: str,
+    target_cycle_id: str,
+    origin_cycle_id: str,
+) -> dict[str, Any]:
+    """Produce the scoped peer-stop effect from an exact failed cycle row.
+
+    The originating cause is read through canonical cycle accounting.  Callers
+    cannot supply either the cause or a finished classification.  The returned
+    effect is consumed only by exact target-cycle terminal reconciliation.
+    """
+    campaign = _required(campaign_id, "campaign_id")
+    run = _required(campaign_run_id, "campaign_run_id")
+    configuration = _required(configuration_id, "configuration_id")
+    factory = _required(factory_run_id, "factory_run_id")
+    target = _required(target_cycle_id, "target_cycle_id")
+    origin = _required(origin_cycle_id, "origin_cycle_id")
+    if target == origin:
+        raise FourTokenFactoryAdapterError("peer-stop cycles must differ")
+    origin_result = derive_cycle_terminal_accounting_result(
+        connection,
+        context=OperationalLifecycleOwnershipContext(
+            campaign_id=campaign,
+            campaign_run_id=run,
+            cycle_id=origin,
+            configuration_id=configuration,
+            factory_run_id=factory,
+        ),
+    )
+    if origin_result.get("execution_outcome") != "CYCLE_FAILED":
+        raise FourTokenFactoryAdapterError(
+            "peer-stop origin is not an exact failed cycle"
+        )
+    origin_fault = origin_result.get("primary_fault")
+    if not isinstance(origin_fault, Mapping) or not str(
+        origin_fault.get("cause") or ""
+    ).strip():
+        raise FourTokenFactoryAdapterError(
+            "peer-stop origin has no exact primary fault"
+        )
+    target_row = connection.execute(
+        "SELECT cycle_state FROM printer_memory_factory_campaign_cycles "
+        "WHERE campaign_id=? AND run_id=? AND cycle_id=?",
+        (campaign, run, target),
+    ).fetchone()
+    if target_row is None or str(target_row[0]).startswith("TERMINAL_"):
+        raise FourTokenFactoryAdapterError(
+            "peer-stop target is missing or already terminal"
+        )
+    return {
+        "cause": CAMPAIGN_STOPPED_AFTER_PEER_CYCLE_TERMINAL,
+        "origin_scope": "CYCLE",
+        "effect_scope": "CAMPAIGN",
+        "target_cycle_id": target,
+        "origin_cycle_id": origin,
+        "origin_fault": dict(origin_fault),
+    }
 
 
 @dataclass(frozen=True)
@@ -738,17 +804,23 @@ def reconcile_four_token_cycle_terminal(
     campaign_run_id: str,
     factory_run_id: str,
     cycle_id: str,
-    cause: str,
-    run_status: str | None,
     now: datetime,
+    configuration_id: str | None = None,
+    peer_stop_origin_cycle_id: str | None = None,
+    cause: str | None = None,
+    run_status: str | None = None,
     terminal_phase: str | None = None,
 ) -> dict[str, Any]:
-    """Phase A: terminalize one exact proof cycle without shared state."""
+    """Phase A: terminalize one exact cycle from canonical accounting truth.
+
+    Production supplies configuration identity, never a finished status/cause.
+    The legacy cause/status parameters remain only for the existing separately
+    authorized recovery and historical test surfaces.
+    """
     campaign = _required(campaign_id, "campaign_id")
     run = _required(campaign_run_id, "campaign_run_id")
     factory = _required(factory_run_id, "factory_run_id")
     cycle = _required(cycle_id, "cycle_id")
-    reason = _required(cause, "cause")
     instant = _utc(now, "now")
     timestamp = instant.isoformat()
     if connection.in_transaction:
@@ -769,11 +841,98 @@ def reconcile_four_token_cycle_terminal(
     ).fetchone()
     if row is None or int(row[0]) not in (1, 2):
         raise FourTokenFactoryAdapterError("proof cycle identity is missing or invalid")
+    canonical_result: Mapping[str, Any] | None = None
+    terminal_effect: Mapping[str, Any] | None = None
+    if configuration_id is not None:
+        configuration = _required(configuration_id, "configuration_id")
+        canonical_result = derive_cycle_terminal_accounting_result(
+            connection,
+            context=OperationalLifecycleOwnershipContext(
+                campaign_id=campaign,
+                campaign_run_id=run,
+                cycle_id=cycle,
+                configuration_id=configuration,
+                factory_run_id=factory,
+            ),
+        )
+        if peer_stop_origin_cycle_id is not None:
+            terminal_effect = derive_peer_cycle_stop_effect(
+                connection,
+                campaign_id=campaign,
+                campaign_run_id=run,
+                configuration_id=configuration,
+                factory_run_id=factory,
+                target_cycle_id=cycle,
+                origin_cycle_id=peer_stop_origin_cycle_id,
+            )
+            reason = str(terminal_effect["cause"])
+            resolved_run_status = "SAFE_STOPPED"
+        else:
+            outcome = str(canonical_result.get("execution_outcome") or "")
+            primary = canonical_result.get("primary_fault")
+            if outcome == "TERMINAL_SUCCESS":
+                reason = "COMPLETED_CLEAN_OR_DIRTY_RESULTS_REPORTED"
+                resolved_run_status = "COMPLETED"
+            elif outcome == "CYCLE_FAILED" and isinstance(primary, Mapping):
+                reason = _required(primary.get("cause"), "canonical cycle cause")
+                resolved_run_status = "FAILED"
+            elif outcome == "CANCELLED_STOPPED" and isinstance(primary, Mapping):
+                reason = _required(primary.get("cause"), "canonical stop cause")
+                resolved_run_status = "SAFE_STOPPED"
+            else:
+                factory_row = connection.execute(
+                    "SELECT stop_reason FROM printer_memory_factory_runs "
+                    "WHERE run_id=?",
+                    (factory,),
+                ).fetchone()
+                persisted_shared_cause = (
+                    None if factory_row is None else factory_row[0]
+                )
+                if not str(persisted_shared_cause or "").strip():
+                    raise FourTokenFactoryAdapterError(
+                        "active/incomplete cycle has no canonical terminal effect"
+                    )
+                if str(persisted_shared_cause) == (
+                    "COMPLETED_CLEAN_OR_DIRTY_RESULTS_REPORTED"
+                ):
+                    raise FourTokenFactoryAdapterError(
+                        "incomplete cycle cannot consume a completion stop cause"
+                    )
+                reason = _required(
+                    persisted_shared_cause, "persisted campaign stop cause"
+                )
+                resolved_run_status = "SAFE_STOPPED"
+                terminal_effect = {
+                    "cause": reason,
+                    "origin_scope": "CAMPAIGN",
+                    "effect_scope": "CAMPAIGN",
+                    "source_reference": f"factory_run:{factory}",
+                    "target_cycle_id": cycle,
+                }
+        run_status = resolved_run_status
+    else:
+        reason = _required(cause, "cause")
+
     if str(row[1]).startswith("TERMINAL_"):
+        from printer_v1.operator_cli.unified_terminal_closure import (
+            resolve_terminal_state,
+        )
+
+        expected_terminal_state = resolve_terminal_state(
+            run_status=run_status, terminal_cause=reason
+        )
+        if str(row[1]) != expected_terminal_state or str(row[2]) != reason:
+            raise FourTokenFactoryAdapterError(
+                "cycle terminal replay differs from canonical accounting"
+            )
         return {
             "cycle_id": cycle,
             "cycle_state": str(row[1]),
             "first_terminal_cause": str(row[2]),
+            "terminal_effect": None if terminal_effect is None else dict(terminal_effect),
+            "canonical_accounting": (
+                None if canonical_result is None else dict(canonical_result)
+            ),
             "shared_terminalized": False,
             "already_terminal": True,
         }
@@ -960,6 +1119,10 @@ def reconcile_four_token_cycle_terminal(
         "cycle_id": cycle,
         "cycle_state": terminal_state,
         "first_terminal_cause": reason,
+        "terminal_effect": None if terminal_effect is None else dict(terminal_effect),
+        "canonical_accounting": (
+            None if canonical_result is None else dict(canonical_result)
+        ),
         "active_owned_work": 0,
         "active_owned_jobs": 0,
         "pre_lifecycle_zero_attempt_provenance_recorded": (
@@ -976,7 +1139,8 @@ def finalize_four_token_shared_terminal(
     campaign_id: str,
     campaign_run_id: str,
     factory_run_id: str,
-    shared_terminalizer: Callable[[], Mapping[str, Any]],
+    shared_terminalizer: Callable[..., Mapping[str, Any]],
+    configuration_id: str | None = None,
 ) -> dict[str, Any]:
     """Phase B: compose the existing shared terminal/cleanup owner once."""
     campaign = _required(campaign_id, "campaign_id")
@@ -1133,7 +1297,29 @@ def finalize_four_token_shared_terminal(
             "already_terminal": True,
             "admitted_shape": admitted_shape,
         }
-    result = shared_terminalizer()
+    terminal_accounting: dict[str, Any] | None = None
+    if configuration_id is not None and admitted_shape == "TWO_CYCLE_COMPLETION":
+        from printer_v1.operator_cli.campaign_full_run_accounting import (
+            derive_two_cycle_campaign_terminal_accounting,
+        )
+
+        terminal_accounting = derive_two_cycle_campaign_terminal_accounting(
+            connection,
+            campaign_id=campaign,
+            campaign_run_id=run,
+            configuration_id=_required(configuration_id, "configuration_id"),
+            factory_run_id=factory,
+        )
+        if terminal_accounting.get("execution_outcome") in {
+            "ACTIVE_INCOMPLETE",
+            "INTERRUPTED_AMBIGUOUS",
+        }:
+            raise FourTokenFactoryAdapterError(
+                "shared terminal aggregate is incomplete or ambiguous"
+            )
+        result = shared_terminalizer(terminal_accounting=terminal_accounting)
+    else:
+        result = shared_terminalizer()
     if not isinstance(result, Mapping):
         raise FourTokenFactoryAdapterError(
             "shared terminal owner did not return evidence"
@@ -1165,6 +1351,7 @@ def finalize_four_token_shared_terminal(
         "shared_cleanup_count": 1,
         "already_terminal": False,
         "admitted_shape": admitted_shape,
+        "terminal_accounting": terminal_accounting,
         "shared_evidence": dict(result),
         "active_work": active_report,
     }

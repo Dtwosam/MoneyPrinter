@@ -1939,8 +1939,9 @@ def project_cycle_lifecycle_accounting_completeness(
     )
     if correspondence.get("correspondence_exact") is not True:
         reasons.append("LIFECYCLE_SCHEDULER_CORRESPONDENCE_INCOMPLETE")
-    if correspondence.get("all_lifecycle_jobs_succeeded") is not True:
-        reasons.append("LIFECYCLE_SCHEDULER_TERMINAL_SUCCESS_INCOMPLETE")
+    # A failed or cancelled job remains exact terminal evidence when its
+    # Scheduler/work mirror corresponds. Token-local disposition below owns
+    # the effect; terminal accounting must not rewrite it into cycle failure.
 
     terminal_states = _OWNED_TERMINAL_WINDOW_STATES
     from printer_v1.operator_cli.one_command_15m_factory import (
@@ -1968,11 +1969,50 @@ def project_cycle_lifecycle_accounting_completeness(
     slot_dispositions: list[dict[str, Any]] = []
     exact_step_ids = tuple(int(value) for value in factory_step_ids)
     exact_step_placeholders = ",".join("?" for _ in exact_step_ids)
+
+    def append_window_quality(
+        *, token_slot_id: str, window_kind: str, memory_window_row_id: Any
+    ) -> None:
+        """Read quality from the exact linked memory/promotion owner."""
+        memory = connection.execute(
+            """SELECT memory_status,data_quality_label,do_not_train
+               FROM printer_memory_windows WHERE id=?""",
+            (int(memory_window_row_id),),
+        ).fetchone()
+        if memory is None:
+            reasons.append(f"{window_kind}_MEMORY_MISSING:{token_slot_id}")
+            return
+        episode = connection.execute(
+            """SELECT episode_kind FROM printer_episodes
+               WHERE memory_window_id=?
+               ORDER BY (episode_kind=?) DESC,id LIMIT 1""",
+            (int(memory_window_row_id), _CLEAN_EPISODE_KIND),
+        ).fetchone()
+        quality = evaluate_quality_consistency(
+            memory_status=str(memory["memory_status"]),
+            data_quality_label=str(memory["data_quality_label"]),
+            do_not_train=int(memory["do_not_train"] or 0),
+            proposed_episode_kind=(
+                None if episode is None else str(episode["episode_kind"])
+            ),
+        )
+        quality_results.append(
+            {
+                "token_slot_id": token_slot_id,
+                "window_kind": window_kind,
+                **quality,
+            }
+        )
+        if quality.get("quality_consistent") is not True:
+            reasons.append(
+                f"MEMORY_QUALITY_INCONSISTENT:{token_slot_id}:{window_kind}"
+            )
+
     for slot in slots:
         slot_id = str(slot["token_slot_id"])
         rows = connection.execute(
             """SELECT window_id,window_kind,window_state,memory_window_row_id,
-                      token_row_id,pair_row_id
+                      token_row_id,pair_row_id,first_terminal_cause
                FROM printer_memory_factory_campaign_windows
                WHERE campaign_id=? AND run_id=? AND cycle_id=? AND token_slot_id=?
                  AND window_kind IN ('WINDOW_15M','WINDOW_1H','WINDOW_4H')
@@ -1995,9 +2035,14 @@ def project_cycle_lifecycle_accounting_completeness(
                 reasons.append(f"{kind}_OWNERSHIP_INCOMPLETE:{slot_id}")
                 continue
             window = owned[0]
+            window_state = str(window["window_state"])
             valid = bool(
-                str(window["window_state"]) in terminal_states
-                and window["memory_window_row_id"] is not None
+                window_state in terminal_states | {"BLOCKED", "CANCELLED"}
+                and (
+                    window["memory_window_row_id"] is not None
+                    if window_state in terminal_states
+                    else True
+                )
                 and int(window["token_row_id"]) == int(slot["token_row_id"])
                 and int(window["pair_row_id"]) == int(slot["pair_row_id"])
             )
@@ -2010,38 +2055,16 @@ def project_cycle_lifecycle_accounting_completeness(
                     "window_id": str(window["window_id"]),
                     "window_state": str(window["window_state"]),
                     "memory_window_row_id": window["memory_window_row_id"],
+                    "first_terminal_cause": window["first_terminal_cause"],
                     "terminal_complete": valid,
                 }
             )
-            if kind == "WINDOW_15M" and window["memory_window_row_id"] is not None:
-                memory = connection.execute(
-                    """SELECT memory_status,data_quality_label,do_not_train
-                       FROM printer_memory_windows WHERE id=?""",
-                    (int(window["memory_window_row_id"]),),
-                ).fetchone()
-                if memory is None:
-                    reasons.append(f"WINDOW_15M_MEMORY_MISSING:{slot_id}")
-                else:
-                    episode = connection.execute(
-                        """SELECT episode_kind FROM printer_episodes
-                           WHERE memory_window_id=?
-                           ORDER BY (episode_kind=?) DESC,id LIMIT 1""",
-                        (
-                            int(window["memory_window_row_id"]),
-                            _CLEAN_EPISODE_KIND,
-                        ),
-                    ).fetchone()
-                    quality = evaluate_quality_consistency(
-                        memory_status=str(memory["memory_status"]),
-                        data_quality_label=str(memory["data_quality_label"]),
-                        do_not_train=int(memory["do_not_train"] or 0),
-                        proposed_episode_kind=(
-                            None if episode is None else str(episode["episode_kind"])
-                        ),
-                    )
-                    quality_results.append({"token_slot_id": slot_id, **quality})
-                    if quality.get("quality_consistent") is not True:
-                        reasons.append(f"MEMORY_QUALITY_INCONSISTENT:{slot_id}")
+            if window["memory_window_row_id"] is not None:
+                append_window_quality(
+                    token_slot_id=slot_id,
+                    window_kind=kind,
+                    memory_window_row_id=window["memory_window_row_id"],
+                )
 
         owned_4h = by_kind.get("WINDOW_4H", [])
         if eligible_4h:
@@ -2049,9 +2072,14 @@ def project_cycle_lifecycle_accounting_completeness(
                 reasons.append(f"WINDOW_4H_OWNERSHIP_INCOMPLETE:{slot_id}")
             else:
                 window = owned_4h[0]
+                window_state = str(window["window_state"])
                 valid = bool(
-                    str(window["window_state"]) in terminal_states
-                    and window["memory_window_row_id"] is not None
+                    window_state in terminal_states | {"BLOCKED", "CANCELLED"}
+                    and (
+                        window["memory_window_row_id"] is not None
+                        if window_state in terminal_states
+                        else True
+                    )
                     and int(window["token_row_id"]) == int(slot["token_row_id"])
                     and int(window["pair_row_id"]) == int(slot["pair_row_id"])
                 )
@@ -2066,9 +2094,16 @@ def project_cycle_lifecycle_accounting_completeness(
                         "window_id": str(window["window_id"]),
                         "window_state": str(window["window_state"]),
                         "memory_window_row_id": window["memory_window_row_id"],
+                        "first_terminal_cause": window["first_terminal_cause"],
                         "terminal_complete": valid,
                     }
                 )
+                if window["memory_window_row_id"] is not None:
+                    append_window_quality(
+                        token_slot_id=slot_id,
+                        window_kind="WINDOW_4H",
+                        memory_window_row_id=window["memory_window_row_id"],
+                    )
         elif owned_4h:
             reasons.append(f"INELIGIBLE_WINDOW_4H_OWNERSHIP_PRESENT:{slot_id}")
 
@@ -2220,6 +2255,852 @@ def project_cycle_lifecycle_accounting_completeness(
     }
 
 
+REQUIRED_MULTI_CYCLE_ORDINALS = (1, 2)
+CAMPAIGN_STOPPED_AFTER_PEER_CYCLE_TERMINAL = (
+    "CAMPAIGN_STOPPED_AFTER_PEER_CYCLE_TERMINAL"
+)
+
+
+def _table_exists_for_accounting(
+    connection: sqlite3.Connection, table_name: str
+) -> bool:
+    return connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (str(table_name),),
+    ).fetchone() is not None
+
+
+def _fault_envelope(
+    *,
+    cause: Any,
+    origin_scope: str,
+    cycle_id: str | None = None,
+    token_slot_id: str | None = None,
+    effect_scope: str | None = None,
+    source_reference: str | None = None,
+) -> dict[str, Any] | None:
+    reason = str(cause or "").strip()
+    if not reason:
+        return None
+    return {
+        "cause": reason,
+        "origin_scope": str(origin_scope),
+        "effect_scope": str(effect_scope or origin_scope),
+        "cycle_id": cycle_id,
+        "token_slot_id": token_slot_id,
+        "source_reference": source_reference,
+    }
+
+
+def _cycle_activity_state(
+    connection: sqlite3.Connection,
+    *,
+    context: OperationalLifecycleOwnershipContext,
+    cycle_state: str,
+    slots: Sequence[sqlite3.Row],
+) -> str:
+    active_slot_states = {
+        "SELECTED",
+        "WINDOW_15M_ACTIVE",
+        "WINDOW_1H_CONTINUING",
+        "WINDOW_4H_CONTINUING",
+    }
+    if any(str(row["token_state"]) in active_slot_states for row in slots):
+        return "ACTIVE_INCOMPLETE"
+    if _table_exists_for_accounting(
+        connection, "printer_memory_factory_campaign_scheduler_work"
+    ):
+        active_work = int(
+            connection.execute(
+                "SELECT COUNT(*) FROM "
+                "printer_memory_factory_campaign_scheduler_work "
+                "WHERE campaign_id=? AND run_id=? AND cycle_id=? "
+                "AND work_state IN ('PENDING','RUNNING','COOLDOWN')",
+                (
+                    context.campaign_id,
+                    context.campaign_run_id,
+                    context.cycle_id,
+                ),
+            ).fetchone()[0]
+        )
+        if active_work:
+            return "ACTIVE_INCOMPLETE"
+    if str(cycle_state).startswith("TERMINAL_"):
+        return "TERMINAL"
+    return "INACTIVE_INCOMPLETE"
+
+
+def _quality_outcome_from_projection(projection: Mapping[str, Any]) -> str:
+    quality = tuple(projection.get("quality_results") or ())
+    if not quality:
+        return "NOT_APPLICABLE"
+    if any(item.get("quality_consistent") is not True for item in quality):
+        return "MIXED"
+    clean = sum(bool(item.get("is_clean_window")) for item in quality)
+    if clean == len(quality):
+        return "CLEAN"
+    if clean == 0:
+        return "NON_CLEAN"
+    return "MIXED"
+
+
+def derive_cycle_terminal_accounting_result(
+    connection: sqlite3.Connection,
+    *,
+    context: OperationalLifecycleOwnershipContext,
+) -> dict[str, Any]:
+    """Derive one exact cycle's terminal accounting from production owners.
+
+    The caller supplies identity only.  Cycle ordinal, slots, Scheduler-owned
+    factory steps, window/quality truth, and Lane-3 progression are resolved
+    here.  No result field is accepted from a caller and nothing is persisted.
+    """
+    connection.row_factory = sqlite3.Row
+    binding = connection.execute(
+        "SELECT authoritative_run_id,run_state,first_terminal_cause "
+        "FROM printer_memory_factory_campaign_runs "
+        "WHERE campaign_id=? AND run_id=?",
+        (context.campaign_id, context.campaign_run_id),
+    ).fetchone()
+    if binding is None or str(binding["authoritative_run_id"] or "") != (
+        context.factory_run_id
+    ):
+        raise FullRunAccountingError("campaign/factory run binding mismatch")
+    configuration_count = int(
+        connection.execute(
+            "SELECT COUNT(*) FROM printer_memory_factory_campaign_configurations "
+            "WHERE campaign_id=? AND configuration_id=?",
+            (context.campaign_id, context.configuration_id),
+        ).fetchone()[0]
+    )
+    if configuration_count != 1:
+        raise FullRunAccountingError("campaign configuration binding mismatch")
+    cycle = connection.execute(
+        "SELECT cycle_id,cycle_ordinal,cycle_state,first_terminal_cause,terminal_at "
+        "FROM printer_memory_factory_campaign_cycles "
+        "WHERE campaign_id=? AND run_id=? AND cycle_id=?",
+        (context.campaign_id, context.campaign_run_id, context.cycle_id),
+    ).fetchone()
+    if cycle is None:
+        raise FullRunAccountingError("cycle ownership is missing")
+    ordinal = int(cycle["cycle_ordinal"])
+    if ordinal not in REQUIRED_MULTI_CYCLE_ORDINALS:
+        raise FullRunAccountingError(
+            "cycle ordinal is outside authorized ordinals 1 and 2"
+        )
+    cycle_state = str(cycle["cycle_state"])
+    slots = connection.execute(
+        "SELECT s.token_slot_id,s.slot_ordinal,s.token_row_id,s.pair_row_id,"
+        "s.token_state,s.first_terminal_cause,s.terminal_at,s.lifecycle_identity,"
+        "s.mint_identity,s.pair_identity,s.tracking_queue_id,q.tracking_lane "
+        "FROM printer_memory_factory_campaign_token_slots AS s "
+        "LEFT JOIN printer_tracking_queue AS q ON q.id=s.tracking_queue_id "
+        "WHERE s.campaign_id=? AND s.run_id=? AND s.cycle_id=? "
+        "ORDER BY s.slot_ordinal",
+        (context.campaign_id, context.campaign_run_id, context.cycle_id),
+    ).fetchall()
+    reasons: list[str] = []
+    exact_slots = bool(
+        len(slots) == 2
+        and tuple(int(row["slot_ordinal"]) for row in slots) == (1, 2)
+        and len({str(row["token_slot_id"]) for row in slots}) == 2
+        and len(
+            {
+                (int(row["token_row_id"]), int(row["pair_row_id"]))
+                for row in slots
+            }
+        )
+        == 2
+        and all(
+            row["tracking_queue_id"] is not None
+            and str(row["tracking_lane"] or "")
+            in {"TRACK_FAST", "TRACK_NORMAL"}
+            and str(row["mint_identity"] or "").strip()
+            and str(row["pair_identity"] or "").strip()
+            and str(row["lifecycle_identity"] or "").strip()
+            for row in slots
+        )
+    )
+    if not exact_slots:
+        reasons.append("EXACT_TWO_SELECTED_TARGETS_UNPROVEN")
+
+    projection: dict[str, Any]
+    scoped_step_ids: tuple[int, ...] = ()
+    required_step_tables = (
+        "printer_memory_factory_run_steps",
+        "printer_memory_factory_campaign_scheduler_work",
+        "printer_scheduler_jobs",
+    )
+    if exact_slots and all(
+        _table_exists_for_accounting(connection, name)
+        for name in required_step_tables
+    ):
+        from printer_v1.operator_cli.four_token_proof_integration import (
+            FourTokenProofPolicyError,
+            cycle_scoped_factory_step_ids,
+        )
+
+        try:
+            scoped_step_ids = cycle_scoped_factory_step_ids(
+                connection,
+                campaign_id=context.campaign_id,
+                campaign_run_id=context.campaign_run_id,
+                factory_run_id=context.factory_run_id,
+                cycle_id=context.cycle_id,
+            )
+        except FourTokenProofPolicyError as exc:
+            raise FullRunAccountingError(
+                f"cycle-scoped factory step ownership invalid: {exc}"
+            ) from exc
+    if not scoped_step_ids:
+        if exact_slots:
+            reasons.append("CYCLE_SCOPED_FACTORY_STEP_OWNERSHIP_MISSING")
+        projection = {
+            "complete": False,
+            "reasons": tuple(reasons),
+            "windows": (),
+            "quality_results": (),
+            "slot_dispositions": (),
+            "standard_four_hour_terminal": {
+                "enabled": False,
+                "complete": False,
+                "per_token": (),
+            },
+            "scheduler_ownership": {
+                "correspondence_exact": False,
+                "all_lifecycle_jobs_succeeded": False,
+            },
+            "terminal_reconciliation_ready": False,
+        }
+    else:
+        projection = project_cycle_lifecycle_accounting_completeness(
+            connection,
+            context=context,
+            factory_step_ids=scoped_step_ids,
+        )
+        reasons.extend(str(item) for item in projection.get("reasons") or ())
+
+    activity_state = _cycle_activity_state(
+        connection,
+        context=context,
+        cycle_state=cycle_state,
+        slots=slots,
+    )
+    progression_state = str(
+        projection.get("standard_four_hour_terminal", {}).get(
+            "aggregate_state"
+        )
+        or ""
+    )
+    if cycle_state == "TERMINAL_FAILED" or progression_state == "TERMINAL_FAILED":
+        execution_outcome = "CYCLE_FAILED"
+    elif cycle_state == "TERMINAL_STOPPED" or progression_state == "TERMINAL_CANCELLED":
+        execution_outcome = "CANCELLED_STOPPED"
+    elif cycle_state == "TERMINAL_BLOCKED" or progression_state in {
+        "INTERRUPTED_REVIEW",
+        "INTERRUPTED_AMBIGUOUS",
+    }:
+        execution_outcome = "INTERRUPTED_AMBIGUOUS"
+    elif projection.get("complete") is True:
+        execution_outcome = "TERMINAL_SUCCESS"
+    elif activity_state == "ACTIVE_INCOMPLETE":
+        execution_outcome = "ACTIVE_INCOMPLETE"
+    else:
+        execution_outcome = "INTERRUPTED_AMBIGUOUS"
+
+    progression_faults = dict(
+        projection.get("standard_four_hour_terminal", {}).get("fault_details")
+        or {}
+    )
+    primary_fault = (
+        None
+        if cycle_state == "TERMINAL_COMPLETED"
+        else _fault_envelope(
+            cause=cycle["first_terminal_cause"],
+            origin_scope="CYCLE",
+            cycle_id=context.cycle_id,
+            source_reference=f"campaign_cycle:{context.cycle_id}",
+        )
+    )
+    if (
+        primary_fault is not None
+        and primary_fault.get("cause")
+        == CAMPAIGN_STOPPED_AFTER_PEER_CYCLE_TERMINAL
+    ):
+        origin_rows = connection.execute(
+            "SELECT cycle_id,first_terminal_cause FROM "
+            "printer_memory_factory_campaign_cycles "
+            "WHERE campaign_id=? AND run_id=? AND cycle_id<>? "
+            "AND cycle_state='TERMINAL_FAILED' "
+            "AND first_terminal_cause IS NOT NULL ORDER BY cycle_ordinal",
+            (context.campaign_id, context.campaign_run_id, context.cycle_id),
+        ).fetchall()
+        if len(origin_rows) != 1:
+            reasons.append("PEER_CYCLE_TERMINAL_ORIGIN_UNPROVEN")
+        else:
+            origin_cycle_id = str(origin_rows[0]["cycle_id"])
+            primary_fault.update(
+                {
+                    "origin_scope": "CYCLE",
+                    "effect_scope": "CAMPAIGN",
+                    "origin_cycle_id": origin_cycle_id,
+                    "source_reference": f"campaign_cycle:{origin_cycle_id}",
+                    "origin_fault": {
+                        "cause": str(origin_rows[0]["first_terminal_cause"]),
+                        "origin_scope": "CYCLE",
+                        "effect_scope": "CYCLE",
+                        "cycle_id": origin_cycle_id,
+                        "source_reference": f"campaign_cycle:{origin_cycle_id}",
+                    },
+                }
+            )
+    if primary_fault is not None:
+        primary_cause = str(primary_fault.get("cause") or "")
+        progression_primary = progression_faults.get("primary")
+        lower_level_cause_exists = bool(
+            isinstance(progression_primary, Mapping)
+            and str(progression_primary.get("cause") or "") == primary_cause
+        )
+        if not lower_level_cause_exists:
+            for table, cause_column in (
+                ("printer_memory_factory_campaign_token_slots", "first_terminal_cause"),
+                ("printer_memory_factory_campaign_windows", "first_terminal_cause"),
+                (
+                    "printer_memory_factory_campaign_scheduler_work",
+                    "first_terminal_cause",
+                ),
+            ):
+                if not _table_exists_for_accounting(connection, table):
+                    continue
+                match = connection.execute(
+                    f"SELECT 1 FROM {table} WHERE campaign_id=? AND run_id=? "
+                    f"AND cycle_id=? AND {cause_column}=? LIMIT 1",
+                    (
+                        context.campaign_id,
+                        context.campaign_run_id,
+                        context.cycle_id,
+                        primary_cause,
+                    ),
+                ).fetchone()
+                if match is not None:
+                    lower_level_cause_exists = True
+                    break
+        supervision_fault = connection.execute(
+            "SELECT supervision_id,terminal_status,first_terminal_cause FROM "
+            "printer_memory_factory_campaign_supervision "
+            "WHERE campaign_id=? AND configuration_id=? AND run_id=? "
+            "AND supervision_state='TERMINAL'",
+            (
+                context.campaign_id,
+                context.configuration_id,
+                context.campaign_run_id,
+            ),
+        ).fetchone()
+        if (
+            supervision_fault is not None
+            and str(supervision_fault["terminal_status"] or "")
+            in {"FAILED", "CANCELLED", "LEASE_RENEWAL_UNCONFIRMED"}
+            and str(supervision_fault["first_terminal_cause"] or "")
+            == str(primary_fault.get("cause") or "")
+            and not lower_level_cause_exists
+        ):
+            primary_fault.update(
+                {
+                    "origin_scope": "CAMPAIGN",
+                    "effect_scope": "CAMPAIGN",
+                    "source_reference": (
+                        "campaign_supervision:"
+                        + str(supervision_fault["supervision_id"])
+                    ),
+                }
+            )
+    if primary_fault is None and progression_state in {
+        "TERMINAL_FAILED",
+        "TERMINAL_CANCELLED",
+        "INTERRUPTED_REVIEW",
+        "INTERRUPTED_AMBIGUOUS",
+    }:
+        progression_primary = progression_faults.get("primary")
+        primary_fault = {
+            **(
+                dict(progression_primary)
+                if isinstance(progression_primary, Mapping)
+                else {}
+            ),
+            **(
+                _fault_envelope(
+                    cause=projection.get(
+                        "standard_four_hour_terminal", {}
+                    ).get("first_terminal_cause"),
+                    origin_scope="CYCLE",
+                    cycle_id=context.cycle_id,
+                    source_reference=(
+                        "standard_4h_progression_attempt:"
+                        + str(
+                            projection.get(
+                                "standard_four_hour_terminal", {}
+                            ).get("progression_attempt_id")
+                            or "UNKNOWN"
+                        )
+                    ),
+                )
+                or {}
+            ),
+        } or None
+    tokens: list[dict[str, Any]] = []
+    progression_by_slot = {
+        str(item.get("token_slot_id")): item
+        for item in (
+            projection.get("standard_four_hour_terminal", {}).get("per_token")
+            or ()
+        )
+        if isinstance(item, Mapping)
+    }
+    windows_by_slot: dict[str, list[dict[str, Any]]] = {}
+    for item in projection.get("windows") or ():
+        windows_by_slot.setdefault(str(item.get("token_slot_id")), []).append(
+            dict(item)
+        )
+    quality_by_slot: dict[str, list[dict[str, Any]]] = {}
+    for item in projection.get("quality_results") or ():
+        quality_by_slot.setdefault(str(item.get("token_slot_id")), []).append(
+            dict(item)
+        )
+    scheduler_states = dict(
+        projection.get("scheduler_ownership", {}).get("lifecycle_job_states")
+        or {}
+    )
+    scheduler_by_token: dict[int, list[dict[str, Any]]] = {}
+    if scoped_step_ids:
+        placeholders = ",".join("?" for _ in scoped_step_ids)
+        for step in connection.execute(
+            "SELECT id,scheduler_job_id,step_kind,token_id,pair_id FROM "
+            "printer_memory_factory_run_steps WHERE run_id=? "
+            f"AND id IN ({placeholders}) ORDER BY id",
+            (context.factory_run_id, *scoped_step_ids),
+        ).fetchall():
+            job_id = step["scheduler_job_id"]
+            scheduler_by_token.setdefault(int(step["token_id"]), []).append(
+                {
+                    "factory_step_id": int(step["id"]),
+                    "scheduler_job_id": (
+                        None if job_id is None else int(job_id)
+                    ),
+                    "step_kind": str(step["step_kind"]),
+                    "pair_row_id": int(step["pair_id"]),
+                    "terminal_state": (
+                        None
+                        if job_id is None
+                        else scheduler_states.get(str(int(job_id)))
+                    ),
+                }
+            )
+    for slot in slots:
+        slot_id = str(slot["token_slot_id"])
+        token_windows = windows_by_slot.get(slot_id, [])
+        progression_token = progression_by_slot.get(slot_id) or {}
+        token_scheduler = scheduler_by_token.get(int(slot["token_row_id"]), [])
+        window_states = {str(item.get("window_state") or "") for item in token_windows}
+        scheduler_terminal_states = {
+            str(item.get("terminal_state") or "") for item in token_scheduler
+        }
+        slot_fault = _fault_envelope(
+            cause=slot["first_terminal_cause"],
+            origin_scope="TOKEN",
+            cycle_id=context.cycle_id,
+            token_slot_id=slot_id,
+            source_reference=f"campaign_token_slot:{slot_id}",
+        )
+        progression_token_fault = _fault_envelope(
+            cause=progression_token.get("first_terminal_cause"),
+            origin_scope="TOKEN",
+            cycle_id=context.cycle_id,
+            token_slot_id=slot_id,
+            source_reference=(
+                "standard_4h_progression_token:" + slot_id
+            ),
+        )
+        window_fault = next(
+            (
+                _fault_envelope(
+                    cause=item.get("first_terminal_cause"),
+                    origin_scope="TOKEN",
+                    cycle_id=context.cycle_id,
+                    token_slot_id=slot_id,
+                    source_reference=(
+                        "campaign_window:" + str(item.get("window_id"))
+                    ),
+                )
+                for item in token_windows
+                if str(item.get("window_state") or "")
+                in {"BLOCKED", "CANCELLED"}
+            ),
+            None,
+        )
+        token_primary = slot_fault or progression_token_fault or window_fault
+        progression_outcome = str(progression_token.get("outcome") or "")
+        progression_disposition = str(
+            progression_token.get("disposition") or ""
+        )
+        if (
+            str(slot["token_state"]) == "FAILED"
+            or progression_outcome == "FAILED"
+            or progression_disposition == "TERMINAL_FAILED"
+            or "FAILED" in scheduler_terminal_states
+            or "BLOCKED" in window_states
+        ):
+            token_outcome = "TOKEN_LOCAL_FAILURE"
+        elif (
+            progression_outcome == "CANCELLED"
+            or "CANCELLED" in scheduler_terminal_states
+            or "CANCELLED" in window_states
+        ):
+            token_outcome = "TOKEN_LOCAL_CANCELLED"
+        elif progression_disposition == "INELIGIBLE":
+            token_outcome = "INELIGIBLE"
+        elif str(slot["token_state"]) == "MANUAL_REVIEW":
+            token_outcome = "INTERRUPTED_AMBIGUOUS"
+        elif any(
+            state in {"PENDING", "RUNNING", "COOLDOWN", ""}
+            for state in scheduler_terminal_states
+        ) or str(slot["token_state"]) in {
+            "SELECTED",
+            "WINDOW_15M_ACTIVE",
+            "WINDOW_1H_CONTINUING",
+            "WINDOW_4H_CONTINUING",
+        }:
+            token_outcome = "ACTIVE_INCOMPLETE"
+        elif projection.get("complete") is True:
+            token_quality = quality_by_slot.get(slot_id, [])
+            token_outcome = (
+                "TERMINAL_NON_CLEAN"
+                if token_quality
+                and any(
+                    item.get("is_clean_window") is not True
+                    for item in token_quality
+                )
+                else "TERMINAL_SUCCESS"
+            )
+        else:
+            token_outcome = "INTERRUPTED_AMBIGUOUS"
+        tokens.append(
+            {
+                "token_slot_id": slot_id,
+                "slot_ordinal": int(slot["slot_ordinal"]),
+                "token_row_id": int(slot["token_row_id"]),
+                "pair_row_id": int(slot["pair_row_id"]),
+                "mint_identity": str(slot["mint_identity"]),
+                "pair_identity": str(slot["pair_identity"]),
+                "tracking_queue_id": (
+                    None
+                    if slot["tracking_queue_id"] is None
+                    else int(slot["tracking_queue_id"])
+                ),
+                "tracking_lane": (
+                    None
+                    if slot["tracking_lane"] is None
+                    else str(slot["tracking_lane"])
+                ),
+                "lifecycle_identity": str(slot["lifecycle_identity"]),
+                "persisted_slot_state": str(slot["token_state"]),
+                "windows": sorted(
+                    token_windows,
+                    key=lambda item: (
+                        str(item.get("window_kind") or ""),
+                        str(item.get("window_id") or ""),
+                    ),
+                ),
+                "standard_four_hour_progression": progression_token or None,
+                "scheduler_work": token_scheduler,
+                "token_outcome": token_outcome,
+                "primary_fault": token_primary,
+                "secondary_faults": [],
+            }
+        )
+
+    accounting_complete = bool(
+        execution_outcome
+        in {"TERMINAL_SUCCESS", "CYCLE_FAILED", "CANCELLED_STOPPED"}
+        and projection.get("complete") is True
+        and not reasons
+    )
+    requires_review = bool(
+        execution_outcome == "INTERRUPTED_AMBIGUOUS"
+        or (
+            activity_state == "ACTIVE_INCOMPLETE"
+            and cycle_state.startswith("TERMINAL_")
+        )
+        or (not accounting_complete and activity_state != "ACTIVE_INCOMPLETE")
+    )
+    return {
+        "campaign_id": context.campaign_id,
+        "campaign_run_id": context.campaign_run_id,
+        "configuration_id": context.configuration_id,
+        "factory_run_id": context.factory_run_id,
+        "cycle_id": context.cycle_id,
+        "cycle_ordinal": ordinal,
+        "persisted_cycle_state": cycle_state,
+        "activity_state": activity_state,
+        "execution_outcome": execution_outcome,
+        "quality_outcome": _quality_outcome_from_projection(projection),
+        "accounting_complete": accounting_complete,
+        "requires_review": requires_review,
+        "primary_fault": primary_fault,
+        "secondary_faults": [
+            dict(item)
+            for item in (progression_faults.get("secondary") or ())
+            if isinstance(item, Mapping)
+        ],
+        "tokens": tokens,
+        "factory_step_ids": list(scoped_step_ids),
+        "scheduler_work": dict(projection.get("scheduler_ownership") or {}),
+        "standard_four_hour_terminal": dict(
+            projection.get("standard_four_hour_terminal") or {}
+        ),
+        "incomplete_reasons": list(dict.fromkeys(reasons)),
+    }
+
+
+def derive_two_cycle_campaign_terminal_accounting(
+    connection: sqlite3.Connection,
+    *,
+    campaign_id: str,
+    campaign_run_id: str,
+    configuration_id: str,
+    factory_run_id: str,
+) -> dict[str, Any]:
+    """Compose the exact authorized Cycle-1/Cycle-2 accounting projection."""
+    campaign = _require(campaign_id, "campaign_id")
+    run = _require(campaign_run_id, "campaign_run_id")
+    configuration = _require(configuration_id, "configuration_id")
+    factory = _require(factory_run_id, "factory_run_id")
+    connection.row_factory = sqlite3.Row
+    identity_row = connection.execute(
+        "SELECT authoritative_run_id FROM printer_memory_factory_campaign_runs "
+        "WHERE campaign_id=? AND run_id=?",
+        (campaign, run),
+    ).fetchone()
+    if identity_row is None or str(
+        identity_row["authoritative_run_id"] or ""
+    ) != factory:
+        raise FullRunAccountingError("campaign/factory run binding mismatch")
+    configuration_count = int(
+        connection.execute(
+            "SELECT COUNT(*) FROM printer_memory_factory_campaign_configurations "
+            "WHERE campaign_id=? AND configuration_id=?",
+            (campaign, configuration),
+        ).fetchone()[0]
+    )
+    if configuration_count != 1:
+        raise FullRunAccountingError("campaign configuration binding mismatch")
+    rows = connection.execute(
+        "SELECT cycle_id,cycle_ordinal FROM "
+        "printer_memory_factory_campaign_cycles "
+        "WHERE campaign_id=? AND run_id=? ORDER BY cycle_ordinal,cycle_id",
+        (campaign, run),
+    ).fetchall()
+    if len(rows) > 2:
+        raise FullRunAccountingError("more than two admitted cycles are forbidden")
+    ordinals = [int(row["cycle_ordinal"]) for row in rows]
+    if len(ordinals) != len(set(ordinals)):
+        raise FullRunAccountingError("duplicate cycle ordinal")
+    if any(value not in REQUIRED_MULTI_CYCLE_ORDINALS for value in ordinals):
+        raise FullRunAccountingError("admitted cycle ordinal is not authorized")
+    cycles = [
+        derive_cycle_terminal_accounting_result(
+            connection,
+            context=OperationalLifecycleOwnershipContext(
+                campaign_id=campaign,
+                campaign_run_id=run,
+                cycle_id=str(row["cycle_id"]),
+                configuration_id=configuration,
+                factory_run_id=factory,
+            ),
+        )
+        for row in rows
+    ]
+
+    exact_ordinals = tuple(item["cycle_ordinal"] for item in cycles) == (
+        REQUIRED_MULTI_CYCLE_ORDINALS
+    )
+    cycle_failures = [
+        item for item in cycles if item["execution_outcome"] == "CYCLE_FAILED"
+    ]
+    stopped = [
+        item
+        for item in cycles
+        if item["execution_outcome"] == "CANCELLED_STOPPED"
+    ]
+    ambiguous = [
+        item
+        for item in cycles
+        if item["execution_outcome"] == "INTERRUPTED_AMBIGUOUS"
+    ]
+    active = [
+        item for item in cycles if item["execution_outcome"] == "ACTIVE_INCOMPLETE"
+    ]
+    quality_values = [
+        str(item["quality_outcome"])
+        for item in cycles
+        if item["quality_outcome"] != "NOT_APPLICABLE"
+    ]
+    if not quality_values:
+        quality_outcome = "NOT_APPLICABLE"
+    elif all(value == "CLEAN" for value in quality_values):
+        quality_outcome = "CLEAN"
+    elif all(value == "NON_CLEAN" for value in quality_values):
+        quality_outcome = "NON_CLEAN"
+    else:
+        quality_outcome = "MIXED"
+
+    run_row = connection.execute(
+        "SELECT run_state,first_terminal_cause,terminal_at FROM "
+        "printer_memory_factory_campaign_runs "
+        "WHERE campaign_id=? AND run_id=? AND authoritative_run_id=?",
+        (campaign, run, factory),
+    ).fetchone()
+    if run_row is None:
+        raise FullRunAccountingError("campaign run ownership mismatch")
+    supervision = connection.execute(
+        "SELECT supervision_id,supervision_state,terminal_status,"
+        "first_terminal_cause,cancellation_requested_at,cancellation_reason,"
+        "cleanup_completed_at,lease_released_at FROM "
+        "printer_memory_factory_campaign_supervision "
+        "WHERE campaign_id=? AND configuration_id=? AND run_id=?",
+        (campaign, configuration, run),
+    ).fetchone()
+    shared_fault: dict[str, Any] | None = None
+    shared_cancelled = False
+    if supervision is not None and str(supervision["supervision_state"]) == "TERMINAL":
+        terminal_status = str(supervision["terminal_status"] or "")
+        shared_cancelled = terminal_status == "CANCELLED"
+        if terminal_status in {"FAILED", "LEASE_RENEWAL_UNCONFIRMED"}:
+            shared_fault = _fault_envelope(
+                cause=supervision["first_terminal_cause"],
+                origin_scope="CAMPAIGN",
+                effect_scope="CAMPAIGN",
+                source_reference=(
+                    "campaign_supervision:" + str(supervision["supervision_id"])
+                ),
+            )
+    run_cause = str(run_row["first_terminal_cause"] or "").strip()
+    cycle_cause_match = next(
+        (
+            dict(item["primary_fault"])
+            for item in cycles
+            if isinstance(item.get("primary_fault"), Mapping)
+            and str(item["primary_fault"].get("cause") or "") == run_cause
+        ),
+        None,
+    )
+    first_cause = cycle_cause_match
+    if first_cause is None and run_cause:
+        first_cause = _fault_envelope(
+            cause=run_cause,
+            origin_scope="CAMPAIGN",
+            effect_scope="CAMPAIGN",
+            source_reference=f"campaign_run:{run}",
+        )
+    if first_cause is None:
+        first_cause = shared_fault
+    if first_cause is None:
+        for item in cycles:
+            if item.get("primary_fault") is not None:
+                first_cause = dict(item["primary_fault"])
+                break
+
+    # Structural ambiguity is first and fail-closed. A genuine persisted
+    # campaign supervision failure/cancellation then outranks cycle-local
+    # effects. Otherwise each independently derived cycle keeps its own result.
+    if not exact_ordinals or ambiguous:
+        execution_outcome = "INTERRUPTED_AMBIGUOUS"
+    elif shared_fault is not None:
+        execution_outcome = "CAMPAIGN_FAILED"
+    elif shared_cancelled or str(run_row["run_state"]) == "TERMINAL_STOPPED":
+        execution_outcome = "CANCELLED_STOPPED"
+    elif stopped:
+        execution_outcome = "CANCELLED_STOPPED"
+    elif cycle_failures:
+        execution_outcome = "CYCLE_FAILED"
+    elif active:
+        execution_outcome = "ACTIVE_INCOMPLETE"
+    elif all(
+        item["execution_outcome"] == "TERMINAL_SUCCESS" for item in cycles
+    ):
+        execution_outcome = "TERMINAL_SUCCESS"
+    else:
+        execution_outcome = "INTERRUPTED_AMBIGUOUS"
+
+    secondary_faults: list[dict[str, Any]] = []
+    primary_key = None if first_cause is None else (
+        str(first_cause.get("cause") or ""),
+        str(first_cause.get("source_reference") or ""),
+    )
+    for candidate in [
+        shared_fault,
+        *(item.get("primary_fault") for item in cycles),
+        *(
+            fault
+            for item in cycles
+            for fault in (item.get("secondary_faults") or ())
+        ),
+    ]:
+        if not isinstance(candidate, Mapping):
+            continue
+        candidate_dict = dict(candidate)
+        candidate_key = (
+            str(candidate_dict.get("cause") or ""),
+            str(candidate_dict.get("source_reference") or ""),
+        )
+        if candidate_key == primary_key or candidate_dict in secondary_faults:
+            continue
+        secondary_faults.append(candidate_dict)
+    accounting_complete = bool(
+        exact_ordinals
+        and execution_outcome
+        not in {"ACTIVE_INCOMPLETE", "INTERRUPTED_AMBIGUOUS"}
+        and all(item["accounting_complete"] is True for item in cycles)
+    )
+    return {
+        "campaign_id": campaign,
+        "campaign_run_id": run,
+        "configuration_id": configuration,
+        "factory_run_id": factory,
+        "required_cycle_ordinals": list(REQUIRED_MULTI_CYCLE_ORDINALS),
+        "admitted_cycles": [
+            {
+                "cycle_id": item["cycle_id"],
+                "cycle_ordinal": item["cycle_ordinal"],
+            }
+            for item in cycles
+        ],
+        "execution_outcome": execution_outcome,
+        "quality_outcome": quality_outcome,
+        "accounting_complete": accounting_complete,
+        "requires_review": bool(
+            execution_outcome == "INTERRUPTED_AMBIGUOUS"
+            or any(item["requires_review"] for item in cycles)
+        ),
+        "first_cause": first_cause,
+        "secondary_faults": secondary_faults,
+        "failed_cycle_ordinals": [
+            item["cycle_ordinal"] for item in cycle_failures
+        ],
+        "active_cycle_ordinals": [item["cycle_ordinal"] for item in active],
+        "interrupted_cycle_ordinals": [
+            item["cycle_ordinal"] for item in ambiguous
+        ],
+        "cycles": cycles,
+        "campaign_supervision": (
+            None if supervision is None else dict(supervision)
+        ),
+        "cleanup": {},
+        "campaign_pass_eligible": bool(
+            accounting_complete and execution_outcome == "TERMINAL_SUCCESS"
+        ),
+    }
+
+
 def _projected_reservation_count(step_kind: str) -> int:
     try:
         return int(PROJECTED_GOVERNED_OPERATIONS_BY_STEP_KIND[str(step_kind)])
@@ -2368,12 +3249,34 @@ def build_lifecycle_action_local_observer(
         step_kind = str(record.get("step_kind"))
         if step_kind not in _WINDOW_15M_ACTION_LOCAL_STEP_KINDS:
             return
+        for field, expected in (
+            ("campaign_id", context.campaign_id),
+            ("campaign_run_id", context.campaign_run_id),
+            ("factory_run_id", context.factory_run_id),
+        ):
+            supplied = record.get(field)
+            if supplied is not None and str(supplied) != str(expected):
+                raise FullRunAccountingError(
+                    f"action-local lifecycle identity mismatch: {field}"
+                )
+        record_cycle_id = str(record.get("cycle_id") or context.cycle_id)
+        active_context = (
+            context
+            if record_cycle_id == context.cycle_id
+            else OperationalLifecycleOwnershipContext(
+                campaign_id=context.campaign_id,
+                campaign_run_id=context.campaign_run_id,
+                cycle_id=record_cycle_id,
+                configuration_id=context.configuration_id,
+                factory_run_id=context.factory_run_id,
+            )
+        )
         ordinal = _slot_ordinal_from_step_key(str(record.get("step_key")))
         if boundary == BOUNDARY_SCHEDULER_ENQUEUE:
             ledger.observe_scheduler_transition(record)
             ledger.observe_scheduler_work(
                 scheduler_work_identity_for_step(
-                    context,
+                    active_context,
                     slot_ordinal=ordinal,
                     scheduler_job_id=int(record["scheduler_job_id"]),
                     step_kind=step_kind,
@@ -2385,7 +3288,7 @@ def build_lifecycle_action_local_observer(
         elif boundary == "LOCAL_VALIDATION":
             ledger.observe_local_validation(
                 LocalValidationIdentity(
-                    stage_id=_slot_stage_id(context, ordinal),
+                    stage_id=_slot_stage_id(active_context, ordinal),
                     subject_identity=str(record["subject_identity"]),
                     validation_kind=str(record["validation_kind"]),
                     validation_ordinal=int(record["validation_ordinal"]),
@@ -2394,8 +3297,8 @@ def build_lifecycle_action_local_observer(
         elif boundary == "LIFECYCLE_RESERVATION":
             ledger.observe_lifecycle_reservation(
                 LifecycleReservationIdentity(
-                    stage_id=_slot_stage_id(context, ordinal),
-                    factory_run_id=context.factory_run_id,
+                    stage_id=_slot_stage_id(active_context, ordinal),
+                    factory_run_id=active_context.factory_run_id,
                     token_id=int(record["token_id"]),
                     pair_id=int(record["pair_id"]),
                     window_kind="WINDOW_15M",
@@ -2403,14 +3306,16 @@ def build_lifecycle_action_local_observer(
                 )
             )
         elif boundary == "GOVERNED_SOURCE_ATTEMPT":
-            ledger.observe_transport(transport_identity_for_attempt(context, record))
+            ledger.observe_transport(
+                transport_identity_for_attempt(active_context, record)
+            )
         elif boundary == BOUNDARY_SOURCE_TRANSPORT:
             source_request_id = record.get("source_request_id")
             if source_request_id is None:
                 return
             ledger.observe_transport(
                 transport_identity_for_step(
-                    context,
+                    active_context,
                     slot_ordinal=ordinal,
                     source_request_id=int(source_request_id),
                     source_name=str(record.get("source_name") or "dexscreener"),
@@ -2424,7 +3329,7 @@ def build_lifecycle_action_local_observer(
             )
             ledger.observe_local_validation(
                 validation_identity_for_step(
-                    context,
+                    active_context,
                     slot_ordinal=ordinal,
                     step_key=str(record["step_key"]),
                     scheduler_job_id=int(record["scheduler_job_id"]),
@@ -2705,6 +3610,84 @@ def finalize_full_run_ownership_and_report(
     stamp = now or datetime.now(timezone.utc).isoformat()
     blocked_reasons: list[str] = []
     queue_dispositions = dict(queue_dispositions or {})
+    admitted_rows = connection.execute(
+        "SELECT cycle_id,cycle_ordinal FROM printer_memory_factory_campaign_cycles "
+        "WHERE campaign_id=? AND run_id=? ORDER BY cycle_ordinal,cycle_id",
+        (context.campaign_id, context.campaign_run_id),
+    ).fetchall()
+    admitted_ids = tuple(str(row["cycle_id"]) for row in admitted_rows)
+    admitted_ordinals = tuple(int(row["cycle_ordinal"]) for row in admitted_rows)
+    multi_cycle_accounting = bool(
+        isinstance(owner, CampaignSixUnitProjection) or len(admitted_rows) > 1
+    )
+    if multi_cycle_accounting and admitted_ordinals != REQUIRED_MULTI_CYCLE_ORDINALS:
+        raise FullRunAccountingError(
+            "full-run accounting requires exact admitted ordinals 1 and 2"
+        )
+    registered_ids = (
+        tuple(owner.registered_cycle_ids)
+        if isinstance(owner, CampaignSixUnitProjection)
+        else (str(owner.cycle_id),)
+    )
+    if registered_ids != admitted_ids:
+        raise FullRunAccountingError(
+            "registered six-unit owners do not match admitted cycles"
+        )
+    cycle_contexts = tuple(
+        OperationalLifecycleOwnershipContext(
+            campaign_id=context.campaign_id,
+            campaign_run_id=context.campaign_run_id,
+            cycle_id=str(row["cycle_id"]),
+            configuration_id=context.configuration_id,
+            factory_run_id=context.factory_run_id,
+        )
+        for row in admitted_rows
+    )
+    # The Lane-4 owner applies only to the currently authorized two-cycle
+    # campaign shape. Historical single-cycle reports retain their immutable
+    # legacy accounting path and are not reinterpreted through newer
+    # stage-scoped ownership rows that did not exist when they were produced.
+    cycle_accounting = (
+        {
+            item.cycle_id: derive_cycle_terminal_accounting_result(
+                connection, context=item
+            )
+            for item in cycle_contexts
+        }
+        if multi_cycle_accounting
+        else {}
+    )
+    campaign_terminal_accounting = (
+        derive_two_cycle_campaign_terminal_accounting(
+            connection,
+            campaign_id=context.campaign_id,
+            campaign_run_id=context.campaign_run_id,
+            configuration_id=context.configuration_id,
+            factory_run_id=context.factory_run_id,
+        )
+        if multi_cycle_accounting
+        else None
+    )
+    per_cycle_six_unit_reconciliation: list[dict[str, Any]] = []
+    if isinstance(owner, CampaignSixUnitProjection):
+        for cycle_context in cycle_contexts:
+            cycle_owner = owner.owner_for_cycle(cycle_context.cycle_id)
+            cycle_action_local = action_local.slice_for_cycle(
+                cycle_context.cycle_id
+            )
+            result = reconcile_full_run_owner_to_action_local(
+                cycle_owner,
+                cycle_action_local,
+                required_stage_kinds=REQUIRED_LIFECYCLE_STAGE_KINDS,
+            )
+            per_cycle_six_unit_reconciliation.append(
+                {"cycle_id": cycle_context.cycle_id, **dict(result)}
+            )
+            if result.get("equal") is not True:
+                blocked_reasons.append(
+                    f"CYCLE_SIX_UNIT_RECONCILIATION_INCOMPLETE:"
+                    f"{cycle_context.cycle_id}"
+                )
     expected_owner_id = (
         f"six-unit-owner|{context.campaign_id}|{context.campaign_run_id}|"
         f"{context.cycle_id}"
@@ -2713,26 +3696,53 @@ def finalize_full_run_ownership_and_report(
         f"action-local-ledger|{context.campaign_id}|{context.campaign_run_id}|"
         f"{context.cycle_id}"
     )
-    if owner.owner_id != expected_owner_id:
+    if not isinstance(owner, CampaignSixUnitProjection) and owner.owner_id != expected_owner_id:
         blocked_reasons.append("FULL_RUN_ACCOUNTING_OWNER_CONTINUITY_MISMATCH")
-    if action_local.ledger_id != expected_ledger_id:
+    valid_ledger_ids = {
+        expected_ledger_id,
+        f"action-local-ledger|{context.campaign_id}|"
+        f"{context.campaign_run_id}|CAMPAIGN",
+    }
+    if action_local.ledger_id not in valid_ledger_ids:
         blocked_reasons.append("ACTION_LOCAL_LEDGER_CONTINUITY_MISMATCH")
     if (
         owner.campaign_id != context.campaign_id
         or owner.run_id != context.campaign_run_id
-        or owner.cycle_id != context.cycle_id
+        or (
+            not isinstance(owner, CampaignSixUnitProjection)
+            and owner.cycle_id != context.cycle_id
+        )
     ):
         blocked_reasons.append("FULL_RUN_ACCOUNTING_OWNER_IDENTITY_MISMATCH")
 
+    primary_step_ids = (
+        tuple(
+            int(value)
+            for value in cycle_accounting[context.cycle_id]["factory_step_ids"]
+        )
+        if multi_cycle_accounting
+        else ()
+    )
+    if multi_cycle_accounting and not primary_step_ids:
+        blocked_reasons.append(
+            f"CYCLE_SCOPED_FACTORY_STEP_OWNERSHIP_MISSING:{context.cycle_id}"
+        )
+    close_step_filter = ""
+    close_step_args: tuple[Any, ...] = (context.factory_run_id,)
+    if multi_cycle_accounting:
+        close_step_placeholders = ",".join("?" for _ in primary_step_ids) or "NULL"
+        close_step_filter = f" AND id IN ({close_step_placeholders})"
+        close_step_args = (context.factory_run_id, *primary_step_ids)
     close_steps = connection.execute(
-        """SELECT id, token_id, pair_id, token_mint, pair_address, tracking_lane,
+        f"""SELECT id, token_id, pair_id, token_mint, pair_address, tracking_lane,
                   memory_window_id, step_key
            FROM printer_memory_factory_run_steps
            WHERE run_id=?
              AND step_kind IN ('WINDOW_CLOSE','WINDOW_CLOSE_AUDIT')
              AND step_status='SUCCEEDED'
+             {close_step_filter}
            ORDER BY id""",
-        (context.factory_run_id,),
+        close_step_args,
     ).fetchall()
 
     token_to_window: dict[int, str] = {}
@@ -2841,8 +3851,16 @@ def finalize_full_run_ownership_and_report(
                 token_to_terminal_state[token_id] = terminal_state
                 registered_windows.append(window_id)
 
+    lifecycle_step_filter = ""
+    lifecycle_step_args: tuple[Any, ...] = (context.factory_run_id,)
+    if multi_cycle_accounting:
+        lifecycle_step_placeholders = (
+            ",".join("?" for _ in primary_step_ids) or "NULL"
+        )
+        lifecycle_step_filter = f" AND s.id IN ({lifecycle_step_placeholders})"
+        lifecycle_step_args = (context.factory_run_id, *primary_step_ids)
     lifecycle_steps = connection.execute(
-        """SELECT s.id, s.scheduler_job_id, s.step_kind, s.token_id, s.pair_id,
+        f"""SELECT s.id, s.scheduler_job_id, s.step_kind, s.token_id, s.pair_id,
                   s.step_key, s.scheduled_for, s.source_request_id,
                   s.source_response_id,
                   s.result_json, s.step_status, s.error_or_skip_reason,
@@ -2858,8 +3876,9 @@ def finalize_full_run_ownership_and_report(
                'WINDOW_CLOSE_CONTEXT','WINDOW_CLOSE_AUDIT'
            )
              AND s.scheduler_job_id IS NOT NULL
+             {lifecycle_step_filter}
            ORDER BY s.id""",
-        (context.factory_run_id,),
+        lifecycle_step_args,
     ).fetchall()
 
     # --- Scheduler ownership carrying each job's real terminal state (§6). ---
@@ -2972,6 +3991,7 @@ def finalize_full_run_ownership_and_report(
         connection,
         context=context,
         standard_four_hour_campaign=standard_four_hour_campaign,
+        factory_step_ids=(primary_step_ids if multi_cycle_accounting else None),
         proof_root_stage_step_ids=proof_root_stage_step_ids,
     )
 
@@ -3398,6 +4418,52 @@ def finalize_full_run_ownership_and_report(
         cleanup_lease_evidence=cleanup_evidence,
         scheduler_ownership=scheduler_ownership,
     )
+    if campaign_terminal_accounting is not None:
+        cleanup_truth_for_accounting = dict(cleanup_result or {})
+        cleanup_projection = {
+            "cleanup_complete": cleanup_truth_for_accounting.get(
+                "cleanup_completed"
+            )
+            is True,
+            "lease_released": cleanup_truth_for_accounting.get(
+                "lease_released"
+            )
+            is True,
+            "active_work": int(
+                cleanup_truth_for_accounting.get("active_owned_work_after")
+                or cleanup_truth_for_accounting.get("active_work_after")
+                or 0
+            ),
+            "per_cycle_six_unit_reconciliation": (
+                per_cycle_six_unit_reconciliation
+            ),
+        }
+        campaign_terminal_accounting = {
+            **campaign_terminal_accounting,
+            "cleanup": cleanup_projection,
+            "accounting_complete": bool(
+                campaign_terminal_accounting.get("accounting_complete") is True
+                and cleanup_projection["cleanup_complete"]
+                and cleanup_projection["lease_released"]
+                and cleanup_projection["active_work"] == 0
+                and all(
+                    item.get("equal") is True
+                    for item in per_cycle_six_unit_reconciliation
+                )
+            ),
+        }
+        campaign_terminal_accounting["campaign_pass_eligible"] = bool(
+            campaign_terminal_accounting["accounting_complete"]
+            and campaign_terminal_accounting.get("execution_outcome")
+            == "TERMINAL_SUCCESS"
+        )
+        report["terminal_accounting"] = campaign_terminal_accounting
+        report["cycles"] = list(campaign_terminal_accounting["cycles"])
+        report["per_cycle_six_unit_reconciliation"] = (
+            per_cycle_six_unit_reconciliation
+        )
+        if not campaign_terminal_accounting["campaign_pass_eligible"]:
+            blocked_reasons.append("MULTI_CYCLE_TERMINAL_ACCOUNTING_INCOMPLETE")
     cleanup_truth = dict(cleanup_result or {})
     automatic_retries = int(cleanup_truth.get("automatic_retries") or 0)
     restart_count = 1 if cleanup_truth.get("restart_created") is True else 0
@@ -3546,12 +4612,15 @@ __all__ = [
     "PRECLOSE_CONTEXT_REQUEST_COUNT",
     "PROJECTED_GOVERNED_OPERATIONS_BY_STEP_KIND",
     "REQUIRED_LIFECYCLE_STAGE_KINDS",
+    "REQUIRED_MULTI_CYCLE_ORDINALS",
     "VERDICT_BLOCKED_UNSAFE",
     "VERDICT_HONEST_BLOCKED",
     "VERDICT_PASS",
     "build_full_run_terminal_report",
     "build_lifecycle_action_local_observer",
     "durable_cleanup_release_timestamps_valid",
+    "derive_cycle_terminal_accounting_result",
+    "derive_two_cycle_campaign_terminal_accounting",
     "evaluate_campaign_acceptance_gate",
     "evaluate_quality_consistency",
     "finalize_full_run_ownership_and_report",

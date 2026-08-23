@@ -100,9 +100,11 @@ from printer_v1.operator_cli.unified_terminal_closure import (
     assemble_campaign_terminal_reporting,
     assert_runtime_dependency_preflight,
     build_campaign_terminal_report,
+    build_campaign_terminal_summary,
     reconcile_campaign_terminal,
     replay_campaign_terminal_report,
     write_campaign_terminal_report,
+    write_campaign_terminal_summary,
 )
 from printer_v1.scheduler.scheduler import ACTIVE_STATUS_VALUES
 from printer_v1.sources.operational_source_contracts import (
@@ -2540,9 +2542,14 @@ def _terminalize_initialized_failure(
             "campaign_scheduler_calls": reporting.get("campaign_scheduler_calls"),
         }
         try:
-            paths["summary"].write_text(
-                json.dumps(terminal, indent=2, sort_keys=True, default=str) + "\n",
-                encoding="utf-8",
+            write_campaign_terminal_summary(
+                paths["summary"],
+                summary={
+                    **terminal,
+                    "configuration_id": command.configuration_id,
+                    "campaign_run_id": command.run_id,
+                    "cycles": [],
+                },
             )
         except BaseException as exc:
             closure_errors.append(f"summary:{type(exc).__name__}:{exc}")
@@ -2650,9 +2657,14 @@ def _terminalize_initialized_failure(
             ),
         }
         try:
-            paths["summary"].write_text(
-                json.dumps(terminal, indent=2, sort_keys=True, default=str) + "\n",
-                encoding="utf-8",
+            write_campaign_terminal_summary(
+                paths["summary"],
+                summary={
+                    **terminal,
+                    "configuration_id": command.configuration_id,
+                    "campaign_run_id": command.run_id,
+                    "cycles": [],
+                },
             )
         except BaseException as exc:
             closure_errors.append(f"summary:{type(exc).__name__}:{exc}")
@@ -2729,9 +2741,14 @@ def _terminalize_initialized_failure(
         "campaign_source_calls": reporting.get("campaign_source_calls"),
     }
     try:
-        paths["summary"].write_text(
-            json.dumps(terminal, indent=2, sort_keys=True, default=str) + "\n",
-            encoding="utf-8",
+        write_campaign_terminal_summary(
+            paths["summary"],
+            summary={
+                **terminal,
+                "configuration_id": command.configuration_id,
+                "campaign_run_id": command.run_id,
+                "cycles": [],
+            },
         )
     except BaseException as exc:
         closure_errors.append(f"summary:{type(exc).__name__}:{exc}")
@@ -3249,9 +3266,14 @@ def _finalize_returned_pre_lifecycle_result(
         "blocked_supply_reason": reporting.get("blocked_supply_reason"),
     }
     try:
-        paths["summary"].write_text(
-            json.dumps(terminal, indent=2, sort_keys=True, default=str) + "\n",
-            encoding="utf-8",
+        write_campaign_terminal_summary(
+            paths["summary"],
+            summary={
+                **terminal,
+                "configuration_id": command.configuration_id,
+                "campaign_run_id": command.run_id,
+                "cycles": [],
+            },
         )
     except BaseException as exc:
         terminal["fault_details"].setdefault("propagation_failures", []).append(
@@ -3537,6 +3559,7 @@ def _run_operational_campaign(
             owner_bridge.operational_database_target_binding
         )
     heartbeat: _CampaignHeartbeat | None = None
+    durable_terminal_report: Mapping[str, Any] | None = None
     initialized_factory_run_id: str | None = str(uuid.uuid4())
     factory_identity_retained = False
     observed_heartbeat_failure: Mapping[str, Any] | None = None
@@ -3562,7 +3585,6 @@ def _run_operational_campaign(
     action_local_ledger = CampaignActionLocalLedger(
         campaign_id=command.campaign_id,
         run_id=command.run_id,
-        cycle_id=cycle_id,
     )
     from printer_v1.operator_cli.campaign_full_run_accounting import (
         OperationalLifecycleOwnershipContext,
@@ -4170,13 +4192,6 @@ def _run_operational_campaign(
             seal_campaign_stage_evidence,
         )
         from printer_v1.sources.measured_transport import LocalValidationIdentity
-        terminal_stage_id = build_campaign_stage_id(
-            campaign_id=command.campaign_id,
-            run_id=command.run_id,
-            cycle_id=cycle_id,
-            stage_kind="CAMPAIGN_TERMINAL_RECONCILIATION",
-            stage_sequence=4,
-        )
         terminal_validation_kinds = (
             "CAMPAIGN_TERMINAL_OWNERSHIP_VALIDATED",
             "ZERO_ACTIVE_WORK_VALIDATED",
@@ -4188,17 +4203,6 @@ def _run_operational_campaign(
             "NO_RESUME_VALIDATED",
             "NO_SUCCESSOR_VALIDATED",
         )
-        terminal_validations = [
-            LocalValidationIdentity(
-                stage_id=terminal_stage_id,
-                subject_identity=f"{cycle_id}:terminal",
-                validation_kind=kind,
-                validation_ordinal=index,
-            )
-            for index, kind in enumerate(terminal_validation_kinds, start=1)
-        ]
-        for validation in terminal_validations:
-            action_local_ledger.observe_local_validation(validation)
         terminal_status = (
             "COMPLETED"
             if str(lifecycle.get("run_status") or "") == "COMPLETED"
@@ -4206,28 +4210,49 @@ def _run_operational_campaign(
             and cleanup.get("lease_released") is True
             else "FAILED"
         )
-        campaign_units.ingest_stage_evidence(
-            seal_campaign_stage_evidence(
-                stage_id=terminal_stage_id,
-                stage_kind="CAMPAIGN_TERMINAL_RECONCILIATION",
-                stage_sequence=4,
-                stage_terminal_status=terminal_status,
-                stage_first_terminal_cause=(
-                    None if terminal_status == "COMPLETED" else cause
-                ),
+        for terminal_cycle_id in cycle_accounting_registry.registered_cycle_ids:
+            terminal_stage_id = build_campaign_stage_id(
                 campaign_id=command.campaign_id,
                 run_id=command.run_id,
-                cycle_id=cycle_id,
-                evidence={
-                    "evidence_kind": "CAMPAIGN_SIX_UNIT_EVIDENCE_V1",
-                    "transport_operations": [],
-                    "local_validations": 0,
-                    "scheduler_work_items": 0,
-                    "lifecycle_reservations": 0,
-                },
-                local_validation_identities=terminal_validations,
+                cycle_id=terminal_cycle_id,
+                stage_kind="CAMPAIGN_TERMINAL_RECONCILIATION",
+                stage_sequence=4,
             )
-        )
+            terminal_validations = [
+                LocalValidationIdentity(
+                    stage_id=terminal_stage_id,
+                    subject_identity=f"{terminal_cycle_id}:terminal",
+                    validation_kind=kind,
+                    validation_ordinal=index,
+                )
+                for index, kind in enumerate(terminal_validation_kinds, start=1)
+            ]
+            for validation in terminal_validations:
+                action_local_ledger.observe_local_validation(validation)
+            cycle_accounting_registry.owner_for_cycle(
+                terminal_cycle_id
+            ).ingest_stage_evidence(
+                seal_campaign_stage_evidence(
+                    stage_id=terminal_stage_id,
+                    stage_kind="CAMPAIGN_TERMINAL_RECONCILIATION",
+                    stage_sequence=4,
+                    stage_terminal_status=terminal_status,
+                    stage_first_terminal_cause=(
+                        None if terminal_status == "COMPLETED" else cause
+                    ),
+                    campaign_id=command.campaign_id,
+                    run_id=command.run_id,
+                    cycle_id=terminal_cycle_id,
+                    evidence={
+                        "evidence_kind": "CAMPAIGN_SIX_UNIT_EVIDENCE_V1",
+                        "transport_operations": [],
+                        "local_validations": 0,
+                        "scheduler_work_items": 0,
+                        "lifecycle_reservations": 0,
+                    },
+                    local_validation_identities=terminal_validations,
+                )
+            )
         campaign_accounting_projection: Any = campaign_units
         campaign_accounting_projection_factory: Any | None = None
         if len(cycle_accounting_registry.registered_cycle_ids) > 1:
@@ -4277,44 +4302,69 @@ def _run_operational_campaign(
         aggregated_six_unit_evidence = (
             campaign_accounting_projection.durable_evidence()
         )
-        payload = build_campaign_terminal_report(
-            campaign_id=command.campaign_id,
-            configuration_id=command.configuration_id,
-            run_id=command.run_id,
-            cycle_id=cycle_id,
-            report_id=command.report_id,
-            factory_run_id=initialized_factory_run_id,
-            execution_id=execution_id,
-            terminal_status=str(cleanup.get("terminal_status") or "COMPLETED"),
-            terminal_cause=cause,
-            run_status=lifecycle.get("run_status"),
-            lifecycle_started=bool(result.lifecycle_started),
-            reconciliation=reconciliation,
-            forbidden_deltas=dict(lifecycle.get("forbidden_deltas") or {}),
-            launch_git_provenance=preflight["git_provenance"],
-            campaign_activity=reporting.get("campaign_activity"),
-            blocked_supply=reporting.get("blocked_supply"),
-            campaign_source_calls=reporting.get("campaign_source_calls"),
-            campaign_scheduler_calls=reporting.get("campaign_scheduler_calls"),
-            candidates_observed=reporting.get("candidates_observed"),
-            candidates_validated=reporting.get("candidates_validated"),
-            eligible_candidates=reporting.get("eligible_candidates"),
-            required_token_capacity=reporting.get("required_token_capacity"),
-            blocked_supply_reason=reporting.get("blocked_supply_reason"),
-            fault_details=lifecycle.get("fault_details"),
-            selective_1h=_selective_1h_terminal_projection(
+        canonical_terminal_accounting = (
+            full_run_acceptance.get("report", {}).get("terminal_accounting")
+            if isinstance(full_run_acceptance.get("report"), Mapping)
+            else None
+        )
+        if (
+            four_token_proof_controller is not None
+            and not isinstance(canonical_terminal_accounting, Mapping)
+        ):
+            raise TerminalClosureError(
+                "LANE4_CANONICAL_TERMINAL_ACCOUNTING_MISSING"
+            )
+        report_arguments: dict[str, Any] = {
+            "campaign_id": command.campaign_id,
+            "configuration_id": command.configuration_id,
+            "report_id": command.report_id,
+            "factory_run_id": initialized_factory_run_id,
+            "execution_id": execution_id,
+            "lifecycle_started": bool(result.lifecycle_started),
+            "reconciliation": reconciliation,
+            "forbidden_deltas": dict(lifecycle.get("forbidden_deltas") or {}),
+            "launch_git_provenance": preflight["git_provenance"],
+            "campaign_activity": reporting.get("campaign_activity"),
+            "blocked_supply": reporting.get("blocked_supply"),
+            "campaign_source_calls": reporting.get("campaign_source_calls"),
+            "campaign_scheduler_calls": reporting.get("campaign_scheduler_calls"),
+            "candidates_observed": reporting.get("candidates_observed"),
+            "candidates_validated": reporting.get("candidates_validated"),
+            "eligible_candidates": reporting.get("eligible_candidates"),
+            "required_token_capacity": reporting.get("required_token_capacity"),
+            "blocked_supply_reason": reporting.get("blocked_supply_reason"),
+            "fault_details": lifecycle.get("fault_details"),
+            "selective_1h": _selective_1h_terminal_projection(
                 command.db_path,
                 campaign_id=command.campaign_id,
                 run_id=command.run_id,
             ),
-            pre_lifecycle_admission=reporting.get("pre_lifecycle_admission"),
-            six_unit_totals=aggregated_six_unit_totals,
-            six_unit_evidence=aggregated_six_unit_evidence,
-            require_six_unit_evidence=True,
-            elapsed_seconds=reporting.get("elapsed_seconds")
-            if reporting.get("elapsed_seconds") is not None
-            else lifecycle.get("elapsed_seconds"),
-        )
+            "pre_lifecycle_admission": reporting.get("pre_lifecycle_admission"),
+            "six_unit_totals": aggregated_six_unit_totals,
+            "six_unit_evidence": aggregated_six_unit_evidence,
+            "require_six_unit_evidence": True,
+            "elapsed_seconds": (
+                reporting.get("elapsed_seconds")
+                if reporting.get("elapsed_seconds") is not None
+                else lifecycle.get("elapsed_seconds")
+            ),
+        }
+        if isinstance(canonical_terminal_accounting, Mapping):
+            report_arguments.update(
+                campaign_run_id=command.run_id,
+                terminal_accounting=canonical_terminal_accounting,
+            )
+        else:
+            report_arguments.update(
+                run_id=command.run_id,
+                cycle_id=cycle_id,
+                terminal_status=str(
+                    cleanup.get("terminal_status") or "COMPLETED"
+                ),
+                terminal_cause=cause,
+                run_status=lifecycle.get("run_status"),
+            )
+        payload = build_campaign_terminal_report(**report_arguments)
         payload["full_run_terminal_evidence"] = dict(
             full_run_acceptance.get("report") or {}
         )
@@ -4345,6 +4395,7 @@ def _run_operational_campaign(
             report=payload,
             require_six_unit_evidence=True,
         )
+        durable_terminal_report = report
         terminal = {
             "status": "OPERATIONAL_CAMPAIGN_TERMINAL",
             "execution_id": execution_id,
@@ -4392,13 +4443,52 @@ def _run_operational_campaign(
             "restart_created": False,
             "successor_created": False,
         }
-        paths["summary"].write_text(
-            json.dumps(terminal, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        if isinstance(canonical_terminal_accounting, Mapping):
+            terminal_summary = build_campaign_terminal_summary(
+                campaign_id=command.campaign_id,
+                configuration_id=command.configuration_id,
+                campaign_run_id=command.run_id,
+                factory_run_id=initialized_factory_run_id,
+                execution_id=execution_id,
+                report_id=command.report_id,
+                terminal_accounting=canonical_terminal_accounting,
+                report_result=report,
+                cleanup={
+                    "cleanup_complete": cleanup.get("cleanup_completed"),
+                    "lease_released": cleanup.get("lease_released"),
+                    "active_work": cleanup.get("active_owned_work_after")
+                    or cleanup.get("active_work_after")
+                    or 0,
+                },
+            )
+        else:
+            terminal_summary = {
+                **terminal,
+                "configuration_id": command.configuration_id,
+                "campaign_run_id": command.run_id,
+                "factory_run_id": initialized_factory_run_id,
+                "report_id": command.report_id,
+                "cycles": [],
+                "campaign_accounting_complete": False,
+            }
+        summary_write = write_campaign_terminal_summary(
+            paths["summary"], summary=terminal_summary
         )
+        terminal["terminal_summary"] = terminal_summary
+        terminal["terminal_summary_artifact"] = summary_write
         return terminal
     except BaseException as exc:
         if heartbeat is not None:
             heartbeat.stop()
+        if durable_terminal_report is not None:
+            # Crash point H: an immutable report row/artifact already owns the
+            # terminal truth. A summary fault is secondary and must not create
+            # a competing independently-derived failure summary.
+            exc.add_note(
+                "canonical terminal report remains authoritative; "
+                "terminal summary is missing or incomplete"
+            )
+            raise
         try:
             terminal_accounting_owner: Any = campaign_units
             if len(cycle_accounting_registry.registered_cycle_ids) > 1:
@@ -4700,7 +4790,7 @@ def _write_discovery_only_report(path: Path, payload: Mapping[str, Any]) -> Path
     text = json.dumps(dict(payload), indent=2, sort_keys=True, default=str) + "\n"
     path.write_text(text, encoding="utf-8")
     summary = path.parent / "terminal-summary.json"
-    summary.write_text(text, encoding="utf-8")
+    write_campaign_terminal_summary(summary, summary=payload)
     return path
 
 
@@ -5472,6 +5562,8 @@ def _load_exact_terminal_summary(
     campaign_id: str,
     run_id: str,
     configuration_id: str,
+    factory_run_id: str | None = None,
+    report_id: str | None = None,
     artifact_root: str | Path | None = None,
 ) -> dict[str, Any] | None:
     """Load terminal-summary only when all identities exactly match.
@@ -5496,7 +5588,9 @@ def _load_exact_terminal_summary(
     if not isinstance(payload, Mapping):
         return None
     payload_campaign = str(payload.get("campaign_id") or "").strip()
-    payload_run = str(payload.get("run_id") or "").strip()
+    payload_run = str(
+        payload.get("campaign_run_id") or payload.get("run_id") or ""
+    ).strip()
     payload_config = str(payload.get("configuration_id") or "").strip()
     payload_execution = str(payload.get("execution_id") or "").strip()
     # Missing identity is a mismatch; empty/optional fields are not accepted.
@@ -5508,6 +5602,14 @@ def _load_exact_terminal_summary(
         return None
     if not payload_execution or payload_execution != execution_id:
         return None
+    if factory_run_id is not None and str(
+        payload.get("factory_run_id") or ""
+    ) != str(factory_run_id):
+        return None
+    if report_id is not None and str(payload.get("report_id") or "") != str(
+        report_id
+    ):
+        return None
     digest = hashlib.sha256(summary_path.read_bytes()).hexdigest()
     return {
         "status": payload.get("status"),
@@ -5517,6 +5619,93 @@ def _load_exact_terminal_summary(
         "report_block_reason": payload.get("report_block_reason"),
         "summary_path": str(summary_path),
         "summary_sha256": digest,
+        "payload": dict(payload),
+    }
+
+
+def _validate_lane4_report_only_payload(
+    *,
+    report: Mapping[str, Any],
+    report_hash: str,
+    campaign_id: str,
+    campaign_run_id: str,
+    configuration_id: str,
+    execution_id: str,
+    factory_run_id: str,
+    report_id: str,
+    summary: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Validate the persisted Lane-4 aggregate without lifecycle recomputation."""
+    identity = report.get("identity")
+    accounting = report.get("terminal_accounting")
+    cycles = report.get("cycles")
+    if not isinstance(identity, Mapping) or not isinstance(accounting, Mapping):
+        raise ValueError("LANE4_REPORT_ACCOUNTING_MISSING")
+    expected_identity = {
+        "campaign_id": campaign_id,
+        "configuration_id": configuration_id,
+        "campaign_run_id": campaign_run_id,
+        "factory_run_id": factory_run_id,
+        "execution_id": execution_id,
+        "report_id": report_id,
+    }
+    if any(
+        str(identity.get(field) or "") != str(expected)
+        for field, expected in expected_identity.items()
+    ):
+        raise ValueError("LANE4_REPORT_IDENTITY_MISMATCH")
+    accounting_cycles = accounting.get("cycles")
+    if not isinstance(accounting_cycles, list) or [
+        int(item.get("cycle_ordinal") or 0)
+        for item in accounting_cycles
+        if isinstance(item, Mapping)
+    ] != [1, 2]:
+        raise ValueError("LANE4_REPORT_EXACT_CYCLES_MISSING")
+    if json.dumps(cycles, sort_keys=True, separators=(",", ":")) != json.dumps(
+        accounting_cycles, sort_keys=True, separators=(",", ":")
+    ):
+        raise ValueError("LANE4_REPORT_CYCLE_MISMATCH")
+    if summary is not None:
+        summary_identity = {
+            "campaign_id": summary.get("campaign_id"),
+            "configuration_id": summary.get("configuration_id"),
+            "campaign_run_id": summary.get("campaign_run_id")
+            or summary.get("run_id"),
+            "factory_run_id": summary.get("factory_run_id"),
+            "execution_id": summary.get("execution_id"),
+            "report_id": summary.get("report_id"),
+        }
+        if any(
+            str(summary_identity[field] or "") != str(expected)
+            for field, expected in expected_identity.items()
+        ):
+            raise ValueError("LANE4_SUMMARY_IDENTITY_MISMATCH")
+        if str(summary.get("report_hash") or "") != str(report_hash):
+            raise ValueError("LANE4_SUMMARY_REPORT_HASH_MISMATCH")
+        for summary_field, accounting_field in (
+            ("campaign_execution_outcome", "execution_outcome"),
+            ("campaign_quality_outcome", "quality_outcome"),
+            ("campaign_accounting_complete", "accounting_complete"),
+        ):
+            if summary.get(summary_field) != accounting.get(accounting_field):
+                raise ValueError("LANE4_SUMMARY_AGGREGATE_MISMATCH")
+        summary_cycles = summary.get("cycles")
+        if not isinstance(summary_cycles, list) or len(summary_cycles) != 2:
+            raise ValueError("LANE4_SUMMARY_CYCLE_MISMATCH")
+        for report_cycle, summary_cycle in zip(
+            accounting_cycles, summary_cycles
+        ):
+            for field in (
+                "cycle_id",
+                "cycle_ordinal",
+                "execution_outcome",
+                "quality_outcome",
+            ):
+                if summary_cycle.get(field) != report_cycle.get(field):
+                    raise ValueError("LANE4_SUMMARY_CYCLE_MISMATCH")
+    return {
+        "terminal_accounting": dict(accounting),
+        "cycles": list(accounting_cycles),
     }
 
 
@@ -5611,6 +5800,16 @@ def report_only(
                 "scheduler_runtime_calls": 0,
                 "database_writes": 0,
             })
+
+        run_binding = connection.execute(
+            "SELECT authoritative_run_id FROM "
+            "printer_memory_factory_campaign_runs "
+            "WHERE campaign_id=? AND run_id=?",
+            (resolved_campaign, resolved_run),
+        ).fetchone()
+        resolved_factory_run = (
+            "" if run_binding is None else str(run_binding[0] or "")
+        )
 
         row = connection.execute(
             """SELECT r.report_id,r.campaign_id,r.configuration_id,
@@ -5811,6 +6010,68 @@ def report_only(
             "source_calls": 0,
             "scheduler_runtime_calls": 0,
             "database_writes": 0,
+        })
+    if (
+        isinstance(stored_report, Mapping)
+        and stored_report.get("policy_version")
+        == "V2_9_8B_LANE4_MULTI_CYCLE_TERMINAL"
+    ):
+        execution_identity = str(configuration.get("execution_id") or "")
+        exact_report_id = str(report_row["report_id"])
+        summary_path = (
+            replay_artifact_root / execution_identity / "terminal-summary.json"
+        )
+        summary_result = _load_exact_terminal_summary(
+            configuration=configuration,
+            campaign_id=resolved_campaign,
+            run_id=resolved_run,
+            configuration_id=resolved_configuration_id,
+            factory_run_id=resolved_factory_run,
+            report_id=exact_report_id,
+            artifact_root=replay_artifact_root,
+        )
+        if summary_path.exists() and summary_result is None:
+            return _report_only_zero_work({
+                "status": "REPLAY_BLOCKED",
+                "requested_identity": identity["requested_identity"],
+                "report_rows": 1,
+                "block_reason": "LANE4_TERMINAL_SUMMARY_MISMATCH",
+            })
+        summary_payload = (
+            None
+            if summary_result is None
+            else summary_result.get("payload")
+        )
+        try:
+            validated_lane4 = _validate_lane4_report_only_payload(
+                report=stored_report,
+                report_hash=str(replay.get("report_hash") or ""),
+                campaign_id=resolved_campaign,
+                campaign_run_id=resolved_run,
+                configuration_id=resolved_configuration_id,
+                execution_id=execution_identity,
+                factory_run_id=resolved_factory_run,
+                report_id=exact_report_id,
+                summary=(
+                    summary_payload
+                    if isinstance(summary_payload, Mapping)
+                    else None
+                ),
+            )
+        except ValueError as exc:
+            return _report_only_zero_work({
+                "status": "REPLAY_BLOCKED",
+                "requested_identity": identity["requested_identity"],
+                "report_rows": 1,
+                "block_reason": str(exc),
+            })
+        return _report_only_zero_work({
+            **dict(replay),
+            "status": "REPORT_ONLY_COMPLETE",
+            "terminal_accounting": validated_lane4["terminal_accounting"],
+            "cycles": validated_lane4["cycles"],
+            "terminal_summary": summary_result,
+            "fallback_used": False,
         })
     if str(stored_identity.get("run_id") or "") != resolved_run:
         return _report_only_zero_work({

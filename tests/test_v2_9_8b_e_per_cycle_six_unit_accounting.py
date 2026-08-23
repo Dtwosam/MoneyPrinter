@@ -200,6 +200,9 @@ def test_campaign_projection_is_sum_with_cycle_provenance() -> None:
     assert totals["NORMALIZED_SOURCE_ROWS"] == 1
     assert totals["LOCAL_VALIDATION_STEP"] == 1
     assert evidence["accounting_scope"] == "CAMPAIGN_MULTI_CYCLE_PROJECTION"
+    assert "cycle_id" not in evidence
+    assert "owner_id" not in evidence
+    assert len(evidence["cycle_owner_ids"]) == 2
     assert evidence["cycle_ids"] == [CYCLE_1, CYCLE_2]
     assert [item["cycle_id"] for item in evidence["cycle_evidences"]] == [
         CYCLE_1,

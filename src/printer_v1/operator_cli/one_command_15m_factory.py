@@ -956,6 +956,35 @@ def _schedule_offsets(lane: str, window_seconds: float) -> list[float]:
     ]
 
 
+def _lifecycle_operation_cycle_identity(
+    conn: sqlite3.Connection, scheduler_job_id: int
+) -> dict[str, Any]:
+    """Resolve action-local cycle identity from the canonical Scheduler owner."""
+    rows = conn.execute(
+        "SELECT campaign_id,run_id AS campaign_run_id,cycle_id,factory_run_id,"
+        "token_slot_id,window_id FROM "
+        "printer_memory_factory_campaign_scheduler_work "
+        "WHERE scheduler_job_id=? AND ownership_contract_version='V2_STAGE_SCOPED' "
+        "AND work_scope='WINDOW_LIFECYCLE' ORDER BY scheduler_work_id",
+        (int(scheduler_job_id),),
+    ).fetchall()
+    if len(rows) > 1:
+        raise ValueError(
+            "lifecycle action-local record has ambiguous cycle ownership"
+        )
+    if not rows:
+        return {}
+    row = rows[0]
+    return {
+        "campaign_id": str(row[0]),
+        "campaign_run_id": str(row[1]),
+        "cycle_id": str(row[2]),
+        "factory_run_id": str(row[3]),
+        "token_slot_id": str(row[4]),
+        "window_id": str(row[5]),
+    }
+
+
 def _insert_step_and_job(
     conn: sqlite3.Connection, *, run_id: str, target: dict[str, Any],
     step_key: str, step_kind: str, scheduled_for: datetime,
@@ -1068,6 +1097,7 @@ def _insert_step_and_job(
     if operation_observer is not None:
         operation_observer(
             {
+                **_lifecycle_operation_cycle_identity(conn, int(job_id)),
                 "boundary": "SCHEDULER_ENQUEUE",
                 "run_id": run_id,
                 "scheduler_job_id": int(job_id),
@@ -6375,6 +6405,7 @@ def _observe_scheduler_terminal(
         raise ValueError(f"SCHEDULER_TERMINAL_ROW_MISSING:{job_id}")
     observer(
         {
+            **_lifecycle_operation_cycle_identity(conn, job_id),
             "boundary": "SCHEDULER_TERMINAL",
             "run_id": run_id,
             "scheduler_job_id": job_id,
@@ -9389,6 +9420,9 @@ def run_one_command_15m_factory(
             lifecycle_operation_observer(
                 {
                     **dict(record),
+                    **_lifecycle_operation_cycle_identity(
+                        conn, int(step_row["scheduler_job_id"])
+                    ),
                     "run_id": run_id,
                     "step_key": str(step_row["step_key"]),
                     "step_kind": str(step_row["step_kind"]),
@@ -9833,6 +9867,7 @@ def run_one_command_15m_factory(
             if lifecycle_operation_observer is not None:
                 lifecycle_operation_observer(
                     {
+                        **_lifecycle_operation_cycle_identity(conn, job_id),
                         "boundary": "SCHEDULER_CLAIM",
                         "run_id": run_id,
                         "scheduler_job_id": job_id,
@@ -9867,6 +9902,13 @@ def run_one_command_15m_factory(
                     pending=pending,
                     projected_requests=projected_requests,
                 )
+                operation_cycle_identity = _lifecycle_operation_cycle_identity(
+                    conn, job_id
+                )
+                reservation_records = [
+                    {**operation_cycle_identity, **record}
+                    for record in reservation_records
+                ]
                 if lifecycle_operation_observer is not None:
                     for reservation_record in reservation_records:
                         lifecycle_operation_observer(reservation_record)
@@ -9971,6 +10013,7 @@ def run_one_command_15m_factory(
                     )
                 validation_records = [
                     {
+                        **operation_cycle_identity,
                         "boundary": "LOCAL_VALIDATION",
                         "run_id": run_id,
                         "scheduler_job_id": int(pending["scheduler_job_id"]),
@@ -10691,8 +10734,6 @@ def run_one_command_15m_factory(
                     if conn.in_transaction:
                         conn.rollback()
         four_token_terminal: dict[str, Any] | None = None
-        four_token_terminal_cause: str | None = None
-        four_token_terminal_run_status: str | None = None
         if four_token_proof_controller is not None:
             from printer_v1.operator_cli.four_token_factory_adapter import (
                 finalize_four_token_shared_terminal,
@@ -10700,35 +10741,76 @@ def run_one_command_15m_factory(
             )
 
             admitted_cycles = conn.execute(
-                "SELECT cycle_id FROM printer_memory_factory_campaign_cycles "
+                "SELECT cycle_id,cycle_ordinal FROM printer_memory_factory_campaign_cycles "
                 "WHERE campaign_id=? AND run_id=? ORDER BY cycle_ordinal",
                 (str(campaign_id), str(campaign_run_id)),
             ).fetchall()
             if not admitted_cycles:
                 raise ValueError("four-token terminal found no admitted cycle")
-            phase_a = []
-            cycle_run_status = (
-                "COMPLETED"
-                if (
-                    stop_reason == STOP_COMPLETED
-                    and four_token_attempt_terminal_cause is None
-                    and len(admitted_cycles) == 2
+            if configuration_id is None:
+                raise ValueError(
+                    "four-token terminal requires exact configuration identity"
                 )
-                else "SAFE_STOPPED"
+            # The factory row is the real producer for a genuinely shared stop
+            # cause. Preserve its first stop reason before any cycle consumer
+            # evaluates a campaign-shared effect.
+            conn.execute(
+                "UPDATE printer_memory_factory_runs "
+                "SET stop_reason=COALESCE(stop_reason,?),updated_at=? "
+                "WHERE run_id=?",
+                (str(stop_reason), _iso(), run_id),
             )
+            conn.commit()
+            from printer_v1.operator_cli.campaign_full_run_accounting import (
+                OperationalLifecycleOwnershipContext,
+                derive_cycle_terminal_accounting_result,
+            )
+
+            pre_terminal_accounting = {
+                str(admitted[0]): derive_cycle_terminal_accounting_result(
+                    conn,
+                    context=OperationalLifecycleOwnershipContext(
+                        campaign_id=str(campaign_id),
+                        campaign_run_id=str(campaign_run_id),
+                        cycle_id=str(admitted[0]),
+                        configuration_id=str(configuration_id),
+                        factory_run_id=run_id,
+                    ),
+                )
+                for admitted in admitted_cycles
+            }
+            failed_cycle_ids = [
+                cycle_identity
+                for cycle_identity, accounting in pre_terminal_accounting.items()
+                if accounting.get("execution_outcome") == "CYCLE_FAILED"
+            ]
+            phase_a = []
             for admitted in admitted_cycles:
+                admitted_cycle_id = str(admitted[0])
+                accounting = pre_terminal_accounting[admitted_cycle_id]
+                peer_origin = next(
+                    (
+                        failed_cycle_id
+                        for failed_cycle_id in failed_cycle_ids
+                        if failed_cycle_id != admitted_cycle_id
+                    ),
+                    None,
+                )
+                if accounting.get("execution_outcome") in {
+                    "TERMINAL_SUCCESS",
+                    "CYCLE_FAILED",
+                    "CANCELLED_STOPPED",
+                }:
+                    peer_origin = None
                 phase_a.append(
                     reconcile_four_token_cycle_terminal(
                         conn,
                         campaign_id=str(campaign_id),
                         campaign_run_id=str(campaign_run_id),
                         factory_run_id=run_id,
-                        cycle_id=str(admitted[0]),
-                        cause=(
-                            four_token_attempt_terminal_cause
-                            or stop_reason
-                        ),
-                        run_status=cycle_run_status,
+                        cycle_id=admitted_cycle_id,
+                        configuration_id=str(configuration_id),
+                        peer_stop_origin_cycle_id=peer_origin,
                         now=_now(),
                         terminal_phase=(
                             "CAMPAIGN_PRE_LIFECYCLE"
@@ -10740,10 +10822,6 @@ def run_one_command_15m_factory(
                         ),
                     )
                 )
-            four_token_terminal_cause = (
-                four_token_attempt_terminal_cause or stop_reason
-            )
-            four_token_terminal_run_status = cycle_run_status
             four_token_terminal = {"phase_a": tuple(phase_a)}
         else:
             _cancel_pending(conn, run_id, stop_reason)
@@ -10807,15 +10885,47 @@ def run_one_command_15m_factory(
         if four_token_terminal is not None:
             if four_token_shared_terminalizer is None:
                 raise ValueError("authoritative shared terminal owner missing")
+
+            def _shared_terminal_from_accounting(
+                *, terminal_accounting: Mapping[str, Any]
+            ) -> Mapping[str, Any]:
+                aggregate_outcome = str(
+                    terminal_accounting.get("execution_outcome") or ""
+                )
+                aggregate_first = terminal_accounting.get("first_cause")
+                aggregate_cause = (
+                    aggregate_first.get("cause")
+                    if isinstance(aggregate_first, Mapping)
+                    else None
+                )
+                if aggregate_outcome == "TERMINAL_SUCCESS":
+                    shared_status = "COMPLETED"
+                    shared_cause = STOP_COMPLETED
+                elif aggregate_outcome in {
+                    "CYCLE_FAILED",
+                    "CAMPAIGN_FAILED",
+                }:
+                    shared_status = "FAILED"
+                    shared_cause = aggregate_cause
+                else:
+                    shared_status = "SAFE_STOPPED"
+                    shared_cause = aggregate_cause
+                if not str(shared_cause or "").strip():
+                    raise ValueError(
+                        "canonical campaign aggregate has no terminal cause"
+                    )
+                return four_token_shared_terminalizer(
+                    terminal_cause=str(shared_cause),
+                    run_status=shared_status,
+                )
+
             phase_b = finalize_four_token_shared_terminal(
                 conn,
                 campaign_id=str(campaign_id),
                 campaign_run_id=str(campaign_run_id),
                 factory_run_id=run_id,
-                shared_terminalizer=lambda: four_token_shared_terminalizer(
-                    terminal_cause=str(four_token_terminal_cause),
-                    run_status=four_token_terminal_run_status,
-                ),
+                configuration_id=str(configuration_id),
+                shared_terminalizer=_shared_terminal_from_accounting,
             )
             four_token_terminal.update(phase_b)
         report["post_cycle_lifecycle_reconciliation"] = lifecycle_reconciliation

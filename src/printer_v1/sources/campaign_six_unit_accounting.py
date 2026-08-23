@@ -921,7 +921,7 @@ class CampaignSixUnitProjection:
             campaign_id, field_name="campaign_id"
         )
         self.run_id = _require_nonempty_text(run_id, field_name="run_id")
-        self.cycle_id = _require_nonempty_text(
+        self.primary_cycle_id = _require_nonempty_text(
             primary_cycle_id, field_name="cycle_id"
         )
         if not cycle_owners:
@@ -1012,7 +1012,7 @@ class CampaignSixUnitProjection:
             if accounting_block_reason is None and owner.accounting_block_reason:
                 accounting_block_reason = str(owner.accounting_block_reason)
 
-        if self.cycle_id not in cycle_ids:
+        if self.primary_cycle_id not in cycle_ids:
             raise CampaignSixUnitError(
                 "SIX_UNIT_CAMPAIGN_PRIMARY_CYCLE_OWNER_MISSING"
             )
@@ -1020,7 +1020,7 @@ class CampaignSixUnitProjection:
         combined_ledger = MeasuredTransportLedger(
             campaign_id=self.campaign_id,
             run_id=self.run_id,
-            cycle_id=self.cycle_id,
+            cycle_id="CAMPAIGN_MULTI_CYCLE",
             transports=combined_transports,
             local_validations=combined_local_validations,
             scheduler_work_items=combined_scheduler_work_items,
@@ -1047,14 +1047,11 @@ class CampaignSixUnitProjection:
                         f"!={int(totals[unit])}"
                     )
 
-        primary_owner = next(
-            owner for owner in owners if str(owner.cycle_id) == self.cycle_id
-        )
-        self.owner_id = primary_owner.owner_id
         self.projection_id = (
             f"six-unit-campaign-projection|{self.campaign_id}|{self.run_id}"
         )
         self._cycle_ids = tuple(cycle_ids)
+        self._cycle_owners = tuple(owners)
         self._cycle_evidences = tuple(cycle_evidences)
         self._cycle_owner_ids = tuple(cycle_owner_ids)
         self._ledger = combined_ledger
@@ -1078,6 +1075,21 @@ class CampaignSixUnitProjection:
     @property
     def ledger(self) -> MeasuredTransportLedger:
         return copy.deepcopy(self._ledger)
+
+    @property
+    def registered_cycle_ids(self) -> tuple[str, ...]:
+        return self._cycle_ids
+
+    def owner_for_cycle(self, cycle_id: str) -> CampaignSixUnitOwner:
+        exact = _require_nonempty_text(cycle_id, field_name="cycle_id")
+        matches = [
+            owner for owner in self._cycle_owners if str(owner.cycle_id) == exact
+        ]
+        if len(matches) != 1:
+            raise CampaignSixUnitError(
+                f"SIX_UNIT_CAMPAIGN_CYCLE_OWNER_MISSING:{exact}"
+            )
+        return matches[0]
 
     @property
     def owner_transport_operation_count(self) -> int:
@@ -1141,12 +1153,9 @@ class CampaignSixUnitProjection:
             "accounting_scope": "CAMPAIGN_MULTI_CYCLE_PROJECTION",
             "campaign_id": self.campaign_id,
             "run_id": self.run_id,
-            # Kept as the canonical campaign-entry cycle for existing terminal
-            # identity consumers; every contributing cycle is explicit below.
-            "cycle_id": self.cycle_id,
             "cycle_ids": list(self._cycle_ids),
             "cycle_evidences": cycle_evidences,
-            "owner_id": self.owner_id,
+            "cycle_owner_ids": list(self._cycle_owner_ids),
             "projection_id": self.projection_id,
             "stage_evidence_count": self.stage_evidence_count,
             "ingested_stage_ids": list(self.ingested_stage_ids),
@@ -1350,9 +1359,57 @@ class CampaignActionLocalLedger:
 
     def __post_init__(self) -> None:
         if self.ledger_id is None:
+            suffix = self.cycle_id if self.cycle_id is not None else "CAMPAIGN"
             self.ledger_id = (
-                f"action-local-ledger|{self.campaign_id}|{self.run_id}|{self.cycle_id}"
+                f"action-local-ledger|{self.campaign_id}|{self.run_id}|{suffix}"
             )
+
+    @staticmethod
+    def _stage_belongs_to_cycle(stage_id: Any, cycle_id: str) -> bool:
+        parts = str(stage_id or "").split("|")
+        return len(parts) >= 3 and parts[2] == str(cycle_id)
+
+    def slice_for_cycle(self, cycle_id: str) -> "CampaignActionLocalLedger":
+        """Return the exact cycle-bearing action-local evidence slice.
+
+        Stage identity, not token id or list position, owns the partition.  The
+        returned ledger is an independent verification view and cannot ingest
+        evidence into the campaign ledger.
+        """
+        exact_cycle = _require_nonempty_text(cycle_id, field_name="cycle_id")
+        sliced = CampaignActionLocalLedger(
+            campaign_id=self.campaign_id,
+            run_id=self.run_id,
+            cycle_id=exact_cycle,
+        )
+        sliced.lifecycle_started = self.lifecycle_started
+        sliced.transport_identities = [
+            dict(item)
+            for item in self.transport_identities
+            if self._stage_belongs_to_cycle(item.get("stage"), exact_cycle)
+        ]
+        sliced.scheduler_work_identities = [
+            dict(item)
+            for item in self.scheduler_work_identities
+            if self._stage_belongs_to_cycle(item.get("stage_id"), exact_cycle)
+        ]
+        sliced.lifecycle_reservation_identities = [
+            dict(item)
+            for item in self.lifecycle_reservation_identities
+            if self._stage_belongs_to_cycle(item.get("stage_id"), exact_cycle)
+        ]
+        sliced.local_validation_identities = [
+            dict(item)
+            for item in self.local_validation_identities
+            if self._stage_belongs_to_cycle(item.get("stage_id"), exact_cycle)
+        ]
+        sliced.scheduler_transition_events = [
+            dict(item)
+            for item in self.scheduler_transition_events
+            if self._stage_belongs_to_cycle(item.get("stage_id"), exact_cycle)
+            or str(item.get("cycle_id") or "") == exact_cycle
+        ]
+        return sliced
 
     def observe_transport(
         self, identity: TransportOperationIdentity | Mapping[str, Any]
