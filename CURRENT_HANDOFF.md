@@ -4,104 +4,92 @@ Date: 2026-08-23
 
 ## Current lane
 
-`V2-9.8B Post-Lane-4 Schema / Gate Coherence`
+`V2-9.8B Fresh Exact-HEAD Four-Token Standard-Four-Hour 4/2/2 Authorization Preparation`
 
-Status: `POST-LANE-4 SCHEMA / GATE COHERENCE CLOSED PASS`
+Status: `PRECOMMITTED_FOR_EXACT_HEAD_PREPARATION`
 
-Verdict:
+Expected preparation verdict after successful create-once publication:
 
-`V2_9_8B_POST_LANE4_SCHEMA_GATE_COHERENCE_CLOSEOUT_PASS`
+`V2_9_8B_FRESH_EXACT_HEAD_FOUR_TOKEN_STD4H_4_2_2_AUTHORIZATION_PREPARATION_PASS_READY_FOR_INDEPENDENT_REVIEW`
 
-The full post-Lane-4 schema/gate sequence is independently closed coherent.
-Catalogue, reviewed admission pin, authoritative DB ledger/physical objects,
-and both four-token profiles now resolve to exact Migration 061. Migration 059
-is the sixth immutable historical package. No campaign authorization was
-created, reviewed, or consumed.
-
-Design:
-
-`docs/printer-v1-v2-9-8b-migration-061-git-evidence-cutover-design.md`
-
-Closeout:
-
-`docs/printer-v1-v2-9-8b-post-lane4-schema-gate-coherence-closeout.md`
-
-Catalogue, pin, authoritative DB, and current Git evidence now resolve to 61.
-Real current execution `MIGRATION_061_20260823T200709Z` recomputed at five
-files with digest `a6eac8d12e30e9f134c137f79a8b72bbe4f9af9d62e65e159a025c5c87108bd6`.
-Historical 059 recomputed at five files with digest
-`d23c4f4bbf2b4683c69038bb6fc372f85c52e280b24662cb46c133690b1479c6`.
-Consumed authorization `…512f2436` remains non-reusable. Cycle 3 and V2-10
-remain locked.
+The post-Lane-4 schema/gate coherence closeout is PASS. Catalogue, reviewed
+pin, authoritative database, and current four-token Git migration evidence all
+resolve to exact Migration 061. This checkpoint permits exactly one new
+create-once authorization package. It does not review, consume, apply, or run
+that authorization.
 
 ## Exact Git transaction
 
 - branch: `agent/v2-9-8b-consumed-4-2-2-full-operational-run-forensic-audit`
-- required starting HEAD:
-  `7c2478b38e7b50675ba13f436e906abca2b1ff47`
-- resulting new HEAD: this documentation-only closeout commit
-  (the exact commit SHA is the repository HEAD containing this handoff)
+- required preparation starting HEAD:
+  `22a59b3dcb64b27bbec0bacb697d9f1610f0dd31`
+- exact authorization-bound HEAD: the commit containing this handoff
+- no later tracked commit is permitted after authorization publication
 
-## Governing repair-lane sequence (forensic)
+The handoff is committed before package publication so the authorization binds
+the final branch tip. Artifact SHA-256, issue/expiry times, and readback facts
+remain in the create-once package and preparation response; they are not written
+back into tracked files afterward.
 
-1. Design Lane 1 cadence authority — **CLOSED PASS**
-2. Design Lane 2 multi-token evidence-deadline scheduling — **CLOSED PASS**
-3. Lane 3 post-1H standard-four-hour progression + fault preservation —
-   **CLOSED PASS**
-4. Lane 4 multi-cycle terminal accounting/reporting — **CLOSED PASS**
-5. Post-Lane-4 authoritative next-lane readiness audit — **CLOSED PASS**
-6. Post-Lane-4 schema / gate coherence design — **CLOSED PASS**
-7. Post-Lane-4 schema / gate coherence narrow implementation — **CLOSED PASS**
-8. Canonical DB target enforcement repair — **CLOSED PASS**
-9. Post-Lane-4 schema / gate coherence implementation inspection —
-   **CLOSED PASS**
-10. Authoritative migration 060/061 application — **CLOSED PASS**
-11. Post-application rereadiness — **CLOSED PASS**
-12. Migration-061 git evidence cutover design/review — **CLOSED PASS**
-13. Current-evidence identity-binding design amendment — **CLOSED PASS**
-14. Migration-061 git evidence cutover narrow implementation — **CLOSED PASS**
-15. Post-Lane-4 schema / gate coherence closeout and bounded proof —
-    **CLOSED PASS here**
+## Selected new authorization identity
 
-V2-9.8B remains the active memory-growth program. V2-10 is not next.
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260823T221645Z_6af1423a`
+
+Canonical package path:
+
+`operator-runs/v2-9-8b-four-token-standard-four-hour-final-authorization/V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260823T221645Z_6af1423a/final_authorization.json`
+
+The package must bind the exact authorization-bound HEAD, canonical DB identity
+at 61 / `061_standard_4h_progression_fault_preservation.sql`, current execution
+`MIGRATION_061_20260823T200709Z`, all six immutable historical migration
+packages, the complete prior-authorization non-reuse trust root, and the exact
+four-token/two-cycle/two-token Standard-4H policy.
+
+## Proven preparation gates
+
+- schema admission coherence: ready, not campaign GO
+- authoritative DB SHA-256:
+  `e96b5aae27871c39499a395b2f6a4e48ece8b3d19e065ce54a2fd3cab076df50`
+- migration count/head: `61` /
+  `061_standard_4h_progression_fault_preservation.sql`
+- current Migration-061 inventory: `5` files /
+  `a6eac8d12e30e9f134c137f79a8b72bbe4f9af9d62e65e159a025c5c87108bd6`
+- historical Migration 059: sixth historical member, `5` files /
+  `d23c4f4bbf2b4683c69038bb6fc372f85c52e280b24662cb46c133690b1479c6`
+- strict four-token zero state: all 12 durable ownership domains zero
+- live Printer runtime processes: zero
+- existing historical authorization identities: 41, all non-reusable
+- consumed authorization `…512f2436`: permanently non-reusable and rejected by
+  the current exact Migration-061 profile
 
 ## Hard stop boundary
 
-This closeout checkpoint must not:
-
-- treat schema readiness or exact Migration-061 provenance as campaign GO;
-- combine fresh authorization preparation with review, consumption, or runtime;
-- write the authoritative database or apply a migration;
-- create/review/consume/clone/refresh/replace authorization
-  `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260821T153458Z_512f2436`;
-- run Printer, Source Governor, or Central Scheduler;
-- activate Cycle 3;
-- unlock retrieval, paper decisions, BUY/SELL/HOLD, positions, trades, audits,
-  PnL, live execution, wallets/private keys, paid APIs, scoring/ranking/
-  confidence/weighted logic, or embeddings/vectors.
+This lane may publish only the selected final authorization package through
+exclusive create-once semantics and perform non-consuming validation. It must
+not create an application marker, campaign, cycle, child, slot, or runtime
+ownership; consume any authorization; invoke providers; run Source Governor or
+Central Scheduler; mutate or migrate SQLite; activate Cycle 3; begin V2-10; or
+unlock retrieval or financial capability.
 
 ## Exact next permitted action
 
+After successful immutable publication and readback:
+
 ```text
 V2-9.8B FRESH EXACT-HEAD FOUR-TOKEN STANDARD-FOUR-HOUR 4/2/2
-AUTHORIZATION PREPARATION ONLY
+INDEPENDENT AUTHORIZATION REVIEW ONLY
 ```
 
-That later preparation must bind the exact closeout HEAD, authoritative DB
-61/061 identity, and current Migration-061 evidence. It must not review or
-consume the authorization, create a marker/child, or start the campaign in the
-same lane. Independent authorization review remains the next separate gate.
-No reuse of consumed authorization `…512f2436`. Cycle 3 and V2-10 remain
-locked.
+That separate lane may review only the exact new identity above. It may not
+create an application marker, consume the authorization, or start a campaign.
 
 ## Locks
 
 Solana-only; Solana memecoin-only; paper-only. No live wallet/private keys/
 signing/real funds/live execution. No paid API dependency. No scoring/ranking/
 confidence/weighted logic. No embeddings/vectors. No Source Governor or Central
-Scheduler bypass. No dirty-memory retrieval/decision use. Retrieval,
+Scheduler bypass. Dirty memory remains excluded from retrieval and decisions.
+`WINDOW_5M_MICRO_EVENT` remains support-only. Cycle 3, 12h/24h, retrieval,
 BUY/SELL/HOLD, positions, trade events, paper audits, and PnL remain locked.
-`WINDOW_5M_MICRO_EVENT` remains support-only. 12h/24h remain locked.
-Cycle 3 and observability/saturation remain locked.
 
 The active authority stack wins any conflict with this handoff.
