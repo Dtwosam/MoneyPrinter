@@ -4,19 +4,23 @@ Date: 2026-08-23
 
 ## Current lane
 
-`V2-9.8B Design Lane 2 — Multi-Token Evidence-Deadline Scheduling`
+`V2-9.8B Lane 2 — Multi-Token Evidence-Deadline Scheduling Closeout`
 
-Status: `FAILURE_SEMANTICS_DESIGN_AMENDMENT_INDEPENDENTLY_ACCEPTED_READY_FOR_DOCUMENTATION_CHECKPOINT`
+Status: `CLOSED_PASS`
 
 Verdict:
 
-`V2_9_8B_CLOSING_CONTEXT_FAILURE_SEMANTICS_DESIGN_AMENDMENT_INDEPENDENTLY_ACCEPTED_READY_FOR_DOCUMENTATION_CHECKPOINT`
+`V2_9_8B_MULTI_TOKEN_EVIDENCE_DEADLINE_SCHEDULING_LANE2_CLOSEOUT_PASS_READY_FOR_LANE3_READINESS_AUDIT`
 
-Design document (amended in place):
+Lane-2 closeout:
+
+`docs/printer-v1-v2-9-8b-multi-token-evidence-deadline-scheduling-lane2-closeout.md`
+
+Governing design document (amended in place):
 
 `docs/printer-v1-v2-9-8b-timely-closing-context-production-design.md`
 
-Accepted finding:
+Accepted final state:
 
 Current V1 has no real audit-preserving technical context-binding exception.
 
@@ -31,56 +35,30 @@ Accepted active semantics:
    savepoint rollback. The exact closing snapshot remains durable and the
    dependent `CLOSE_AUDIT` is not preserved.
 
-## Handoff staleness note
-
-The previous handoff still described
-`V2-9.8B Fresh 4/2/2 Final Authorization Construction` and an unconsumed
-authorization package. That description is stale relative to:
-
-- consumed authorization
-  `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260821T153458Z_512f2436`
-- forensic audit
-  `docs/printer-v1-v2-9-8b-consumed-4-2-2-full-operational-run-forensic-audit.md`
-  (`PASS_READY_FOR_DESIGN`)
-- Design Lane 1 closeout
-  `docs/printer-v1-v2-9-8b-cadence-authority-lane1-closeout.md`
-  (`PASS_READY_FOR_DESIGN_LANE_2`)
-
-The active authority stack and those closeouts win over the stale construction
-handoff. This update is documentation-only for Design Lane 2.
-
 ## Exact Git transaction
 
 - branch: `agent/v2-9-8b-consumed-4-2-2-full-operational-run-forensic-audit`
-- Design Lane 2 original design commit:
-  `46fc13c0f36297f8d76c24f7bbba1313a6db796e`
-- Design Lane 2 amendment starting HEAD:
-  `46fc13c0f36297f8d76c24f7bbba1313a6db796e`
-- current code baseline before the next implementation:
-  `24e7ceed8c7b3fca261a45a00c81cc50a0b2844e`
-- Production-Path Completeness Gate adoption starting HEAD:
-  `5783a897cd58150effb979a63547e458f47ea7e4`
-- resulting new HEAD: this single documentation governance commit (the exact
+- Lane-2 implementation/proof baseline:
+  `ae4d5d55abc9486372115a9fb21d976b46f67a54`
+- Lane-2 closeout starting HEAD:
+  `ae4d5d55abc9486372115a9fb21d976b46f67a54`
+- resulting new HEAD: this documentation-only closeout commit (the exact
   commit SHA is the repository HEAD containing this handoff)
 
-## Failure-semantics checkpoint disposition
+## Lane-2 disposition
 
-`24e7cee` is partially superseded. Retain its close-context savepoint rollback,
-durable exact closing snapshot, strengthened request/response/failure
-provenance, generic technical-failure fail-closed behavior, and token
-isolation. The next implementation removes only the unreachable
-`ContextBindingCompositionFailure` / `CONTEXT_BINDING_FAILED`
-audit-preserving technical-exception machinery.
-
-Lane 2 remains active after this governance adoption. There is no Lane 2
-closeout yet.
+Lane 2 is **CLOSED PASS**. The exact production path and focused 76-test proof
+at `ae4d5d55abc9486372115a9fb21d976b46f67a54` establish the accepted Scheduler,
+Source Governor, deadline, cutoff, degraded-evidence, durable-snapshot,
+technical-failure, token-isolation, and permanent-lock contracts. There is no
+remaining proven Lane-2 blocker.
 
 ## Governing repair-lane sequence (forensic)
 
 1. Design Lane 1 cadence authority — **CLOSED PASS**
-2. Design Lane 2 multi-token evidence-deadline scheduling — **this lane**
-3. Design Lane 3 post-1H standard-four-hour progression + fault preservation —
-   **not started**
+2. Design Lane 2 multi-token evidence-deadline scheduling — **CLOSED PASS**
+3. Lane 3 post-1H standard-four-hour progression + fault preservation —
+   **AUDIT/READINESS ONLY; not started**
 4. Design Lane 4 multi-cycle terminal accounting/reporting — **not started**
 
 Authorization `…512f2436` remains permanently consumed and non-reusable.
@@ -88,27 +66,26 @@ No automatic fresh authorization, retry, rerun, resume, restart, or successor.
 
 ## Hard stop boundary
 
-This Design Lane 2 package is design/documentation only. It must not:
+This Lane-2 closeout package is documentation only. It must not:
 
-- implement scheduler/close-path code or migrations;
+- modify scheduler/close-path production, tests, schemas, migrations, or config;
 - run Printer, Source Governor, or Central Scheduler;
 - create/reuse/apply authorization;
-- begin Design Lane 3;
+- begin Lane 3 in this run;
 - unlock retrieval, paper decisions, BUY/SELL/HOLD, positions, trades, audits,
   PnL, live execution, wallets/private keys, paid APIs, scoring/ranking/
   confidence/weighted logic, or embeddings/vectors.
 
-## Exact next permitted lane
+## Exact next permitted action
 
-This remains unchanged by the Production-Path Completeness Gate adoption.
+```text
+LANE 3:
+Post-1H Standard-4H Progression + Fault Preservation
+AUDIT/READINESS ONLY.
+```
 
-One narrow implementation removing the unsupported
-`ContextBindingCompositionFailure` / `CONTEXT_BINDING_FAILED`
-audit-preserving technical-exception surface, while retaining the accepted
-savepoint, durable-snapshot, provenance, generic fail-closed, token-isolation,
-and normal degraded-evidence audit behavior.
-
-Do not start closeout or Design Lane 3 during that implementation.
+This does not authorize Lane-3 design or implementation. Do not start Lane 3
+in the Lane-2 closeout run. Cycle 3 remains locked.
 
 ## Locks
 
