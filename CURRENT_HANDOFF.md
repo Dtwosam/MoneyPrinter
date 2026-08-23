@@ -1,25 +1,35 @@
 # CURRENT HANDOFF
 
-Date: 2026-08-22
+Date: 2026-08-23
 
 ## Current lane
 
 `V2-9.8B Design Lane 2 — Multi-Token Evidence-Deadline Scheduling`
 
-Status: `DESIGN_AMENDMENT_PASS_READY_FOR_IMPLEMENTATION` (docs-only amendment)
+Status: `FAILURE_SEMANTICS_DESIGN_AMENDMENT_INDEPENDENTLY_ACCEPTED_READY_FOR_DOCUMENTATION_CHECKPOINT`
 
 Verdict:
 
-`V2_9_8B_MULTI_TOKEN_EVIDENCE_DEADLINE_SCHEDULING_DESIGN_AMENDMENT_PASS_READY_FOR_IMPLEMENTATION`
+`V2_9_8B_CLOSING_CONTEXT_FAILURE_SEMANTICS_DESIGN_AMENDMENT_INDEPENDENTLY_ACCEPTED_READY_FOR_DOCUMENTATION_CHECKPOINT`
 
 Design document (amended in place):
 
-`docs/printer-v1-v2-9-8b-multi-token-evidence-deadline-scheduling-design.md`
+`docs/printer-v1-v2-9-8b-timely-closing-context-production-design.md`
 
-Amendment corrects only:
+Accepted finding:
 
-1. AGENTS-led resource category order (close evidence must not outrank TRACK_*)
-2. clean-dispatch `deadline_at` from last actual capture (+ forced-close min)
+Current V1 has no real audit-preserving technical context-binding exception.
+
+Accepted active semantics:
+
+1. A structurally successful `CLOSE_CONTEXT_BIND` may contain truthful
+   complete, partial, provider-failed, rejected, unavailable, or unknown
+   evidence. It succeeds operationally, `CLOSE_AUDIT` remains claimable, and
+   E2Q owns CLEAN eligibility.
+2. Identity, provenance, invariant, persistence, SQLite, or unclassified
+   technical exception during `CLOSE_CONTEXT_BIND` fails closed after
+   savepoint rollback. The exact closing snapshot remains durable and the
+   dependent `CLOSE_AUDIT` is not preserved.
 
 ## Handoff staleness note
 
@@ -46,7 +56,20 @@ handoff. This update is documentation-only for Design Lane 2.
   `46fc13c0f36297f8d76c24f7bbba1313a6db796e`
 - Design Lane 2 amendment starting HEAD:
   `46fc13c0f36297f8d76c24f7bbba1313a6db796e`
+- current code baseline before the next implementation:
+  `24e7ceed8c7b3fca261a45a00c81cc50a0b2844e`
 - this handoff updates only with the Design Lane 2 amendment commit
+
+## Failure-semantics checkpoint disposition
+
+`24e7cee` is partially superseded. Retain its close-context savepoint rollback,
+durable exact closing snapshot, strengthened request/response/failure
+provenance, generic technical-failure fail-closed behavior, and token
+isolation. The next implementation removes only the unreachable
+`ContextBindingCompositionFailure` / `CONTEXT_BINDING_FAILED`
+audit-preserving technical-exception machinery.
+
+Lane 2 remains active. There is no Lane 2 closeout yet.
 
 ## Governing repair-lane sequence (forensic)
 
@@ -73,13 +96,13 @@ This Design Lane 2 package is design/documentation only. It must not:
 
 ## Exact next permitted lane
 
-After operator acceptance of this amended design:
+One narrow implementation removing the unsupported
+`ContextBindingCompositionFailure` / `CONTEXT_BINDING_FAILED`
+audit-preserving technical-exception surface, while retaining the accepted
+savepoint, durable-snapshot, provenance, generic fail-closed, token-isolation,
+and normal degraded-evidence audit behavior.
 
-`V2-9.8B Multi-Token Evidence-Deadline Scheduling Implementation`
-
-(implementation slices S1–S5 as specified in the amended design document), or
-operator review only. Do not start Design Lane 3 until Lane 2
-implementation/closeout progress is explicitly authorized.
+Do not start closeout or Design Lane 3 during that implementation.
 
 ## Locks
 
@@ -89,5 +112,6 @@ confidence/weighted logic. No embeddings/vectors. No Source Governor or Central
 Scheduler bypass. No dirty-memory retrieval/decision use. Retrieval,
 BUY/SELL/HOLD, positions, trade events, paper audits, and PnL remain locked.
 `WINDOW_5M_MICRO_EVENT` remains support-only. 12h/24h remain locked.
+Cycle 3 and observability/saturation remain locked.
 
 The active authority stack wins any conflict with this handoff.
