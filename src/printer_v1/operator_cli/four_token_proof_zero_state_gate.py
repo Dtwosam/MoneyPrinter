@@ -31,6 +31,11 @@ from printer_v1.operator_cli.pre_authorization_migration_ledger_guard import (
     inspect_authoritative_database,
     package_binding_from_document,
 )
+from printer_v1.operator_cli.schema_admission_coherence import (
+    REQUIRED_MIGRATION_COUNT,
+    REQUIRED_MIGRATION_HEAD,
+    evaluate_schema_admission_coherence,
+)
 from printer_v1.sources.operational_source_contracts import (
     SolanaRpcConfigurationError,
     validate_window_15m_source_configuration,
@@ -41,35 +46,13 @@ ZERO_STATE_SCHEMA_VERSION = "PRINTER_V1_FOUR_TOKEN_PROOF_ZERO_STATE_GATE_V1"
 OPERATIONAL_ZERO_STATE_SCHEMA_VERSION = (
     "PRINTER_V1_FOUR_TOKEN_STANDARD_4H_ZERO_STATE_GATE_V1"
 )
-# Exact authorized schema for a bounded four-token proof. Migration 056 owns the
-# immutable pre-lifecycle terminal provenance that
-# ``ONE_CYCLE_PRE_LIFECYCLE_ZERO_ATTEMPT`` requires. Migration 057 adds durable
-# Scheduler-owned pre-lifecycle discovery-refresh work, so proof admission must
-# prove that no live RUNNING refresh ownership remains. Historical terminal
-# refresh-work rows remain evidence and are never deleted or counted as active
-# ownership.
-#
-# Migration 058 adds the durable direct Pump migration traversal cursor owned by
-# the canonical migration feeder. It is a mutable local projection: it carries no
-# campaign, lifecycle, authorization, selection or financial ownership, so it
-# introduces no new zero-state domain.
-#
-# Migration 059 replaces only the pre-admission attempt transition trigger so
-# the dedicated exact parent-terminal owner can revoke frozen unconsumed
-# PAIR_READY authority. It adds no table, state, ownership domain, source path,
-# Scheduler behavior or financial capability. The pin is advanced to the 059
-# head so the authorized schema and canonical migration-ledger drift guard
-# continue to describe the same fully upgraded database.
-#
-# These are deliberately explicit literals, never derived from the migrations
-# directory. Adding a migration must not silently re-authorize bounded-proof
-# admission: a future head requires its own gate review and an explicit re-pin
-# here. The canonical migration-ledger drift guard still runs independently and
-# is not replaced by this pin.
-REQUIRED_MIGRATION_COUNT = 59
-REQUIRED_MIGRATION_HEAD = (
-    "059_pair_ready_parent_terminal_cancellation_transition.sql"
-)
+# Exact authorized schema pin lives in schema_admission_coherence as explicit
+# literals. This gate re-exports those names and does not keep a second pin.
+# Adding a migrations-directory file must not silently re-authorize bounded
+# admission: a future head requires its own helper-literal review. The
+# canonical migration-ledger drift guard still runs independently and is not
+# replaced by the pin. Four-token git current evidence remains the 059 package
+# until a later apply/closeout lane creates a real 061 package.
 LOCKED_LONG_WINDOWS = LOCKED_WINDOWS
 
 #: Every domain that must be exactly zero before this proof may start. Each
@@ -366,6 +349,15 @@ def _assert_four_token_zero_state(
         )
     except MigrationLedgerDriftGuardError as exc:
         blockers.append(_blocker("migration_ledger_drift", str(exc)))
+
+    coherence = evaluate_schema_admission_coherence(
+        db_path=db_path,
+        migrations_dir=migrations_dir,
+        expected_target=None,
+    )
+    if not coherence.admission_schema_ready:
+        for code in coherence.blocker_codes:
+            blockers.append(_blocker(code, coherence.summary()))
 
     identity = inspect_authoritative_database(db_path)
     sidecars = list(identity.get("sidecars") or ())

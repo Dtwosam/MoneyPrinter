@@ -295,25 +295,23 @@ class AuthorizationProfileSeparationTests(unittest.TestCase):
 class ZeroStateGateTests(unittest.TestCase):
     """The operational gate reuses, never duplicates, the four-token gate."""
 
-    def test_migration_pin_is_59_and_059(self) -> None:
-        self.assertEqual(gate.REQUIRED_MIGRATION_COUNT, 59)
+    def test_migration_pin_is_61_and_061(self) -> None:
+        self.assertEqual(gate.REQUIRED_MIGRATION_COUNT, 61)
         self.assertEqual(
             gate.REQUIRED_MIGRATION_HEAD,
-            "059_pair_ready_parent_terminal_cancellation_transition.sql",
+            "061_standard_4h_progression_fault_preservation.sql",
         )
 
-    def test_059_is_the_only_new_canonical_migration(self) -> None:
-        source = inspect.getsource(gate)
-        self.assertIn("059_pair_ready_parent_terminal_cancellation_transition.sql", source)
+    def test_catalogue_head_is_061_and_059_file_still_exists(self) -> None:
         migrations = sorted(
             item.name
             for item in Path("migrations").iterdir()
             if item.suffix == ".sql"
         )
-        self.assertEqual(len(migrations), 59)
+        self.assertEqual(len(migrations), 61)
         self.assertEqual(
             migrations[-1],
-            "059_pair_ready_parent_terminal_cancellation_transition.sql",
+            "061_standard_4h_progression_fault_preservation.sql",
         )
         self.assertEqual(
             [item for item in migrations if item.startswith("059")],

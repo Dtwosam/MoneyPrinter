@@ -26,15 +26,10 @@ def test_four_token_current_migration_evidence_is_exactly_059() -> None:
 
 
 def test_four_token_zero_state_is_explicitly_pinned_to_the_current_head() -> None:
-    """The durable transition repair advances the canonical head to 059.
-
-    Existing zero-state domains remain required; only the explicit schema pin
-    moves so the gate and canonical migration-ledger guard describe the same
-    fully upgraded database.
-    """
-    assert zero_state.REQUIRED_MIGRATION_COUNT == 59
+    """The reviewed admission pin is 61/061; git current evidence stays 059."""
+    assert zero_state.REQUIRED_MIGRATION_COUNT == 61
     assert zero_state.REQUIRED_MIGRATION_HEAD == (
-        "059_pair_ready_parent_terminal_cancellation_transition.sql"
+        "061_standard_4h_progression_fault_preservation.sql"
     )
     assert "active_pre_lifecycle_discovery_refresh_work" in (
         zero_state.REQUIRED_ZERO_STATE_DOMAINS

@@ -438,6 +438,22 @@ def evaluate_migration_ledger_drift(
                 )
             )
 
+    from printer_v1.operator_cli.schema_admission_coherence import (
+        evaluate_schema_admission_coherence,
+    )
+
+    coherence = evaluate_schema_admission_coherence(
+        db_path=target,
+        migrations_dir=migrations_dir,
+        expected_target=None if db_path is None else target,
+    )
+    if not coherence.admission_schema_ready:
+        seen = {item["code"] for item in blockers}
+        for code in coherence.blocker_codes:
+            if code not in seen:
+                blockers.append(_blocker(code, coherence.summary()))
+                seen.add(code)
+
     binding_report: dict[str, Any] | None = None
     if package_binding is not None:
         try:

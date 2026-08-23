@@ -182,16 +182,10 @@ class GuardBlockerTests(AuthoritativeDatabaseUntouched):
             package_binding=binding,
         )
 
-    def test_canonical_052_ledger_passes(self) -> None:
+    def test_canonical_matching_ledger_without_objects_blocks(self) -> None:
         result = self.evaluate(self.canonical)
-        self.assertEqual(result.status, "PASS", result.summary())
-        self.assertEqual(result.verdict, guard.PASS_VERDICT)
-        self.assertEqual(result.blockers, ())
-        self.assertEqual(result.database["migration_count"], 52)
-        self.assertEqual(
-            result.database["migration_head"],
-            "052_memory_observation_eligibility_layers.sql",
-        )
+        self.assertEqual(result.status, "BLOCKED", result.summary())
+        self.assertIn("required_schema_object_missing", result.blocker_codes)
 
     def test_real_migrated_database_passes(self) -> None:
         db = self.root / "fully-migrated.sqlite3"
@@ -208,7 +202,7 @@ class GuardBlockerTests(AuthoritativeDatabaseUntouched):
         self.assertIn("migration_ledger_missing", result.blocker_codes)
         self.assertIn("migration_head_mismatch", result.blocker_codes)
         self.assertIn(
-            "052_memory_observation_eligibility_layers.sql", result.summary()
+            "061_standard_4h_progression_fault_preservation.sql", result.summary()
         )
 
     def test_unexpected_migration_blocks(self) -> None:
@@ -252,7 +246,10 @@ class GuardBlockerTests(AuthoritativeDatabaseUntouched):
             item for item in result.blockers if item["code"] == "migration_head_mismatch"
         ]
         self.assertTrue(head)
-        self.assertIn("051_permanent_discovery_availability.sql", head[0]["detail"])
+        self.assertIn(
+            "060_pre_admission_frozen_tracking_lane_provenance.sql",
+            head[0]["detail"],
+        )
 
     def test_empty_ledger_blocks(self) -> None:
         result = self.evaluate([])
@@ -353,7 +350,8 @@ class ReviewModeTests(AuthoritativeDatabaseUntouched):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         self.canonical = list(canonical_migration_names())
-        self.db = _disposable_db(self.root / "review.sqlite3", self.canonical)
+        self.db = self.root / "review.sqlite3"
+        apply_migrations(self.db)
         info = self.db.stat()
         self.honest = {
             "path": str(self.db),
@@ -442,7 +440,13 @@ class ReviewModeTests(AuthoritativeDatabaseUntouched):
                 binding.pop(field_name)
                 result = self.review(binding)
                 self.assertEqual(result.status, "BLOCKED")
-                self.assertIn("package_binding_incomplete", result.blocker_codes)
+                self.assertTrue(
+                    {
+                        "package_binding_incomplete",
+                        "package_binding_invalid",
+                    } & set(result.blocker_codes),
+                    result.blocker_codes,
+                )
                 self.assertIn(field_name, result.summary())
 
     def test_incomplete_binding_rejected(self) -> None:
@@ -450,7 +454,13 @@ class ReviewModeTests(AuthoritativeDatabaseUntouched):
         binding.pop("migration_head")
         result = self.review(binding)
         self.assertEqual(result.status, "BLOCKED")
-        self.assertIn("package_binding_incomplete", result.blocker_codes)
+        self.assertTrue(
+            {
+                "package_binding_incomplete",
+                "package_binding_invalid",
+            } & set(result.blocker_codes),
+            result.blocker_codes,
+        )
 
     def test_binding_fields_cover_the_required_contract(self) -> None:
         self.assertEqual(

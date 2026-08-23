@@ -67,6 +67,12 @@ REQUIRED_TABLE_COLUMNS = {
         "successor_window_4h_id", "first_terminal_cause",
         "fault_details_json", "evaluated_at", "created_at", "updated_at",
     },
+    "printer_pre_admission_discovery_attempt_items": {
+        "frozen_tracking_lane", "frozen_discovery_action",
+        "frozen_discovery_label", "frozen_classification_reason",
+        "frozen_lane_evidence_hash", "frozen_lane_decided_at",
+        "frozen_lane_decision_owner",
+    },
 }
 
 REQUIRED_NOT_NULL_COLUMNS = {
@@ -100,6 +106,7 @@ REQUIRED_NOT_NULL_COLUMNS = {
         "disposition_reasons_json", "eligibility_evidence_json",
         "fault_details_json", "created_at", "updated_at",
     },
+    "printer_pre_admission_discovery_attempt_items": set(),
 }
 
 REQUIRED_INDEXES = {
@@ -130,6 +137,10 @@ REQUIRED_INDEXES = {
         "printer_memory_factory_standard_4h_progression_tokens",
         ("progression_attempt_id", "token_disposition", "slot_ordinal"),
     ),
+    "idx_standard_4h_progression_successor": (
+        "printer_memory_factory_standard_4h_progression_tokens",
+        ("successor_window_4h_id",),
+    ),
 }
 
 REQUIRED_UNIQUE_KEYS = {
@@ -139,13 +150,78 @@ REQUIRED_UNIQUE_KEYS = {
     "printer_memory_factory_standard_4h_progression_attempts": {
         ("progression_attempt_id",),
         ("campaign_id", "campaign_run_id", "cycle_id"),
+        (
+            "progression_attempt_id",
+            "campaign_id",
+            "campaign_run_id",
+            "cycle_id",
+            "factory_run_id",
+        ),
     },
     "printer_memory_factory_standard_4h_progression_tokens": {
         ("progression_token_id",),
         ("progression_attempt_id", "slot_ordinal"),
         ("progression_attempt_id", "token_slot_id"),
     },
+    "printer_pre_admission_discovery_attempt_items": set(),
 }
+
+REQUIRED_TRIGGERS = {
+    "printer_pre_admission_item_frozen_lane_complete": (
+        "printer_pre_admission_discovery_attempt_items"
+    ),
+    "printer_standard_4h_progression_attempt_identity_immutable": (
+        "printer_memory_factory_standard_4h_progression_attempts"
+    ),
+    "printer_standard_4h_progression_attempt_terminal_immutable": (
+        "printer_memory_factory_standard_4h_progression_attempts"
+    ),
+    "printer_standard_4h_progression_attempt_primary_immutable": (
+        "printer_memory_factory_standard_4h_progression_attempts"
+    ),
+    "printer_standard_4h_progression_attempt_authority_immutable": (
+        "printer_memory_factory_standard_4h_progression_attempts"
+    ),
+    "printer_standard_4h_progression_token_identity_immutable": (
+        "printer_memory_factory_standard_4h_progression_tokens"
+    ),
+    "printer_standard_4h_progression_token_terminal_immutable": (
+        "printer_memory_factory_standard_4h_progression_tokens"
+    ),
+    "printer_standard_4h_progression_token_primary_immutable": (
+        "printer_memory_factory_standard_4h_progression_tokens"
+    ),
+    "printer_standard_4h_progression_token_evidence_immutable": (
+        "printer_memory_factory_standard_4h_progression_tokens"
+    ),
+}
+
+MIGRATION_060_REQUIRED_TABLES = frozenset({
+    "printer_pre_admission_discovery_attempt_items",
+})
+MIGRATION_060_REQUIRED_TRIGGERS = frozenset({
+    "printer_pre_admission_item_frozen_lane_complete",
+})
+MIGRATION_060_REQUIRED_INDEXES = frozenset()
+MIGRATION_061_REQUIRED_TABLES = frozenset({
+    "printer_memory_factory_standard_4h_progression_attempts",
+    "printer_memory_factory_standard_4h_progression_tokens",
+})
+MIGRATION_061_REQUIRED_TRIGGERS = frozenset({
+    "printer_standard_4h_progression_attempt_identity_immutable",
+    "printer_standard_4h_progression_attempt_terminal_immutable",
+    "printer_standard_4h_progression_attempt_primary_immutable",
+    "printer_standard_4h_progression_attempt_authority_immutable",
+    "printer_standard_4h_progression_token_identity_immutable",
+    "printer_standard_4h_progression_token_terminal_immutable",
+    "printer_standard_4h_progression_token_primary_immutable",
+    "printer_standard_4h_progression_token_evidence_immutable",
+})
+MIGRATION_061_REQUIRED_INDEXES = frozenset({
+    "idx_standard_4h_progression_attempt_scope",
+    "idx_standard_4h_progression_token_disposition",
+    "idx_standard_4h_progression_successor",
+})
 
 REQUIRED_STEP_FOREIGN_KEYS = {
     ("run_id", "printer_memory_factory_runs", "run_id"),
@@ -228,6 +304,56 @@ def _unique_keys(connection: sqlite3.Connection, table: str) -> set[tuple[str, .
     return keys
 
 
+def inspect_required_schema_objects(
+    connection: sqlite3.Connection,
+) -> dict[str, Any]:
+    """Read-only presence inventory. Never raises because an object is absent."""
+    issues: list[str] = []
+    for table, required_columns in REQUIRED_TABLE_COLUMNS.items():
+        if not _table_exists(connection, table):
+            issues.append(f"missing table: {table}")
+            continue
+        try:
+            rows = connection.execute(f"PRAGMA table_info('{table}')").fetchall()
+        except sqlite3.Error:
+            issues.append(f"missing table: {table}")
+            continue
+        columns = {str(row[1]) for row in rows}
+        missing_columns = sorted(required_columns - columns)
+        if missing_columns:
+            issues.append(f"{table} missing columns: {missing_columns}")
+        not_null = {str(row[1]) for row in rows if int(row[3]) == 1}
+        missing_not_null = sorted(
+            REQUIRED_NOT_NULL_COLUMNS.get(table, set()) - not_null
+        )
+        if missing_not_null:
+            issues.append(f"{table} missing NOT NULL constraints: {missing_not_null}")
+        missing_unique = REQUIRED_UNIQUE_KEYS.get(table, set()) - _unique_keys(
+            connection, table
+        )
+        if missing_unique:
+            issues.append(f"{table} missing unique keys: {sorted(missing_unique)}")
+
+    for index_name, (table, columns) in REQUIRED_INDEXES.items():
+        row = connection.execute(
+            "SELECT tbl_name FROM sqlite_master WHERE type='index' AND name=?",
+            (index_name,),
+        ).fetchone()
+        if row is None or str(row[0]) != table:
+            issues.append(f"missing index: {index_name}")
+        elif _index_columns(connection, index_name) != columns:
+            issues.append(f"index column mismatch: {index_name}")
+
+    for trigger_name, table in REQUIRED_TRIGGERS.items():
+        row = connection.execute(
+            "SELECT tbl_name FROM sqlite_master WHERE type='trigger' AND name=?",
+            (trigger_name,),
+        ).fetchone()
+        if row is None or str(row[0]) != table:
+            issues.append(f"missing trigger: {trigger_name}")
+    return {"issues": issues}
+
+
 def validate_runtime_schema_connection(
     connection: sqlite3.Connection, *, raise_on_error: bool = True,
 ) -> dict[str, Any]:
@@ -262,32 +388,8 @@ def validate_runtime_schema_connection(
         if unknown:
             issues.append(f"unknown migration ledger entries: {unknown}")
 
-    for table, required_columns in REQUIRED_TABLE_COLUMNS.items():
-        if not _table_exists(connection, table):
-            issues.append(f"missing table: {table}")
-            continue
-        rows = connection.execute(f"PRAGMA table_info('{table}')").fetchall()
-        columns = {str(row[1]) for row in rows}
-        missing_columns = sorted(required_columns - columns)
-        if missing_columns:
-            issues.append(f"{table} missing columns: {missing_columns}")
-        not_null = {str(row[1]) for row in rows if int(row[3]) == 1}
-        missing_not_null = sorted(REQUIRED_NOT_NULL_COLUMNS[table] - not_null)
-        if missing_not_null:
-            issues.append(f"{table} missing NOT NULL constraints: {missing_not_null}")
-        missing_unique = REQUIRED_UNIQUE_KEYS[table] - _unique_keys(connection, table)
-        if missing_unique:
-            issues.append(f"{table} missing unique keys: {sorted(missing_unique)}")
-
-    for index_name, (table, columns) in REQUIRED_INDEXES.items():
-        row = connection.execute(
-            "SELECT tbl_name FROM sqlite_master WHERE type='index' AND name=?",
-            (index_name,),
-        ).fetchone()
-        if row is None or str(row[0]) != table:
-            issues.append(f"missing index: {index_name}")
-        elif _index_columns(connection, index_name) != columns:
-            issues.append(f"index column mismatch: {index_name}")
+    object_report = inspect_required_schema_objects(connection)
+    issues.extend(str(item) for item in object_report["issues"])
 
     if _table_exists(connection, "printer_memory_factory_runs"):
         row = connection.execute(

@@ -1258,6 +1258,16 @@ def build_activation_preflight(
                 f"canonical_count={ledger['canonical_count']}"
             ),
         )
+    from printer_v1.operator_cli.schema_admission_coherence import (
+        evaluate_schema_admission_coherence,
+    )
+
+    coherence = evaluate_schema_admission_coherence(
+        db_path=path,
+        expected_target=path,
+    )
+    if not coherence.admission_schema_ready:
+        _preflight_fail("schema_admission_coherence", coherence.summary())
     # Defensive equality: count is always derived from the same canonical source.
     if int(ledger["canonical_count"]) != canonical_migration_count():
         _preflight_fail(

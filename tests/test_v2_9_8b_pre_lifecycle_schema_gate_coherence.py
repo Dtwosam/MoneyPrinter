@@ -16,12 +16,16 @@ import ast
 import sqlite3
 from pathlib import Path
 
+from printer_v1.db.migrate import canonical_migration_names
 from printer_v1.operator_cli import git_provenance_authorization_manifest as git_auth
 from printer_v1.operator_cli import four_token_proof_zero_state_gate as gate
 from printer_v1.operator_cli import operational_campaign_recovery as recovery
+from printer_v1.operator_cli import schema_admission_coherence as coherence
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 GATE_SOURCE = REPO_ROOT / "src/printer_v1/operator_cli/four_token_proof_zero_state_gate.py"
+HELPER_SOURCE = REPO_ROOT / "src/printer_v1/operator_cli/schema_admission_coherence.py"
+MIGRATION_061_NAME = "061_standard_4h_progression_fault_preservation.sql"
 MIGRATION_059_NAME = "059_pair_ready_parent_terminal_cancellation_transition.sql"
 MIGRATION_058_NAME = "058_direct_pump_migration_cursor.sql"
 MIGRATION_057_NAME = "057_pre_lifecycle_discovery_refresh_work.sql"
@@ -63,7 +67,11 @@ def _apply(db_path: Path, names: list[str]) -> list[str]:
 
 
 def _canonical_names() -> list[str]:
-    return sorted(p.name for p in (REPO_ROOT / "migrations").glob("*.sql"))
+    return list(canonical_migration_names())
+
+
+def _names_through(ordinal: int) -> list[str]:
+    return [name for name in _canonical_names() if int(name[:3]) <= ordinal]
 
 
 # --------------------------------------------------------------------------
@@ -71,26 +79,25 @@ def _canonical_names() -> list[str]:
 # --------------------------------------------------------------------------
 
 
-def test_zero_state_gate_admits_migration_059_only() -> None:
-    assert gate.REQUIRED_MIGRATION_COUNT == 59
-    assert gate.REQUIRED_MIGRATION_HEAD == MIGRATION_059_NAME
+def test_zero_state_gate_reexports_helper_pin_61() -> None:
+    assert gate.REQUIRED_MIGRATION_COUNT == 61
+    assert gate.REQUIRED_MIGRATION_HEAD == MIGRATION_061_NAME
+    assert gate.REQUIRED_MIGRATION_COUNT == coherence.REQUIRED_MIGRATION_COUNT
+    assert gate.REQUIRED_MIGRATION_HEAD == coherence.REQUIRED_MIGRATION_HEAD
 
 
-def test_zero_state_gate_rejects_the_superseded_055_through_058_pins() -> None:
-    assert gate.REQUIRED_MIGRATION_COUNT not in (55, 56, 57, 58)
+def test_zero_state_gate_rejects_the_superseded_055_through_059_pins() -> None:
+    assert gate.REQUIRED_MIGRATION_COUNT not in (55, 56, 57, 58, 59)
     assert gate.REQUIRED_MIGRATION_HEAD != MIGRATION_055_NAME
     assert gate.REQUIRED_MIGRATION_HEAD != MIGRATION_056_NAME
     assert gate.REQUIRED_MIGRATION_HEAD != MIGRATION_057_NAME
     assert gate.REQUIRED_MIGRATION_HEAD != MIGRATION_058_NAME
+    assert gate.REQUIRED_MIGRATION_HEAD != MIGRATION_059_NAME
 
 
-def test_gate_migration_pins_are_explicit_literals_not_derived() -> None:
-    """The pins must be static constants, reviewable in the diff.
-
-    Deriving them from the migrations directory would let any future migration
-    silently re-authorize bounded-proof admission without gate review.
-    """
-    tree = ast.parse(GATE_SOURCE.read_text())
+def test_helper_migration_pins_are_explicit_literals_not_derived() -> None:
+    """The pins must be static constants on the helper, reviewable in the diff."""
+    tree = ast.parse(HELPER_SOURCE.read_text())
     found: dict[str, ast.expr] = {}
     for node in tree.body:
         if isinstance(node, ast.Assign) and len(node.targets) == 1:
@@ -103,11 +110,30 @@ def test_gate_migration_pins_are_explicit_literals_not_derived() -> None:
     assert set(found) == {"REQUIRED_MIGRATION_COUNT", "REQUIRED_MIGRATION_HEAD"}
     for name, value in found.items():
         assert isinstance(value, ast.Constant), f"{name} must be a literal constant"
-    assert found["REQUIRED_MIGRATION_COUNT"].value == 59
-    assert found["REQUIRED_MIGRATION_HEAD"].value == MIGRATION_059_NAME
+    assert found["REQUIRED_MIGRATION_COUNT"].value == 61
+    assert found["REQUIRED_MIGRATION_HEAD"].value == MIGRATION_061_NAME
+    source = HELPER_SOURCE.read_text()
+    assert "REQUIRED_MIGRATION_COUNT = canonical_migration_count()" not in source
+    assert gate.REQUIRED_MIGRATION_COUNT == len(_canonical_names())
+    assert gate.REQUIRED_MIGRATION_HEAD == _canonical_names()[-1]
+
+
+def test_gate_reexports_pins_without_local_literals() -> None:
+    tree = ast.parse(GATE_SOURCE.read_text())
+    found: dict[str, ast.expr] = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target = node.targets[0]
+            if isinstance(target, ast.Name) and target.id in {
+                "REQUIRED_MIGRATION_COUNT",
+                "REQUIRED_MIGRATION_HEAD",
+            }:
+                found[target.id] = node.value
+    assert found == {}
     source = GATE_SOURCE.read_text()
     assert "canonical_migration_count" not in source
     assert "canonical_migration_names" not in source
+    assert "evaluate_schema_admission_coherence" in source
 
 
 def test_canonical_ledger_drift_guard_is_still_wired_into_the_gate() -> None:
@@ -122,17 +148,20 @@ def test_canonical_ledger_drift_guard_is_still_wired_into_the_gate() -> None:
 # --------------------------------------------------------------------------
 
 
-def test_disposable_schema_59_satisfies_the_gate_migration_pins(tmp_path) -> None:
-    applied = _apply(tmp_path / "migrated.sqlite3", _canonical_names())
-    assert len(applied) == gate.REQUIRED_MIGRATION_COUNT
-    assert applied[-1] == gate.REQUIRED_MIGRATION_HEAD
+def test_disposable_schema_59_does_not_satisfy_the_gate_migration_pins(
+    tmp_path,
+) -> None:
+    applied = _apply(tmp_path / "schema59.sqlite3", _names_through(59))
+    assert len(applied) == 59
+    assert applied[-1] == MIGRATION_059_NAME
+    assert len(applied) != gate.REQUIRED_MIGRATION_COUNT
+    assert applied[-1] != gate.REQUIRED_MIGRATION_HEAD
 
 
 def test_disposable_schema_58_does_not_satisfy_the_gate_migration_pins(
     tmp_path,
 ) -> None:
-    names = [n for n in _canonical_names() if n != MIGRATION_059_NAME]
-    applied = _apply(tmp_path / "stale.sqlite3", names)
+    applied = _apply(tmp_path / "stale.sqlite3", _names_through(58))
     assert len(applied) == 58
     assert applied[-1] == MIGRATION_058_NAME
     assert len(applied) != gate.REQUIRED_MIGRATION_COUNT
@@ -143,7 +172,7 @@ def test_migration_056_provenance_objects_exist_on_disposable_schema(
     tmp_path,
 ) -> None:
     db = tmp_path / "provenance.sqlite3"
-    _apply(db, _canonical_names())
+    _apply(db, _names_through(56))
     connection = sqlite3.connect(db)
     try:
         tables = {
