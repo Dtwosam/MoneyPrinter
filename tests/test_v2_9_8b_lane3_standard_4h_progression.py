@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import importlib
+import inspect
 import json
 import sqlite3
 from unittest.mock import patch
@@ -18,8 +19,11 @@ from printer_v1.db.migrate import canonical_migration_count, canonical_migration
 from printer_v1.operator_cli.campaign_supervision import acquire_campaign_supervision
 from printer_v1.operator_cli.operational_database_target_binding import (
     PRODUCTION_AUTHORITATIVE,
+    build_durable_operational_database_target_expectation,
     build_operational_database_target_binding,
 )
+from printer_v1.memory.clean_object_promotion import promote_clean_object
+from printer_v1.sources.governed_execution import build_fixture_source_adapter
 from tests import (
     test_v2_9_8b_post_dtw100_standard_four_hour_activation_factory_barrier
     as activation_fixture,
@@ -33,6 +37,127 @@ from tests.test_v2_9_8b_operational_selective_1h import Selective1hFixture
 
 ATTEMPTS = "printer_memory_factory_standard_4h_progression_attempts"
 TOKENS = "printer_memory_factory_standard_4h_progression_tokens"
+
+
+class _FactoryLoopClock:
+    def __init__(self, instant: datetime) -> None:
+        self.instant = instant
+        self.elapsed = 0.0
+
+    def now(self) -> datetime:
+        value = self.instant
+        self.instant += timedelta(microseconds=1)
+        return value
+
+    def monotonic(self) -> float:
+        return self.elapsed
+
+    def sleep(self, seconds: float) -> None:
+        self.elapsed += seconds
+        self.instant += timedelta(seconds=seconds)
+
+
+class _FactoryLoopDateTime(datetime):
+    clock: _FactoryLoopClock
+
+    @classmethod
+    def now(cls, tz=None):
+        value = cls.clock.now()
+        return value if tz is None else value.astimezone(tz)
+
+
+class _HandoffCommittedAtFactoryLoop(RuntimeError):
+    post_handoff_proof_fault = True
+
+    def __init__(self, barrier: dict) -> None:
+        self.barrier = barrier
+        super().__init__("LANE3_HANDOFF_COMMITTED_AT_FACTORY_LOOP")
+
+
+def _factory_loop_snapshot_adapter(*, token_mint, timeout_seconds):
+    del timeout_seconds
+    return build_fixture_source_adapter(
+        "dexscreener",
+        fixture_payload={
+            "pairs": [
+                {
+                    "chain": "solana",
+                    "token_mint": token_mint,
+                    "pair_address": "pool-1" if token_mint == "mint-1" else "pool-2",
+                    "price_usd": 1.0,
+                    "liquidity_usd": 10_000.0,
+                    "volume_5m": 500.0,
+                    "volume_1h": 2_000.0,
+                    "volume_24h": 10_000.0,
+                    "txns_5m": 10,
+                    "txns_1h": 50,
+                    "txns_24h": 500,
+                    "buys_5m": 7,
+                    "sells_5m": 3,
+                    "buys_1h": 30,
+                    "sells_1h": 20,
+                    "buys_24h": 280,
+                    "sells_24h": 220,
+                    "price_change_5m": 1.0,
+                    "price_change_1h": 2.0,
+                    "price_change_24h": 3.0,
+                }
+            ]
+        },
+    )
+
+
+def _factory_loop_context_adapters(clock: _FactoryLoopClock):
+    def market(**_kwargs):
+        return build_fixture_source_adapter(
+            "coingecko",
+            fixture_payload={
+                "captured_at": clock.now().isoformat(),
+                "assets": {
+                    "bitcoin": {"price_usd": 65_000, "change_24h": 2.5},
+                    "ethereum": {"price_usd": 3_500, "change_24h": 1.5},
+                    "solana": {
+                        "price_usd": 150,
+                        "change_24h": 4.0,
+                        "volume_24h": 2_000_000_000,
+                    },
+                },
+            },
+        )
+
+    def safety(**kwargs):
+        return build_fixture_source_adapter(
+            "goplus",
+            fixture_payload={
+                "token_mint": kwargs.get("token_mint"),
+                "mint_authority": None,
+                "freeze_authority": None,
+                "metadata_mutable": False,
+                "total_supply": "1000000000",
+                "top_10_holders": [{"percent": "3"} for _ in range(10)],
+                "lp_info": [{"locked": True}],
+                "risk_flags": [],
+            },
+        )
+
+    def quote(**kwargs):
+        return build_fixture_source_adapter(
+            "jupiter_quote",
+            fixture_payload={
+                "route_available": True,
+                "route_plan_present": True,
+                "slippage_bps": 50,
+                "price_impact_bps": 5,
+                "freshness_label": "QUOTE_FRESH",
+                "target_status": "TARGET_MATCH",
+                "paper_only_context": True,
+                "liquidity_context_label": "LIQUIDITY_CONTEXT_ACCEPTABLE",
+                "input_mint": kwargs["input_mint"],
+                "output_mint": kwargs["output_mint"],
+            },
+        )
+
+    return {"coingecko": market, "goplus": safety, "jupiter_quote": quote}
 
 
 def _ready_progression_fixture():
@@ -1192,6 +1317,7 @@ def test_migration_does_not_backfill_legacy_standard_campaigns(tmp_path) -> None
         ).fetchone()[0]
     finally:
         connection.close()
+
     apply_migrations(db)
     connection = sqlite3.connect(db)
     try:
@@ -1200,5 +1326,548 @@ def test_migration_does_not_backfill_legacy_standard_campaigns(tmp_path) -> None
         assert connection.execute(
             "SELECT COUNT(*) FROM printer_memory_factory_campaigns"
         ).fetchone()[0] == before
+    finally:
+        connection.close()
+
+
+def _factory_loop_operational_binding(db) -> object:
+    from tests.test_v2_9_8b_four_token_factory_wake_ordering import (
+        CAMPAIGN_ID,
+        CAMPAIGN_RUN_ID,
+        CONFIGURATION_ID,
+        CYCLE_ID,
+    )
+
+    values = {
+        "target_kind": PRODUCTION_AUTHORITATIVE,
+        "resolved_db_path": str(db.resolve()),
+        "authorized_pre_mutation_sha256": "a" * 64,
+        "migration_count": canonical_migration_count(),
+        "migration_head": canonical_migration_names()[-1],
+        "authorization_id": "lane3-factory-loop-authorization",
+        "authorization_marker_sha256": "b" * 64,
+        "application_marker_sha256": "c" * 64,
+        "execution_id": "lane3-factory-loop-execution",
+        "campaign_id": CAMPAIGN_ID,
+        "campaign_run_id": CAMPAIGN_RUN_ID,
+        "cycle_id": CYCLE_ID,
+        "configuration_id": CONFIGURATION_ID,
+        "authorization_consumed_once": True,
+        "invocation_count": 1,
+        "allowed_invocation_count": 1,
+        "automatic_retry_allowed": False,
+        "manual_rerun_allowed": False,
+        "resume_allowed": False,
+        "restart_allowed": False,
+        "successor_allowed": False,
+    }
+    expectation = build_durable_operational_database_target_expectation(
+        **values,
+        durable_db_target_identity="sha256:" + "a" * 64,
+    )
+    connection = sqlite3.connect(db)
+    try:
+        row = connection.execute(
+            "SELECT configuration_json FROM "
+            "printer_memory_factory_campaign_configurations "
+            "WHERE campaign_id=? AND configuration_id=?",
+            (CAMPAIGN_ID, CONFIGURATION_ID),
+        ).fetchone()
+        configuration = json.loads(str(row[0]))
+        configuration["operational_database_target_expectation"] = expectation
+        immutable_triggers = connection.execute(
+            "SELECT name,sql FROM sqlite_master WHERE type='trigger' "
+            "AND tbl_name='printer_memory_factory_campaign_configurations'"
+        ).fetchall()
+        for trigger in immutable_triggers:
+            connection.execute(f'DROP TRIGGER "{str(trigger[0])}"')
+        connection.execute(
+            "UPDATE printer_memory_factory_campaign_configurations "
+            "SET configuration_json=? WHERE campaign_id=? AND configuration_id=?",
+            (
+                json.dumps(configuration, sort_keys=True),
+                CAMPAIGN_ID,
+                CONFIGURATION_ID,
+            ),
+        )
+        for trigger in immutable_triggers:
+            connection.execute(str(trigger[1]))
+        connection.commit()
+    finally:
+        connection.close()
+    return build_operational_database_target_binding(**values)
+
+
+def _promote_factory_window(connection, *, window_id: int, snapshot_id: int) -> None:
+    if connection.execute(
+        "SELECT 1 FROM printer_episodes WHERE memory_window_id=?",
+        (int(window_id),),
+    ).fetchone() is not None:
+        return
+    row = connection.execute(
+        "SELECT supporting_context_json FROM printer_memory_windows WHERE id=?",
+        (int(window_id),),
+    ).fetchone()
+    context = json.loads(str(row[0]))
+    context["e2q_audited"] = True
+    context["e2q_audited_by"] = "lane_e2q"
+    context.setdefault("snapshot_id", int(snapshot_id))
+    connection.execute(
+        "UPDATE printer_memory_windows SET memory_status='PARTIAL_MEMORY', "
+        "data_quality_label='CLEAN_DATA', "
+        "memory_quality_label='PARTIAL_MEMORY', do_not_train=0, "
+        "outcome_label='CONSOLIDATION', supporting_context_json=? WHERE id=?",
+        (json.dumps(context, sort_keys=True), int(window_id)),
+    )
+    promote_clean_object(connection, window_id=int(window_id))
+
+
+def _attach_factory_acceptable_safety(connection, *, window_id: int) -> None:
+    window = connection.execute(
+        """SELECT w.token_id,w.pair_id,w.snapshot_end_id,w.window_end_at,
+                  t.token_mint,p.pair_address,w.supporting_context_json
+             FROM printer_memory_windows AS w
+             JOIN printer_tokens AS t ON t.id=w.token_id
+             JOIN printer_pairs AS p ON p.id=w.pair_id
+            WHERE w.id=?""",
+        (int(window_id),),
+    ).fetchone()
+    observed_at = (
+        datetime.fromisoformat(str(window[3])) - timedelta(seconds=60)
+    ).isoformat()
+    request = connection.execute(
+        """INSERT INTO printer_source_requests(
+               source_name,request_kind,requested_at,source_status,data_quality_label
+           ) VALUES ('goplus','SAFETY',?,'COMPLETE','CLEAN_DATA')""",
+        (observed_at,),
+    )
+    response = connection.execute(
+        """INSERT INTO printer_source_responses(
+               source_request_id,source_name,received_at,source_status,
+               data_quality_label
+           ) VALUES (?,'goplus',?,'COMPLETE','CLEAN_DATA')""",
+        (int(request.lastrowid), observed_at),
+    )
+    composite = connection.execute(
+        """INSERT INTO printer_safety_evidence_composites(
+               token_id,pair_id,snapshot_id,memory_window_id,policy_version,
+               token_mint,pair_address,evidence_captured_at,source_status,
+               data_quality_label,target_status,freshness_label,
+               mint_authority_status,freeze_authority_status,
+               metadata_mutability_status,supply_sanity_label,
+               holder_concentration_label,liquidity_lock_or_burn_label,
+               known_risk_flag_label,token_program_label,safety_context_label,
+               safety_contract_label,provenance_complete,conflicts_json,
+               blockers_json,optional_unknowns_json,field_bindings_json,
+               paper_only_context
+           ) VALUES (?,?,?,?, 'lane3-factory-boundary',?,?,?,
+               'COMPLETE','CLEAN_DATA','TARGET_MATCH','SAFETY_EVIDENCE_FRESH',
+               'MINT_AUTHORITY_RENOUNCED','FREEZE_AUTHORITY_DISABLED',
+               'METADATA_IMMUTABLE','SUPPLY_SANITY_OK',
+               'HOLDER_CONCENTRATION_HEALTHY','LIQUIDITY_LOCK_OR_BURN_UNKNOWN',
+               'KNOWN_RISK_FLAGS_UNKNOWN','SPL_TOKEN_OR_TOKEN_2022_VERIFIED',
+               'SAFETY_UNKNOWN','SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY',1,
+               '[]','[]','["liquidity_lock_or_burn_label"]','{}',1)""",
+        (
+            int(window[0]),
+            int(window[1]),
+            int(window[2]),
+            int(window_id),
+            str(window[4]),
+            str(window[5]),
+            observed_at,
+        ),
+    )
+    connection.execute(
+        """INSERT INTO printer_safety_evidence_contributions(
+               composite_id,source_name,evidence_category,source_request_id,
+               source_response_id,captured_at,freshness_label,token_mint,
+               pair_address,fields_supplied_json,source_status,
+               data_quality_label,target_status
+           ) VALUES (?,'goplus','TOKEN_SAFETY',?,?,?,
+               'SAFETY_EVIDENCE_FRESH',?,?,'{}','COMPLETE','CLEAN_DATA',
+               'TARGET_MATCH')""",
+        (
+            int(composite.lastrowid),
+            int(request.lastrowid),
+            int(response.lastrowid),
+            observed_at,
+            str(window[4]),
+            str(window[5]),
+        ),
+    )
+    context = json.loads(str(window[6]))
+    overlays = dict(context.get("memory_build_evidence_overlays") or {})
+    overlays["safety_composite_id"] = int(composite.lastrowid)
+    context["memory_build_evidence_overlays"] = overlays
+    connection.execute(
+        "UPDATE printer_memory_windows SET supporting_context_json=? WHERE id=?",
+        (json.dumps(context, sort_keys=True), int(window_id)),
+    )
+
+
+def _run_standard_factory_loop(
+    tmp_path,
+    monkeypatch,
+    *,
+    operational_binding,
+    disposable_binding,
+    fail_progression_binding=False,
+    progression_predecessor_observations=None,
+):
+    from printer_v1.operator_cli import one_command_15m_factory as factory
+    from printer_v1.operator_cli import operational_standard_4h as standard
+    from tests.test_v2_9_8b_four_token_factory_terminal_integration import (
+        _discovery,
+    )
+    from tests.test_v2_9_8b_four_token_factory_wake_ordering import (
+        CAMPAIGN_ID,
+        CAMPAIGN_RUN_ID,
+        CONFIGURATION_ID,
+        CYCLE_ID,
+        FACTORY_RUN_ID,
+        START,
+        _prepare,
+    )
+
+    db, backup, prepared_disposable = _prepare(tmp_path)
+    if disposable_binding == "PREPARED":
+        disposable_binding = prepared_disposable
+    if operational_binding == "VALID":
+        operational_binding = _factory_loop_operational_binding(db)
+    configuration_id = CONFIGURATION_ID
+    acquire_campaign_supervision(
+        db,
+        lock_path=tmp_path / "lane3-factory-loop.lease.json",
+        supervision_id="lane3-factory-loop-supervision",
+        campaign_id=CAMPAIGN_ID,
+        configuration_id=configuration_id,
+        run_id=CAMPAIGN_RUN_ID,
+        owner_id="lane3-factory-loop-owner",
+        lease_seconds=30_000,
+        now=datetime.now(timezone.utc),
+    )
+    clock = _FactoryLoopClock(START)
+    _FactoryLoopDateTime.clock = clock
+    monkeypatch.setattr(factory, "_now", clock.now)
+    monkeypatch.setattr("printer_v1.sources.contracts.datetime", _FactoryLoopDateTime)
+    monkeypatch.setattr(
+        "printer_v1.operator_cli.proof_db_schema_readiness.CANONICAL_PERSISTENT_DB",
+        db,
+    )
+    real_selective_barrier = factory._run_selective_1h_campaign_barrier
+
+    def selective_barrier_with_clean_predecessors(
+        connection, *, db_path, run_id, config, continuation_seconds, cycle_id=None
+    ):
+        closes = factory._authoritative_terminal_15m_closes(
+            connection, run_id, cycle_id=cycle_id
+        )
+        expected = factory._operational_activated_token_count(
+            connection, run_id, cycle_id=cycle_id
+        )
+        if len(closes) == expected:
+            for close in closes:
+                window_id = int(close["memory_window_id"])
+                _promote_factory_window(
+                    connection,
+                    window_id=window_id,
+                    snapshot_id=int(close["snapshot_id"] or 1),
+                )
+            connection.commit()
+        return real_selective_barrier(
+            connection,
+            db_path=db_path,
+            run_id=run_id,
+            config=config,
+            continuation_seconds=continuation_seconds,
+            cycle_id=cycle_id,
+        )
+
+    monkeypatch.setattr(
+        factory,
+        "_run_selective_1h_campaign_barrier",
+        selective_barrier_with_clean_predecessors,
+    )
+    real_campaign_work_sync = factory._sync_owned_campaign_scheduler_job
+
+    def preserve_running_campaign_work_across_scheduler_yield(
+        connection, *, scheduler_job_id
+    ):
+        state = connection.execute(
+            "SELECT j.status,w.work_state FROM printer_scheduler_jobs AS j "
+            "JOIN printer_memory_factory_campaign_scheduler_work AS w "
+            "ON w.scheduler_job_id=j.id WHERE j.id=?",
+            (int(scheduler_job_id),),
+        ).fetchone()
+        if state is not None and tuple(state) == ("PENDING", "RUNNING"):
+            return "RUNNING"
+        return real_campaign_work_sync(
+            connection, scheduler_job_id=int(scheduler_job_id)
+        )
+
+    monkeypatch.setattr(
+        factory,
+        "_sync_owned_campaign_scheduler_job",
+        preserve_running_campaign_work_across_scheduler_yield,
+    )
+    monkeypatch.setattr(
+        factory,
+        "_capture_same_stream_5m_support",
+        lambda *_args, **_kwargs: {
+            "captured": False,
+            "verdict": "VALID_NO_CAPTURE",
+            "reason": "LANE3_FACTORY_BOUNDARY_FIXTURE_NO_MICRO_EVENT",
+            "window_5m_id": None,
+        },
+    )
+    real_opening_planner = factory._plan_opening_jobs
+
+    def plan_owned_cycle_one_opening(
+        connection,
+        run_id,
+        targets,
+        scheduled_for,
+        first_commit_callback=None,
+        operation_observer=None,
+        cycle_ordinal=1,
+        four_token_proof=False,
+    ):
+        del four_token_proof
+        row = connection.execute(
+            "SELECT config_json FROM printer_memory_factory_runs WHERE run_id=?",
+            (run_id,),
+        ).fetchone()
+        run_config = json.loads(str(row[0]))
+        run_config["four_token_proof"] = True
+        connection.execute(
+            "UPDATE printer_memory_factory_runs SET config_json=? WHERE run_id=?",
+            (json.dumps(run_config, sort_keys=True), run_id),
+        )
+        return real_opening_planner(
+            connection,
+            run_id,
+            targets,
+            scheduled_for,
+            first_commit_callback=first_commit_callback,
+            operation_observer=operation_observer,
+            cycle_ordinal=cycle_ordinal,
+            four_token_proof=True,
+        )
+
+    monkeypatch.setattr(
+        factory, "_plan_opening_jobs", plan_owned_cycle_one_opening
+    )
+    real_close_audit = factory._execute_close_audit_phase
+
+    def close_audit_with_clean_first_hour(connection, step, **kwargs):
+        result = real_close_audit(connection, step, **kwargs)
+        if (
+            str(step["step_kind"]) == "CONTINUATION_CLOSE_AUDIT"
+            and result.get("ok")
+            and result.get("memory_window_id") is not None
+        ):
+            _attach_factory_acceptable_safety(
+                connection, window_id=int(result["memory_window_id"])
+            )
+            _promote_factory_window(
+                connection,
+                window_id=int(result["memory_window_id"]),
+                snapshot_id=int(result.get("snapshot_id") or 1),
+            )
+        return result
+
+    monkeypatch.setattr(
+        factory, "_execute_close_audit_phase", close_audit_with_clean_first_hour
+    )
+    if fail_progression_binding:
+        real_progression_barrier = standard.run_standard_four_hour_campaign_barrier
+
+        def progression_barrier_with_missing_binding(*args, **kwargs):
+            if progression_predecessor_observations is not None:
+                progression_predecessor_observations.extend(
+                    tuple(row)
+                    for row in args[0].execute(
+                        """SELECT s.id,s.step_status,s.scheduler_job_id,
+                                  j.status,w.work_state,
+                                  cw.window_state,cw.first_terminal_cause
+                             FROM printer_memory_factory_run_steps AS s
+                             JOIN printer_scheduler_jobs AS j
+                               ON j.id=s.scheduler_job_id
+                             JOIN printer_memory_factory_campaign_scheduler_work AS w
+                               ON w.scheduler_job_id=s.scheduler_job_id
+                              AND w.ownership_contract_version='V2_STAGE_SCOPED'
+                             JOIN printer_memory_factory_campaign_windows AS cw
+                               ON cw.window_id=w.window_id
+                            WHERE s.run_id=?
+                              AND s.step_kind IN (
+                                  'CONTINUATION_CLOSE','CONTINUATION_CLOSE_AUDIT'
+                              )
+                              AND s.step_status='SUCCEEDED'
+                            ORDER BY s.id""",
+                        (kwargs["factory_run_id"],),
+                    ).fetchall()
+                )
+            kwargs["operational_db_binding"] = None
+            return real_progression_barrier(*args, **kwargs)
+
+        monkeypatch.setattr(
+            standard,
+            "run_standard_four_hour_campaign_barrier",
+            progression_barrier_with_missing_binding,
+        )
+    report = factory.run_one_command_15m_factory(
+        db,
+        backup,
+        operator_approved=True,
+        proof_mode=False,
+        operational_persistent_mode=True,
+        operational_database_target_binding=operational_binding,
+        disposable_public_composition_proof_binding=disposable_binding,
+        discovery_runner=_discovery(db),
+        snapshot_adapter_factory=_factory_loop_snapshot_adapter,
+        context_adapter_factories=_factory_loop_context_adapters(clock),
+        launch_provenance={
+            "git_head": "d" * 40,
+            "git_tracked_tree_clean": True,
+            "git_staged_changes_present": False,
+            "git_unstaged_changes_present": False,
+            "git_untracked_present": True,
+            "git_provenance_captured_at": START.isoformat(),
+        },
+        standard_four_hour_campaign=True,
+        selective_1h_continuation=True,
+        continuous_first_hour=True,
+        continuous_four_hour=True,
+        total_duration_seconds=20_000,
+        _window_seconds=900,
+        _continuation_seconds=3_600,
+        max_selected_tokens=2,
+        max_source_requests=2,
+        campaign_id=CAMPAIGN_ID,
+        campaign_run_id=CAMPAIGN_RUN_ID,
+        cycle_id=CYCLE_ID,
+        configuration_id=configuration_id,
+        factory_run_id=FACTORY_RUN_ID,
+        _sleep=clock.sleep,
+        _monotonic=clock.monotonic,
+    )
+    return db, report
+
+
+def test_factory_loop_progression_fault_occurs_only_after_committed_1h(
+    tmp_path, monkeypatch
+) -> None:
+    committed_predecessors: list[tuple] = []
+    db, report = _run_standard_factory_loop(
+        tmp_path,
+        monkeypatch,
+        operational_binding="VALID",
+        disposable_binding=None,
+        fail_progression_binding=True,
+        progression_predecessor_observations=committed_predecessors,
+    )
+    connection = sqlite3.connect(db)
+    try:
+        predecessors = connection.execute(
+            """SELECT s.id,s.step_status,s.scheduler_job_id,j.status,w.work_state,
+                      cw.window_state,cw.first_terminal_cause
+                 FROM printer_memory_factory_run_steps AS s
+                 JOIN printer_scheduler_jobs AS j ON j.id=s.scheduler_job_id
+                 JOIN printer_memory_factory_campaign_scheduler_work AS w
+                   ON w.scheduler_job_id=s.scheduler_job_id
+                  AND w.ownership_contract_version='V2_STAGE_SCOPED'
+                 JOIN printer_memory_factory_campaign_windows AS cw
+                   ON cw.window_id=w.window_id
+                WHERE s.run_id=?
+                  AND s.step_kind IN ('CONTINUATION_CLOSE','CONTINUATION_CLOSE_AUDIT')
+                  AND s.step_status='SUCCEEDED'
+                ORDER BY s.id""",
+            ("wake-order-factory",),
+        ).fetchall()
+        assert len(predecessors) == 2, report["stop_reason"]
+        assert all(str(row[1]) == "SUCCEEDED" for row in predecessors)
+        assert all(str(row[3]) == "SUCCEEDED" for row in predecessors)
+        assert all(str(row[4]) == "SUCCEEDED" for row in predecessors)
+        assert all(str(row[5]) == "CLEAN_PROMOTED" for row in predecessors)
+        assert all(
+            str(row[6]) == "window_1h_closed_clean_promoted"
+            for row in predecessors
+        )
+        assert committed_predecessors[-2:] == [
+            tuple(row) for row in predecessors
+        ]
+        assert connection.execute(
+            "SELECT COUNT(*) FROM printer_memory_factory_run_steps "
+            "WHERE run_id=? AND error_or_skip_reason LIKE '%TOKEN_LOCAL%'",
+            ("wake-order-factory",),
+        ).fetchone()[0] == 0
+        progression = connection.execute(
+            f"SELECT attempt_state,first_terminal_cause FROM {ATTEMPTS}"
+        ).fetchone()
+        assert tuple(progression) == (
+            "TERMINAL_FAILED",
+            "OPERATIONAL_DB_BINDING_MISSING",
+        )
+    finally:
+        connection.close()
+    assert report["stop_reason"] == "OPERATIONAL_DB_BINDING_MISSING"
+
+
+def test_healthy_factory_loop_uses_one_postcommit_call_site_and_one_handoff(
+    tmp_path, monkeypatch
+) -> None:
+    from printer_v1.operator_cli import operational_standard_4h as standard
+
+    real_barrier = standard.run_standard_four_hour_campaign_barrier
+    caller_lines: list[int] = []
+
+    def observe_real_barrier(*args, **kwargs):
+        caller_lines.append(int(inspect.currentframe().f_back.f_lineno))
+        result = real_barrier(*args, **kwargs)
+        if result.get("plan", {}).get("planned") and not result["plan"].get("replay"):
+            args[0].commit()
+            raise _HandoffCommittedAtFactoryLoop(result)
+        return result
+
+    monkeypatch.setattr(
+        standard,
+        "run_standard_four_hour_campaign_barrier",
+        observe_real_barrier,
+    )
+    try:
+        _db, report = _run_standard_factory_loop(
+            tmp_path,
+            monkeypatch,
+            operational_binding="VALID",
+            disposable_binding=None,
+        )
+        raise AssertionError(
+            "factory loop did not reach the real Standard-4H handoff: "
+            f"calls={caller_lines!r} stop_reason={report['stop_reason']!r}"
+        )
+    except _HandoffCommittedAtFactoryLoop as reached:
+        db = tmp_path / "wake-order.sqlite3"
+        barrier = reached.barrier
+
+    assert len(caller_lines) == 2
+    assert len(set(caller_lines)) == 1
+    assert barrier["plan"]["replay"] is False
+    connection = sqlite3.connect(db)
+    try:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM printer_memory_factory_campaign_windows "
+            "WHERE window_kind='WINDOW_4H'"
+        ).fetchone()[0] == 2
+        assert connection.execute(
+            f"SELECT COUNT(*) FROM {ATTEMPTS} WHERE attempt_state='HANDOFF_COMMITTED'"
+        ).fetchone()[0] == 1
+        assert connection.execute(
+            f"SELECT COUNT(*) FROM {TOKENS} WHERE token_disposition='HANDOFF_CREATED'"
+        ).fetchone()[0] == 2
+        assert connection.execute(
+            "SELECT COUNT(*) FROM printer_memory_factory_campaign_scheduler_work "
+            "WHERE stage_id='WINDOW_4H'"
+        ).fetchone()[0] == int(barrier["planned_jobs"])
     finally:
         connection.close()

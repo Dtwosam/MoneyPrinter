@@ -10414,42 +10414,6 @@ def run_one_command_15m_factory(
                             continuation_seconds=_continuation_seconds,
                             cycle_id=owned_proof_cycle_id,
                         )
-                        if standard_four_hour_campaign:
-                            progression_cycle_id = str(
-                                owned_proof_cycle_id
-                                if four_token_proof_controller is not None
-                                else cycle_id
-                            )
-                            progression_exists = conn.execute(
-                                """SELECT 1
-                                   FROM printer_memory_factory_standard_4h_progression_attempts
-                                   WHERE campaign_id=? AND campaign_run_id=?
-                                     AND cycle_id=?""",
-                                (
-                                    str(campaign_id),
-                                    str(campaign_run_id),
-                                    progression_cycle_id,
-                                ),
-                            ).fetchone()
-                            if progression_exists is not None:
-                                from printer_v1.operator_cli.operational_standard_4h import (
-                                    run_standard_four_hour_campaign_barrier,
-                                )
-
-                                run_standard_four_hour_campaign_barrier(
-                                    conn,
-                                    db_path=str(path),
-                                    campaign_id=str(campaign_id),
-                                    configuration_id=str(configuration_id),
-                                    run_id=str(campaign_run_id),
-                                    cycle_id=progression_cycle_id,
-                                    factory_run_id=str(run_id),
-                                    operational_db_binding=(
-                                        operational_database_target_binding
-                                    ),
-                                    canonical_authoritative_db_path=str(canonical),
-                                    cancellation_probe=cancellation_probe,
-                                )
                 else:
                     # V2-5 token-local terminal failure: isolate this token,
                     # cancel only its remaining pending jobs, continue others.
