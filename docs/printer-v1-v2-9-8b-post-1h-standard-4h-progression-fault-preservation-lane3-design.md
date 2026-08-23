@@ -17,6 +17,12 @@ change Standard-4H evidence or execution policy and does not authorize a run.
 This design uses the accepted Lane-3 readiness audit as the production-path
 map. It does not reconstruct the missing historical consumed-run exception.
 
+Amendment at starting HEAD
+`9ea8baaf75162b31ecb6d1dd23abbaf64949aa47` corrects only two narrow
+contracts: SQLite failure while persisting a progression primary fault, and
+completion semantics for token-local `TERMINAL_FAILED`. The selected
+architecture and every other contract remain unchanged.
+
 ## 1. Chosen progression owner
 
 The production owner is a new `standard_4h_progression` coordinator invoked by
@@ -55,7 +61,7 @@ can truthfully own shared attempt state and two independent token dispositions.
 | Standard-4H progression attempt | the existing standard first-hour handoff transaction, only when `standard_four_hour_campaign` is enabled | `printer_memory_factory_standard_4h_progression_attempts` | progression coordinator, handoff planner, terminal validator, full-run accounting, terminal closure, final report | one row per campaign-run/cycle; prove no first-hour plan can commit without it |
 | Token progression disposition | progression coordinator reading exact committed predecessor and authority facts | `printer_memory_factory_standard_4h_progression_tokens` | subset planner, budget reader, accounting/reporting | one row per exact slot; prove the 0/1/2 subset and peer isolation from underlying predecessor outcomes |
 | Authority evidence consumed | progression coordinator using existing health, budget, cadence, window and supervision owners | immutable `authority_evidence_json` on the attempt and `eligibility_evidence_json` on each token row | accounting, report, focused authority-origin proof | stores values and source identities actually read; no caller-supplied health booleans |
-| Primary and secondary progression faults | first catching progression boundary; later terminal cleanup/report boundaries append only secondary facts | `first_terminal_cause` plus validated `fault_details_json` on the affected attempt or token row | terminal closure, run/cycle/campaign first-cause sync, accounting, final report and terminal summary | first compare-and-set wins; prove a later cleanup/report exception cannot replace it |
+| Primary and secondary progression faults | first catching progression boundary; later terminal cleanup/report boundaries append only secondary facts | `first_terminal_cause` plus validated `fault_details_json` on the affected attempt or token row | terminal closure, run/cycle/campaign first-cause sync, accounting, final report and terminal summary | first compare-and-set wins; if SQLite prevents the write, retain the last durable state and derive interrupted/ambiguous review truth rather than claim the unpersisted fault |
 | 4h handoff completion | existing `plan_standard_campaign_4h_handoff` transaction, extended to compare-and-update the progression aggregate | the two-row progression manifest plus existing window, slot, step, Scheduler job and campaign work tables | Scheduler loop, validators, accounting/reporting | all-or-none 0/1/2 handoff; prove rollback and duplicate rejection |
 | Canonical reported progression state | `derive_standard_4h_progression_status` reading the attempt/token aggregate and existing 4h lifecycle graph | no new row; the persisted aggregate and existing lifecycle rows are its sole inputs | terminal validator, full-run accounting, final report and terminal summary | deterministic read-side result; prove all consumers agree for absence, pending, terminal and ambiguous cases |
 
@@ -65,6 +71,27 @@ step's `result_json`. Existing close-result manifests are historical read-only
 compatibility evidence only. When one is present, a consumer may compare it to
 the progression rows; disagreement is integrity failure, never an alternate
 eligibility authority.
+
+For the two amended boundaries, Production-Path Completeness is exact:
+
+- a progression fault is produced by the progression coordinator, owned only
+  by the progression attempt/token tables, and consumed by terminal closure,
+  accounting, report and summary; failure of that canonical SQLite write
+  leaves no invented emergency owner, so stopped ownership plus non-terminal
+  persisted progression state reads as `INTERRUPTED_AMBIGUOUS` /
+  `REQUIRES_REVIEW`;
+- the heartbeat lease-file record is independently produced only by
+  `campaign_supervision.renew_campaign_lease` through its sanitized renewal-
+  failure path; the heartbeat worker signals that same evidence to the main
+  coordinator, and `persist_campaign_heartbeat_failure` is the exact lease-file
+  confirmation/canonical migration-045 persistence boundary before terminal
+  closure; progression code is neither a producer nor a writer of that
+  channel; and
+- token-local `TERMINAL_FAILED` is produced only by an exact token-scoped
+  progression evaluation fault, durably owned by that token's progression row,
+  consumed by subset planning/accounting/reporting, contributes no eligible
+  successor, and remains reported `FAILED` while an unaffected peer may
+  continue.
 
 ## 3. Exact identity contract
 
@@ -135,6 +162,11 @@ Token dispositions are limited to:
 - `HANDOFF_CREATED` with exact successor campaign-window identity; and
 - `TERMINAL_FAILED` with an exact token-local progression fault.
 
+The terminally non-eligible token set is exactly `INELIGIBLE` plus
+token-local `TERMINAL_FAILED`. Both contribute zero tokens to the eligible
+subset, but they are not aliases: `INELIGIBLE` reports its eligibility reasons;
+`TERMINAL_FAILED` reports `FAILED` with its primary token-local fault.
+
 `EVALUATING` left active by abrupt process death is itself a durable ambiguous
 marker. A read-only consumer reports it as interrupted/ambiguous once the
 owning campaign is no longer live; it never reports success. Only existing
@@ -147,7 +179,7 @@ durable first cause. Honest hard-gate failures are also `INELIGIBLE`, retaining
 the evaluator's categorical reasons. They are not progression technical
 failures. An identity/integrity exception scoped to one token is
 `TERMINAL_FAILED`; a genuine campaign/lease/DB/global-budget fault terminalizes
-the attempt.
+the attempt and must never be converted into token-local `TERMINAL_FAILED`.
 
 Transitions use compare-and-update checks plus schema triggers. Identities,
 completed eligibility evidence, primary cause, and terminal states are
@@ -219,8 +251,10 @@ Propagation follows these rules:
 1. A token-local progression fault is primary on that token disposition.
 2. A shared progression/handoff/cancellation/interruption cause is primary on
    the attempt.
-3. If that cause terminalizes run/cycle/campaign/supervision state, existing
-   first-cause fields receive the same exact cause only when still null.
+3. Only after the progression primary is durably confirmed may that cause
+   terminalize run/cycle/campaign/supervision state; existing first-cause
+   fields then receive the same exact cause only when still null. An in-memory
+   cause whose progression write failed is not propagated as durable truth.
 4. A progression failure creates no fake Scheduler job, campaign work row, or
    4h window. “Through Scheduler/work/window where applicable” begins only
    after handoff; their existing exact first-cause contract remains active.
@@ -230,10 +264,29 @@ Propagation follows these rules:
 6. Canonical report and terminal summary select the progression primary before
    a generic `SAFE_STOP_PREFLIGHT_FAILED`; a generic later stop is secondary.
 
-If SQLite itself cannot accept the primary write, the existing supervision
-heartbeat/lease-file emergency evidence is the fallback evidence location. A
-later authorized terminal reconciliation imports that exact safe cause; it
-does not invent the missing historical consumed-run exception.
+Progression writes its primary fault only through its canonical progression
+attempt/token table. If SQLite itself prevents that write, progression must not
+write to another table or file, must not repurpose the supervision lease file,
+and must not claim the in-memory cause became durable. It preserves the last
+truthful progression row, fails closed, and stops creating child work. The
+shared read-side derivation combines that last row with stopped/expired
+ownership and reports `INTERRUPTED_AMBIGUOUS` / `REQUIRES_REVIEW` whenever a
+terminal progression result cannot be proven. A later generic stop cannot be
+promoted into the missing progression primary.
+
+The existing lease-file fallback remains narrower. Its real producer is
+`campaign_supervision.renew_campaign_lease`, which creates an allowlisted
+heartbeat-renewal failure through `_safe_renewal_failure` and writes the fixed
+`first_heartbeat_renewal_failure` lease-file key only when the canonical
+heartbeat SQLite write is unavailable. The heartbeat worker signals that same
+evidence to the main coordinator; `persist_campaign_heartbeat_failure` is the
+exact consumer that persists the supplied heartbeat evidence to the migration-
+045 ledger and confirms whether identical lease-file evidence is present before
+canonical terminal cleanup. Terminal/accounting consumers may use the
+canonical heartbeat ledger only when this heartbeat owner independently
+produced it for an actual heartbeat or lease fault. No generic progression path
+may write arbitrary faults into or import arbitrary faults from this channel.
+No other canonical durable emergency-fault owner exists for progression.
 
 ## 8. Atomic 0/1/2 token isolation contract
 
@@ -245,13 +298,18 @@ identity is not waiting; it is an integrity fault.
 When both token rows can be evaluated, one transaction writes the complete
 two-row disposition set and moves the attempt from `EVALUATING` to
 `ELIGIBILITY_COMPLETE`. The eligible subset may contain zero, one, or two
-slots. Token-local failure cannot change the peer's disposition or campaign
-truth. Only a shared campaign/run, supervision/lease, DB/integrity,
+slots. Subset derivation treats both `INELIGIBLE` and token-local
+`TERMINAL_FAILED` as terminally non-eligible. It therefore handles
+`TERMINAL_FAILED + ELIGIBLE_PENDING_HANDOFF`, `TERMINAL_FAILED + INELIGIBLE`,
+and `TERMINAL_FAILED + TERMINAL_FAILED` without blocking on a peer that is
+already terminal. Token-local failure cannot change the peer's disposition or
+campaign truth. Only a shared campaign/run, supervision/lease, DB/integrity,
 cancellation, or global-budget cause can stop the entire attempt.
 
 An eligible token can therefore progress even when its peer's 1h predecessor
-failed or was cancelled. An ineligible token receives no 4h window, step, job,
-work row, or slot advancement.
+failed or was cancelled, or its peer's progression evaluation failed locally.
+A terminally non-eligible token receives no 4h window, step, job, work row, or
+slot advancement.
 
 ## 9. Atomic handoff transaction
 
@@ -272,8 +330,10 @@ the handoff owner. It is extended, not replaced. From an exact
    window identities; and
 9. move the attempt to `HANDOFF_COMMITTED` after full read-back verification.
 
-For zero eligible tokens, steps 3 and 9 still commit an explicit no-op; no
-4h lifecycle rows are fabricated. Any exception rolls back the entire list.
+For zero eligible tokens, steps 3 and 9 still commit an explicit no-op whenever
+both token rows are terminally non-eligible, including any combination of
+`INELIGIBLE` and token-local `TERMINAL_FAILED`; no 4h lifecycle rows are
+fabricated. Any exception rolls back the entire list.
 The outer progression boundary then terminalizes the attempt with the exact
 first cause in a separate transaction, leaving `ELIGIBLE_PENDING_HANDOFF`
 truth visible and the 1h predecessors unchanged.
@@ -291,6 +351,7 @@ review.
 | Before attempt persistence | no standard 1h handoff has committed under the new contract | **safely pending**; if a required/terminal 1h graph exists without an attempt, report **interrupted/ambiguous**, never complete |
 | After attempt exists, before eligibility completes | `WAITING_FOR_PREDECESSORS` with exact active peer, or durable `EVALUATING` | waiting on genuinely active peer is **safely pending**; stopped ownership with `EVALUATING` or terminal predecessors is **interrupted/ambiguous requiring review** |
 | After eligibility, before handoff | `ELIGIBILITY_COMPLETE` plus exact eligible rows and no 4h graph | **safely pending**, explicitly “eligible but not created”; no automatic handoff/retry |
+| While persisting a progression primary fault | the canonical attempt/token fault write fails and the prior progression state remains | **interrupted/ambiguous requiring review** after ownership stops; fail closed, create no child work, and do not write a generic fault to the heartbeat lease-file channel |
 | During atomic handoff | SQLite yields the prior eligibility state after rollback or the complete committed graph | **safely pending** after rollback or committed after success; an uninspectable DB outcome is **interrupted/ambiguous requiring review** |
 | After commit, before first claim | complete manifest/windows/steps/jobs/work and `HANDOFF_COMMITTED` | **safely pending**; Central Scheduler remains the only possible claimant |
 | During claimed 4h work | exact step/job/work running and window collecting/close-pending | graceful fault is **terminal** through existing paths; abrupt loss is **interrupted/ambiguous requiring review** |
@@ -320,9 +381,18 @@ For each token it reports exactly one of:
 
 The aggregate is complete only when:
 
-- an explicit `HANDOFF_COMMITTED` zero-token no-op has two ineligible rows; or
-- every eligible `HANDOFF_CREATED` token has the exact terminal 4h graph and
-  every ineligible token has a complete disposition.
+- an explicit `HANDOFF_COMMITTED` zero-token no-op has two terminally
+  non-eligible rows; or
+- every `HANDOFF_CREATED` token has the exact terminal 4h graph and every other
+  token is `INELIGIBLE` or token-local `TERMINAL_FAILED`.
+
+`TERMINAL_FAILED` always derives the token report state `FAILED`, never
+`INELIGIBLE`. It carries its token-local primary fault and remains distinct in
+campaign accounting even when the aggregate handoff itself commits a lawful
+zero-token no-op. A shared attempt failure remains an aggregate failure and
+cannot be used to satisfy the token-local terminally non-eligible set.
+`HANDOFF_COMMITTED` proves composition completeness only; it cannot erase a
+token `FAILED` result or by itself make campaign accounting successful.
 
 If Standard-4H was required and its progression attempt is absent,
 `EVALUATING` is stranded, an eligible row lacks handoff, or created rows are
@@ -417,10 +487,21 @@ classifications:
   `ELIGIBLE_NOT_CREATED`, never complete;
 - inject a progression fault followed by a cleanup/report fault; prove the
   first remains primary and the latter is secondary;
+- hold or fail the canonical SQLite write while progression attempts to persist
+  its primary fault; prove the last progression state remains unchanged, no
+  generic lease-file heartbeat evidence is written, stopped ownership derives
+  `INTERRUPTED_AMBIGUOUS` / `REQUIRES_REVIEW`, and independently produced real
+  heartbeat-renewal evidence remains consumable only by its existing owner;
 - interrupt after `EVALUATING` and after a request-only source record; prove
   ambiguous/review truth, not success;
+- produce underlying token-local evaluation failures and prove
+  `TERMINAL_FAILED + ELIGIBLE_PENDING_HANDOFF`, `TERMINAL_FAILED + INELIGIBLE`,
+  and `TERMINAL_FAILED + TERMINAL_FAILED`; prove zero eligible contribution,
+  peer continuation, lawful zero-token no-op, and distinct `FAILED` versus
+  `INELIGIBLE` accounting, while shared failures terminalize the attempt;
 - prove atomic 0/1/2 subsets, transaction rollback, exact committed read-back,
-  and no duplicate 4h plan on an exact verification/replay;
+  aggregate completion across `HANDOFF_CREATED`/`INELIGIBLE`/token-local
+  `TERMINAL_FAILED`, and no duplicate 4h plan on exact verification/replay;
 - run the nearest Lane-2 selector/deadline/source-unit contract tests unchanged
   to prove category-first ordering, deadlines, fairness, one unit per claim,
   reselection and Source Governor ownership remain intact; and
