@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import sqlite3
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 from printer_v1.operator_cli.campaign_full_run_accounting import (
     CAMPAIGN_STOPPED_AFTER_PEER_CYCLE_TERMINAL,
@@ -50,9 +50,10 @@ def derive_peer_cycle_stop_effect(
 ) -> dict[str, Any]:
     """Produce the scoped peer-stop effect from an exact failed cycle row.
 
-    The originating cause is read through canonical cycle accounting.  Callers
-    cannot supply either the cause or a finished classification.  The returned
-    effect is consumed only by exact target-cycle terminal reconciliation.
+    The originating cause and the target activity state are both read through
+    canonical cycle accounting.  Callers cannot supply a cause or a finished
+    classification for either cycle.  The returned effect is consumed only by
+    exact target-cycle terminal reconciliation of a still-active peer.
     """
     campaign = _required(campaign_id, "campaign_id")
     run = _required(campaign_run_id, "campaign_run_id")
@@ -83,6 +84,25 @@ def derive_peer_cycle_stop_effect(
         raise FourTokenFactoryAdapterError(
             "peer-stop origin has no exact primary fault"
         )
+    target_result = derive_cycle_terminal_accounting_result(
+        connection,
+        context=OperationalLifecycleOwnershipContext(
+            campaign_id=campaign,
+            campaign_run_id=run,
+            cycle_id=target,
+            configuration_id=configuration,
+            factory_run_id=factory,
+        ),
+    )
+    target_outcome = str(target_result.get("execution_outcome") or "")
+    if target_outcome == "INTERRUPTED_AMBIGUOUS":
+        raise FourTokenFactoryAdapterError(
+            "peer-stop target is interrupted or ambiguous"
+        )
+    if target_outcome != "ACTIVE_INCOMPLETE":
+        raise FourTokenFactoryAdapterError(
+            "peer-stop target is not an exact active incomplete cycle"
+        )
     target_row = connection.execute(
         "SELECT cycle_state FROM printer_memory_factory_campaign_cycles "
         "WHERE campaign_id=? AND run_id=? AND cycle_id=?",
@@ -100,6 +120,63 @@ def derive_peer_cycle_stop_effect(
         "origin_cycle_id": origin,
         "origin_fault": dict(origin_fault),
     }
+
+
+def resolve_peer_stop_origin_cycle_id(
+    connection: sqlite3.Connection,
+    *,
+    campaign_id: str,
+    campaign_run_id: str,
+    configuration_id: str,
+    factory_run_id: str,
+    target_cycle_id: str,
+    admitted_cycle_ids: Sequence[str],
+) -> str | None:
+    """Select a failed peer origin only for an exact ACTIVE_INCOMPLETE target.
+
+    Canonical accounting is derived here for both the target and each candidate
+    origin.  Callers cannot supply a finished classification.  Any target that
+    is not exactly ACTIVE_INCOMPLETE, including INTERRUPTED_AMBIGUOUS, is left
+    without a peer-stop origin.
+    """
+    campaign = _required(campaign_id, "campaign_id")
+    run = _required(campaign_run_id, "campaign_run_id")
+    configuration = _required(configuration_id, "configuration_id")
+    factory = _required(factory_run_id, "factory_run_id")
+    target = _required(target_cycle_id, "target_cycle_id")
+    cycle_ids = tuple(
+        _required(item, "admitted_cycle_id") for item in admitted_cycle_ids
+    )
+    if target not in cycle_ids:
+        return None
+    target_result = derive_cycle_terminal_accounting_result(
+        connection,
+        context=OperationalLifecycleOwnershipContext(
+            campaign_id=campaign,
+            campaign_run_id=run,
+            cycle_id=target,
+            configuration_id=configuration,
+            factory_run_id=factory,
+        ),
+    )
+    if target_result.get("execution_outcome") != "ACTIVE_INCOMPLETE":
+        return None
+    for cycle_id in cycle_ids:
+        if cycle_id == target:
+            continue
+        origin_result = derive_cycle_terminal_accounting_result(
+            connection,
+            context=OperationalLifecycleOwnershipContext(
+                campaign_id=campaign,
+                campaign_run_id=run,
+                cycle_id=cycle_id,
+                configuration_id=configuration,
+                factory_run_id=factory,
+            ),
+        )
+        if origin_result.get("execution_outcome") == "CYCLE_FAILED":
+            return cycle_id
+    return None
 
 
 @dataclass(frozen=True)

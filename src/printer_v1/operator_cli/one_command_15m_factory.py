@@ -10738,6 +10738,7 @@ def run_one_command_15m_factory(
             from printer_v1.operator_cli.four_token_factory_adapter import (
                 finalize_four_token_shared_terminal,
                 reconcile_four_token_cycle_terminal,
+                resolve_peer_stop_origin_cycle_id,
             )
 
             admitted_cycles = conn.execute(
@@ -10761,47 +10762,19 @@ def run_one_command_15m_factory(
                 (str(stop_reason), _iso(), run_id),
             )
             conn.commit()
-            from printer_v1.operator_cli.campaign_full_run_accounting import (
-                OperationalLifecycleOwnershipContext,
-                derive_cycle_terminal_accounting_result,
-            )
-
-            pre_terminal_accounting = {
-                str(admitted[0]): derive_cycle_terminal_accounting_result(
-                    conn,
-                    context=OperationalLifecycleOwnershipContext(
-                        campaign_id=str(campaign_id),
-                        campaign_run_id=str(campaign_run_id),
-                        cycle_id=str(admitted[0]),
-                        configuration_id=str(configuration_id),
-                        factory_run_id=run_id,
-                    ),
-                )
-                for admitted in admitted_cycles
-            }
-            failed_cycle_ids = [
-                cycle_identity
-                for cycle_identity, accounting in pre_terminal_accounting.items()
-                if accounting.get("execution_outcome") == "CYCLE_FAILED"
-            ]
+            admitted_cycle_ids = tuple(str(item[0]) for item in admitted_cycles)
             phase_a = []
             for admitted in admitted_cycles:
                 admitted_cycle_id = str(admitted[0])
-                accounting = pre_terminal_accounting[admitted_cycle_id]
-                peer_origin = next(
-                    (
-                        failed_cycle_id
-                        for failed_cycle_id in failed_cycle_ids
-                        if failed_cycle_id != admitted_cycle_id
-                    ),
-                    None,
+                peer_origin = resolve_peer_stop_origin_cycle_id(
+                    conn,
+                    campaign_id=str(campaign_id),
+                    campaign_run_id=str(campaign_run_id),
+                    configuration_id=str(configuration_id),
+                    factory_run_id=run_id,
+                    target_cycle_id=admitted_cycle_id,
+                    admitted_cycle_ids=admitted_cycle_ids,
                 )
-                if accounting.get("execution_outcome") in {
-                    "TERMINAL_SUCCESS",
-                    "CYCLE_FAILED",
-                    "CANCELLED_STOPPED",
-                }:
-                    peer_origin = None
                 phase_a.append(
                     reconcile_four_token_cycle_terminal(
                         conn,
