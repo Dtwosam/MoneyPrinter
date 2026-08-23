@@ -4,52 +4,53 @@ Date: 2026-08-23
 
 ## Current lane
 
-`V2-9.8B Lane 4 — Multi-Cycle Terminal Accounting / Reporting Design`
+`V2-9.8B Lane 4 — Multi-Cycle Terminal Accounting / Reporting`
 
 Status: `CLOSED PASS`
 
 Verdict:
 
-`V2_9_8B_LANE4_MULTI_CYCLE_TERMINAL_ACCOUNTING_REPORTING_DESIGN_PASS_READY_FOR_NARROW_IMPLEMENTATION`
+`V2_9_8B_LANE4_MULTI_CYCLE_TERMINAL_ACCOUNTING_REPORTING_CLOSEOUT_PASS`
 
-Lane-4 design:
+Lane-4 closeout:
 
-`docs/printer-v1-v2-9-8b-lane4-multi-cycle-terminal-accounting-reporting-design.md`
+`docs/printer-v1-v2-9-8b-lane4-multi-cycle-terminal-accounting-reporting-closeout.md`
 
 Accepted final state:
 
-The design assigns canonical per-cycle and exact two-cycle derivation to the
-existing full-run accounting owner, preserves token/cycle/campaign fault scope,
-keeps six-unit projection subordinate as evidence, extends the immutable report,
-and makes terminal summary a deterministic report/aggregate projection. No
-migration is required. Cycle 3 remains locked.
+Canonical per-cycle and exact two-cycle derivation live in the existing
+full-run accounting owner. Each admitted cycle is terminalized from its own
+durable truth. Peer-stop applies only to an exact `ACTIVE_INCOMPLETE` target
+after an exact `CYCLE_FAILED` origin. The immutable two-cycle report is
+canonical; the terminal summary is a subordinate create-once projection;
+report-only is SQLite read-only replay. No migration was required. Cycle 3
+remains locked. There is no remaining proven Lane-4 blocker.
 
 ## Exact Git transaction
 
 - branch: `agent/v2-9-8b-consumed-4-2-2-full-operational-run-forensic-audit`
 - Lane-2 implementation/proof baseline:
   `ae4d5d55abc9486372115a9fb21d976b46f67a54`
-- Lane-3 audit starting HEAD:
-  `30db8a89a761e3b1b894e393a9c70c46e84311c9`
-- Lane-3 design starting HEAD:
-  `eefc1df8ffee3b91f85571511f97c0d6c9b9811c`
-- Lane-3 amended design: `93903dc3d743594120409f7cb6fa563ddd10098d`
-- Lane-3 implementation: `899c69fd1322d06355bcf9f3a0c2e1c7d99a6a7b`
-- Lane-3 wiring repair: `01fe653b27f3d8d5101d675d4848fb5de85d0e38`
 - Lane-3 closeout / Lane-4 audit starting HEAD:
   `e70b2faf4906f73faec2adf9321d04385e362e81`
-- Lane-4 design starting HEAD:
+- Lane-4 readiness audit:
   `4c0fe31f773c14f59e2008ed3f17f8f03580bb98`
-- resulting new HEAD: this documentation-only Lane-4 design commit (the
+- Lane-4 design:
+  `2c98a0f82faf787e0f2a209b74bd2d422549c8f8`
+- Lane-4 implementation:
+  `2bfb19ee31d7add4c7185f119154741613e56804`
+- Lane-4 peer-stop repair:
+  `2b507ceed5966e2d5ddf08b4070e1c0615b8ff0c`
+- Lane-4 bounded proof:
+  `35ff7ba8db6c45ddb63a9496394e7013a88f0089`
+- resulting new HEAD: this documentation-only Lane-4 closeout commit (the
   exact commit SHA is the repository HEAD containing this handoff)
 
-## Lane-2 disposition
+## Lane-2 / Lane-3 disposition
 
-Lane 2 is **CLOSED PASS**. The exact production path and focused 76-test proof
-at `ae4d5d55abc9486372115a9fb21d976b46f67a54` establish the accepted Scheduler,
-Source Governor, deadline, cutoff, degraded-evidence, durable-snapshot,
-technical-failure, token-isolation, and permanent-lock contracts. There is no
-remaining proven Lane-2 blocker.
+Lane 2 is **CLOSED PASS**. There is no remaining proven Lane-2 blocker.
+
+Lane 3 is **CLOSED PASS**. There is no remaining proven Lane-3 blocker.
 
 ## Governing repair-lane sequence (forensic)
 
@@ -57,20 +58,20 @@ remaining proven Lane-2 blocker.
 2. Design Lane 2 multi-token evidence-deadline scheduling — **CLOSED PASS**
 3. Lane 3 post-1H standard-four-hour progression + fault preservation —
    **CLOSED PASS; no remaining proven blocker**
-4. Lane 4 multi-cycle terminal accounting/reporting — **readiness and design
-   CLOSED PASS; implementation not started**
+4. Lane 4 multi-cycle terminal accounting/reporting —
+   **CLOSED PASS; no remaining proven blocker**
 
 Authorization `…512f2436` remains permanently consumed and non-reusable.
 No automatic fresh authorization, retry, rerun, resume, restart, or successor.
 
 ## Hard stop boundary
 
-This Lane-4 design package is documentation only. It must not:
+This Lane-4 closeout package is documentation only. It must not:
 
 - modify production, tests, schemas, migrations, runtime, or config;
 - run Printer, Source Governor, or Central Scheduler;
 - create/reuse/apply authorization;
-- begin Lane-4 implementation in this run;
+- begin another implementation lane in this run;
 - activate Cycle 3;
 - unlock retrieval, paper decisions, BUY/SELL/HOLD, positions, trades, audits,
   PnL, live execution, wallets/private keys, paid APIs, scoring/ranking/
@@ -79,14 +80,16 @@ This Lane-4 design package is documentation only. It must not:
 ## Exact next permitted action
 
 ```text
-LANE 4:
-Multi-Cycle Terminal Accounting / Reporting
-NARROW IMPLEMENTATION ONLY.
+POST-LANE-4:
+Fresh authoritative readiness audit only.
+Cycle 3 remains locked.
+No campaign.
+No reuse of consumed authorization.
 ```
 
-This permits only a separate narrow Lane-4 implementation task grounded in the
-readiness audit and design. It does not authorize a campaign, proof,
-retry/restart/successor, report regeneration, recovery, or Cycle 3.
+This permits only a later separate readiness/audit task. It does not authorize
+a campaign, implementation, retry/restart/successor, report regeneration,
+recovery, Cycle 3, or reuse of consumed authorization `…512f2436`.
 
 ## Locks
 
