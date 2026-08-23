@@ -18,6 +18,10 @@ from printer_v1.operator_cli.close_phases import (
 )
 from printer_v1.scheduler.contracts import JOB_PRIORITY_VALUE, JobKind
 from printer_v1.scheduler import LockResult, claim_due_job
+from printer_v1.sources.governed_execution import (
+    FIXTURE_FAILURE,
+    build_fixture_source_adapter,
+)
 from printer_v1.snapshots.lifecycle_continuity import (
     resolve_current_run_long_predecessor,
 )
@@ -422,14 +426,18 @@ def test_evidence_executor_captures_only_and_context_cannot_rewrite_capture_time
     assert calls == ["capture"]
 
 
-def test_partial_context_preserves_durable_evidence_timestamp(
+@pytest.mark.parametrize(
+    "safety_mode",
+    ("PROVIDER_FAILURE", "EXPLICIT_TARGET_REJECTION"),
+)
+def test_real_degraded_context_producers_reach_audit_without_mutating_capture(
     connection: sqlite3.Connection,
     monkeypatch: pytest.MonkeyPatch,
+    safety_mode: str,
 ) -> None:
     opening_sid = _snapshot(
         connection, token_id=1, captured_at=NOW - timedelta(minutes=15)
     )
-    sid = _snapshot(connection, token_id=1, captured_at=NOW)
     connection.execute(
         """INSERT INTO printer_memory_factory_run_steps(
                run_id,step_key,step_kind,step_status,token_id,pair_id,
@@ -445,6 +453,70 @@ def test_partial_context_preserves_durable_evidence_timestamp(
         ),
     )
     connection.commit()
+    context = _add_phase(
+        connection,
+        token_id=1,
+        step_kind="WINDOW_CLOSE_CONTEXT",
+        scheduled_for=NOW,
+    )
+    factories = {
+        source: (
+            lambda _source=source, **_kwargs: build_fixture_source_adapter(
+                _source, fixture_kind=FIXTURE_FAILURE
+            )
+        )
+        for source in ("coingecko", "goplus", "jupiter_quote")
+    }
+    factories["solana_rpc_holder"] = (
+        lambda **_kwargs: build_fixture_source_adapter(
+            "solana_rpc", fixture_kind=FIXTURE_FAILURE
+        )
+    )
+    if safety_mode == "EXPLICIT_TARGET_REJECTION":
+        factories["goplus"] = lambda **_kwargs: build_fixture_source_adapter(
+            "goplus",
+            fixture_payload={
+                "token_mint": "different-mint",
+                "holder_concentration_label": "HOLDER_CONCENTRATION_HEALTHY",
+            },
+        )
+    bundle = factory._collect_preclose_context(
+        connection,
+        context,
+        timeout_seconds=1.0,
+        adapter_factories=factories,
+    )
+    role_keys = (
+        ("MARKET_CHAIN", "market_chain"),
+        ("SAFETY_PRIMARY", "safety"),
+        ("ENTRY_QUOTE", "entry_quote"),
+        ("EXIT_QUOTE", "exit_quote"),
+        ("HOLDER_PRIMARY", "holder_primary"),
+    )
+    bundle["report"]["unit_results"] = [
+        {
+            "source_unit_identity": role,
+            "state": (
+                "TIMELY"
+                if bundle["report"]["items"][key]["source_response_id"] is not None
+                else "FAILED"
+            ),
+            "source_request_id": bundle["report"]["items"][key][
+                "source_request_id"
+            ],
+            "source_response_id": bundle["report"]["items"][key][
+                "source_response_id"
+            ],
+            "source_failure_id": bundle["report"]["items"][key][
+                "source_failure_id"
+            ],
+        }
+        for role, key in role_keys
+        if key in bundle["report"]["items"]
+    ]
+    bundle["report"]["post_capture_main_window_provider_calls"] = 0
+
+    sid = _snapshot(connection, token_id=1, captured_at=NOW)
     _add_phase(
         connection,
         token_id=1,
@@ -453,27 +525,6 @@ def test_partial_context_preserves_durable_evidence_timestamp(
         status="SUCCEEDED",
         snapshot_id=sid,
     )
-    context = _add_phase(
-        connection,
-        token_id=1,
-        step_kind="WINDOW_CLOSE_CONTEXT",
-        scheduled_for=NOW,
-    )
-    partial = {
-        "executions": {},
-        "report": {
-            "source_request_budget": 0,
-            "source_requests_attempted": 0,
-            "post_capture_main_window_provider_calls": 0,
-            "unit_results": [
-                {
-                    "source_unit_identity": "SAFETY_PRIMARY",
-                    "state": "FAILED",
-                }
-            ],
-            "items": {},
-        },
-    }
     monkeypatch.setattr(
         factory,
         "_collect_preclose_context",
@@ -482,12 +533,9 @@ def test_partial_context_preserves_durable_evidence_timestamp(
         ),
     )
     monkeypatch.setattr(
-        factory, "_rehydrate_preclose_context_bundle", lambda *args, **kwargs: partial
-    )
-    monkeypatch.setattr(
         factory,
-        "_persist_preclose_context",
-        lambda *args, **kwargs: {"status": "PARTIAL", "persisted": True},
+        "_rehydrate_preclose_context_bundle",
+        lambda *args, **kwargs: bundle,
     )
 
     result = factory._execute_close_context_phase(
@@ -510,6 +558,57 @@ def test_partial_context_preserves_durable_evidence_timestamp(
     ] == 0
     assert captured == NOW.isoformat()
     assert result.get("snapshot_id") is None
+    items = result["governed_context_collection"]["items"]
+    for key, source_name in (
+        ("market_chain", "coingecko"),
+        ("entry_quote", "jupiter_quote"),
+        ("exit_quote", "jupiter_quote"),
+    ):
+        assert items[key]["source_name"] == source_name
+        assert items[key]["source_status"] == "FAILED"
+        assert items[key]["source_failure_id"] is not None
+        assert items[key]["source_response_id"] is None
+    persistence = result["governed_context_persistence"]
+    assert "market_regime_row_id" not in persistence
+    assert "chain_heat_row_id" not in persistence
+    assert persistence["entry_quote"]["clean_eligible"] is False
+    assert persistence["exit_quote"]["clean_eligible"] is False
+    if safety_mode == "PROVIDER_FAILURE":
+        assert items["safety"]["source_name"] == "goplus"
+        assert items["safety"]["source_status"] == "FAILED"
+        assert items["safety"]["source_failure_id"] is not None
+        assert items["holder"]["source_name"] == "solana_rpc"
+        assert items["holder"]["source_status"] == "FAILED"
+        assert items["holder"]["source_failure_id"] is not None
+        composite = persistence["safety_composite"]
+        assert composite["safety_contract_label"] == (
+            "SAFETY_BLOCKED_FOR_15M_MEMORY"
+        )
+        assert composite["holder_concentration_label"] == (
+            "HOLDER_CONCENTRATION_UNKNOWN"
+        )
+        assert "HOLDER_CONDITION_UNAVAILABLE" in composite["optional_unknowns"]
+        contributions = connection.execute(
+            """SELECT source_name,source_status,source_failure_id
+               FROM printer_safety_evidence_contributions
+               WHERE composite_id=? ORDER BY id""",
+            (int(composite["composite_id"]),),
+        ).fetchall()
+        assert [tuple(row) for row in contributions] == [
+            ("goplus", "FAILED", items["safety"]["source_failure_id"]),
+            ("solana_rpc", "FAILED", items["holder"]["source_failure_id"]),
+        ]
+    else:
+        assert items["safety"]["source_name"] == "goplus"
+        assert items["safety"]["source_status"] == "COMPLETE"
+        assert items["safety"]["source_response_id"] is not None
+        assert persistence["safety"] == {
+            "inserted": False,
+            "evidence_id": None,
+            "clean_eligible": False,
+            "audit_status": "REJECTED_TARGET_MINT_MISMATCH",
+            "rejection_reasons": ["GOPLUS_TARGET_MINT_MISMATCH"],
+        }
 
     connection.execute(
         """UPDATE printer_memory_factory_run_steps
@@ -564,6 +663,12 @@ def test_partial_context_preserves_durable_evidence_timestamp(
     assert memory["memory_status"] != "CLEAN_MEMORY"
     assert memory["memory_quality_label"] != "CLEAN_MEMORY"
     assert int(memory["do_not_train"]) == 1
+    unchanged = connection.execute(
+        """SELECT captured_at,source_status,data_quality_label
+           FROM printer_token_snapshots WHERE id=?""",
+        (sid,),
+    ).fetchone()
+    assert tuple(unchanged) == (NOW.isoformat(), "COMPLETE", "CLEAN_DATA")
 
 
 def test_failed_context_binding_envelope_never_makes_audit_claimable(
@@ -665,9 +770,18 @@ def test_failed_context_binding_envelope_never_makes_audit_claimable(
     assert close_phase_dependency_ready(connection, audit) is False
 
 
-def test_persistence_value_error_uses_ordinary_fail_closed_cancellation(
+@pytest.mark.parametrize(
+    "error",
+    (
+        ValueError("CONTEXT_BINDING_PERSISTENCE_IDENTITY_INVARIANT_FAILED"),
+        sqlite3.IntegrityError("CONTEXT_BINDING_SQLITE_INTEGRITY_FAILED"),
+    ),
+    ids=("generic-value-error", "sqlite-integrity-error"),
+)
+def test_persistence_technical_error_uses_ordinary_fail_closed_cancellation(
     connection: sqlite3.Connection,
     monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
 ) -> None:
     sid = _snapshot(connection, token_id=1, captured_at=NOW)
     _add_phase(
@@ -715,7 +829,7 @@ def test_persistence_value_error_uses_ordinary_fail_closed_cancellation(
             "UPDATE printer_token_snapshots SET source_status='FAILED' WHERE id=?",
             (sid,),
         )
-        raise ValueError("CONTEXT_BINDING_PERSISTENCE_IDENTITY_INVARIANT_FAILED")
+        raise error
 
     monkeypatch.setattr(
         factory,
@@ -723,10 +837,7 @@ def test_persistence_value_error_uses_ordinary_fail_closed_cancellation(
         fail_persistence_invariant,
     )
 
-    with pytest.raises(
-        ValueError,
-        match="CONTEXT_BINDING_PERSISTENCE_IDENTITY_INVARIANT_FAILED",
-    ):
+    with pytest.raises(type(error), match=str(error)):
         factory._execute_close_context_phase(
             connection,
             context,
@@ -735,10 +846,7 @@ def test_persistence_value_error_uses_ordinary_fail_closed_cancellation(
 
     failure_result = {
         "ok": False,
-        "exception": (
-            "ValueError: "
-            "CONTEXT_BINDING_PERSISTENCE_IDENTITY_INVARIANT_FAILED"
-        ),
+        "exception": f"{type(error).__name__}: {error}",
     }
     factory._update_step(
         connection,
