@@ -60,7 +60,6 @@ from printer_v1.operator_cli.close_phases import (
     close_phase_dependency_ready,
     close_phase_metadata,
     close_phase_order,
-    context_binding_failure_is_exact,
     resolve_close_context,
     resolve_close_evidence,
     resolve_preclose_manifest,
@@ -2108,17 +2107,6 @@ class PrecloseContextPartialError(RuntimeError):
         super().__init__(f"{self.code}:stage={self.failed_stage}")
 
 
-class ContextBindingCompositionFailure(RuntimeError):
-    """Exact marker for a trustworthy local context binding failure.
-
-    This exception is reserved for bounded composition or attachment work after
-    the close owner, pre-close manifest, and durable closing snapshot have been
-    validated.  Generic validation, identity, provenance, persistence, SQLite,
-    and integrity failures must retain their original exception type so the
-    ordinary token-local fail-closed path cancels dependent work.
-    """
-
-
 @dataclass(frozen=True)
 class HolderSafetyRequestPlanEntry:
     """One source-free request family in the existing holder safety path."""
@@ -3836,84 +3824,6 @@ def _execute_close_context_phase(
             snapshot_id=int(evidence["snapshot_id"]),
             context_bundle=context_bundle,
         )
-    except ContextBindingCompositionFailure as exc:
-        conn.execute("ROLLBACK TO SAVEPOINT close_context_binding")
-        conn.execute("RELEASE SAVEPOINT close_context_binding")
-        failed_at = _iso()
-        failure_reason = f"{type(exc).__name__}: {exc}"
-        evidence_step = evidence["evidence_step"]
-        preclose_step = preclose["preclose_step"]
-        context_envelope: dict[str, Any] = {
-            "context_state": "CONTEXT_BINDING_FAILED",
-            "failure_type": "CONTEXT_BINDING_FAILED",
-            "factory_run_id": str(step["run_id"]),
-            "token_id": int(step["token_id"]),
-            "pair_id": int(step["pair_id"]),
-            "token_mint": str(step["token_mint"]),
-            "pair_address": str(step["pair_address"]),
-            "tracking_lane": str(step["tracking_lane"]),
-            "window_family": str(phase["close_family"]),
-            "context_step_id": int(step["id"]),
-            "context_step_key": str(step["step_key"]),
-            "context_step_kind": str(step["step_kind"]),
-            "context_scheduler_job_id": int(step["scheduler_job_id"]),
-            "evidence_step_id": int(evidence_step["id"]),
-            "evidence_step_key": str(evidence_step["step_key"]),
-            "evidence_scheduler_job_id": int(evidence_step["scheduler_job_id"]),
-            "preclose_manifest_step_id": int(preclose_step["id"]),
-            "preclose_step_key": str(preclose_step["step_key"]),
-            "preclose_scheduler_job_id": int(preclose_step["scheduler_job_id"]),
-            "closing_snapshot_id": int(evidence["snapshot_id"]),
-            "closing_snapshot_captured_at": str(evidence["evidence_captured_at"]),
-            "failure_reason": failure_reason,
-            "failed_at": failed_at,
-            "unit_results": list(context_bundle["report"]["unit_results"]),
-        }
-        campaign_owners = conn.execute(
-            """SELECT campaign_id,run_id,cycle_id,token_slot_id,window_id,
-                      scheduler_work_id,stage_id,work_scope,target_category,
-                      target_identity
-               FROM printer_memory_factory_campaign_scheduler_work
-               WHERE scheduler_job_id=?
-                 AND ownership_contract_version='V2_STAGE_SCOPED'
-               ORDER BY scheduler_work_id""",
-            (int(step["scheduler_job_id"]),),
-        ).fetchall()
-        if len(campaign_owners) > 1:
-            raise ValueError("CLOSE_CONTEXT_CAMPAIGN_OWNER_AMBIGUOUS") from exc
-        if campaign_owners:
-            owner = campaign_owners[0]
-            context_envelope.update(
-                campaign_id=str(owner["campaign_id"]),
-                campaign_run_id=str(owner["run_id"]),
-                cycle_id=str(owner["cycle_id"]),
-                token_slot_id=str(owner["token_slot_id"]),
-                campaign_window_id=str(owner["window_id"]),
-                campaign_scheduler_work_id=str(owner["scheduler_work_id"]),
-                campaign_stage_id=str(owner["stage_id"]),
-                campaign_work_scope=str(owner["work_scope"]),
-                campaign_target_category=str(owner["target_category"]),
-                campaign_target_identity=str(owner["target_identity"]),
-            )
-        return {
-            **phase,
-            "ok": False,
-            "audit_preserving_context_failure": True,
-            "blocked_reason": "CONTEXT_BINDING_FAILED",
-            "closing_snapshot_id": int(evidence["snapshot_id"]),
-            "evidence_captured_at": str(evidence["evidence_captured_at"]),
-            "governed_context_collection": context_bundle["report"],
-            "governed_context_persistence": {
-                "status": "FAILED",
-                "persisted": False,
-                "reason": failure_reason,
-            },
-            "preclose_manifest_step_id": int(preclose_step["id"]),
-            "preclose_context_state": "CONTEXT_BINDING_FAILED",
-            "closing_context_envelope": context_envelope,
-            "evidence_bound_at": None,
-            "binding_failed_at": failed_at,
-        }
     except Exception:
         conn.execute("ROLLBACK TO SAVEPOINT close_context_binding")
         conn.execute("RELEASE SAVEPOINT close_context_binding")
@@ -3956,72 +3866,14 @@ def _execute_close_context_phase(
     }
 
 
-def _close_context_result(
-    step: sqlite3.Row, *, allow_typed_failure: bool = False
-) -> dict[str, Any]:
+def _close_context_result(step: sqlite3.Row) -> dict[str, Any]:
     try:
         payload = json.loads(str(step["result_json"] or "{}"))
     except (TypeError, json.JSONDecodeError) as exc:
         raise ValueError("CLOSE_CONTEXT_RESULT_MALFORMED") from exc
-    if not isinstance(payload, dict) or (
-        payload.get("ok") is not True
-        and not (
-            allow_typed_failure
-            and payload.get("ok") is False
-            and isinstance(payload.get("closing_context_envelope"), Mapping)
-        )
-    ):
+    if not isinstance(payload, dict) or payload.get("ok") is not True:
         raise ValueError("CLOSE_CONTEXT_RESULT_NOT_SUCCESSFUL")
     return payload
-
-
-def _terminalize_typed_context_binding_failure(
-    conn: sqlite3.Connection,
-    *,
-    step: sqlite3.Row,
-    result: Mapping[str, Any],
-    run_id: str,
-    lifecycle_operation_observer: Callable[[Mapping[str, Any]], Any] | None = None,
-) -> bool:
-    """Fail one exact context job while preserving its dependent audit."""
-    scheduler_job = conn.execute(
-        """SELECT status,locked_at,lock_owner FROM printer_scheduler_jobs
-           WHERE id=?""",
-        (int(step["scheduler_job_id"]),),
-    ).fetchone()
-    if (
-        str(step["run_id"]) != str(run_id)
-        or str(step["step_status"]) != "RUNNING"
-        or scheduler_job is None
-        or str(scheduler_job["status"]) != "RUNNING"
-        or scheduler_job["locked_at"] is None
-        or not str(scheduler_job["lock_owner"] or "")
-        or not context_binding_failure_is_exact(conn, step, result)
-    ):
-        return False
-    envelope = result["closing_context_envelope"]
-    error = (
-        "CONTEXT_BINDING_FAILED:"
-        + str(envelope["failure_reason"])
-    )
-    _update_step(conn, int(step["id"]), "FAILED", dict(result), error=error)
-    fail_job(
-        conn,
-        job_id=int(step["scheduler_job_id"]),
-        error=error,
-        max_retries=0,
-    )
-    _sync_owned_campaign_scheduler_job(
-        conn, scheduler_job_id=int(step["scheduler_job_id"])
-    )
-    _observe_scheduler_terminal(
-        conn,
-        observer=lifecycle_operation_observer,
-        run_id=str(run_id),
-        step=step,
-    )
-    conn.commit()
-    return True
 
 
 def _audit_15m_close_from_evidence(
@@ -4316,10 +4168,7 @@ def _execute_close_audit_phase(
             "ok": False,
             "blocked_reason": str(resolved.get("reason")),
         }
-    context_result = _close_context_result(
-        resolved["context_step"],
-        allow_typed_failure=bool(resolved.get("typed_context_failure")),
-    )
+    context_result = _close_context_result(resolved["context_step"])
     if int(context_result.get("closing_snapshot_id", -1)) != int(
         resolved["snapshot_id"]
     ):
@@ -10534,17 +10383,6 @@ def run_one_command_15m_factory(
                             barrier=barrier,
                         )
                         conn.commit()
-                elif _terminalize_typed_context_binding_failure(
-                    conn,
-                    step=pending,
-                    result=result,
-                    run_id=run_id,
-                    lifecycle_operation_observer=lifecycle_operation_observer,
-                ):
-                    # The exact closing capture is already durable.  This sole
-                    # validated failed-context class preserves CLOSE_AUDIT so
-                    # E2Q can record honest non-CLEAN context truth.
-                    pass
                 else:
                     # V2-5 token-local terminal failure: isolate this token,
                     # cancel only its remaining pending jobs, continue others.

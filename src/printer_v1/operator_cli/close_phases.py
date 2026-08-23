@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime
 from types import MappingProxyType
 from typing import Any, Mapping
 
@@ -337,137 +336,6 @@ def resolve_preclose_manifest(
     }
 
 
-def context_binding_failure_is_exact(
-    connection: sqlite3.Connection,
-    context_step: Mapping[str, Any],
-    payload: Mapping[str, Any],
-    *,
-    evidence: Mapping[str, Any] | None = None,
-    preclose: Mapping[str, Any] | None = None,
-) -> bool:
-    """Validate the sole audit-preserving failed-context producer contract."""
-    expected = CLOSE_PHASE_STEP_KINDS.get(str(context_step["step_kind"]))
-    if expected is None or expected[1] != "CONTEXT":
-        return False
-    resolved_evidence = evidence or resolve_close_evidence(connection, context_step)
-    resolved_preclose = preclose or resolve_preclose_manifest(
-        connection, context_step
-    )
-    if not resolved_evidence.get("resolved") or not resolved_preclose.get(
-        "resolved"
-    ):
-        return False
-    envelope = payload.get("closing_context_envelope")
-    collection = payload.get("governed_context_collection")
-    persistence = payload.get("governed_context_persistence")
-    if (
-        not isinstance(envelope, Mapping)
-        or not isinstance(collection, Mapping)
-        or not isinstance(persistence, Mapping)
-    ):
-        return False
-    failed_at = envelope.get("failed_at")
-    try:
-        parsed_failure_at = datetime.fromisoformat(str(failed_at))
-    except (TypeError, ValueError):
-        return False
-    if parsed_failure_at.tzinfo is None:
-        return False
-    snapshot_id = int(resolved_evidence["snapshot_id"])
-    evidence_step = resolved_evidence["evidence_step"]
-    preclose_step = resolved_preclose["preclose_step"]
-    required = {
-        "context_state": "CONTEXT_BINDING_FAILED",
-        "failure_type": "CONTEXT_BINDING_FAILED",
-        "factory_run_id": str(context_step["run_id"]),
-        "token_id": int(context_step["token_id"]),
-        "pair_id": int(context_step["pair_id"]),
-        "token_mint": str(context_step["token_mint"]),
-        "pair_address": str(context_step["pair_address"]),
-        "tracking_lane": str(context_step["tracking_lane"]),
-        "window_family": expected[0],
-        "context_step_id": int(context_step["id"]),
-        "context_step_key": str(context_step["step_key"]),
-        "context_step_kind": str(context_step["step_kind"]),
-        "context_scheduler_job_id": int(context_step["scheduler_job_id"]),
-        "evidence_step_id": int(evidence_step["id"]),
-        "evidence_step_key": str(evidence_step["step_key"]),
-        "evidence_scheduler_job_id": int(evidence_step["scheduler_job_id"]),
-        "preclose_manifest_step_id": int(preclose_step["id"]),
-        "preclose_step_key": str(preclose_step["step_key"]),
-        "preclose_scheduler_job_id": int(preclose_step["scheduler_job_id"]),
-        "closing_snapshot_id": snapshot_id,
-        "closing_snapshot_captured_at": str(
-            resolved_evidence["evidence_captured_at"]
-        ),
-    }
-    if any(str(envelope.get(key)) != str(value) for key, value in required.items()):
-        return False
-    if (
-        payload.get("ok") is not False
-        or payload.get("audit_preserving_context_failure") is not True
-        or str(payload.get("blocked_reason")) != "CONTEXT_BINDING_FAILED"
-        or int(payload.get("closing_snapshot_id") or -1) != snapshot_id
-        or envelope.get("unit_results") != collection.get("unit_results")
-        or not isinstance(envelope.get("unit_results"), list)
-        or not str(envelope.get("failure_reason") or "")
-        or str(payload.get("binding_failed_at")) != str(failed_at)
-        or str(persistence.get("status")) != "FAILED"
-        or persistence.get("persisted") is not False
-        or str(persistence.get("reason"))
-        != str(envelope.get("failure_reason"))
-        or int(payload.get("preclose_manifest_step_id") or -1)
-        != int(preclose_step["id"])
-        or str(payload.get("evidence_captured_at"))
-        != str(resolved_evidence["evidence_captured_at"])
-        or int(collection.get("post_capture_main_window_provider_calls") or 0)
-        != 0
-        or payload.get("snapshot_id") is not None
-        or payload.get("evidence_bound_at") is not None
-    ):
-        return False
-
-    owners = _campaign_owners(
-        connection, int(context_step["scheduler_job_id"])
-    )
-    if len(owners) > 1:
-        return False
-    campaign_identity_keys = (
-        "campaign_id",
-        "campaign_run_id",
-        "cycle_id",
-        "token_slot_id",
-        "campaign_window_id",
-        "campaign_scheduler_work_id",
-        "campaign_stage_id",
-        "campaign_work_scope",
-        "campaign_target_category",
-        "campaign_target_identity",
-    )
-    if owners:
-        owner = owners[0]
-        campaign_identity = {
-            "campaign_id": str(owner["campaign_id"]),
-            "campaign_run_id": str(owner["run_id"]),
-            "cycle_id": str(owner["cycle_id"]),
-            "token_slot_id": str(owner["token_slot_id"]),
-            "campaign_window_id": str(owner["window_id"]),
-            "campaign_scheduler_work_id": str(owner["scheduler_work_id"]),
-            "campaign_stage_id": str(owner["stage_id"]),
-            "campaign_work_scope": str(owner["work_scope"]),
-            "campaign_target_category": str(owner["target_category"]),
-            "campaign_target_identity": str(owner["target_identity"]),
-        }
-        if any(
-            str(envelope.get(key)) != value
-            for key, value in campaign_identity.items()
-        ):
-            return False
-    elif any(key in envelope for key in campaign_identity_keys):
-        return False
-    return True
-
-
 def resolve_close_context(
     connection: sqlite3.Connection,
     step: Mapping[str, Any],
@@ -483,48 +351,11 @@ def resolve_close_context(
         step_key=str(metadata.get("context_step_key") or ""),
         expected_phase="CONTEXT",
     )
-    if context is None or str(context["step_status"]) not in {"SUCCEEDED", "FAILED"}:
+    if context is None or str(context["step_status"]) != "SUCCEEDED":
         return {"resolved": False, "reason": "CLOSE_CONTEXT_NOT_SUCCEEDED"}
     if not _same_campaign_window_owner(connection, step, context):
         return {"resolved": False, "reason": "CLOSE_CONTEXT_OWNER_MISMATCH"}
-    if str(context["step_status"]) == "SUCCEEDED":
-        return {**evidence, "context_step": context, "typed_context_failure": False}
-    payload = _payload(context)
-    envelope = payload.get("closing_context_envelope")
-    allowed_states = {
-        "CONTEXT_PARTIAL",
-        "CONTEXT_PROVIDER_FAILED",
-        "CONTEXT_BINDING_FAILED",
-        "CONTEXT_UNKNOWN",
-    }
-    preclose = resolve_preclose_manifest(connection, step)
-    if (
-        isinstance(envelope, Mapping)
-        and str(envelope.get("context_state") or "")
-        == "CONTEXT_BINDING_FAILED"
-        and not context_binding_failure_is_exact(
-            connection,
-            context,
-            payload,
-            evidence=evidence,
-            preclose=preclose,
-        )
-    ):
-        return {"resolved": False, "reason": "CLOSE_CONTEXT_FAILURE_ENVELOPE_INVALID"}
-    if (
-        payload.get("ok") is not False
-        or int(payload.get("closing_snapshot_id") or -1) != int(evidence["snapshot_id"])
-        or not isinstance(envelope, Mapping)
-        or str(envelope.get("context_state") or "") not in allowed_states
-        or int(envelope.get("closing_snapshot_id") or -1)
-        != int(evidence["snapshot_id"])
-        or not isinstance(envelope.get("unit_results"), list)
-        or not preclose.get("resolved")
-        or int(envelope.get("preclose_manifest_step_id") or -1)
-        != int(preclose["preclose_step"]["id"])
-    ):
-        return {"resolved": False, "reason": "CLOSE_CONTEXT_FAILURE_ENVELOPE_INVALID"}
-    return {**evidence, "context_step": context, "typed_context_failure": True}
+    return {**evidence, "context_step": context}
 
 
 def close_phase_dependency_ready(
