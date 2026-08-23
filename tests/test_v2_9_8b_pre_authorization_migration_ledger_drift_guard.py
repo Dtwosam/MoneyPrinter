@@ -30,6 +30,7 @@ from printer_v1.db.migrate import (
     parse_migration_ordinal,
 )
 from printer_v1.operator_cli import pre_authorization_migration_ledger_guard as guard
+from printer_v1.operator_cli import schema_admission_coherence as coherence_mod
 from printer_v1.operator_cli import window_15m_one_shot_wrapper as wrapper
 from printer_v1.operator_db.paths import get_default_db_path
 
@@ -187,14 +188,26 @@ class GuardBlockerTests(AuthoritativeDatabaseUntouched):
         self.assertEqual(result.status, "BLOCKED", result.summary())
         self.assertIn("required_schema_object_missing", result.blocker_codes)
 
-    def test_real_migrated_database_passes(self) -> None:
+    def test_real_migrated_database_blocks_wrong_canonical_target(self) -> None:
         db = self.root / "fully-migrated.sqlite3"
         apply_migrations(db)
         result = guard.evaluate_migration_ledger_drift(mode="prepare", db_path=db)
+        self.assertEqual(result.status, "BLOCKED", result.summary())
+        self.assertIn("db_target_mismatch", result.blocker_codes)
+        self.assertFalse(result.to_dict()["authorization_created"])
+
+    def test_real_migrated_database_passes_when_canonical_target_is_the_file(
+        self,
+    ) -> None:
+        db = self.root / "fully-migrated-canonical.sqlite3"
+        apply_migrations(db)
+        with mock.patch.object(coherence_mod, "CANONICAL_PERSISTENT_DB", db):
+            result = guard.evaluate_migration_ledger_drift(mode="prepare", db_path=db)
         self.assertEqual(result.status, "PASS", result.summary())
         self.assertEqual(
             result.database["ledger_digest"], canonical_migration_digest()
         )
+        self.assertNotIn("db_target_mismatch", result.blocker_codes)
 
     def test_missing_migration_blocks(self) -> None:
         result = self.evaluate(self.canonical[:-1])
@@ -371,10 +384,20 @@ class ReviewModeTests(AuthoritativeDatabaseUntouched):
             mode="review", db_path=self.db, package_binding=binding
         )
 
-    def test_honest_package_passes_review(self) -> None:
+    def test_honest_package_blocks_wrong_canonical_target(self) -> None:
         result = self.review(self.honest)
+        self.assertEqual(result.status, "BLOCKED", result.summary())
+        self.assertIn("db_target_mismatch", result.blocker_codes)
+        self.assertFalse(result.to_dict()["authorization_created"])
+
+    def test_honest_package_passes_review_when_canonical_target_is_the_file(
+        self,
+    ) -> None:
+        with mock.patch.object(coherence_mod, "CANONICAL_PERSISTENT_DB", self.db):
+            result = self.review(self.honest)
         self.assertEqual(result.status, "PASS", result.summary())
         self.assertTrue(result.package_binding["honest"])
+        self.assertNotIn("db_target_mismatch", result.blocker_codes)
 
     def test_dishonest_head_rejected(self) -> None:
         binding = dict(self.honest, migration_head="051_permanent_discovery_availability.sql")

@@ -7,12 +7,18 @@ Scheduler, or authoritative-DB mutation.
 from __future__ import annotations
 
 import ast
+import hashlib
+import inspect
 import re
 import sqlite3
 from pathlib import Path
 import shutil
+from unittest import mock
 
 from printer_v1.db.migrate import apply_migrations, canonical_migration_names
+from printer_v1.operator_cli.operational_memory_factory_command import (
+    OperationalMemoryFactoryError,
+)
 from printer_v1.operator_cli import four_token_proof_zero_state_gate as gate
 from printer_v1.operator_cli import git_provenance_authorization_manifest as git_auth
 from printer_v1.operator_cli import operational_memory_factory_command as command
@@ -428,6 +434,115 @@ def test_m_cycle3_and_long_window_locks_unchanged() -> None:
         blocker_codes=(),
     )
     assert result.to_dict()["cycle_3_unlocked"] is False
+
+
+def _package_binding(db: Path) -> dict[str, object]:
+    info = db.stat()
+    return {
+        "path": str(db.resolve()),
+        "sha256": hashlib.sha256(db.read_bytes()).hexdigest(),
+        "size": info.st_size,
+        "inode": info.st_ino,
+        "mtime_ns": info.st_mtime_ns,
+        "migration_count": 61,
+        "migration_head": MIGRATION_061,
+    }
+
+
+def test_a_preflight_wrong_target_blocks_schema_admission(tmp_path) -> None:
+    db = _full(tmp_path)
+    with mock.patch.object(command, "AUTHORITATIVE_DB", db):
+        try:
+            command.build_activation_preflight(db_path=db)
+        except OperationalMemoryFactoryError as exc:
+            message = str(exc)
+        else:
+            raise AssertionError("preflight continued against a wrong-target 061 DB")
+    assert "gate=schema_admission_coherence" in message
+    assert "db_target_mismatch" in message
+
+
+def test_b_prepare_wrong_target_blocks(tmp_path) -> None:
+    db = _full(tmp_path)
+    result = ledger_guard.evaluate_migration_ledger_drift(mode="prepare", db_path=db)
+    assert result.status == "BLOCKED"
+    assert "db_target_mismatch" in result.blocker_codes
+    assert result.to_dict()["authorization_created"] is False
+
+
+def test_c_review_wrong_target_cannot_claim_schema_honesty(tmp_path) -> None:
+    db = _full(tmp_path)
+    result = ledger_guard.evaluate_migration_ledger_drift(
+        mode="review",
+        db_path=db,
+        package_binding=_package_binding(db),
+    )
+    assert result.status == "BLOCKED"
+    assert "db_target_mismatch" in result.blocker_codes
+    assert result.to_dict()["authorization_created"] is False
+    assert result.verdict != ledger_guard.PASS_VERDICT
+
+
+def test_d_window_15m_inherited_guard_blocks_wrong_target(tmp_path) -> None:
+    default = inspect.signature(window_wrapper.apply_authorization_once).parameters[
+        "migration_ledger_guard"
+    ].default
+    assert default is ledger_guard.assert_migration_ledger_ready
+    db = _full(tmp_path)
+    try:
+        default(mode="review", db_path=db, package_binding=_package_binding(db))
+    except ledger_guard.MigrationLedgerDriftGuardError as exc:
+        message = str(exc)
+    else:
+        raise AssertionError("WINDOW_15M inherited guard continued")
+    assert "db_target_mismatch" in message
+
+
+def test_e_standard_4h_inherited_guard_blocks_wrong_target(tmp_path) -> None:
+    default = inspect.signature(standard_wrapper.apply_authorization_once).parameters[
+        "migration_ledger_guard"
+    ].default
+    assert default is ledger_guard.assert_migration_ledger_ready
+    db = _full(tmp_path)
+    try:
+        default(mode="review", db_path=db, package_binding=_package_binding(db))
+    except ledger_guard.MigrationLedgerDriftGuardError as exc:
+        message = str(exc)
+    else:
+        raise AssertionError("standard-4h inherited guard continued")
+    assert "db_target_mismatch" in message
+
+
+def test_f_canonical_target_opposite_passes_when_candidate_is_canonical(
+    tmp_path,
+) -> None:
+    db = _full(tmp_path)
+    with mock.patch.object(coherence, "CANONICAL_PERSISTENT_DB", db):
+        with mock.patch.object(command, "AUTHORITATIVE_DB", db):
+            preflight_blocked = None
+            try:
+                command.build_activation_preflight(db_path=db)
+            except OperationalMemoryFactoryError as exc:
+                preflight_blocked = str(exc)
+            prepare = ledger_guard.evaluate_migration_ledger_drift(
+                mode="prepare", db_path=db
+            )
+    assert prepare.status == "PASS", prepare.summary()
+    assert "db_target_mismatch" not in prepare.blocker_codes
+    if preflight_blocked is not None:
+        assert "db_target_mismatch" not in preflight_blocked
+        assert "gate=schema_admission_coherence" not in preflight_blocked
+
+
+def test_production_callers_do_not_self_target() -> None:
+    preflight = Path(command.__file__).read_text(encoding="utf-8")
+    guard_src = Path(ledger_guard.__file__).read_text(encoding="utf-8")
+    gate_src = Path(gate.__file__).read_text(encoding="utf-8")
+    assert "expected_target=None" in preflight
+    assert "expected_target=path" not in preflight
+    assert "expected_target=None if db_path is None else target" not in guard_src
+    assert "expected_target=None" in guard_src
+    assert "expected_target=None" in gate_src
 
 
 def test_no_authoritative_migration_writer_in_this_change() -> None:

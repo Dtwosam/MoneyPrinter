@@ -445,7 +445,7 @@ def evaluate_migration_ledger_drift(
     coherence = evaluate_schema_admission_coherence(
         db_path=target,
         migrations_dir=migrations_dir,
-        expected_target=None if db_path is None else target,
+        expected_target=None,
     )
     if not coherence.admission_schema_ready:
         seen = {item["code"] for item in blockers}
