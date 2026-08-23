@@ -58,7 +58,10 @@ handoff. This update is documentation-only for Design Lane 2.
   `46fc13c0f36297f8d76c24f7bbba1313a6db796e`
 - current code baseline before the next implementation:
   `24e7ceed8c7b3fca261a45a00c81cc50a0b2844e`
-- this handoff updates only with the Design Lane 2 amendment commit
+- Production-Path Completeness Gate adoption starting HEAD:
+  `5783a897cd58150effb979a63547e458f47ea7e4`
+- resulting new HEAD: this single documentation governance commit (the exact
+  commit SHA is the repository HEAD containing this handoff)
 
 ## Failure-semantics checkpoint disposition
 
@@ -69,7 +72,8 @@ isolation. The next implementation removes only the unreachable
 `ContextBindingCompositionFailure` / `CONTEXT_BINDING_FAILED`
 audit-preserving technical-exception machinery.
 
-Lane 2 remains active. There is no Lane 2 closeout yet.
+Lane 2 remains active after this governance adoption. There is no Lane 2
+closeout yet.
 
 ## Governing repair-lane sequence (forensic)
 
@@ -95,6 +99,8 @@ This Design Lane 2 package is design/documentation only. It must not:
   confidence/weighted logic, or embeddings/vectors.
 
 ## Exact next permitted lane
+
+This remains unchanged by the Production-Path Completeness Gate adoption.
 
 One narrow implementation removing the unsupported
 `ContextBindingCompositionFailure` / `CONTEXT_BINDING_FAILED`

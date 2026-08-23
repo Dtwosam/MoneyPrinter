@@ -648,6 +648,37 @@ Each phase must have a clear pass/fail result before moving to the next phase.
 
 
 
+## Production-Path Completeness Gate
+
+Before implementing any non-trivial runtime behavior or repair:
+
+1. Trace the affected production path and confirm the requested behavior maps
+   to a real reachable production state.
+
+2. Any new runtime state, exception, status, flag, envelope, or classification
+   must have a real production producer and consumer. Test-only injection is
+   not a substitute for a production producer.
+
+3. Tests must inject the underlying condition being classified, not directly
+   inject the expected classification/result.
+
+4. For a new failure/classification boundary, prove the intended case and the
+   fail-closed/opposite case at the same production boundary when practical.
+
+5. If the requested design assumes a production state that does not actually
+   exist, STOP before implementation and report the design/source/provider/
+   evidence gap instead of inventing behavior.
+
+Passing tests alone do not prove implementation completeness.
+Use minimum sufficient source inspection and risk-based verification.
+
+This gate applies only to non-trivial runtime or semantic work. It does not
+require heavyweight preflight for formatting, dead imports, straightforward
+renames, documentation-only changes, or other clearly non-semantic edits.
+The existing Risk-Based Verification Policy remains authoritative.
+
+
+
 ## Risk-Based Verification Policy
 
 
