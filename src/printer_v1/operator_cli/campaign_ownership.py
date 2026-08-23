@@ -946,6 +946,24 @@ def persist_standard_first_hour_handoff_set(
                         )
                     current = next_state
 
+            # Lane 3: the durable Standard-4H progression aggregate is part of
+            # the same authoritative first-hour handoff transaction. The owner
+            # inspects the immutable factory config and is a no-op unless the
+            # approved Standard-4H campaign mode is enabled.
+            from printer_v1.operator_cli.standard_4h_progression import (
+                create_standard_4h_progression_aggregate,
+            )
+
+            create_standard_4h_progression_aggregate(
+                connection,
+                campaign_id=campaign,
+                configuration_id=configuration,
+                campaign_run_id=run,
+                cycle_id=cycle,
+                candidates=candidates,
+                now=timestamp,
+            )
+
             # Read-back verification is inside the same transaction; any mismatch
             # raises and rolls back objects, successor windows, and slot updates.
             persisted_ids = {
@@ -1092,7 +1110,6 @@ def persist_standard_four_hour_handoff_set(
             try:
                 token_row_id = int(candidate.get("token_row_id"))
                 pair_row_id = int(candidate.get("pair_row_id"))
-                memory_window_1h_id = int(candidate.get("memory_window_1h_id"))
             except (TypeError, ValueError) as exc:
                 raise CampaignOwnershipError(
                     f"four-hour handoff numeric identity invalid for {slot_id}"
@@ -1148,6 +1165,13 @@ def persist_standard_four_hour_handoff_set(
                         f"ineligible four-hour successor identity is already owned: {successor_id}"
                     )
                 continue
+
+            try:
+                memory_window_1h_id = int(candidate.get("memory_window_1h_id"))
+            except (TypeError, ValueError) as exc:
+                raise CampaignOwnershipError(
+                    f"four-hour predecessor memory identity invalid for {slot_id}"
+                ) from exc
 
             if state not in {"WINDOW_1H_CLOSED", "WINDOW_4H_CONTINUING"}:
                 raise CampaignOwnershipError(

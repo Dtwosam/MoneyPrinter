@@ -305,6 +305,11 @@ def _continuation_input(
     cycle_id: str,
     slot: sqlite3.Row,
     state: Mapping[str, Any],
+    token_budget_available: bool,
+    tracking_lane: str,
+    token_eligible: bool,
+    cancelled: bool,
+    terminal: bool,
 ) -> tuple[TokenContinuationInput, dict[str, Any]]:
     window = state["window"]
     close = state["close"]
@@ -366,7 +371,7 @@ def _continuation_input(
         CONTINUITY_UNKNOWN,
     }:
         continuity = CONTINUITY_BLOCKED
-    lane = str(close["tracking_lane"] or context.get("tracking_lane") or "")
+    lane = str(tracking_lane)
     expected = ExpectedTokenContinuationIdentity(
         token_slot_id=slot_id,
         token_id=str(slot["token_row_id"]),
@@ -402,11 +407,11 @@ def _continuation_input(
         safety_context_result=str(facts["safety_context_result"]),
         continuity_status=continuity,
         learning_need=None,
-        token_budget_available=True,
+        token_budget_available=bool(token_budget_available),
         token_state=lane,
-        token_eligible=True,
-        cancelled=False,
-        terminal=False,
+        token_eligible=bool(token_eligible),
+        cancelled=bool(cancelled),
+        terminal=bool(terminal),
     )
     candidate = {
         "token_slot_id": slot_id,
@@ -439,121 +444,130 @@ def run_standard_four_hour_campaign_barrier(
     run_id: str,
     cycle_id: str,
     factory_run_id: str,
+    operational_db_binding: Any | None,
+    canonical_authoritative_db_path: str | Path,
+    cancellation_probe: Any | None = None,
     now: str | None = None,
 ) -> dict[str, Any]:
-    """Release standard 4h composition exactly once after both 1h closes."""
-    if connection.in_transaction:
-        raise StandardFourHourOperationalError(
-            "standard four-hour barrier requires committed first-hour truth"
-        )
-    slots = _campaign_identity_rows(
-        connection,
-        campaign_id=campaign_id,
-        configuration_id=configuration_id,
-        run_id=run_id,
-        cycle_id=cycle_id,
-        factory_run_id=factory_run_id,
+    """Evaluate and atomically hand off through the durable coordinator."""
+    from printer_v1.operator_cli.standard_4h_progression import (
+        commit_standard_4h_progression_handoff,
+        evaluate_standard_4h_progression,
+        persist_progression_primary_fault,
+        progression_attempt_id_for,
     )
-    states = [
-        _owned_first_hour_state(
-            connection,
-            campaign_id=campaign_id,
-            run_id=run_id,
-            cycle_id=cycle_id,
-            factory_run_id=factory_run_id,
-            slot=slot,
-        )
-        for slot in slots
-    ]
-    terminal_count = sum(1 for state in states if state["terminal"])
-    if terminal_count < TOKEN_CAPACITY:
-        return {
-            "status": "AWAITING_PEER_FIRST_HOUR_CLOSE",
-            "barrier_reached": False,
-            "successful_first_hour_close_count": terminal_count,
-            "eligible_token_slot_ids": [],
-            "continuation_count": 0,
-            "planned_jobs": 0,
-        }
 
-    token_inputs: list[TokenContinuationInput] = []
-    candidates: list[dict[str, Any]] = []
-    for slot, state in zip(slots, states, strict=True):
-        token, candidate = _continuation_input(
+    try:
+        evaluation = evaluate_standard_4h_progression(
             connection,
-            db_path=db_path,
+            db_path=str(db_path),
             campaign_id=campaign_id,
             configuration_id=configuration_id,
-            run_id=run_id,
-            cycle_id=cycle_id,
-            slot=slot,
-            state=state,
-        )
-        token_inputs.append(token)
-        candidates.append(candidate)
-
-    campaign_row = connection.execute(
-        "SELECT campaign_state FROM printer_memory_factory_campaigns WHERE campaign_id=?",
-        (campaign_id,),
-    ).fetchone()
-    campaign = CampaignContinuationContext(
-        campaign_id=campaign_id,
-        configuration_id=configuration_id,
-        campaign_state=str(campaign_row[0]) if campaign_row is not None else "TERMINAL_FAILED",
-        campaign_eligible=True,
-        shared_db_healthy=True,
-        shared_lease_healthy=True,
-        shared_integrity_healthy=True,
-        campaign_budget_available=True,
-    )
-    results = evaluate_standard_four_hour_eligibility(
-        campaign=campaign,
-        tokens=tuple(token_inputs),
-    )
-    eligible = [
-        result.token_slot_id
-        for result in results
-        if result.verdict == ContinuationVerdict.CONTINUE_TO_WINDOW_4H
-    ]
-    verdicts = [
-        {
-            "token_slot_id": result.token_slot_id,
-            "token_id": result.token_id,
-            "verdict": result.verdict.value,
-            "reasons": list(result.reasons),
-        }
-        for result in results
-    ]
-    lanes = (str(candidates[0]["tracking_lane"]), str(candidates[1]["tracking_lane"]))
-    mask = (
-        str(candidates[0]["token_slot_id"]) in set(eligible),
-        str(candidates[1]["token_slot_id"]) in set(eligible),
-    )
-    subset_budget = standard_campaign_lifecycle_budget(lanes, mask)
-    try:
-        plan = plan_standard_campaign_4h_handoff(
-            connection,
-            campaign_id=campaign_id,
-            run_id=run_id,
+            campaign_run_id=run_id,
             cycle_id=cycle_id,
             factory_run_id=factory_run_id,
-            candidates=candidates,
-            eligible_token_slot_ids=eligible,
-            execution_authority=FourHourExecutionAuthority.STANDARD_CAMPAIGN,
+            operational_db_binding=operational_db_binding,
+            canonical_authoritative_db_path=str(canonical_authoritative_db_path),
+            cancellation_probe=cancellation_probe,
             now=now,
         )
-    except ValueError as exc:
+        if evaluation["attempt_state"] == "WAITING_FOR_PREDECESSORS":
+            return {
+                "status": "AWAITING_PEER_FIRST_HOUR_CLOSE",
+                "barrier_reached": False,
+                "eligible_token_slot_ids": [],
+                "continuation_count": 0,
+                "planned_jobs": 0,
+            }
+        if evaluation["attempt_state"] in {
+            "TERMINAL_FAILED", "TERMINAL_CANCELLED", "INTERRUPTED_REVIEW"
+        }:
+            from printer_v1.operator_cli.standard_4h_progression import (
+                StandardFourHourProgressionError,
+                load_standard_4h_progression_aggregate,
+            )
+
+            terminal = load_standard_4h_progression_aggregate(
+                connection,
+                campaign_id=campaign_id,
+                campaign_run_id=run_id,
+                cycle_id=cycle_id,
+            )
+            terminal_cause = (
+                None if terminal is None else terminal["first_terminal_cause"]
+            )
+            raise StandardFourHourProgressionError(
+                f"standard 4h progression terminal: {evaluation['attempt_state']}: "
+                f"{terminal_cause or 'CAUSE_UNAVAILABLE'}",
+                terminal_cause=terminal_cause,
+                terminal_state=str(evaluation["attempt_state"]),
+            )
+        if evaluation["attempt_state"] not in {
+            "ELIGIBILITY_COMPLETE", "HANDOFF_COMMITTED"
+        }:
+            raise StandardFourHourOperationalError(
+                f"unsupported standard 4h progression state: "
+                f"{evaluation['attempt_state']}"
+            )
+        plan = commit_standard_4h_progression_handoff(
+            connection,
+            campaign_id=campaign_id,
+            campaign_run_id=run_id,
+            cycle_id=cycle_id,
+            factory_run_id=factory_run_id,
+            db_path=str(db_path),
+            configuration_id=configuration_id,
+            operational_db_binding=operational_db_binding,
+            canonical_authoritative_db_path=str(canonical_authoritative_db_path),
+            cancellation_probe=cancellation_probe,
+            now=now,
+        )
+    except Exception as exc:
+        # The predecessor is already committed. Persist the fault only on the
+        # canonical progression aggregate. If SQLite itself rejects this write,
+        # the last durable non-terminal state remains the read-side truth.
+        with connection:
+            persist_progression_primary_fault(
+                connection,
+                progression_attempt_id=progression_attempt_id_for(
+                    campaign_id=campaign_id,
+                    campaign_run_id=run_id,
+                    cycle_id=cycle_id,
+                ),
+                cause=str(
+                    getattr(exc, "terminal_cause", None)
+                    or "STANDARD_4H_PROGRESSION_OR_HANDOFF_FAILED"
+                ),
+                state=str(getattr(exc, "terminal_state", "TERMINAL_FAILED")),
+                stage="ATOMIC_HANDOFF",
+                exc=exc,
+                safe_message=str(exc),
+                now=now,
+            )
         raise StandardFourHourOperationalError(
             f"standard four-hour campaign planning blocked: {exc}"
         ) from exc
     return {
         "status": "STANDARD_FOUR_HOUR_BARRIER_RELEASED",
         "barrier_reached": True,
-        "successful_first_hour_close_count": TOKEN_CAPACITY,
-        "eligible_token_slot_ids": list(eligible),
-        "continuation_count": len(eligible),
-        "verdicts": verdicts,
-        "subset_budget": subset_budget,
+        "eligible_token_slot_ids": list(evaluation["eligible_token_slot_ids"]),
+        "continuation_count": len(evaluation["eligible_token_slot_ids"]),
+        "verdicts": [
+            {
+                "token_slot_id": str(token["token_slot_id"]),
+                "token_id": int(token["token_row_id"]),
+                "verdict": (
+                    "CONTINUE_TO_WINDOW_4H"
+                    if str(token["token_slot_id"])
+                    in set(evaluation["eligible_token_slot_ids"])
+                    else "BLOCK_CONTINUATION"
+                ),
+                "reasons": list(token["disposition_reasons"]),
+                "disposition": str(token["token_disposition"]),
+            }
+            for token in evaluation["tokens"]
+        ],
+        "subset_budget": plan.get("budget", {}),
         "plan": plan,
         "planned_jobs": int(plan.get("planned_jobs", 0)),
         "replay": bool(plan.get("replay")),

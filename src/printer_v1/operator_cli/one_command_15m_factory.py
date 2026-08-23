@@ -8019,29 +8019,55 @@ def _standard_campaign_four_hour_terminal_validation(
     if not all((campaign_id, run_id, cycle_id, factory_run_id)):
         return {"enabled": False, "complete": True, "reasons": [], "per_token": []}
 
-    from printer_v1.operator_cli.one_token_4h_runtime import (
-        load_standard_four_hour_eligibility_manifests,
+    from printer_v1.operator_cli.standard_4h_progression import (
+        derive_standard_4h_progression_status,
     )
 
     try:
-        manifests = load_standard_four_hour_eligibility_manifests(
+        progression = derive_standard_4h_progression_status(
             conn,
-            campaign_id=str(campaign_id),
-            run_id=str(run_id),
-            cycle_id=str(cycle_id),
             factory_run_id=str(factory_run_id),
+            campaign_id=str(campaign_id),
+            campaign_run_id=str(run_id),
+            cycle_id=str(cycle_id),
         )
     except Exception as exc:
         return {
             "enabled": True,
             "complete": False,
-            "reasons": [f"standard_four_hour_eligibility_manifest_invalid:{exc}"],
+            "reasons": [f"standard_four_hour_progression_invalid:{exc}"],
             "per_token": [],
             "expected_continuation_count": 0,
             "window_count": 0,
             "active_owned_four_hour_work": 0,
             "nonterminal_owned_four_hour_windows": 0,
         }
+    if progression.get("enabled") is not True:
+        return progression
+    if progression.get("aggregate_state") != "HANDOFF_COMMITTED":
+        return {
+            **progression,
+            "expected_continuation_count": sum(
+                1
+                for item in progression.get("per_token", [])
+                if item.get("outcome")
+                in {"ELIGIBLE_NOT_CREATED", "CREATED_PENDING", "RUNNING", "SUCCEEDED"}
+            ),
+            "window_count": 0,
+            "active_owned_four_hour_work": 0,
+            "nonterminal_owned_four_hour_windows": 0,
+        }
+
+    from printer_v1.operator_cli.one_token_4h_runtime import (
+        load_standard_four_hour_eligibility_manifests,
+    )
+    manifests = load_standard_four_hour_eligibility_manifests(
+        conn,
+        campaign_id=str(campaign_id),
+        run_id=str(run_id),
+        cycle_id=str(cycle_id),
+        factory_run_id=str(factory_run_id),
+    )
 
     windows = conn.execute(
         """SELECT w.*,s.slot_ordinal,s.token_state,s.token_row_id AS slot_token_row_id,
@@ -8055,10 +8081,7 @@ def _standard_campaign_four_hour_terminal_validation(
            ORDER BY s.slot_ordinal,w.window_id""",
         (str(campaign_id), str(run_id), str(cycle_id)),
     ).fetchall()
-    if manifests is None and not windows:
-        return {"enabled": False, "complete": True, "reasons": [], "per_token": []}
-
-    manifest_mode = manifests is not None
+    manifest_mode = True
     expected_slot_ids = (
         {slot_id for slot_id, manifest in manifests.items() if manifest["eligible"] is True}
         if manifests is not None
@@ -8109,6 +8132,7 @@ def _standard_campaign_four_hour_terminal_validation(
                  AND s.run_id=? AND s.token_id=? AND s.pair_id=?
                  AND s.step_kind IN (
                      'LONG_CONTINUATION_SNAPSHOT','LONG_CONTINUATION_CLOSE',
+                     'LONG_CONTINUATION_CLOSE_PRE_CLOSE_CRITICAL',
                      'LONG_CONTINUATION_CLOSE_EVIDENCE',
                      'LONG_CONTINUATION_CLOSE_CONTEXT',
                      'LONG_CONTINUATION_CLOSE_AUDIT'
@@ -8133,7 +8157,7 @@ def _standard_campaign_four_hour_terminal_validation(
             except Exception:
                 expected = 0
                 window_reasons.append("missing_4h_cadence_policy")
-        expected_owned = expected + 2 if expected else 0
+        expected_owned = expected + 3 if expected else 0
         expected_owned_total += expected_owned
         if expected and len(owned) != expected_owned:
             window_reasons.append(
@@ -8301,15 +8325,50 @@ def _standard_campaign_four_hour_terminal_validation(
         reasons.append(f"nonterminal_owned_four_hour_windows:{nonterminal_windows}")
     return {
         "enabled": True,
-        "complete": not reasons,
+        "complete": bool(progression.get("complete")) and not reasons,
         "reasons": reasons,
-        "per_token": per_token,
+        "per_token": progression.get("per_token", []),
+        "eligible_window_details": per_token,
         "expected_continuation_count": expected_continuation_count,
-        "eligibility_manifest_present": manifest_mode,
+        "progression_attempt_id": progression.get("progression_attempt_id"),
+        "aggregate_state": progression.get("aggregate_state"),
+        "requires_review": progression.get("requires_review", False),
         "active_owned_four_hour_work": active_owned,
         "nonterminal_owned_four_hour_windows": nonterminal_windows,
         "window_count": len(windows),
     }
+
+
+def _durable_standard_4h_progression_stop_cause(
+    conn: sqlite3.Connection,
+    *,
+    campaign_id: str,
+    campaign_run_id: str,
+    cycle_id: str,
+    exc: BaseException,
+) -> str | None:
+    """Return a progression primary only for the exact progression exception."""
+    if (
+        type(exc).__name__ != "StandardFourHourOperationalError"
+        or type(exc).__module__
+        != "printer_v1.operator_cli.operational_standard_4h"
+    ):
+        return None
+    row = conn.execute(
+        """SELECT attempt_state,first_terminal_cause
+           FROM printer_memory_factory_standard_4h_progression_attempts
+           WHERE campaign_id=? AND campaign_run_id=? AND cycle_id=?""",
+        (campaign_id, campaign_run_id, cycle_id),
+    ).fetchone()
+    if (
+        row is None
+        or str(row[0])
+        not in {"TERMINAL_FAILED", "TERMINAL_CANCELLED", "INTERRUPTED_REVIEW"}
+        or row[1] is None
+        or not str(row[1]).strip()
+    ):
+        return None
+    return str(row[1])
 
 def _two_token_continuous_proof_validation(
     *,
@@ -9291,6 +9350,8 @@ def run_one_command_15m_factory(
     first_window_checkpointed = False
     post_activation_checkpointed = False
     proof_fault: BaseException | None = None
+    progression_secondary_stop_fact: str | None = None
+    progression_primary_write_failed_cycles: set[str] = set()
     governed_observer_token = None
     four_token_attempt_terminal_cause: str | None = None
     four_token_cycle_one_opening_completed = False
@@ -10353,36 +10414,42 @@ def run_one_command_15m_factory(
                             continuation_seconds=_continuation_seconds,
                             cycle_id=owned_proof_cycle_id,
                         )
-                    if (
-                        str(pending["step_kind"]) in {
-                            "CONTINUATION_CLOSE", "CONTINUATION_CLOSE_AUDIT"
-                        }
-                        and standard_four_hour_campaign
-                    ):
-                        from printer_v1.operator_cli.operational_standard_4h import (
-                            run_standard_four_hour_campaign_barrier,
-                        )
-                        _check_cancellation(cancellation_probe)
-                        barrier = run_standard_four_hour_campaign_barrier(
-                            conn,
-                            db_path=str(path),
-                            campaign_id=str(campaign_id),
-                            configuration_id=str(configuration_id),
-                            run_id=str(campaign_run_id),
-                            cycle_id=str(
+                        if standard_four_hour_campaign:
+                            progression_cycle_id = str(
                                 owned_proof_cycle_id
                                 if four_token_proof_controller is not None
                                 else cycle_id
-                            ),
-                            factory_run_id=str(run_id),
-                        )
-                        result = _merge_standard_four_hour_barrier_result(
-                            conn,
-                            run_id=run_id,
-                            step_id=int(pending["id"]),
-                            barrier=barrier,
-                        )
-                        conn.commit()
+                            )
+                            progression_exists = conn.execute(
+                                """SELECT 1
+                                   FROM printer_memory_factory_standard_4h_progression_attempts
+                                   WHERE campaign_id=? AND campaign_run_id=?
+                                     AND cycle_id=?""",
+                                (
+                                    str(campaign_id),
+                                    str(campaign_run_id),
+                                    progression_cycle_id,
+                                ),
+                            ).fetchone()
+                            if progression_exists is not None:
+                                from printer_v1.operator_cli.operational_standard_4h import (
+                                    run_standard_four_hour_campaign_barrier,
+                                )
+
+                                run_standard_four_hour_campaign_barrier(
+                                    conn,
+                                    db_path=str(path),
+                                    campaign_id=str(campaign_id),
+                                    configuration_id=str(configuration_id),
+                                    run_id=str(campaign_run_id),
+                                    cycle_id=progression_cycle_id,
+                                    factory_run_id=str(run_id),
+                                    operational_db_binding=(
+                                        operational_database_target_binding
+                                    ),
+                                    canonical_authoritative_db_path=str(canonical),
+                                    cancellation_probe=cancellation_probe,
+                                )
                 else:
                     # V2-5 token-local terminal failure: isolate this token,
                     # cancel only its remaining pending jobs, continue others.
@@ -10516,6 +10583,43 @@ def run_one_command_15m_factory(
                         "AFTER_POST_ACTIVATION_15M_STATE_COMMIT",
                     )
                     post_activation_checkpointed = True
+            # Post-1h progression deliberately executes outside the predecessor
+            # step/job/work exception owner. Once those terminal surfaces commit,
+            # a later progression fault can only belong to the durable progression
+            # aggregate and cannot rewrite the predecessor.
+            if (
+                str(pending["step_kind"])
+                in {"CONTINUATION_CLOSE", "CONTINUATION_CLOSE_AUDIT"}
+                and standard_four_hour_campaign
+            ):
+                from printer_v1.operator_cli.operational_standard_4h import (
+                    run_standard_four_hour_campaign_barrier,
+                )
+
+                def _progression_cancellation_reason() -> str | None:
+                    external = (
+                        None if cancellation_probe is None else cancellation_probe()
+                    )
+                    if external:
+                        return str(external)
+                    return None if stop_reason == STOP_COMPLETED else str(stop_reason)
+
+                run_standard_four_hour_campaign_barrier(
+                    conn,
+                    db_path=str(path),
+                    campaign_id=str(campaign_id),
+                    configuration_id=str(configuration_id),
+                    run_id=str(campaign_run_id),
+                    cycle_id=str(
+                        owned_proof_cycle_id
+                        if four_token_proof_controller is not None
+                        else cycle_id
+                    ),
+                    factory_run_id=str(run_id),
+                    operational_db_binding=operational_database_target_binding,
+                    canonical_authoritative_db_path=str(canonical),
+                    cancellation_probe=_progression_cancellation_reason,
+                )
     except _ExternalStop as external_stop:
         stop_reason = external_stop.reason
     except KeyboardInterrupt:
@@ -10526,7 +10630,52 @@ def run_one_command_15m_factory(
         if getattr(exc, "post_handoff_proof_fault", False):
             proof_fault = exc
         else:
-            stop_reason = STOP_PREFLIGHT
+            progression_stop_cause = None
+            if standard_four_hour_campaign and all(
+                (campaign_id, campaign_run_id)
+            ):
+                progression_failure_cycle = str(
+                    owned_proof_cycle_id
+                    if four_token_proof_controller is not None
+                    else cycle_id
+                )
+                progression_stop_cause = (
+                    _durable_standard_4h_progression_stop_cause(
+                        conn,
+                        campaign_id=str(campaign_id),
+                        campaign_run_id=str(campaign_run_id),
+                        cycle_id=progression_failure_cycle,
+                        exc=exc,
+                    )
+                )
+                if progression_stop_cause is not None:
+                    progression_secondary_stop_fact = STOP_PREFLIGHT
+                elif isinstance(exc, sqlite3.Error):
+                    progression_row = conn.execute(
+                        """SELECT attempt_state,first_terminal_cause
+                           FROM printer_memory_factory_standard_4h_progression_attempts
+                           WHERE campaign_id=? AND campaign_run_id=?
+                             AND cycle_id=?""",
+                        (
+                            str(campaign_id),
+                            str(campaign_run_id),
+                            progression_failure_cycle,
+                        ),
+                    ).fetchone()
+                    if (
+                        progression_row is not None
+                        and progression_row[1] is None
+                        and str(progression_row[0])
+                        in {
+                            "WAITING_FOR_PREDECESSORS",
+                            "EVALUATING",
+                            "ELIGIBILITY_COMPLETE",
+                        }
+                    ):
+                        progression_primary_write_failed_cycles.add(
+                            progression_failure_cycle
+                        )
+            stop_reason = progression_stop_cause or STOP_PREFLIGHT
             discovery = {
                 **discovery,
                 "orchestration_error": f"{type(exc).__name__}: {exc}",
@@ -10545,6 +10694,38 @@ def run_one_command_15m_factory(
         _emit_supervision_event(
             bool(supervision_execution_id), "TERMINAL_CAUSE", reason=stop_reason,
         )
+        if standard_four_hour_campaign and all((campaign_id, campaign_run_id)):
+            from printer_v1.operator_cli.standard_4h_progression import (
+                terminalize_stopped_standard_4h_progression,
+            )
+
+            progression_cycles = conn.execute(
+                """SELECT cycle_id
+                   FROM printer_memory_factory_standard_4h_progression_attempts
+                   WHERE campaign_id=? AND campaign_run_id=?
+                   ORDER BY cycle_id""",
+                (str(campaign_id), str(campaign_run_id)),
+            ).fetchall()
+            for progression_cycle in progression_cycles:
+                if str(progression_cycle[0]) in progression_primary_write_failed_cycles:
+                    continue
+                try:
+                    with conn:
+                        terminalize_stopped_standard_4h_progression(
+                            conn,
+                            campaign_id=str(campaign_id),
+                            campaign_run_id=str(campaign_run_id),
+                            cycle_id=str(progression_cycle[0]),
+                            stop_cause=str(
+                                progression_secondary_stop_fact or stop_reason
+                            ),
+                            now=_now(),
+                        )
+                except sqlite3.Error:
+                    # Canonical progression persistence is the only fault owner.
+                    # Preserve the prior row; read-side accounting derives review.
+                    if conn.in_transaction:
+                        conn.rollback()
         four_token_terminal: dict[str, Any] | None = None
         four_token_terminal_cause: str | None = None
         four_token_terminal_run_status: str | None = None

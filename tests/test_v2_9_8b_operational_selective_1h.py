@@ -122,10 +122,45 @@ def _provenance() -> dict[str, object]:
 
 
 class Selective1hFixture:
-    def __init__(self) -> None:
+    def __init__(self, *, standard_four_hour_campaign: bool = False) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.db = Path(self.tmp.name) / "proof.sqlite3"
         _apply_all_migrations(self.db)
+        operational_expectation = None
+        if standard_four_hour_campaign:
+            from printer_v1.db.migrate import (
+                canonical_migration_count,
+                canonical_migration_names,
+            )
+            from printer_v1.operator_cli.operational_database_target_binding import (
+                PRODUCTION_AUTHORITATIVE,
+                build_durable_operational_database_target_expectation,
+            )
+
+            operational_expectation = build_durable_operational_database_target_expectation(
+                target_kind=PRODUCTION_AUTHORITATIVE,
+                resolved_db_path=self.db,
+                authorized_pre_mutation_sha256="a" * 64,
+                migration_count=canonical_migration_count(),
+                migration_head=canonical_migration_names()[-1],
+                durable_db_target_identity=f"sha256:{'a' * 64}",
+                authorization_id="lane3-authorization",
+                manifest_sha256="b" * 64,
+                application_marker_sha256="c" * 64,
+                execution_id="lane3-execution",
+                campaign_id="campaign-1h",
+                campaign_run_id="run-1h",
+                cycle_id="cycle-1h",
+                configuration_id="config-1h",
+                authorization_consumed_once=True,
+                invocation_count=1,
+                allowed_invocation_count=1,
+                automatic_retry_allowed=False,
+                manual_rerun_allowed=False,
+                resume_allowed=False,
+                restart_allowed=False,
+                successor_allowed=False,
+            )
         self.connection = sqlite3.connect(self.db)
         self.connection.row_factory = sqlite3.Row
         self.connection.execute("PRAGMA foreign_keys=ON")
@@ -138,10 +173,16 @@ class Selective1hFixture:
                 "token_capacity": 2,
                 "main_window": "WINDOW_15M",
                 "selective_1h_continuation": True,
+                "standard_four_hour_campaign": standard_four_hour_campaign,
+                "operational_database_target_expectation": operational_expectation,
             },
             launch_provenance=_provenance(),
             db_mode=DB_MODE_PROOF_ISOLATED,
-            db_target_identity="proof-1h",
+            db_target_identity=(
+                f"sha256:{'a' * 64}"
+                if standard_four_hour_campaign
+                else "proof-1h"
+            ),
             proof_source_db_identity="proof-source-1h",
             policy_version=SELECTIVE_1H_POLICY_VERSION,
         )
@@ -152,7 +193,13 @@ class Selective1hFixture:
                     selected_token_count,started_at
                 ) VALUES ('factory-run-1','RUNNING','WINDOW_15M','PROOF_ONLY',
                     'hash',?,2,?)""",
-                (json.dumps({"selective_1h_continuation": True}), NOW),
+                (
+                    json.dumps({
+                        "selective_1h_continuation": True,
+                        "standard_four_hour_campaign": standard_four_hour_campaign,
+                    }),
+                    NOW,
+                ),
             )
             for identity in (1, 2):
                 self.connection.execute(
@@ -162,6 +209,26 @@ class Selective1hFixture:
                 self.connection.execute(
                     "INSERT INTO printer_pairs(id,token_id,pair_address) VALUES (?,?,?)",
                     (identity, identity, f"pair-{identity}"),
+                )
+                self.connection.execute(
+                    """INSERT INTO printer_tracking_queue(
+                           id,token_id,pair_id,tracking_lane,tracking_action,
+                           priority_reason,next_check_at,queue_status,
+                           source_status,data_quality_label
+                       ) VALUES (?,?,?,?,?,'lane3_fixture',?,'ACTIVE',
+                           'COMPLETE','CLEAN_DATA')""",
+                    (
+                        identity,
+                        identity,
+                        identity,
+                        "TRACK_FAST" if identity == 1 else "TRACK_NORMAL",
+                        (
+                            "PROMOTE_TO_TRACK_FAST"
+                            if identity == 1
+                            else "PROMOTE_TO_TRACK_NORMAL"
+                        ),
+                        NOW,
+                    ),
                 )
         create_campaign_run(
             self.connection,
@@ -192,6 +259,7 @@ class Selective1hFixture:
                     "pair_identity": "pair-1",
                     "pair_row_id": 1,
                     "lifecycle_identity": "lifecycle-1",
+                    "tracking_queue_id": 1,
                 },
                 {
                     "token_slot_id": "slot-2",
@@ -202,6 +270,7 @@ class Selective1hFixture:
                     "pair_identity": "pair-2",
                     "pair_row_id": 2,
                     "lifecycle_identity": "lifecycle-2",
+                    "tracking_queue_id": 2,
                 },
             ),
             now=NOW,

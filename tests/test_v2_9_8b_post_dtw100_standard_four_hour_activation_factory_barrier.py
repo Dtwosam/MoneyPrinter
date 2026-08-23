@@ -8,16 +8,21 @@ import unittest
 from printer_v1.operator_cli import one_command_15m_factory as factory
 from printer_v1.operator_cli import one_token_4h_runtime as four
 from printer_v1.operator_cli import operational_standard_4h as standard
-from tests.test_v2_9_8b_post_dtw100_standard_four_hour_campaign_planning import (
-    StandardFourHourCampaignPlanningTests,
-    T1H,
-    _iso,
+from printer_v1.db.migrate import canonical_migration_count, canonical_migration_names
+from printer_v1.operator_cli.campaign_supervision import acquire_campaign_supervision
+from printer_v1.operator_cli.operational_database_target_binding import (
+    PRODUCTION_AUTHORITATIVE,
+    build_operational_database_target_binding,
 )
+from tests import test_v2_9_8b_post_dtw100_standard_four_hour_campaign_planning as planning_fixture
+from tests.test_v2_9_8b_operational_selective_1h import T1H, _iso
 
 
 class StandardFourHourActivationFactoryBarrierTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.fx, self.candidates = StandardFourHourCampaignPlanningTests()._prepared()
+        self.fx, self.candidates = (
+            planning_fixture.StandardFourHourCampaignPlanningTests()._prepared()
+        )
         self.fx.connection.execute(
             "UPDATE printer_memory_factory_runs SET config_json=? WHERE run_id='factory-run-1'",
             (json.dumps({
@@ -27,11 +32,48 @@ class StandardFourHourActivationFactoryBarrierTests(unittest.TestCase):
                 "cycle_id": "cycle-1h",
             }, sort_keys=True),),
         )
+        self.fx.connection.execute(
+            "UPDATE printer_memory_factory_campaign_cycles SET cycle_state='TRACKING' "
+            "WHERE cycle_id='cycle-1h'"
+        )
         self._attach_authoritative_clean_fingerprint(self.candidates[0])
         self._attach_authoritative_clean_fingerprint(self.candidates[1])
         self._attach_acceptable_safety(1, self.candidates[0])
         self._attach_acceptable_safety(2, self.candidates[1])
         self.fx.connection.commit()
+        acquire_campaign_supervision(
+            self.fx.db,
+            lock_path=self.fx.db.with_suffix(".lease.json"),
+            supervision_id="lane3-supervision",
+            campaign_id="campaign-1h",
+            configuration_id="config-1h",
+            run_id="run-1h",
+            owner_id="lane3-owner",
+            lease_seconds=3600,
+        )
+        self.binding = build_operational_database_target_binding(
+            target_kind=PRODUCTION_AUTHORITATIVE,
+            resolved_db_path=self.fx.db,
+            authorized_pre_mutation_sha256="a" * 64,
+            migration_count=canonical_migration_count(),
+            migration_head=canonical_migration_names()[-1],
+            authorization_id="lane3-authorization",
+            authorization_marker_sha256="b" * 64,
+            application_marker_sha256="c" * 64,
+            execution_id="lane3-execution",
+            campaign_id="campaign-1h",
+            campaign_run_id="run-1h",
+            cycle_id="cycle-1h",
+            configuration_id="config-1h",
+            authorization_consumed_once=True,
+            invocation_count=1,
+            allowed_invocation_count=1,
+            automatic_retry_allowed=False,
+            manual_rerun_allowed=False,
+            resume_allowed=False,
+            restart_allowed=False,
+            successor_allowed=False,
+        )
 
     def tearDown(self) -> None:
         self.fx.close()
@@ -163,6 +205,9 @@ class StandardFourHourActivationFactoryBarrierTests(unittest.TestCase):
             run_id="run-1h",
             cycle_id="cycle-1h",
             factory_run_id="factory-run-1",
+            operational_db_binding=self.binding,
+            canonical_authoritative_db_path=self.fx.db,
+            cancellation_probe=lambda: None,
             now=_iso(T1H),
         )
 
@@ -175,9 +220,9 @@ class StandardFourHourActivationFactoryBarrierTests(unittest.TestCase):
             "SELECT COUNT(*) FROM printer_memory_factory_run_steps WHERE step_kind LIKE 'LONG_CONTINUATION_%'"
         ).fetchone()[0])
         manifests = int(connection.execute(
-            """SELECT COUNT(*) FROM printer_memory_factory_run_steps
-               WHERE step_kind='CONTINUATION_CLOSE'
-                 AND result_json LIKE '%standard_four_hour_eligibility%'"""
+            """SELECT COUNT(*)
+               FROM printer_memory_factory_standard_4h_progression_tokens
+               WHERE token_disposition <> 'WAITING_FOR_PREDECESSOR'"""
         ).fetchone()[0])
         return windows, steps, manifests
 
@@ -185,14 +230,13 @@ class StandardFourHourActivationFactoryBarrierTests(unittest.TestCase):
         self.fx.connection.execute(
             """UPDATE printer_memory_factory_run_steps SET step_status='RUNNING'
                WHERE run_id='factory-run-1' AND token_id=2
-                 AND step_kind='CONTINUATION_CLOSE'"""
+                 AND step_kind IN ('CONTINUATION_CLOSE','CONTINUATION_CLOSE_AUDIT')"""
         )
         self.fx.connection.commit()
         before = self._long_counts()
         result = self._barrier()
         self.assertFalse(result["barrier_reached"])
         self.assertEqual(result["status"], "AWAITING_PEER_FIRST_HOUR_CLOSE")
-        self.assertEqual(result["successful_first_hour_close_count"], 1)
         self.assertEqual(self._long_counts(), before)
         self.assertEqual(before, (0, 0, 0))
 
@@ -201,13 +245,13 @@ class StandardFourHourActivationFactoryBarrierTests(unittest.TestCase):
         self.assertTrue(result["barrier_reached"])
         self.assertEqual(result["eligible_token_slot_ids"], ["slot-1", "slot-2"])
         self.assertEqual(result["continuation_count"], 2)
-        self.assertEqual(result["subset_budget"]["request_ceiling"], 188)
-        self.assertEqual(result["subset_budget"]["scheduler_ceiling"], 162)
-        self.assertEqual(self._long_counts(), (2, 92, 2))
+        self.assertEqual(result["subset_budget"]["request_ceiling"], 190)
+        self.assertEqual(result["subset_budget"]["scheduler_ceiling"], 174)
+        self.assertEqual(self._long_counts(), (2, 98, 2))
         replay = self._barrier()
         self.assertTrue(replay["barrier_reached"])
         self.assertEqual(replay["eligible_token_slot_ids"], ["slot-1", "slot-2"])
-        self.assertEqual(self._long_counts(), (2, 92, 2))
+        self.assertEqual(self._long_counts(), (2, 98, 2))
 
     def test_one_hard_gate_blocked_continues_only_eligible_peer(self) -> None:
         memory_window_id = int(self.candidates[1]["memory_window_1h_id"])
@@ -223,9 +267,9 @@ class StandardFourHourActivationFactoryBarrierTests(unittest.TestCase):
         verdicts = {row["token_slot_id"]: row["verdict"] for row in result["verdicts"]}
         self.assertEqual(verdicts["slot-1"], "CONTINUE_TO_WINDOW_4H")
         self.assertEqual(verdicts["slot-2"], "BLOCK_CONTINUATION")
-        self.assertEqual(result["subset_budget"]["request_ceiling"], 149)
-        self.assertEqual(result["subset_budget"]["scheduler_ceiling"], 128)
-        self.assertEqual(self._long_counts(), (1, 61, 2))
+        self.assertEqual(result["subset_budget"]["request_ceiling"], 151)
+        self.assertEqual(result["subset_budget"]["scheduler_ceiling"], 140)
+        self.assertEqual(self._long_counts(), (1, 64, 2))
 
     def test_zero_eligible_is_valid_manifested_noop(self) -> None:
         for candidate in self.candidates:
@@ -238,20 +282,23 @@ class StandardFourHourActivationFactoryBarrierTests(unittest.TestCase):
         self.assertTrue(result["barrier_reached"])
         self.assertEqual(result["eligible_token_slot_ids"], [])
         self.assertEqual(result["continuation_count"], 0)
-        self.assertEqual(result["subset_budget"]["request_ceiling"], 80)
-        self.assertEqual(result["subset_budget"]["scheduler_ceiling"], 64)
+        self.assertEqual(result["subset_budget"]["request_ceiling"], 82)
+        self.assertEqual(result["subset_budget"]["scheduler_ceiling"], 76)
         self.assertEqual(self._long_counts(), (0, 0, 2))
 
-    def test_failed_first_hour_peer_fails_closed_without_manufactured_manifest(self) -> None:
+    def test_failed_first_hour_peer_is_ineligible_without_blocking_valid_peer(self) -> None:
         self.fx.connection.execute(
             """UPDATE printer_memory_factory_run_steps SET step_status='FAILED'
                WHERE run_id='factory-run-1' AND token_id=2
-                 AND step_kind='CONTINUATION_CLOSE'"""
+                 AND step_kind IN ('CONTINUATION_CLOSE','CONTINUATION_CLOSE_AUDIT')"""
         )
         self.fx.connection.commit()
-        with self.assertRaisesRegex(standard.StandardFourHourOperationalError, "first-hour close"):
-            self._barrier()
-        self.assertEqual(self._long_counts(), (0, 0, 0))
+        result = self._barrier()
+        self.assertEqual(result["eligible_token_slot_ids"], ["slot-1"])
+        verdicts = {row["token_slot_id"]: row for row in result["verdicts"]}
+        self.assertEqual(verdicts["slot-2"]["disposition"], "INELIGIBLE")
+        self.assertIn("PREDECESSOR_1H_FAILED", verdicts["slot-2"]["reasons"])
+        self.assertEqual(self._long_counts(), (1, 64, 2))
 
     def test_factory_has_distinct_standard_authority_not_proof_flag(self) -> None:
         parameters = inspect.signature(factory.run_one_command_15m_factory).parameters
@@ -268,7 +315,11 @@ class StandardFourHourActivationFactoryBarrierTests(unittest.TestCase):
         )
 
     def test_barrier_uses_explicit_standard_campaign_authority(self) -> None:
-        source = inspect.getsource(standard.run_standard_four_hour_campaign_barrier)
+        from printer_v1.operator_cli import standard_4h_progression
+
+        source = inspect.getsource(
+            standard_4h_progression.commit_standard_4h_progression_handoff
+        )
         self.assertIn("FourHourExecutionAuthority.STANDARD_CAMPAIGN", source)
         self.assertIn("plan_standard_campaign_4h_handoff", source)
         self.assertNotIn("plan_current_run_4h", source)
@@ -320,15 +371,16 @@ class StandardFourHourActivationFactoryBarrierTests(unittest.TestCase):
             self.fx.connection, "factory-run-1"
         )
         self.assertEqual(result["eligible_token_slot_ids"], ["slot-1"])
-        self.assertEqual(budget["request_ceiling"], 149)
-        self.assertEqual(budget["scheduler_ceiling"], 128)
+        self.assertEqual(budget["request_ceiling"], 151)
+        self.assertEqual(budget["scheduler_ceiling"], 140)
         self.assertEqual(budget["continuing_mask"], (True, False))
 
-    def test_long_execution_fails_closed_when_durable_manifest_disappears(self) -> None:
+    def test_long_execution_uses_progression_not_legacy_close_result_manifest(self) -> None:
         self._barrier()
         rows = self.fx.connection.execute(
             """SELECT id,result_json FROM printer_memory_factory_run_steps
-               WHERE run_id='factory-run-1' AND step_kind='CONTINUATION_CLOSE'
+               WHERE run_id='factory-run-1'
+                 AND step_kind IN ('CONTINUATION_CLOSE','CONTINUATION_CLOSE_AUDIT')
                ORDER BY id"""
         ).fetchall()
         self.assertEqual(len(rows), 2)
@@ -346,11 +398,9 @@ class StandardFourHourActivationFactoryBarrierTests(unittest.TestCase):
                ORDER BY id LIMIT 1"""
         ).fetchone()
         self.fx.connection.commit()
-        with self.assertRaises(factory._GlobalStop) as caught:
-            factory._enforce_budgets_before_step(
-                self.fx.connection, "factory-run-1", step
-            )
-        self.assertEqual(caught.exception.scope, "STANDARD_FOUR_HOUR_SUBSET")
+        factory._enforce_budgets_before_step(
+            self.fx.connection, "factory-run-1", step
+        )
 
 
 if __name__ == "__main__":

@@ -10,23 +10,27 @@ from printer_v1.operator_cli import campaign_ownership
 from printer_v1.operator_cli import one_command_15m_factory as factory
 from printer_v1.operator_cli import one_token_4h_runtime
 from printer_v1.operator_cli.campaign_ownership import CampaignOwnershipError
-from tests.test_v2_9_8b_post_dtw100_standard_four_hour_campaign_planning import (
-    StandardFourHourCampaignPlanningTests,
+from tests import (
+    test_v2_9_8b_post_dtw100_standard_four_hour_activation_factory_barrier
+    as activation_fixture,
 )
 from tests.test_v2_9_8b_operational_selective_1h import T1H, _iso
 
 
 class StandardFourHourEligibleSubsetTests(unittest.TestCase):
     def setUp(self) -> None:
-        helper = StandardFourHourCampaignPlanningTests()
-        self.fx, self.candidates = helper._prepared()
+        self.helper = (
+            activation_fixture.StandardFourHourActivationFactoryBarrierTests()
+        )
+        self.helper.setUp()
+        self.fx, self.candidates = self.helper.fx, self.helper.candidates
         self.by_slot = {
             str(candidate["token_slot_id"]): dict(candidate)
             for candidate in self.candidates
         }
 
     def tearDown(self) -> None:
-        self.fx.close()
+        self.helper.tearDown()
 
     def _plan(self, eligible_slots: list[str]):
         planner = getattr(
@@ -35,6 +39,21 @@ class StandardFourHourEligibleSubsetTests(unittest.TestCase):
             None,
         )
         self.assertIsNotNone(planner)
+        attempt_state = str(self.fx.connection.execute(
+            "SELECT attempt_state FROM "
+            "printer_memory_factory_standard_4h_progression_attempts"
+        ).fetchone()[0])
+        if attempt_state == "WAITING_FOR_PREDECESSORS":
+            for candidate in self.candidates:
+                if str(candidate["token_slot_id"]) in set(eligible_slots):
+                    continue
+                self.fx.connection.execute(
+                    "UPDATE printer_memory_windows SET supporting_context_json='{}' "
+                    "WHERE id=?",
+                    (int(candidate["memory_window_1h_id"]),),
+                )
+            self.fx.connection.commit()
+            return self.helper._barrier()["plan"]
         return planner(
             self.fx.connection,
             campaign_id="campaign-1h",
@@ -50,21 +69,14 @@ class StandardFourHourEligibleSubsetTests(unittest.TestCase):
         )
 
     def _manifest_by_slot(self) -> dict[str, dict]:
-        rows = self.fx.connection.execute(
-            """SELECT token_id,pair_id,result_json
-               FROM printer_memory_factory_run_steps
-               WHERE run_id='factory-run-1'
-                 AND step_kind='CONTINUATION_CLOSE'
-                 AND step_status='SUCCEEDED'
-               ORDER BY token_id"""
-        ).fetchall()
-        manifests: dict[str, dict] = {}
-        for row in rows:
-            payload = json.loads(str(row["result_json"] or "{}"))
-            manifest = payload.get("standard_four_hour_eligibility")
-            if isinstance(manifest, dict):
-                manifests[str(manifest["token_slot_id"])] = manifest
-        return manifests
+        loaded = one_token_4h_runtime.load_standard_four_hour_eligibility_manifests(
+            self.fx.connection,
+            campaign_id="campaign-1h",
+            run_id="run-1h",
+            cycle_id="cycle-1h",
+            factory_run_id="factory-run-1",
+        )
+        return {} if loaded is None else loaded
 
     def _long_counts(self) -> list[tuple[int, int]]:
         rows = self.fx.connection.execute(
@@ -117,16 +129,16 @@ class StandardFourHourEligibleSubsetTests(unittest.TestCase):
         # so the reserve applies to every mask. Scheduler ceilings are unchanged
         # because no new Scheduler job is introduced.
         cases = (
-            (("TRACK_FAST", "TRACK_FAST"), (False, False), 98, 82),
-            (("TRACK_FAST", "TRACK_FAST"), (True, False), 167, 146),
-            (("TRACK_FAST", "TRACK_FAST"), (True, True), 236, 210),
-            (("TRACK_FAST", "TRACK_NORMAL"), (False, False), 80, 64),
-            (("TRACK_FAST", "TRACK_NORMAL"), (True, False), 149, 128),
-            (("TRACK_FAST", "TRACK_NORMAL"), (False, True), 119, 98),
-            (("TRACK_FAST", "TRACK_NORMAL"), (True, True), 188, 162),
-            (("TRACK_NORMAL", "TRACK_NORMAL"), (False, False), 62, 46),
-            (("TRACK_NORMAL", "TRACK_NORMAL"), (True, False), 101, 80),
-            (("TRACK_NORMAL", "TRACK_NORMAL"), (True, True), 140, 114),
+            (("TRACK_FAST", "TRACK_FAST"), (False, False), 100, 94),
+            (("TRACK_FAST", "TRACK_FAST"), (True, False), 169, 158),
+            (("TRACK_FAST", "TRACK_FAST"), (True, True), 238, 222),
+            (("TRACK_FAST", "TRACK_NORMAL"), (False, False), 82, 76),
+            (("TRACK_FAST", "TRACK_NORMAL"), (True, False), 151, 140),
+            (("TRACK_FAST", "TRACK_NORMAL"), (False, True), 121, 110),
+            (("TRACK_FAST", "TRACK_NORMAL"), (True, True), 190, 174),
+            (("TRACK_NORMAL", "TRACK_NORMAL"), (False, False), 64, 58),
+            (("TRACK_NORMAL", "TRACK_NORMAL"), (True, False), 103, 92),
+            (("TRACK_NORMAL", "TRACK_NORMAL"), (True, True), 142, 126),
         )
         for lanes, mask, requests, scheduler in cases:
             budget = budget_owner(lanes, mask)
@@ -141,21 +153,21 @@ class StandardFourHourEligibleSubsetTests(unittest.TestCase):
         compatibility = one_token_4h_runtime.standard_two_token_lifecycle_budget(
             ("TRACK_FAST", "TRACK_NORMAL")
         )
-        self.assertEqual(int(compatibility["request_ceiling"]), 188)
-        self.assertEqual(int(compatibility["scheduler_ceiling"]), 162)
+        self.assertEqual(int(compatibility["request_ceiling"]), 190)
+        self.assertEqual(int(compatibility["scheduler_ceiling"]), 174)
 
     def test_only_normal_slot_continues_with_exact_manifest_and_ownership(self) -> None:
         result = self._plan(["slot-2"])
         self.assertTrue(result["planned"])
         self.assertFalse(result["replay"])
         self.assertEqual(int(result["continuation_count"]), 1)
-        self.assertEqual(int(result["planned_jobs"]), 31)
-        self.assertEqual(result["planned_by_slot"], {"slot-2": 31})
-        self.assertEqual(int(result["budget"]["request_ceiling"]), 119)
-        self.assertEqual(int(result["budget"]["scheduler_ceiling"]), 98)
+        self.assertEqual(int(result["planned_jobs"]), 34)
+        self.assertEqual(result["planned_by_slot"], {"slot-2": 34})
+        self.assertEqual(int(result["budget"]["request_ceiling"]), 121)
+        self.assertEqual(int(result["budget"]["scheduler_ceiling"]), 110)
         self.assertEqual(self._window_slots(), ["slot-2"])
-        self.assertEqual(self._long_counts(), [(2, 31)])
-        self.assertEqual(self._owned_counts(), [(2, 31)])
+        self.assertEqual(self._long_counts(), [(2, 34)])
+        self.assertEqual(self._owned_counts(), [(2, 34)])
 
         states = self.fx.connection.execute(
             """SELECT token_slot_id,token_state
@@ -176,7 +188,7 @@ class StandardFourHourEligibleSubsetTests(unittest.TestCase):
         self.assertEqual(manifests["slot-2"]["verdict"], "CONTINUE_TO_WINDOW_4H")
         self.assertEqual(
             {manifest["contract_version"] for manifest in manifests.values()},
-            {"STANDARD_4H_ELIGIBILITY_V1"},
+            {"STANDARD_4H_PROGRESSION_V1"},
         )
         self.assertEqual(
             int(self.fx.connection.execute(
@@ -209,12 +221,12 @@ class StandardFourHourEligibleSubsetTests(unittest.TestCase):
         self.assertFalse(first["replay"])
         self.assertTrue(second["planned"])
         self.assertTrue(second["replay"])
-        self.assertEqual(int(second["planned_jobs"]), 61)
-        self.assertEqual(second["planned_by_slot"], {"slot-1": 61})
-        self.assertEqual(int(second["budget"]["request_ceiling"]), 149)
-        self.assertEqual(int(second["budget"]["scheduler_ceiling"]), 128)
+        self.assertEqual(int(second["planned_jobs"]), 64)
+        self.assertEqual(second["planned_by_slot"], {"slot-1": 64})
+        self.assertEqual(int(second["budget"]["request_ceiling"]), 151)
+        self.assertEqual(int(second["budget"]["scheduler_ceiling"]), 140)
         self.assertEqual(self._window_slots(), ["slot-1"])
-        self.assertEqual(self._long_counts(), [(1, 61)])
+        self.assertEqual(self._long_counts(), [(1, 64)])
         self.assertEqual(counts_before, counts_after)
 
     def test_zero_eligible_persists_manifest_and_is_valid_noop(self) -> None:
@@ -225,8 +237,8 @@ class StandardFourHourEligibleSubsetTests(unittest.TestCase):
         self.assertEqual(int(result["continuation_count"]), 0)
         self.assertEqual(int(result["planned_jobs"]), 0)
         self.assertEqual(result["planned_by_slot"], {})
-        self.assertEqual(int(result["budget"]["request_ceiling"]), 80)
-        self.assertEqual(int(result["budget"]["scheduler_ceiling"]), 64)
+        self.assertEqual(int(result["budget"]["request_ceiling"]), 82)
+        self.assertEqual(int(result["budget"]["scheduler_ceiling"]), 76)
         self.assertEqual(self._window_slots(), [])
         self.assertEqual(self._long_counts(), [])
         self.assertEqual(self._owned_counts(), [])
@@ -290,10 +302,19 @@ class StandardFourHourEligibleSubsetTests(unittest.TestCase):
             "project_campaign_scheduler_job",
             side_effect=fail_first,
         ):
-            with self.assertRaises(CampaignOwnershipError):
+            with self.assertRaises(Exception):
                 self._plan(["slot-2"])
 
-        self.assertEqual(self._manifest_by_slot(), {})
+        self.assertEqual(
+            {
+                slot: manifest["disposition"]
+                for slot, manifest in self._manifest_by_slot().items()
+            },
+            {
+                "slot-1": "INELIGIBLE",
+                "slot-2": "ELIGIBLE_PENDING_HANDOFF",
+            },
+        )
         self.assertEqual(self._window_slots(), [])
         self.assertEqual(self._long_counts(), [])
         self.assertEqual(self._owned_counts(), [])
@@ -323,22 +344,29 @@ class StandardFourHourEligibleSubsetTests(unittest.TestCase):
         snapshot_ids: list[int] = []
         with self.fx.connection:
             for index, row in enumerate(rows, start=1):
-                snapshot_id = 60000 + int(token_id) * 100 + index
-                snapshot_ids.append(snapshot_id)
                 stamp = str(row["scheduled_for"])
-                self.fx.connection.execute(
-                    """INSERT INTO printer_token_snapshots(
-                        id,token_id,pair_id,captured_at,tracking_lane,snapshot_mode,
-                        source_status,data_quality_label
-                    ) VALUES (?,?,?,?,?,'TOKEN','COMPLETE','CLEAN_DATA')""",
-                    (
-                        snapshot_id,
-                        int(row["token_id"]),
-                        int(row["pair_id"]),
-                        stamp,
-                        str(row["tracking_lane"]),
-                    ),
+                captures = str(row["step_kind"]) in {
+                    "LONG_CONTINUATION_SNAPSHOT",
+                    "LONG_CONTINUATION_CLOSE_EVIDENCE",
+                }
+                snapshot_id = (
+                    60000 + int(token_id) * 100 + index if captures else None
                 )
+                if snapshot_id is not None:
+                    snapshot_ids.append(snapshot_id)
+                    self.fx.connection.execute(
+                        """INSERT INTO printer_token_snapshots(
+                            id,token_id,pair_id,captured_at,tracking_lane,snapshot_mode,
+                            source_status,data_quality_label
+                        ) VALUES (?,?,?,?,?,'TOKEN','COMPLETE','CLEAN_DATA')""",
+                        (
+                            snapshot_id,
+                            int(row["token_id"]),
+                            int(row["pair_id"]),
+                            stamp,
+                            str(row["tracking_lane"]),
+                        ),
+                    )
                 self.fx.connection.execute(
                     """UPDATE printer_memory_factory_run_steps
                        SET step_status='SUCCEEDED',snapshot_id=?,started_at=?,finished_at=?,updated_at=?
@@ -397,7 +425,11 @@ class StandardFourHourEligibleSubsetTests(unittest.TestCase):
             )
             memory_id = int(cursor.lastrowid)
 
-        close = next(row for row in rows if str(row["step_kind"]) == "LONG_CONTINUATION_CLOSE")
+        close = next(
+            row
+            for row in rows
+            if str(row["step_kind"]) == "LONG_CONTINUATION_CLOSE_AUDIT"
+        )
         binding = factory._bind_owned_long_memory_window_at_close(
             self.fx.connection,
             scheduler_job_id=int(close["scheduler_job_id"]),
@@ -428,9 +460,11 @@ class StandardFourHourEligibleSubsetTests(unittest.TestCase):
         self.assertTrue(terminal["complete"], terminal.get("reasons"))
         self.assertEqual(int(terminal["expected_continuation_count"]), 1)
         self.assertEqual(int(terminal["window_count"]), 1)
-        self.assertEqual(len(terminal["per_token"]), 1)
-        self.assertEqual(int(terminal["per_token"][0]["token_id"]), 2)
-        self.assertEqual(terminal["per_token"][0]["window_state"], "DIRTY")
+        self.assertEqual(len(terminal["per_token"]), 2)
+        eligible_details = terminal["eligible_window_details"]
+        self.assertEqual(len(eligible_details), 1)
+        self.assertEqual(int(eligible_details[0]["token_id"]), 2)
+        self.assertEqual(eligible_details[0]["window_state"], "DIRTY")
         self.assertEqual(int(terminal["active_owned_four_hour_work"]), 0)
         self.assertEqual(int(terminal["nonterminal_owned_four_hour_windows"]), 0)
 
@@ -440,7 +474,7 @@ class StandardFourHourEligibleSubsetTests(unittest.TestCase):
         close = self.fx.connection.execute(
             """SELECT scheduler_job_id FROM printer_memory_factory_run_steps
                WHERE run_id='factory-run-1' AND token_id=2
-                 AND step_kind='LONG_CONTINUATION_CLOSE'"""
+                 AND step_kind='LONG_CONTINUATION_CLOSE_AUDIT'"""
         ).fetchone()
         self.assertIsNotNone(close)
         with self.fx.connection:

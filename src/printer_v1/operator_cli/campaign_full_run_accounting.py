@@ -1946,22 +1946,6 @@ def project_cycle_lifecycle_accounting_completeness(
     from printer_v1.operator_cli.one_command_15m_factory import (
         _standard_campaign_four_hour_terminal_validation,
     )
-    from printer_v1.operator_cli.one_token_4h_runtime import (
-        load_standard_four_hour_eligibility_manifests,
-    )
-
-    manifests = load_standard_four_hour_eligibility_manifests(
-        connection,
-        campaign_id=context.campaign_id,
-        run_id=context.campaign_run_id,
-        cycle_id=context.cycle_id,
-        factory_run_id=context.factory_run_id,
-    )
-    if manifests is None or set(manifests) != {
-        str(row["token_slot_id"]) for row in slots
-    }:
-        reasons.append("STANDARD_FOUR_HOUR_ELIGIBILITY_MANIFEST_INCOMPLETE")
-        manifests = {}
     four_hour = _standard_campaign_four_hour_terminal_validation(
         connection,
         factory_run_id=context.factory_run_id,
@@ -1971,6 +1955,14 @@ def project_cycle_lifecycle_accounting_completeness(
     )
     if four_hour.get("enabled") is not True or four_hour.get("complete") is not True:
         reasons.append("STANDARD_FOUR_HOUR_TERMINAL_ACCOUNTING_INCOMPLETE")
+    progression_by_slot = {
+        str(item["token_slot_id"]): item
+        for item in four_hour.get("per_token", [])
+    }
+    if set(progression_by_slot) != {
+        str(row["token_slot_id"]) for row in slots
+    }:
+        reasons.append("STANDARD_FOUR_HOUR_PROGRESSION_ACCOUNTING_INCOMPLETE")
     window_evidence: list[dict[str, Any]] = []
     quality_results: list[dict[str, Any]] = []
     slot_dispositions: list[dict[str, Any]] = []
@@ -1995,7 +1987,8 @@ def project_cycle_lifecycle_accounting_completeness(
         by_kind: dict[str, list[sqlite3.Row]] = {}
         for row in rows:
             by_kind.setdefault(str(row["window_kind"]), []).append(row)
-        eligible_4h = bool(manifests.get(slot_id, {}).get("eligible"))
+        progression_token = progression_by_slot.get(slot_id, {})
+        eligible_4h = str(progression_token.get("disposition")) == "HANDOFF_CREATED"
         for kind in ("WINDOW_15M", "WINDOW_1H"):
             owned = by_kind.get(kind, [])
             if len(owned) != 1:
@@ -2093,7 +2086,10 @@ def project_cycle_lifecycle_accounting_completeness(
         through_4h_closed = str(slot["token_state"]) in (
             {"WINDOW_4H_CLOSED", "COOLDOWN", "ARCHIVED"}
             if eligible_4h
-            else {"WINDOW_1H_CLOSED", "COOLDOWN", "ARCHIVED"}
+            else {
+                "WINDOW_1H_CLOSED", "FAILED", "MANUAL_REVIEW",
+                "COOLDOWN", "ARCHIVED",
+            }
         )
         slot_dispositions.append(
             {
@@ -2101,6 +2097,8 @@ def project_cycle_lifecycle_accounting_completeness(
                 "persisted_slot_state": str(slot["token_state"]),
                 "through_4h_closed": through_4h_closed,
                 "canonical_15m_disposition": disposition,
+                "standard_four_hour_outcome": progression_token.get("outcome"),
+                "standard_four_hour_disposition": progression_token.get("disposition"),
             }
         )
         if not through_4h_closed:

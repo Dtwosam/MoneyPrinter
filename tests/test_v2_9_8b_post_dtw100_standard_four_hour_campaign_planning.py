@@ -38,6 +38,113 @@ class StandardFourHourCampaignPlanningTests(unittest.TestCase):
             planner,
             "two-token standard four-hour planning/Scheduler ownership owner is missing",
         )
+        attempt = fx.connection.execute(
+            "SELECT attempt_state FROM "
+            "printer_memory_factory_standard_4h_progression_attempts"
+        ).fetchone()
+        if attempt is not None and str(attempt[0]) == "WAITING_FOR_PREDECESSORS":
+            from printer_v1.db.migrate import (
+                canonical_migration_count,
+                canonical_migration_names,
+            )
+            from printer_v1.operator_cli.campaign_supervision import (
+                acquire_campaign_supervision,
+            )
+            from printer_v1.operator_cli.operational_database_target_binding import (
+                PRODUCTION_AUTHORITATIVE,
+                build_operational_database_target_binding,
+            )
+            from printer_v1.operator_cli.standard_4h_progression import (
+                evaluate_standard_4h_progression,
+            )
+            from tests import (
+                test_v2_9_8b_post_dtw100_standard_four_hour_activation_factory_barrier
+                as activation_fixture,
+            )
+
+            authority = (
+                activation_fixture.StandardFourHourActivationFactoryBarrierTests()
+            )
+            authority.fx = fx
+            authority._attach_authoritative_clean_fingerprint(candidates[0])
+            authority._attach_authoritative_clean_fingerprint(candidates[1])
+            authority._attach_acceptable_safety(1, candidates[0])
+            authority._attach_acceptable_safety(2, candidates[1])
+            with fx.connection:
+                fx.connection.execute(
+                    "UPDATE printer_memory_factory_campaign_cycles "
+                    "SET cycle_state='TRACKING' WHERE cycle_id='cycle-1h'"
+                )
+            acquire_campaign_supervision(
+                fx.db,
+                lock_path=fx.db.with_suffix(".lease.json"),
+                supervision_id="lane3-planning-supervision",
+                campaign_id="campaign-1h",
+                configuration_id="config-1h",
+                run_id="run-1h",
+                owner_id="lane3-planning-owner",
+                lease_seconds=3600,
+            )
+            binding = build_operational_database_target_binding(
+                target_kind=PRODUCTION_AUTHORITATIVE,
+                resolved_db_path=fx.db,
+                authorized_pre_mutation_sha256="a" * 64,
+                migration_count=canonical_migration_count(),
+                migration_head=canonical_migration_names()[-1],
+                authorization_id="lane3-authorization",
+                authorization_marker_sha256="b" * 64,
+                application_marker_sha256="c" * 64,
+                execution_id="lane3-execution",
+                campaign_id="campaign-1h",
+                campaign_run_id="run-1h",
+                cycle_id="cycle-1h",
+                configuration_id="config-1h",
+                authorization_consumed_once=True,
+                invocation_count=1,
+                allowed_invocation_count=1,
+                automatic_retry_allowed=False,
+                manual_rerun_allowed=False,
+                resume_allowed=False,
+                restart_allowed=False,
+                successor_allowed=False,
+            )
+            evaluated = evaluate_standard_4h_progression(
+                fx.connection,
+                db_path=fx.db,
+                campaign_id="campaign-1h",
+                configuration_id="config-1h",
+                campaign_run_id="run-1h",
+                cycle_id="cycle-1h",
+                factory_run_id="factory-run-1",
+                operational_db_binding=binding,
+                canonical_authoritative_db_path=fx.db,
+                cancellation_probe=lambda: None,
+                now=_iso(T1H),
+            )
+            self.assertEqual(evaluated["eligible_token_slot_ids"], ["slot-1", "slot-2"])
+
+        def _assert_atomic_campaign_graph(atomic_connection):
+            graph = atomic_connection.execute(
+                """SELECT c.campaign_state,r.run_state,cy.cycle_state,f.run_status
+                   FROM printer_memory_factory_campaigns AS c
+                   JOIN printer_memory_factory_campaign_runs AS r
+                     ON r.campaign_id=c.campaign_id AND r.run_id='run-1h'
+                   JOIN printer_memory_factory_campaign_cycles AS cy
+                     ON cy.campaign_id=c.campaign_id AND cy.run_id=r.run_id
+                    AND cy.cycle_id='cycle-1h'
+                   JOIN printer_memory_factory_runs AS f
+                     ON f.run_id=r.authoritative_run_id
+                   WHERE c.campaign_id='campaign-1h'
+                     AND r.authoritative_run_id='factory-run-1'"""
+            ).fetchone()
+            if graph is None or tuple(str(value) for value in graph) != (
+                "RUNNING",
+                "RUNNING",
+                "TRACKING",
+                "RUNNING",
+            ):
+                raise ValueError("standard four-hour atomic campaign graph changed")
+
         return planner(
             fx.connection,
             campaign_id="campaign-1h",
@@ -48,6 +155,7 @@ class StandardFourHourCampaignPlanningTests(unittest.TestCase):
             execution_authority=(
                 one_token_4h_runtime.FourHourExecutionAuthority.STANDARD_CAMPAIGN
             ),
+            atomic_precondition=_assert_atomic_campaign_graph,
             now=_iso(T1H),
         )
 
@@ -83,21 +191,21 @@ class StandardFourHourCampaignPlanningTests(unittest.TestCase):
             # V2-9.8B first-hour safety provenance repair: +3 fresh governed
             # safety transports per token at the exact 1h close. The Scheduler
             # ceiling is unchanged because no new Scheduler job is introduced.
-            self.assertEqual(int(budget["request_ceiling"]), 188)
-            self.assertEqual(int(budget["scheduler_ceiling"]), 162)
+            self.assertEqual(int(budget["request_ceiling"]), 190)
+            self.assertEqual(int(budget["scheduler_ceiling"]), 174)
             self.assertTrue(bool(budget["real_collection_enabled"]))
 
             result = self._plan(fx, candidates)
             self.assertTrue(result["planned"])
             self.assertFalse(result["replay"])
-            self.assertEqual(int(result["planned_jobs"]), 92)
+            self.assertEqual(int(result["planned_jobs"]), 98)
             self.assertEqual(
-                result["planned_by_slot"], {"slot-1": 61, "slot-2": 31}
+                result["planned_by_slot"], {"slot-1": 64, "slot-2": 34}
             )
 
             steps = fx.connection.execute(
                 """SELECT token_id,COUNT(*) AS total,
-                          SUM(CASE WHEN step_kind='LONG_CONTINUATION_CLOSE' THEN 1 ELSE 0 END) AS closes,
+                          SUM(CASE WHEN step_kind='LONG_CONTINUATION_CLOSE_AUDIT' THEN 1 ELSE 0 END) AS closes,
                           COUNT(DISTINCT scheduler_job_id) AS jobs
                    FROM printer_memory_factory_run_steps
                    WHERE run_id='factory-run-1'
@@ -106,7 +214,7 @@ class StandardFourHourCampaignPlanningTests(unittest.TestCase):
             ).fetchall()
             self.assertEqual(
                 [(int(r[0]), int(r[1]), int(r[2]), int(r[3])) for r in steps],
-                [(1, 61, 1, 61), (2, 31, 1, 31)],
+                [(1, 64, 1, 64), (2, 34, 1, 34)],
             )
 
             owned = fx.connection.execute(
@@ -127,10 +235,10 @@ class StandardFourHourCampaignPlanningTests(unittest.TestCase):
             ).fetchall()
             self.assertEqual(
                 [(int(r[0]), int(r[1]), int(r[2]), int(r[3])) for r in owned],
-                [(1, 61, 61, 61), (2, 31, 31, 31)],
+                [(1, 64, 64, 64), (2, 34, 34, 34)],
             )
 
-            for candidate, expected in zip(candidates, (61, 31), strict=True):
+            for candidate, expected in zip(candidates, (64, 34), strict=True):
                 exact = fx.connection.execute(
                     """SELECT COUNT(*)
                        FROM printer_memory_factory_campaign_scheduler_work AS cw

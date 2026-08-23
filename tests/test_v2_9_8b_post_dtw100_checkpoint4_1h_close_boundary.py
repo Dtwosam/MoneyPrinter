@@ -29,8 +29,12 @@ from tests.test_v2_9_8b_operational_selective_1h import (
 
 
 class Checkpoint4FirstHourCloseBoundaryTests(unittest.TestCase):
-    def _prepared_campaign(self) -> Selective1hFixture:
-        fx = Selective1hFixture()
+    def _prepared_campaign(
+        self, *, standard_four_hour_campaign: bool = False
+    ) -> Selective1hFixture:
+        fx = Selective1hFixture(
+            standard_four_hour_campaign=standard_four_hour_campaign
+        )
         fx.prepare_eligible(token_id=1, window_id=601, outcome="CONSOLIDATION")
         fx.prepare_eligible(token_id=2, window_id=602, outcome="NO_PUMP")
         with fx.connection:
@@ -58,11 +62,18 @@ class Checkpoint4FirstHourCloseBoundaryTests(unittest.TestCase):
 
     @staticmethod
     def _continuation_step(fx: Selective1hFixture, token_id: int, kind: str):
+        kinds = (
+            ("CONTINUATION_CLOSE", "CONTINUATION_CLOSE_AUDIT")
+            if kind == "CONTINUATION_CLOSE"
+            else (kind,)
+        )
+        placeholders = ",".join("?" for _ in kinds)
         row = fx.connection.execute(
-            """SELECT * FROM printer_memory_factory_run_steps
-               WHERE run_id='factory-run-1' AND token_id=? AND step_kind=?
+            f"""SELECT * FROM printer_memory_factory_run_steps
+               WHERE run_id='factory-run-1' AND token_id=?
+                 AND step_kind IN ({placeholders})
                ORDER BY scheduled_for,id LIMIT 1""",
-            (token_id, kind),
+            (token_id, *kinds),
         ).fetchone()
         if row is None:
             raise AssertionError(f"missing {kind} for token {token_id}")

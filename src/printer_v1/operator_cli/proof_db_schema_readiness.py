@@ -49,6 +49,24 @@ REQUIRED_TABLE_COLUMNS = {
         "recovery_report_json", "started_at", "finished_at", "created_at",
         "updated_at",
     },
+    "printer_memory_factory_standard_4h_progression_attempts": {
+        "progression_attempt_id", "campaign_id", "configuration_id",
+        "campaign_run_id", "factory_run_id", "cycle_id", "policy_version",
+        "attempt_state", "authority_evidence_json", "first_terminal_cause",
+        "fault_details_json", "eligibility_completed_at",
+        "handoff_committed_at", "terminal_at", "created_at", "updated_at",
+    },
+    "printer_memory_factory_standard_4h_progression_tokens": {
+        "progression_token_id", "progression_attempt_id", "campaign_id",
+        "campaign_run_id", "factory_run_id", "cycle_id", "slot_ordinal",
+        "token_slot_id", "token_identity", "token_row_id", "mint_identity",
+        "pair_identity", "pair_row_id", "lifecycle_identity",
+        "tracking_queue_id", "tracking_lane", "predecessor_window_1h_id",
+        "predecessor_memory_window_id", "token_disposition",
+        "disposition_reasons_json", "eligibility_evidence_json",
+        "successor_window_4h_id", "first_terminal_cause",
+        "fault_details_json", "evaluated_at", "created_at", "updated_at",
+    },
 }
 
 REQUIRED_NOT_NULL_COLUMNS = {
@@ -66,6 +84,21 @@ REQUIRED_NOT_NULL_COLUMNS = {
         "heartbeat_at", "lease_expires_at", "proof_db_path", "backup_db_path",
         "one_proof_lock_path", "stdout_log_path", "stderr_log_path", "started_at",
         "created_at", "updated_at",
+    },
+    "printer_memory_factory_standard_4h_progression_attempts": {
+        "progression_attempt_id", "campaign_id", "configuration_id",
+        "campaign_run_id", "factory_run_id", "cycle_id", "policy_version",
+        "attempt_state", "authority_evidence_json", "fault_details_json",
+        "created_at", "updated_at",
+    },
+    "printer_memory_factory_standard_4h_progression_tokens": {
+        "progression_token_id", "progression_attempt_id", "campaign_id",
+        "campaign_run_id", "factory_run_id", "cycle_id", "slot_ordinal",
+        "token_slot_id", "token_identity", "token_row_id", "mint_identity",
+        "pair_identity", "pair_row_id", "lifecycle_identity",
+        "tracking_queue_id", "tracking_lane", "token_disposition",
+        "disposition_reasons_json", "eligibility_evidence_json",
+        "fault_details_json", "created_at", "updated_at",
     },
 }
 
@@ -89,12 +122,29 @@ REQUIRED_INDEXES = {
     "idx_proof_supervision_run": (
         "printer_proof_run_supervision", ("run_id",),
     ),
+    "idx_standard_4h_progression_attempt_scope": (
+        "printer_memory_factory_standard_4h_progression_attempts",
+        ("campaign_id", "campaign_run_id", "cycle_id", "attempt_state"),
+    ),
+    "idx_standard_4h_progression_token_disposition": (
+        "printer_memory_factory_standard_4h_progression_tokens",
+        ("progression_attempt_id", "token_disposition", "slot_ordinal"),
+    ),
 }
 
 REQUIRED_UNIQUE_KEYS = {
     "printer_memory_factory_runs": {("run_id",)},
     "printer_memory_factory_run_steps": {("run_id", "step_key")},
     "printer_proof_run_supervision": {("execution_id",), ("run_id",)},
+    "printer_memory_factory_standard_4h_progression_attempts": {
+        ("progression_attempt_id",),
+        ("campaign_id", "campaign_run_id", "cycle_id"),
+    },
+    "printer_memory_factory_standard_4h_progression_tokens": {
+        ("progression_token_id",),
+        ("progression_attempt_id", "slot_ordinal"),
+        ("progression_attempt_id", "token_slot_id"),
+    },
 }
 
 REQUIRED_STEP_FOREIGN_KEYS = {

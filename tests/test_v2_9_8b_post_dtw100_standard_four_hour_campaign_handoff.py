@@ -16,7 +16,9 @@ from tests.test_v2_9_8b_operational_selective_1h import T15, T1H, _iso
 
 class StandardFourHourCampaignHandoffTests(unittest.TestCase):
     def _prepared_closed_first_hour(self):
-        fx = Checkpoint4FirstHourCloseBoundaryTests()._prepared_campaign()
+        fx = Checkpoint4FirstHourCloseBoundaryTests()._prepared_campaign(
+            standard_four_hour_campaign=True
+        )
         with fx.connection:
             for token_id, lane in ((1, "TRACK_FAST"), (2, "TRACK_NORMAL")):
                 fx.connection.execute(
@@ -71,7 +73,9 @@ class StandardFourHourCampaignHandoffTests(unittest.TestCase):
                 close_step = fx.connection.execute(
                     """SELECT id FROM printer_memory_factory_run_steps
                        WHERE run_id='factory-run-1' AND token_id=?
-                         AND step_kind='CONTINUATION_CLOSE'""",
+                         AND step_kind IN (
+                             'CONTINUATION_CLOSE','CONTINUATION_CLOSE_AUDIT'
+                         )""",
                     (token_id,),
                 ).fetchone()
                 self.assertIsNotNone(close_step)
@@ -85,6 +89,27 @@ class StandardFourHourCampaignHandoffTests(unittest.TestCase):
                         json.dumps({"ok": True, "memory_window_id": memory_id}),
                         int(close_step[0]),
                     ),
+                )
+                scheduler_job_id = int(
+                    fx.connection.execute(
+                        "SELECT scheduler_job_id FROM printer_memory_factory_run_steps "
+                        "WHERE id=?",
+                        (int(close_step[0]),),
+                    ).fetchone()[0]
+                )
+                fx.connection.execute(
+                    """UPDATE printer_scheduler_jobs
+                       SET status='SUCCEEDED',finished_at=?,locked_at=NULL,
+                           lock_owner=NULL,last_error=NULL
+                       WHERE id=?""",
+                    (_iso(T1H), scheduler_job_id),
+                )
+                fx.connection.execute(
+                    """UPDATE printer_memory_factory_campaign_scheduler_work
+                       SET work_state='SUCCEEDED',first_terminal_cause='fixture_clean_1h',
+                           terminal_at=?,updated_at=?
+                       WHERE scheduler_job_id=?""",
+                    (_iso(T1H), _iso(T1H), scheduler_job_id),
                 )
                 campaign_1h = fx.connection.execute(
                     """SELECT window_id FROM printer_memory_factory_campaign_windows

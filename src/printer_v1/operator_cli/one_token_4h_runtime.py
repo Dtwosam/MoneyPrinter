@@ -670,6 +670,40 @@ def load_standard_four_hour_eligibility_manifests(
     factory_run_id: str,
 ) -> dict[str, dict[str, Any]] | None:
     """Return the exact durable two-slot standard-4h manifest, or None if absent."""
+    from printer_v1.operator_cli.standard_4h_progression import (
+        load_standard_4h_progression_aggregate,
+    )
+
+    progression = load_standard_4h_progression_aggregate(
+        connection,
+        campaign_id=campaign_id,
+        campaign_run_id=run_id,
+        cycle_id=cycle_id,
+    )
+    if progression is not None:
+        if str(progression["factory_run_id"]) != str(factory_run_id):
+            raise ValueError("standard four-hour progression factory-run mismatch")
+        return {
+            str(token["token_slot_id"]): {
+                "contract_version": "STANDARD_4H_PROGRESSION_V1",
+                "campaign_id": str(campaign_id),
+                "campaign_run_id": str(run_id),
+                "cycle_id": str(cycle_id),
+                "token_slot_id": str(token["token_slot_id"]),
+                "token_id": int(token["token_row_id"]),
+                "pair_id": int(token["pair_row_id"]),
+                "verdict": (
+                    "CONTINUE_TO_WINDOW_4H"
+                    if str(token["token_disposition"])
+                    in {"ELIGIBLE_PENDING_HANDOFF", "HANDOFF_CREATED"}
+                    else "BLOCK_CONTINUATION"
+                ),
+                "eligible": str(token["token_disposition"])
+                in {"ELIGIBLE_PENDING_HANDOFF", "HANDOFF_CREATED"},
+                "disposition": str(token["token_disposition"]),
+            }
+            for token in progression["tokens"]
+        }
     slot_rows = _campaign_slot_identity_rows(
         connection,
         campaign_id=campaign_id,
@@ -902,7 +936,7 @@ def _standard_campaign_4h_plan_state(
         if policy is None:
             raise ValueError(f"missing WINDOW_4H policy for {lane}")
         expected = int(policy.minimum_required_snapshots)
-        expected_work = expected + 2
+        expected_work = expected + 3
         total_expected += expected_work
         planned_by_slot[slot_id] = expected_work
         window = connection.execute(
@@ -939,11 +973,16 @@ def _standard_campaign_4h_plan_state(
                 "LONG_CONTINUATION_CLOSE_EVIDENCE",
                 "LONG_CONTINUATION_CLOSE_CONTEXT",
                 "LONG_CONTINUATION_CLOSE_AUDIT",
+                "LONG_CONTINUATION_CLOSE_PRE_CLOSE_CRITICAL",
             }
             or any(row[1] is None for row in step_rows)
             or len({int(row[1]) for row in step_rows}) != expected_work
         ):
-            raise ValueError(f"incomplete four-hour run-step plan for {slot_id}")
+            raise ValueError(
+                f"incomplete four-hour run-step plan for {slot_id}: "
+                f"actual={len(step_rows)} expected={expected_work} "
+                f"kinds={sorted(str(row[0]) for row in step_rows)}"
+            )
         ownership_count = int(connection.execute(
             """SELECT COUNT(*)
                FROM printer_memory_factory_campaign_scheduler_work AS cw
@@ -1014,6 +1053,7 @@ def plan_standard_campaign_4h_handoff(
     cycle_id: str,
     factory_run_id: str,
     candidates: Sequence[Mapping[str, Any]],
+    atomic_precondition: Any = None,
     eligible_token_slot_ids: Sequence[str] | None = None,
     execution_authority: FourHourExecutionAuthority | str = FourHourExecutionAuthority.DISABLED,
     now: str | None = None,
@@ -1047,6 +1087,31 @@ def plan_standard_campaign_4h_handoff(
     budget = standard_campaign_lifecycle_budget(
         (lanes[0], lanes[1]), (bool(mask[0]), bool(mask[1]))
     )
+    from printer_v1.operator_cli.standard_4h_progression import (
+        ATTEMPT_TABLE,
+        TOKEN_TABLE,
+        load_standard_4h_progression_aggregate,
+    )
+
+    progression = load_standard_4h_progression_aggregate(
+        connection,
+        campaign_id=campaign_id,
+        campaign_run_id=run_id,
+        cycle_id=cycle_id,
+    )
+    if progression is None:
+        raise ValueError("standard_four_hour_progression_attempt_missing")
+    if str(progression["factory_run_id"]) != str(factory_run_id):
+        raise ValueError("standard four-hour progression factory-run mismatch")
+    durable_eligible = {
+        str(token["token_slot_id"])
+        for token in progression["tokens"]
+        if str(token["token_disposition"])
+        in {"ELIGIBLE_PENDING_HANDOFF", "HANDOFF_CREATED"}
+    }
+    if durable_eligible != eligible_ids:
+        raise ValueError("requested standard four-hour subset differs from durable progression")
+
     existing_manifests = load_standard_four_hour_eligibility_manifests(
         connection,
         campaign_id=campaign_id,
@@ -1071,13 +1136,7 @@ def plan_standard_campaign_4h_handoff(
         (campaign_id, run_id, cycle_id, factory_run_id),
     ).fetchone()[0])
 
-    if existing_manifests is not None:
-        manifest_eligible = {
-            slot_id for slot_id, manifest in existing_manifests.items()
-            if manifest["eligible"] is True
-        }
-        if manifest_eligible != eligible_ids:
-            raise ValueError("requested standard four-hour subset differs from durable manifest")
+    if str(progression["attempt_state"]) == "HANDOFF_COMMITTED":
         verified = _standard_campaign_4h_plan_state(
             connection,
             campaign_id=campaign_id,
@@ -1088,6 +1147,11 @@ def plan_standard_campaign_4h_handoff(
             eligible_token_slot_ids=tuple(eligible_ids),
         )
         return {"planned": True, "replay": True, **verified, "budget": budget}
+
+    if str(progression["attempt_state"]) != "ELIGIBILITY_COMPLETE":
+        raise ValueError(
+            "standard four-hour handoff requires ELIGIBILITY_COMPLETE progression"
+        )
 
     if existing_windows or existing_steps or existing_owned:
         raise ValueError("partial_or_ambiguous_standard_four_hour_plan_without_manifest")
@@ -1100,15 +1164,31 @@ def plan_standard_campaign_4h_handoff(
     timestamp = now or datetime.now(timezone.utc).isoformat()
     connection.execute("BEGIN")
     try:
-        _persist_standard_four_hour_eligibility_manifests(
+        if not callable(atomic_precondition):
+            raise ValueError(
+                "standard four-hour atomic authority precondition is required"
+            )
+        atomic_precondition(connection)
+        atomic_progression = load_standard_4h_progression_aggregate(
             connection,
             campaign_id=campaign_id,
-            run_id=run_id,
+            campaign_run_id=run_id,
             cycle_id=cycle_id,
-            factory_run_id=factory_run_id,
-            candidates=candidates,
-            eligible_ids=eligible_ids,
         )
+        if (
+            atomic_progression is None
+            or str(atomic_progression["attempt_state"]) != "ELIGIBILITY_COMPLETE"
+            or {
+                str(token["token_slot_id"])
+                for token in atomic_progression["tokens"]
+                if str(token["token_disposition"])
+                == "ELIGIBLE_PENDING_HANDOFF"
+            }
+            != eligible_ids
+        ):
+            raise ValueError(
+                "standard four-hour atomic progression precondition changed"
+            )
         handoff = campaign_ownership.persist_standard_four_hour_handoff_set(
             connection,
             campaign_id=campaign_id,
@@ -1197,6 +1277,59 @@ def plan_standard_campaign_4h_handoff(
         )
         if verified["planned_by_slot"] != planned_by_slot:
             raise ValueError("standard four-hour planned-slot read-back mismatch")
+        candidate_by_slot = {
+            str(candidate["token_slot_id"]): candidate for candidate in candidates
+        }
+        for slot_id in eligible_ids:
+            cursor = connection.execute(
+                f"""UPDATE {TOKEN_TABLE}
+                    SET token_disposition='HANDOFF_CREATED',
+                        successor_window_4h_id=?,updated_at=?
+                    WHERE progression_attempt_id=? AND token_slot_id=?
+                      AND token_disposition='ELIGIBLE_PENDING_HANDOFF'""",
+                (
+                    str(candidate_by_slot[slot_id]["campaign_window_4h_id"]),
+                    timestamp,
+                    str(progression["progression_attempt_id"]),
+                    slot_id,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError(
+                    f"standard four-hour progression token handoff mismatch: {slot_id}"
+                )
+        cursor = connection.execute(
+            f"""UPDATE {ATTEMPT_TABLE}
+                SET attempt_state='HANDOFF_COMMITTED',handoff_committed_at=?,
+                    terminal_at=?,updated_at=?
+                WHERE progression_attempt_id=?
+                  AND attempt_state='ELIGIBILITY_COMPLETE'""",
+            (
+                timestamp,
+                timestamp,
+                timestamp,
+                str(progression["progression_attempt_id"]),
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise ValueError("standard four-hour progression handoff commit mismatch")
+        committed = load_standard_4h_progression_aggregate(
+            connection,
+            campaign_id=campaign_id,
+            campaign_run_id=run_id,
+            cycle_id=cycle_id,
+        )
+        if (
+            committed is None
+            or str(committed["attempt_state"]) != "HANDOFF_COMMITTED"
+            or {
+                str(token["token_slot_id"])
+                for token in committed["tokens"]
+                if str(token["token_disposition"]) == "HANDOFF_CREATED"
+            }
+            != eligible_ids
+        ):
+            raise ValueError("standard four-hour progression read-back mismatch")
     except Exception:
         connection.rollback()
         raise
