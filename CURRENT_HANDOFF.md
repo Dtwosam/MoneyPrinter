@@ -4,45 +4,34 @@ Date: 2026-08-23
 
 ## Current lane
 
-`V2-9.8B Lane 2 — Multi-Token Evidence-Deadline Scheduling Closeout`
+`V2-9.8B Lane 3 — Post-1H Standard-4H Progression + Fault Preservation Readiness Audit`
 
-Status: `CLOSED_PASS`
+Status: `CLOSED_PASS_READY_FOR_DESIGN`
 
 Verdict:
 
-`V2_9_8B_MULTI_TOKEN_EVIDENCE_DEADLINE_SCHEDULING_LANE2_CLOSEOUT_PASS_READY_FOR_LANE3_READINESS_AUDIT`
+`V2_9_8B_LANE3_POST_1H_STANDARD_4H_PROGRESSION_FAULT_PRESERVATION_READINESS_AUDIT_PASS_READY_FOR_DESIGN`
 
-Lane-2 closeout:
+Lane-3 readiness audit:
 
-`docs/printer-v1-v2-9-8b-multi-token-evidence-deadline-scheduling-lane2-closeout.md`
-
-Governing design document (amended in place):
-
-`docs/printer-v1-v2-9-8b-timely-closing-context-production-design.md`
+`docs/printer-v1-v2-9-8b-post-1h-standard-4h-progression-fault-preservation-lane3-readiness-audit.md`
 
 Accepted final state:
 
-Current V1 has no real audit-preserving technical context-binding exception.
-
-Accepted active semantics:
-
-1. A structurally successful `CLOSE_CONTEXT_BIND` may contain truthful
-   complete, partial, provider-failed, rejected, unavailable, or unknown
-   evidence. It succeeds operationally, `CLOSE_AUDIT` remains claimable, and
-   E2Q owns CLEAN eligibility.
-2. Identity, provenance, invariant, persistence, SQLite, or unclassified
-   technical exception during `CLOSE_CONTEXT_BIND` fails closed after
-   savepoint rollback. The exact closing snapshot remains durable and the
-   dependent `CLOSE_AUDIT` is not preserved.
+The real Scheduler-owned, Source-Governed 1h->4h production route exists, but
+its pre-plan progression/fault boundary is incomplete. A separate design must
+address durable progression disposition, real health/budget/queue authority,
+post-commit first-cause preservation, failed-peer isolation, and absence-versus-
+completion truth. No repair is designed or implemented by this audit.
 
 ## Exact Git transaction
 
 - branch: `agent/v2-9-8b-consumed-4-2-2-full-operational-run-forensic-audit`
 - Lane-2 implementation/proof baseline:
   `ae4d5d55abc9486372115a9fb21d976b46f67a54`
-- Lane-2 closeout starting HEAD:
-  `ae4d5d55abc9486372115a9fb21d976b46f67a54`
-- resulting new HEAD: this documentation-only closeout commit (the exact
+- Lane-3 audit starting HEAD:
+  `30db8a89a761e3b1b894e393a9c70c46e84311c9`
+- resulting new HEAD: this documentation-only Lane-3 audit commit (the exact
   commit SHA is the repository HEAD containing this handoff)
 
 ## Lane-2 disposition
@@ -58,7 +47,7 @@ remaining proven Lane-2 blocker.
 1. Design Lane 1 cadence authority — **CLOSED PASS**
 2. Design Lane 2 multi-token evidence-deadline scheduling — **CLOSED PASS**
 3. Lane 3 post-1H standard-four-hour progression + fault preservation —
-   **AUDIT/READINESS ONLY; not started**
+   **READINESS AUDIT CLOSED PASS; design permitted but not started**
 4. Design Lane 4 multi-cycle terminal accounting/reporting — **not started**
 
 Authorization `…512f2436` remains permanently consumed and non-reusable.
@@ -66,12 +55,12 @@ No automatic fresh authorization, retry, rerun, resume, restart, or successor.
 
 ## Hard stop boundary
 
-This Lane-2 closeout package is documentation only. It must not:
+This Lane-3 audit package is documentation only. It must not:
 
 - modify scheduler/close-path production, tests, schemas, migrations, or config;
 - run Printer, Source Governor, or Central Scheduler;
 - create/reuse/apply authorization;
-- begin Lane 3 in this run;
+- begin Lane-3 design or implementation in this run;
 - unlock retrieval, paper decisions, BUY/SELL/HOLD, positions, trades, audits,
   PnL, live execution, wallets/private keys, paid APIs, scoring/ranking/
   confidence/weighted logic, or embeddings/vectors.
@@ -81,11 +70,11 @@ This Lane-2 closeout package is documentation only. It must not:
 ```text
 LANE 3:
 Post-1H Standard-4H Progression + Fault Preservation
-AUDIT/READINESS ONLY.
+DESIGN / SPECIFICATION ONLY.
 ```
 
-This does not authorize Lane-3 design or implementation. Do not start Lane 3
-in the Lane-2 closeout run. Cycle 3 remains locked.
+This authorizes only a separate Lane-3 design/specification task. It does not
+authorize implementation, a campaign, retry/restart/successor, or Cycle 3.
 
 ## Locks
 
