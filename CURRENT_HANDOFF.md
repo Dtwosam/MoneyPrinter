@@ -4,25 +4,25 @@ Date: 2026-08-23
 
 ## Current lane
 
-`V2-9.8B Lane 4 — Multi-Cycle Terminal Accounting / Reporting Readiness Audit`
+`V2-9.8B Lane 4 — Multi-Cycle Terminal Accounting / Reporting Design`
 
 Status: `CLOSED PASS`
 
 Verdict:
 
-`V2_9_8B_LANE4_MULTI_CYCLE_TERMINAL_ACCOUNTING_REPORTING_READINESS_AUDIT_PASS_READY_FOR_DESIGN`
+`V2_9_8B_LANE4_MULTI_CYCLE_TERMINAL_ACCOUNTING_REPORTING_DESIGN_PASS_READY_FOR_NARROW_IMPLEMENTATION`
 
-Lane-4 readiness audit:
+Lane-4 design:
 
-`docs/printer-v1-v2-9-8b-lane4-multi-cycle-terminal-accounting-reporting-readiness-audit.md`
+`docs/printer-v1-v2-9-8b-lane4-multi-cycle-terminal-accounting-reporting-design.md`
 
 Accepted final state:
 
-The audit traced the real Cycle-1/Cycle-2 runtime, Lane-3 progression,
-cycle/shared terminal owners, full-run accounting, canonical report, and
-terminal summary. It proves current Cycle-1 scoping/shared-terminal/reporting
-defects and separates them from unused synthetic adapter fixture debt. The
-production path is sufficiently resolved for a separate Lane-4 design only.
+The design assigns canonical per-cycle and exact two-cycle derivation to the
+existing full-run accounting owner, preserves token/cycle/campaign fault scope,
+keeps six-unit projection subordinate as evidence, extends the immutable report,
+and makes terminal summary a deterministic report/aggregate projection. No
+migration is required. Cycle 3 remains locked.
 
 ## Exact Git transaction
 
@@ -38,7 +38,9 @@ production path is sufficiently resolved for a separate Lane-4 design only.
 - Lane-3 wiring repair: `01fe653b27f3d8d5101d675d4848fb5de85d0e38`
 - Lane-3 closeout / Lane-4 audit starting HEAD:
   `e70b2faf4906f73faec2adf9321d04385e362e81`
-- resulting new HEAD: this documentation-only Lane-4 audit commit (the
+- Lane-4 design starting HEAD:
+  `4c0fe31f773c14f59e2008ed3f17f8f03580bb98`
+- resulting new HEAD: this documentation-only Lane-4 design commit (the
   exact commit SHA is the repository HEAD containing this handoff)
 
 ## Lane-2 disposition
@@ -55,20 +57,20 @@ remaining proven Lane-2 blocker.
 2. Design Lane 2 multi-token evidence-deadline scheduling — **CLOSED PASS**
 3. Lane 3 post-1H standard-four-hour progression + fault preservation —
    **CLOSED PASS; no remaining proven blocker**
-4. Lane 4 multi-cycle terminal accounting/reporting — **readiness audit CLOSED
-   PASS; design not started**
+4. Lane 4 multi-cycle terminal accounting/reporting — **readiness and design
+   CLOSED PASS; implementation not started**
 
 Authorization `…512f2436` remains permanently consumed and non-reusable.
 No automatic fresh authorization, retry, rerun, resume, restart, or successor.
 
 ## Hard stop boundary
 
-This Lane-4 readiness package is documentation only. It must not:
+This Lane-4 design package is documentation only. It must not:
 
 - modify production, tests, schemas, migrations, runtime, or config;
 - run Printer, Source Governor, or Central Scheduler;
 - create/reuse/apply authorization;
-- begin Lane-4 design or implementation in this run;
+- begin Lane-4 implementation in this run;
 - activate Cycle 3;
 - unlock retrieval, paper decisions, BUY/SELL/HOLD, positions, trades, audits,
   PnL, live execution, wallets/private keys, paid APIs, scoring/ranking/
@@ -79,11 +81,11 @@ This Lane-4 readiness package is documentation only. It must not:
 ```text
 LANE 4:
 Multi-Cycle Terminal Accounting / Reporting
-DESIGN / SPECIFICATION ONLY.
+NARROW IMPLEMENTATION ONLY.
 ```
 
-This permits only a separate Lane-4 design/specification task grounded in the
-readiness audit. It does not authorize implementation, a campaign,
+This permits only a separate narrow Lane-4 implementation task grounded in the
+readiness audit and design. It does not authorize a campaign, proof,
 retry/restart/successor, report regeneration, recovery, or Cycle 3.
 
 ## Locks
