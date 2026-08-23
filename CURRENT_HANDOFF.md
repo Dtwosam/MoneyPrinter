@@ -6,36 +6,36 @@ Date: 2026-08-23
 
 `V2-9.8B Post-Lane-4 Schema / Gate Coherence`
 
-Status: `AUTHORITATIVE MIGRATION 060/061 APPLICATION COMPLETED`
+Status: `POST-APPLICATION REREADINESS CLOSED PASS`
 
 Verdict:
 
-`V2_9_8B_POST_LANE4_SCHEMA_GATE_COHERENCE_AUTHORITATIVE_MIGRATION_060_061_APPLICATION_PASS_READY_FOR_POST_APPLICATION_REREADINESS`
+`V2_9_8B_POST_LANE4_SCHEMA_GATE_COHERENCE_POST_APPLICATION_REREADINESS_PASS`
 
-This means **SCHEMA APPLICATION COMMITTED**. It does not mean campaign ready,
-authorized, V2-9.8B complete, or V2-10 ready.
+This means **POST-APPLICATION SCHEMA REREADINESS PASS**. It does not mean
+campaign authorized, campaign GO, V2-9.8B complete, V2-10 ready, or Cycle 3
+unlocked.
 
-Evidence:
+Rereadiness:
 
-`operator-runs/v2-9-8b-migration-061-application/MIGRATION_061_20260823T200709Z/`
+`docs/printer-v1-v2-9-8b-post-lane4-schema-gate-coherence-post-application-rereadiness.md`
 
-Authoritative `apply_migrations` was invoked exactly once against
-`data/printer_v1.sqlite3` after backup/rehearsal PASS. Ledger is now 61 /
-`061_standard_4h_progression_fault_preservation.sql`. Required Migration 060
-columns/trigger and Migration 061 tables/indexes/triggers exist. Immediate
-integrity/FK checks passed. Progression tables remain empty. Four-token git
-current evidence stays `MIGRATION_059_*`. V2-9.8B remains ACTIVE and
-incomplete. Cycle 3 remains locked. Consumed authorization `…512f2436`
-remains non-reusable. No campaign authorization exists. No campaign is
-authorized. PR 4 rereadiness is required and has not started.
+PR 3 execution: `MIGRATION_061_20260823T200709Z`. Authoritative DB SHA remains
+`e96b5aae27871c39499a395b2f6a4e48ece8b3d19e065ce54a2fd3cab076df50`. Ledger is
+61 / `061_standard_4h_progression_fault_preservation.sql`. Helper
+`admission_schema_ready = true` with `campaign_authorized = false`. Four-token
+git current evidence still `MIGRATION_059_*`. No `MIGRATION_061_PACKAGE_*`
+exists in the manifest. Consumed authorization `…512f2436` remains
+non-reusable. No campaign authorization exists. No campaign is authorized.
+Cycle 3 remains locked. V2-10 remains locked.
 
 ## Exact Git transaction
 
 - branch: `agent/v2-9-8b-consumed-4-2-2-full-operational-run-forensic-audit`
 - required starting HEAD:
-  `3bfa6d2c7fea5f8da52693fa529c1af3a92764e8`
-- migration execution ID: `MIGRATION_061_20260823T200709Z`
-- resulting new HEAD: this documentation-only handoff checkpoint
+  `1c5905cfd2d735dcb6a107a9a0b7e54da0c866f8`
+- PR 3 execution ID: `MIGRATION_061_20260823T200709Z`
+- resulting new HEAD: this documentation-only rereadiness/closeout commit
   (the exact commit SHA is the repository HEAD containing this handoff)
 
 ## Governing repair-lane sequence (forensic)
@@ -51,22 +51,22 @@ authorized. PR 4 rereadiness is required and has not started.
 8. Canonical DB target enforcement repair — **CLOSED PASS**
 9. Post-Lane-4 schema / gate coherence implementation inspection —
    **CLOSED PASS**
-10. Authoritative migration 060/061 application — **CLOSED PASS here**
+10. Authoritative migration 060/061 application — **CLOSED PASS**
+11. Post-application rereadiness — **CLOSED PASS here**
 
 V2-9.8B remains the active memory-growth program. V2-10 is not next.
 
 ## Hard stop boundary
 
-This handoff records schema application only. It must not:
+This package is documentation only. It must not:
 
-- be read as campaign authorization or campaign GO;
-- create, review, consume, clone, refresh, or replace authorization
+- write the authoritative database or apply a migration;
+- create/review/consume/clone/refresh/replace authorization
   `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260821T153458Z_512f2436`;
 - run Printer, Source Governor, or Central Scheduler;
-- cut git current evidence from `MIGRATION_059_*`;
-- edit `git_provenance_authorization_manifest.py`;
-- begin PR 4 from this handoff without the separately named read-only
-  rereadiness task;
+- cut git current evidence from `MIGRATION_059_*` in this closed lane;
+- edit `git_provenance_authorization_manifest.py` from this closed lane;
+- append 059 to the historical migration-package tuple from this closed lane;
 - activate Cycle 3;
 - unlock retrieval, paper decisions, BUY/SELL/HOLD, positions, trades, audits,
   PnL, live execution, wallets/private keys, paid APIs, scoring/ranking/
@@ -76,13 +76,15 @@ This handoff records schema application only. It must not:
 
 ```text
 V2-9.8B Post-Lane-4 Schema / Gate Coherence
-POST-APPLICATION REREADINESS — READ-ONLY ONLY
+MIGRATION-061 GIT EVIDENCE CUTOVER / SCHEMA-GATE CLOSEOUT — DESIGN/REVIEW ONLY
 ```
 
-PR 4 is independent read-only rereadiness of the 061 evidence package and the
-authoritative database. It is not started here. No campaign. No new campaign
-authorization. No reuse of consumed authorization `…512f2436`. Cycle 3 remains
-locked. V2-10 remains locked.
+Catalogue, pin, and authoritative DB are 61, and a real 061 application
+package exists, but authorization profiles still point at
+`MIGRATION_059_EVIDENCE`. The next lane must reconcile that git-evidence
+mismatch. It is not a campaign authorization lane. Do not skip to a fresh
+4/2/2 package from this handoff. No reuse of consumed authorization
+`…512f2436`. Cycle 3 remains locked. V2-10 remains locked.
 
 ## Locks
 
