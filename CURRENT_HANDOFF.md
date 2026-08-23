@@ -6,15 +6,15 @@ Date: 2026-08-23
 
 `V2-9.8B Post-Lane-4 Schema / Gate Coherence`
 
-Status: `MIGRATION-061 GIT EVIDENCE CUTOVER DESIGN/REVIEW CLOSED PASS`
+Status: `MIGRATION-061 GIT EVIDENCE CUTOVER DESIGN AMENDMENT CLOSED PASS`
 
 Verdict:
 
-`V2_9_8B_MIGRATION_061_GIT_EVIDENCE_CUTOVER_DESIGN_REVIEW_PASS_READY_FOR_NARROW_IMPLEMENTATION`
+`V2_9_8B_MIGRATION_061_GIT_EVIDENCE_CUTOVER_DESIGN_AMENDMENT_PASS_READY_FOR_NARROW_IMPLEMENTATION`
 
-This means the later git-evidence cutover is specified. It does not mean the
-cutover is implemented, a campaign is authorized, V2-9.8B is complete, or
-V2-10 is ready.
+The later git-evidence cutover is specified, including production-consumed
+current-061 identity fields. This DESIGN/AMENDMENT lane does not implement
+that cutover.
 
 Design:
 
@@ -22,16 +22,16 @@ Design:
 
 Catalogue, pin, and authoritative DB remain 61. Real 061 application package
 `MIGRATION_061_20260823T200709Z` exists. Both four-token profiles still bind
-`MIGRATION_059_EVIDENCE`. That mismatch is unchanged by this documentation
-lane. Consumed authorization `…512f2436` remains non-reusable. No campaign
+`MIGRATION_059_EVIDENCE`. That mismatch is unchanged until the next lane.
+Consumed authorization `…512f2436` remains non-reusable. No campaign
 authorization exists. Cycle 3 remains locked. V2-10 remains locked.
 
 ## Exact Git transaction
 
 - branch: `agent/v2-9-8b-consumed-4-2-2-full-operational-run-forensic-audit`
 - required starting HEAD:
-  `81714134783cfd5cd6cea72af6d71b3cb7579494`
-- resulting new HEAD: this documentation-only design/review commit
+  `bb6260d7311af1355e5990714b214ed98d64a0a3`
+- resulting new HEAD: this documentation-only design-amendment commit
   (the exact commit SHA is the repository HEAD containing this handoff)
 
 ## Governing repair-lane sequence (forensic)
@@ -49,7 +49,8 @@ authorization exists. Cycle 3 remains locked. V2-10 remains locked.
    **CLOSED PASS**
 10. Authoritative migration 060/061 application — **CLOSED PASS**
 11. Post-application rereadiness — **CLOSED PASS**
-12. Migration-061 git evidence cutover design/review — **CLOSED PASS here**
+12. Migration-061 git evidence cutover design/review — **CLOSED PASS**
+13. Current-evidence identity-binding design amendment — **CLOSED PASS here**
 
 V2-9.8B remains the active memory-growth program. V2-10 is not next.
 
@@ -57,8 +58,8 @@ V2-9.8B remains the active memory-growth program. V2-10 is not next.
 
 This package is documentation only. It must not:
 
-- implement the git-evidence cutover;
-- edit `git_provenance_authorization_manifest.py`;
+- skip the next permitted implementation lane;
+- skip to a fresh 4/2/2 authorization;
 - write the authoritative database or apply a migration;
 - create/review/consume/clone/refresh/replace authorization
   `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260821T153458Z_512f2436`;
@@ -75,9 +76,11 @@ V2-9.8B MIGRATION-061 GIT EVIDENCE CUTOVER
 NARROW IMPLEMENTATION ONLY
 ```
 
-Do not implement that cutover from this handoff. Do not skip to a fresh
-4/2/2 authorization. No reuse of consumed authorization `…512f2436`.
-Cycle 3 remains locked. V2-10 remains locked.
+This DESIGN/AMENDMENT lane does not implement the cutover. After this
+amended design closes PASS, the next permitted lane **is** the narrow
+implementation named above. Do not authorize anything beyond that lane.
+No reuse of consumed authorization `…512f2436`. Cycle 3 remains locked.
+V2-10 remains locked.
 
 ## Locks
 

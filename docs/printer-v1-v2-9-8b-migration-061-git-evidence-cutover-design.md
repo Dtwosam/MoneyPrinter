@@ -8,20 +8,28 @@
 `agent/v2-9-8b-consumed-4-2-2-full-operational-run-forensic-audit`
 
 **Required starting HEAD:**
-`81714134783cfd5cd6cea72af6d71b3cb7579494`
+`bb6260d7311af1355e5990714b214ed98d64a0a3`
+
+**Parent design commit:**
+`bb6260d7311af1355e5990714b214ed98d64a0a3`
 
 **Verdict:**
-`V2_9_8B_MIGRATION_061_GIT_EVIDENCE_CUTOVER_DESIGN_REVIEW_PASS_READY_FOR_NARROW_IMPLEMENTATION`
+`V2_9_8B_MIGRATION_061_GIT_EVIDENCE_CUTOVER_DESIGN_AMENDMENT_PASS_READY_FOR_NARROW_IMPLEMENTATION`
 
-This lane is documentation and read-only source review. It does not edit
-production or tests, does not edit
-`git_provenance_authorization_manifest.py`, does not write
-`data/printer_v1.sqlite3`, does not apply a migration, does not create or
-consume authorization, and does not implement the cutover.
+This lane is a documentation-only amendment of the accepted cutover topology.
+It does not implement the cutover, edit production or tests, write
+`data/printer_v1.sqlite3`, apply a migration, or create or consume
+authorization.
 
-Passing this review means the later implementation is specified. It does not
-mean git evidence has moved, a campaign is authorized, V2-9.8B is complete,
-or V2-10 is ready.
+The parent design's topology remains: 061 becomes singular current four-token
+migration evidence; 059 becomes immutable historical evidence. This amendment
+**replaces** the parent design's test-only 061 execution/digest facts with a
+production-consumed `GitAuthorizationProfile` current-evidence identity
+contract.
+
+Passing this amendment means the later implementation is specified. It does
+not mean git evidence has moved, a campaign is authorized, V2-9.8B is
+complete, or V2-10 is ready.
 
 ---
 
@@ -39,6 +47,24 @@ minimum fail-closed cutover that makes Migration 061 the single current
 schema-transition evidence owner for both four-token profiles and demotes
 Migration 059 to one immutable historical package. It does not authorize a
 campaign.
+
+### Proven blocker amended here
+
+The parent design committed 061 execution ID, file count, and current-class
+digest, then left prepare/validate on the previous root/kind +
+caller-supplied execution-ID shape. Those facts would have been test/review
+constants, not production-consumed evidence authority. That would still
+permit:
+
+1. a syntactically valid sibling execution ID under the 061 root to be
+   selected; or
+2. current-package bytes changed before manifest construction to be
+   enumerated and then validated against the manifest generated from those
+   same changed bytes.
+
+This amendment binds the exact real 061 identity onto both four-token
+profiles and requires `validate_git_provenance_manifest_pre_marker` to
+enforce it before any review-PASS, marker, or usable authorization.
 
 ---
 
@@ -73,14 +99,19 @@ cutover scope.
 
 There is no `MIGRATION_061_PACKAGE_*` symbol today.
 
-### Execution-ID binding
+### Execution-ID binding (amended)
 
-`GitAuthorizationProfile` has no execution-ID field.
+Today `GitAuthorizationProfile` has no execution-ID field. A later
+authorization document and its git-provenance manifest both carry
+`migration_execution_id`. The later cutover **adds** optional
+`current_migration_execution_id` (and matching count/digest fields) so
+four-token profiles can require the document/manifest ID to equal the
+committed 061 identity. Ordinary profiles keep `None` and therefore keep
+today's caller-supplied execution-ID shape.
 
-A later authorization document and its git-provenance manifest both carry
-`migration_execution_id`. `validate_git_provenance_manifest_pre_marker`
-requires those strings to match. `_validate_files` then requires every
-current migration file to live under:
+Today `validate_git_provenance_manifest_pre_marker` already requires the
+manifest and authorization-document execution IDs to match each other.
+`_validate_files` then requires every current migration file to live under:
 
 ```text
 {profile.migration_package_root}/{migration_execution_id}/
@@ -236,28 +267,60 @@ No accepted HEAD may exist in which:
 - one profile uses a historical evidence class as `migration_package_kind`.
 
 Python assignment order inside the module is irrelevant. The committed file
-must be coherent. Tests must assert the two profiles'
-`migration_package_kind` and `migration_package_root` are equal to each
-other and equal to the 061 constants.
+must be coherent. Tests must assert the two profiles share:
+
+- `migration_package_kind`
+- `migration_package_root`
+- `current_migration_execution_id`
+- `current_migration_expected_file_count`
+- `current_migration_expected_inventory_sha256`
+- `historical_migration_packages`
 
 The later implementation should keep using the shared
 `FOUR_TOKEN_HISTORICAL_MIGRATION_PACKAGES` object so the two profiles cannot
-drift on historical membership.
+drift on historical membership. The same three current-identity constants
+must be passed into both profile constructors.
 
 ---
 
 ## 4. New 061 current-evidence contract
 
-Derive names from the 055–059 constant pattern already in source.
+Do **not** reuse `HistoricalMigrationPackage` for current evidence. Its
+docstring states that class never satisfies current-package identity.
 
-### Required profile/current constants
+### 4.1 Producer: optional profile identity fields
+
+Extend `GitAuthorizationProfile` with three OPTIONAL fields whose names
+follow existing `migration_package_*` and historical
+`expected_file_count` / `expected_inventory_sha256` / `execution_id`
+conventions:
+
+```text
+current_migration_execution_id: str | None = None
+current_migration_expected_file_count: int | None = None
+current_migration_expected_inventory_sha256: str | None = None
+```
+
+Defaults are `None`. Ordinary WINDOW_15M and two-token standard-four-hour
+profiles omit them and keep today's root/kind + caller-supplied execution-ID
+shape.
+
+All-or-nothing: a profile may bind all three or none. One or two set is
+malformed and must fail closed at profile construction or at the canonical
+validator, before any PASS.
+
+Module-level constants (same pattern as historical 058/059 identities) are
+the values bound **into** both four-token profiles. They are not test-only:
 
 | Name | Value |
 | --- | --- |
 | `MIGRATION_061_PACKAGE_KIND` | `MIGRATION_061_EVIDENCE` |
 | `MIGRATION_061_PACKAGE_ROOT` | `operator-runs/v2-9-8b-migration-061-application` |
+| `FOUR_TOKEN_CURRENT_MIGRATION_061_EXECUTION_ID` | `MIGRATION_061_20260823T200709Z` |
+| `FOUR_TOKEN_CURRENT_MIGRATION_061_EXPECTED_FILE_COUNT` | `5` |
+| `FOUR_TOKEN_CURRENT_MIGRATION_061_EXPECTED_INVENTORY_SHA256` | `a6eac8d12e30e9f134c137f79a8b72bbe4f9af9d62e65e159a025c5c87108bd6` |
 
-Current evidence class is `MIGRATION_061_EVIDENCE`, not
+Current evidence class remains `MIGRATION_061_EVIDENCE`, not
 `HISTORICAL_MIGRATION_061_EVIDENCE`.
 
 Both four-token profiles set:
@@ -265,25 +328,21 @@ Both four-token profiles set:
 ```text
 migration_package_root = MIGRATION_061_PACKAGE_ROOT
 migration_package_kind = MIGRATION_061_PACKAGE_KIND
+current_migration_execution_id = FOUR_TOKEN_CURRENT_MIGRATION_061_EXECUTION_ID
+current_migration_expected_file_count = FOUR_TOKEN_CURRENT_MIGRATION_061_EXPECTED_FILE_COUNT
+current_migration_expected_inventory_sha256 = FOUR_TOKEN_CURRENT_MIGRATION_061_EXPECTED_INVENTORY_SHA256
+historical_migration_packages = FOUR_TOKEN_HISTORICAL_MIGRATION_PACKAGES
 ```
 
-### Execution ID source
+`MIGRATION_061_20260823T200709Z` is a valid `require_safe_authorization_id`
+value. Filesystem discovery of a sibling directory must never promote a
+second current package.
 
-Keep the established current-evidence law: execution ID is **not** a
-`GitAuthorizationProfile` field. The next separately authorized 4/2/2
-package must supply `migration_execution_id` as authorization-time input.
+### 4.2 Independently recomputed 061 inventory
 
-The only real 061 package that exists is:
-
-`MIGRATION_061_20260823T200709Z`
-
-That string is a valid `require_safe_authorization_id` value. Filesystem
-discovery of a sibling directory must never promote a second current
-package.
-
-### Real current package inventory
-
-Complete directory inventory (5 regular files, no extras):
+Recomputed at amendment HEAD from the live untracked PR-3 package using
+`compute_historical_migration_inventory_sha256` and evidence class
+`MIGRATION_061_EVIDENCE`. Matches PR 4 and the parent design.
 
 | path under the execution directory | size | sha256 |
 | --- | --- | --- |
@@ -293,52 +352,76 @@ Complete directory inventory (5 regular files, no extras):
 | `post_application_snapshot.json` | 29299 | `590ec13b88cf75aba830808b73dd687135aa4573b2a31c7752006eeeb264ff2d` |
 | `pre_application_snapshot.json` | 29600 | `906d3c302794c656dbea438b3758fae7ac0fcc46f0f171f39bfa7f6846ace0af` |
 
-Independently recomputed with `compute_historical_migration_inventory_sha256`
-and evidence class `MIGRATION_061_EVIDENCE`:
+Current-class digest:
 
 `a6eac8d12e30e9f134c137f79a8b72bbe4f9af9d62e65e159a025c5c87108bd6`
 
-This matches PR 4. It is the **proposed current-class digest**.
-
-The digest under `HISTORICAL_MIGRATION_061_EVIDENCE` is
+The digest under `HISTORICAL_MIGRATION_061_EVIDENCE` remains
 `ff8aefa1c0ee3fe4ec2063400a97cd81b8311bc4aa23dd402614bb609659a459`.
-That class is **not** proposed. 061 is not being demoted.
+That class is **not** proposed.
 
-### Validator ownership for current 061
+During later implementation, recompute this current-class digest from the
+live 061 package before committing the constant. If it differs, STOP.
 
-Existing owners, after the profile rebind, already reach the 061 root:
+### 4.3 Consumer: canonical pre-marker validator
 
-| Owner | Behavior |
-| --- | --- |
-| `_enumerate_package` | missing / empty / symlink / non-regular → fail |
-| four-token `build_manifest_bytes` | enumerates `{root}/{migration_execution_id}` |
-| `_validate_files` | member path/size/sha256 vs live bytes |
-| `validate_git_provenance_manifest_pre_marker` | current prefix + historical tuple |
+**Producer:** committed four-token current-061 profile identity (the three
+new fields plus KIND/ROOT).
 
-Narrow extension: commit the real 061 execution identity and current-class
-inventory digest as **module-level identity constants**, not as new
-`GitAuthorizationProfile` fields. Purpose:
+**Consumer:** `validate_git_provenance_manifest_pre_marker`.
 
-- focused tests recompute the real-package digest against a committed expected
-  value;
-- later authorization review can require the document's
-  `migration_execution_id` to equal that identity;
-- production prepare/validate APIs stay the 059 current-evidence shape.
+`validate_git_provenance_authorization` already calls that function first.
+Four-token `apply_authorization_once` already calls it as
+`pre_marker_validator` **before** writing `application-marker.json` and
+before child launch. Manifest construction via `build_manifest_bytes` may
+still enumerate live bytes, including a wrong sibling ID. That is acceptable
+only because no review-PASS, marker, or usable authorization can occur until
+pre-marker validation succeeds.
 
-Suggested names, following the historical `FOUR_TOKEN_HISTORICAL_MIGRATION_*`
-pattern without pretending they are historical:
+Do not add a parallel wrapper check unless implementation inspection proves
+a four-token path that becomes review-PASS without
+`validate_git_provenance_manifest_pre_marker`. Inspected source has no such
+path.
 
-- `FOUR_TOKEN_CURRENT_MIGRATION_061_EXECUTION_ID`
-- `FOUR_TOKEN_CURRENT_MIGRATION_061_EXPECTED_FILE_COUNT` = 5
-- `FOUR_TOKEN_CURRENT_MIGRATION_061_EXPECTED_INVENTORY_SHA256` =
-  `a6eac8d12e30e9f134c137f79a8b72bbe4f9af9d62e65e159a025c5c87108bd6`
+When a profile binds current-migration identity, the canonical validator
+must, in this order:
 
-Do not add a second inventory helper. Do not copy the package into a tracked
-directory.
+A. Require `manifest.migration_execution_id` equals
+   `profile.current_migration_execution_id`. Also require the authorization
+   document's `migration_execution_id` equals that same expected ID
+   (`_validate_authorization_document` already requires document ID equals
+   manifest ID; add the profile comparison there or immediately beside it).
 
-Also add `MIGRATION_061_PACKAGE_KIND` to
-`_NON_RECONCILIATION_EVIDENCE_CLASSES` and export the new public names in
-`__all__`.
+B. Inventory the COMPLETE directory
+   `{migration_package_root}/{current_migration_execution_id}` with the
+   existing `_inventory_bound_package_files` owner (same complete-directory
+   law as historical packages). Do not inventory a caller-selected sibling.
+
+C. Require file count equals
+   `current_migration_expected_file_count`.
+
+D. Compute SHA-256 with existing
+   `compute_historical_migration_inventory_sha256`, using
+   `evidence_class = profile.migration_package_kind`
+   (`MIGRATION_061_EVIDENCE` on the four-token profiles). No new hash
+   convention.
+
+E. Require that digest equals
+   `current_migration_expected_inventory_sha256`.
+
+F. Then preserve existing `_validate_files` per-member path/size/SHA
+   validation against the manifest.
+
+A manifest that is internally consistent with **tampered live bytes** must
+still FAIL at E, because E compares to the committed profile digest, not to
+the manifest's own file hashes.
+
+When all three identity fields are `None`, skip A–E. Ordinary profiles keep
+today's behavior.
+
+Add `MIGRATION_061_PACKAGE_KIND` to `_NON_RECONCILIATION_EVIDENCE_CLASSES`
+and export the new public names in `__all__`. Do not copy the package into
+a tracked directory.
 
 ---
 
@@ -361,8 +444,12 @@ separate `HISTORICAL_MIGRATION_058_EVIDENCE` class.
 | `expected_file_count` | 5 |
 | `expected_inventory_sha256` | `d23c4f4bbf2b4683c69038bb6fc372f85c52e280b24662cb46c133690b1479c6` |
 
-Independently recomputed from the live 059 package with that historical
-class. Matches PR 4.
+Independently recomputed at amendment HEAD from the live 059 package with
+that historical class. Matches PR 4 and the parent design.
+
+During later implementation, recompute this historical digest from the live
+immutable 059 package before committing. If it differs, STOP rather than
+silently replacing this value.
 
 Live 059 members:
 
@@ -423,13 +510,16 @@ on purpose.
 | 061 current directory empty | yes, `_enumerate_package` | keep |
 | current member missing vs prepared manifest | yes, `_validate_files` | keep |
 | current member byte mismatch vs prepared manifest | yes, `_validate_files` | keep |
-| extra file in real 061 dir | next prepare would include it; no committed current completeness field today | focused real-byte digest test fails if count/digest change |
-| unexpected current execution ID | only fails if that directory is missing | document that next 4/2/2 must name `MIGRATION_061_20260823T200709Z`; do not add a profile execution-ID field |
+| extra file in real 061 dir | **not** against a committed current digest today | pre-marker identity check: count/digest FAIL |
+| unexpected current execution ID / sibling ID | only fails if that directory is missing today | pre-marker requires profile `current_migration_execution_id` |
+| bytes changed before manifest construction | today the new manifest would self-validate | pre-marker digest vs committed expected digest FAIL |
 | 059 historical missing/tampered/extra | yes, `enumerate_historical_migration_evidence` | declare 059 historical; existing validator covers it |
 | current root also historical | yes, tests + path overlap checks | rebind the exclusivity test to 061 |
 
-Do not duplicate package files into a tracked tree. Do not invent a second
-current-package completeness subsystem inside `GitAuthorizationProfile`.
+Do not duplicate package files into a tracked tree. The current-identity
+fields on `GitAuthorizationProfile` are the single current-evidence
+completeness owner for constrained profiles. Do not add a second hash
+helper or a parallel wrapper validator.
 
 ---
 
@@ -467,88 +557,90 @@ does not: those modules own pin/catalogue/objects, not git evidence.
 
 ## 10. Production consumer trace
 
-Cutover of the two profile fields reaches every real four-token consumer
-without editing those files:
-
-| Consumer | Use |
+| Role | Owner |
 | --- | --- |
-| `git_provenance_authorization_manifest._validate_files` | current prefix `{root}/{execution_id}` |
-| `validate_git_provenance_manifest_pre_marker` / `validate_git_provenance_authorization` | full current + historical boundary |
-| `enumerate_historical_migration_evidence` | historical tuple, including new 059 |
-| `four_token_proof_one_shot_wrapper.build_manifest_bytes` | `profile = FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE` then enumerate |
-| `four_token_standard_four_hour_one_shot_wrapper.build_manifest_bytes` | same for the operational four-token profile |
-| `operational_memory_factory_command` | passes the same profile objects into git-provenance validation |
+| Producer | `GitAuthorizationProfile` current-061 identity fields on both four-token profiles |
+| Canonical consumer | `validate_git_provenance_manifest_pre_marker` (also the first step of `validate_git_provenance_authorization`) |
+| Runtime gate | four-token `apply_authorization_once` already calls that pre-marker validator before marker write and child launch |
+| Historical consumer | `enumerate_historical_migration_evidence` over the shared tuple, including 059 |
+| Wrapper construction | `build_manifest_bytes` still enumerates live bytes; it is **not** the identity authority |
 
-Wrapper docstrings still say “migration 055” / “migration 058”. That is
-pre-existing comment lag. Do not expand this cutover to rewrite those
-comments unless a later implementation inspection finds a **code** path that
-still hard-codes 059 KIND/ROOT. Inspected code uses `profile.migration_*`.
+`operational_memory_factory_command` already passes the four-token profile
+objects into git-provenance validation. After the profile fields exist, that
+command consumes them without a source edit.
 
-WINDOW_15M / two-token standard-four-hour wrappers stay on migration-050.
+Do not edit wrappers unless inspection proves a four-token path that can
+become review-PASS without `validate_git_provenance_manifest_pre_marker`.
+Inspected source has no such path. Wrapper docstrings saying migration
+055/058 remain pre-existing comment lag.
+
+WINDOW_15M / two-token standard-four-hour wrappers stay unconstrained
+(`current_migration_* is None`) on migration-050.
 
 `pre_authorization_migration_ledger_guard` binds DB path/count/head, not
-git package KIND. Leave it alone.
+git package identity. Leave it alone.
 
-A later proof that only asserts constants, without
-`enumerate_historical_migration_evidence` and a four-token
-`build_manifest_bytes` / pre-marker validate on real or disposable package
-bytes, is insufficient.
+A later proof that only asserts constants, without calling
+`validate_git_provenance_manifest_pre_marker` against real or disposable
+061 bytes **and** `enumerate_historical_migration_evidence` for 059, is
+insufficient. The expected execution/count/digest values must not be
+test-only constants.
 
 ---
 
 ## 11. Test design
 
-Minimum sufficient later proof. Tests must hash real or disposable package
-bytes and call production validators. Do not inject a finished PASS flag.
+Minimum sufficient later proof. Tests must change underlying package
+bytes/identity and call `validate_git_provenance_manifest_pre_marker` (and
+historical enumerate where applicable). Do not inject a finished PASS flag.
 
-A. Both four-token profiles bind `MIGRATION_061_PACKAGE_KIND` /
-   `MIGRATION_061_PACKAGE_ROOT`, and those two profiles are equal to each
-   other.
+A. Exact real 061 execution ID plus exact live bytes → current-evidence
+   validation PASS through the canonical pre-marker validator.
 
-B. 059 is in `FOUR_TOKEN_HISTORICAL_MIGRATION_PACKAGES` with the historical
-   class, execution ID, count 5, and digest below. 059 is no longer
-   `migration_package_root`.
+B. Another syntactically valid sibling execution ID under the same 061
+   root, even with a complete package, → FAIL (profile expected execution
+   ID mismatch). Do not mutate the real package; use a disposable tree.
 
-C. Real 061 package inventory recomputes to
-   `a6eac8d12e30e9f134c137f79a8b72bbe4f9af9d62e65e159a025c5c87108bd6`
-   with evidence class `MIGRATION_061_EVIDENCE`.
+C. Mutate a 061 file **before** manifest construction → FAIL against the
+   committed expected inventory digest, even if the manifest is built from
+   the mutated bytes.
 
-D. Real 059 package inventory recomputes to
-   `d23c4f4bbf2b4683c69038bb6fc372f85c52e280b24662cb46c133690b1479c6`
-   with evidence class `HISTORICAL_MIGRATION_059_EVIDENCE`.
-   `enumerate_historical_migration_evidence` accepts that declaration.
+D. Add an extra file **before** manifest construction → FAIL exact file
+   count/digest.
 
-E. Disposable copy of the 061 current package with a missing or mutated
-   member fails `_enumerate_package` and/or `_validate_files` / digest
-   comparison. Do not mutate the real package.
+E. Remove a member **before** manifest construction → FAIL.
 
-F. Disposable copy of historical 059 with a missing, extra, or mutated
-   member fails `enumerate_historical_migration_evidence`.
+F. Mutate a member **after** manifest construction → existing `_validate_files`
+   SHA/size check still FAIL.
 
-G. Current 061 root is absent from the historical tuple. Historical 059
-   execution ID must not equal a current manifest `migration_execution_id`.
+G. Both live four-token profiles have identical KIND, ROOT, execution ID,
+   file count, digest, and historical tuple.
 
-H. A constructed profile pair that splits 059 vs 061 is not an accepted
-   production state; the production objects must not diverge. Assert
-   equality of the two live four-token profiles.
+H. Ordinary profiles with all three identity fields `None` preserve
+   existing root/kind + caller-supplied execution-ID behavior.
 
-I. `_enumerate_package` / `build_manifest_bytes` fail if the 061 current
-   prefix directory does not exist.
+I. Historical 059 missing/extra/mutated remains fail closed via
+   `enumerate_historical_migration_evidence`.
 
-J. Consumed `…512f2436` remains non-reusable (one-shot flags false; still
+J. Current 061 root cannot appear in the historical tuple.
+
+K. Old consumed `…512f2436` remains unusable (one-shot flags false; still
    bound to 59/059). Do not load it as capability.
 
-K. Cutover tests create no authorization package and assert
-   `authorization_created is False` on any helper they call.
+L. Cutover tests create no authorization; `authorization_created is False`.
 
-L. No authoritative DB write; no `apply_migrations`.
+M. No SQLite writes; no `apply_migrations`.
 
-M. Cycle 3 / 12h / 24h / retrieval / financial locks unchanged.
+N. Cycle 3 / V2-10 / retrieval / financial locks unchanged.
 
 Completeness fixtures that currently write TESTONLY current files under
-`MIGRATION_059_PACKAGE_ROOT` must move to the 061 current root. After 059
-is historical, an untracked TESTONLY sibling under the 059 root fails
-“unapproved historical migration package contains untracked files”.
+`MIGRATION_059_PACKAGE_ROOT` must move off that root. After 059 is
+historical, an untracked TESTONLY sibling there fails unapproved-historical
+package law. Synthetic completeness profiles that need a passing
+TESTONLY current package must **not** copy production
+`current_migration_*` fields; leave them `None` or bind them to the
+synthetic inventory. Production four-token profiles must keep the real
+061 identity.
 
 ---
 
@@ -616,17 +708,17 @@ Minimum expected set:
 
 | File | Change |
 | --- | --- |
-| `src/printer_v1/operator_cli/git_provenance_authorization_manifest.py` | add 061 current KIND/ROOT; add 059 historical class/execution/count/digest; rebind both four-token profiles; append 059 to `FOUR_TOKEN_HISTORICAL_MIGRATION_PACKAGES`; update `_NON_RECONCILIATION_EVIDENCE_CLASSES` and `__all__`; update the “current authority is 059” comments |
-| Directly affected focused tests listed in §11–§12 | rebind current identity, historical membership, completeness fixtures, real-byte digest proofs |
+| `src/printer_v1/operator_cli/git_provenance_authorization_manifest.py` | add optional `current_migration_*` fields on `GitAuthorizationProfile`; add 061 KIND/ROOT and identity constants; bind both four-token profiles to the exact 061 identity; consume that identity in `validate_git_provenance_manifest_pre_marker` (and document-ID equality); add 059 historical class/execution/count/digest; append 059 to `FOUR_TOKEN_HISTORICAL_MIGRATION_PACKAGES`; update `_NON_RECONCILIATION_EVIDENCE_CLASSES` and `__all__`; update “current authority is 059” comments |
+| Directly affected focused tests listed in §11–§12 | rebind current identity, historical membership, completeness fixtures, real-byte fail-closed matrix A–N |
 
-Do **not** include, unless a later inspection proves a hard-coded 059
-KIND/ROOT in code:
+Do **not** include, unless a later inspection proves the canonical validator
+cannot enforce identity without them:
 
 - `schema_admission_coherence.py`
 - `proof_db_schema_readiness.py`
-- `four_token_proof_one_shot_wrapper.py` (reads profile fields)
-- `four_token_standard_four_hour_one_shot_wrapper.py` (reads profile fields)
-- `operational_memory_factory_command.py` (passes profile objects)
+- `four_token_proof_one_shot_wrapper.py`
+- `four_token_standard_four_hour_one_shot_wrapper.py`
+- `operational_memory_factory_command.py`
 - `migrate.py` / migration SQL
 - Scheduler / Source Governor / campaign runtime
 
@@ -641,7 +733,7 @@ design before editing it. Wrapper comments are not that signal.
 Do not combine stages.
 
 ```text
-this cutover design/review PASS
+this design amendment PASS
 → narrow git-evidence cutover implementation
 → independent implementation inspection / bounded proof
 → schema-gate coherence closeout
@@ -654,12 +746,17 @@ this cutover design/review PASS
 V2-9.8B remains the active memory-growth program until that campaign
 closeout. V2-10 remains blocked. Cycle 3 remains locked.
 
-The next permitted action after this document is **only**:
+This DESIGN/AMENDMENT lane does not implement the cutover.
+
+After this amended design closes PASS, the next permitted lane **is**:
 
 ```text
 V2-9.8B MIGRATION-061 GIT EVIDENCE CUTOVER
 NARROW IMPLEMENTATION ONLY
 ```
+
+Do not authorize anything beyond that lane. Do not skip to a fresh 4/2/2
+package.
 
 ---
 
@@ -682,18 +779,16 @@ Unchanged by this design and by the later cutover:
 
 ## 18. Blockers / open questions
 
-None that block this design.
+None that block this amendment. The parent design's test-only identity
+binding is withdrawn.
 
 Non-blocking notes:
 
-- Current-package execution ID remains authorization-time input. The real
-  061 package identity is specified here for tests and for the later
-  authorization lane; it is not a new `GitAuthorizationProfile` field.
-- Empty or extra-file behavior of current packages is the existing 059
-  current-evidence law. This cutover does not invent a second completeness
-  engine for current packages.
-- Pre-existing wrapper comment lag and leftover ledger-guard fixture
-  assertions are out of scope.
+- Ordinary profiles remain unconstrained (`current_migration_* is None`).
+- Wrapper comment lag and leftover ledger-guard fixture assertions stay
+  out of scope.
+- Completeness fixtures that need synthetic current packages must not copy
+  production `current_migration_*` values.
 
 ---
 
