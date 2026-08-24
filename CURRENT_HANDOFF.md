@@ -4,13 +4,17 @@ Date: 2026-08-24
 
 ## Current lane
 
-`V2-9.8B Latest Consumed Authorization Historical-Disposition Implementation Closeout`
+`V2-9.8B Post-Historical-Disposition-Repair Exact-HEAD / Worktree / DB Rereadiness Gate`
 
 Status:
 
-`V2_9_8B_LATEST_CONSUMED_AUTHORIZATION_HISTORICAL_DISPOSITION_CLOSEOUT_PASS`
+`V2_9_8B_POST_HISTORICAL_DISPOSITION_REPAIR_EXACT_HEAD_WORKTREE_DB_REREADINESS_PASS_READY_FOR_FRESH_AUTHORIZATION_PREPARATION`
 
-Closeout:
+Rereadiness checkpoint:
+
+`docs/printer-v1-v2-9-8b-post-historical-disposition-repair-exact-head-worktree-db-rereadiness.md`
+
+Historical-disposition closeout:
 
 `docs/printer-v1-v2-9-8b-latest-consumed-authorization-historical-disposition-closeout.md`
 
@@ -27,24 +31,27 @@ contains exactly one adopted registration:
 
 `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260824T123555Z_95dc47dd -> CONSUMED_CHILD_EXITED_NONZERO`
 
-Closeout proof confirmed exact enumeration, wrong-ID isolation, trust-root
-omission, package/marker/child tamper rejection, historical distinctions,
-current-versus-historical separation, temporal non-reactivation, canonical
-reconciliation, DB invariance, and the derived 43-ID sorted unique future
-trust root. The exact `DISPOSITION_NOT_AVAILABLE` blocker is closed, but the
-historical consumed run is unchanged and the authorization remains permanently
-non-reusable. No generic classifier, evidence class, root, schema, DB, runtime,
-or authorization behavior changed.
+Fresh read-only rereadiness confirmed exact repair ancestry, canonical evidence
+reconciliation, the 43-ID sorted unique future non-reuse trust root, exact
+Migration-061 provenance, 61/061 schema admission, authoritative DB invariance,
+historical incident quiescence, all twelve zero-state domains at zero, host
+quiescence, diagnostic and historical-disposition repair isolation, and the
+zero-I/O source/composition/dependency/budget guards. No fresh authorization,
+marker, child, campaign, provider call, Scheduler runtime call, or DB write
+occurred. The consumed historical run is unchanged and remains permanently
+non-reusable.
 
 ## Exact next permitted action
 
-`READ-ONLY POST-HISTORICAL-DISPOSITION-REPAIR EXACT-HEAD / WORKTREE / DB REREADINESS GATE`
+`V2-9.8B FRESH EXACT-HEAD FOUR-TOKEN STANDARD-FOUR-HOUR 4/2/2 AUTHORIZATION PREPARATION ONLY`
 
-The full rereadiness gate must be repeated read-only. Do not prepare an
-authorization yet. Any future authorization must bind the later exact final
-HEAD produced after all required rereadiness/checkpoint work. This handoff does
-not authorize a campaign, DB mutation, provider/runtime call, retry, recovery,
-or successor.
+The next lane may prepare exactly one completely fresh authorization ID bound
+to the final commit containing this handoff, the unchanged authoritative DB
+SHA, the complete historical non-reuse trust root including `...95dc47dd`, and
+current Migration-061 provenance. It must stop before execution and require a
+separate independent authorization review. This handoff does not authorize a
+campaign, marker application, child, DB mutation, provider/runtime call, retry,
+recovery, or successor.
 
 ## Locks
 
