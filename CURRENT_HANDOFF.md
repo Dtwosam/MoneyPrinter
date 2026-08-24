@@ -4,60 +4,31 @@ Date: 2026-08-24
 
 ## Current lane
 
-`V2-9.8B Historical Operator Patch-Artifact Hash-Preserving Relocation`
+`V2-9.8B Consumed 4/2/2 Pre-Lifecycle Terminal-Accounting Repair`
 
 Status:
 
-`V2_9_8B_HISTORICAL_OPERATOR_PATCH_ARTIFACT_RELOCATION_PASS_READY_FOR_WORKTREE_REREADINESS`
+`REPAIR_DESIGN_COMPLETE_TDD_IMPLEMENTATION_PENDING`
 
-The nine previously audited top-level historical operator patch/diff artifacts
-were relocated byte-for-byte outside the Git worktree to:
+The accepted narrow design is:
 
-`/Users/Dtwo1/MoneyPrinter-operator-artifact-archive/V2_9_8B_LANE2_PATCH_EXPORTS_20260824T111404Z`
+`docs/printer-v1-v2-9-8b-consumed-4-2-2-pre-lifecycle-terminal-accounting-repair-design.md`
 
-All nine destination SHA-256 and size values equal their pre-move source
-values. Their source paths are absent. No other file was relocated, and the
-canonical read-only evidence-set reconciliation has no uncovered
-`operator-runs` path or visible untracked path outside `operator-runs`.
+It preserves the adapter's lawful no-accounting one-cycle mode and strict
+accounted two-cycle mode. The implementation boundary is the callback bridge
+in `one_command_15m_factory.py`; no adapter runtime change is authorized.
 
-The create-once authorization
-`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260823T221645Z_6af1423a` is terminal by
-`AUTHORIZATION_EXPIRED`. It remains immutable and unconsumed. It never passed
-independent review and has no durable manifest, marker, child, campaign, or
-runtime authority.
-
-Package SHA-256:
-
-`c0d05a6c9de103e911f00d7f7e471e27d08fa983a57c6de33b6286a55388fb69`
-
-The accepted disposition design is:
-
-`docs/printer-v1-v2-9-8b-expired-fresh-4-2-2-authorization-terminal-disposition-design.md`
-
-The narrow implementation is complete. The exact ID now receives diagnostic
-`BLOCKED_UNCONSUMED_SUPERSEDED` from the existing canonical policy map. Focused
-production-path proof confirms that a later fresh authorization's complete
-sorted `prior_authorizations_non_reusable` trust root must include this ID for
-historical enumeration to emit the exact immutable package; omission still
-fails closed. The package remains at its current path with unchanged bytes. No
-new evidence class, root, authority, or reuse mechanism was introduced.
-
-The consumed authorization `...512f2436` remains a distinct consumed,
-permanently non-reusable historical authorization.
+The consumed authorization
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260824T123555Z_95dc47dd` is permanently
+consumed and non-reusable. Its post-attempt database and application evidence
+remain immutable incident evidence.
 
 ## Exact next permitted action
 
-```text
-V2-9.8B
-POST-ARTIFACT-RELOCATION
-EXACT-HEAD / WORKTREE REREADINESS
-READ-ONLY ONLY
-```
-
-Do not create a new authorization in the rereadiness lane. The required order
-remains: exact-HEAD/worktree rereadiness, completely new create-once
-authorization preparation, independent authorization review, separately
-operator-started campaign, then campaign closeout.
+Complete the approved narrow TDD repair and focused disposable-database proof.
+After an implementation PASS, the only next permitted action is independent
+bounded proof / patch inspection. Do not create an authorization or run the
+Printer, providers, or campaign.
 
 ## Locks
 
