@@ -88,6 +88,9 @@ EXPIRED_FRESH_AUTHORIZATION_SHA256 = (
 CONSUMED_FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_ID = (
     "V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260821T153458Z_512f2436"
 )
+LATEST_CONSUMED_FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_ID = (
+    "V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260824T123555Z_95dc47dd"
+)
 FUTURE_FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_ID = (
     "V2_9_8B_FOUR_TOKEN_STD4H_AUTH_FUTURE_TESTONLY"
 )
@@ -188,14 +191,23 @@ class ExpiredFreshAuthorizationHistoricalAdoptionTests(unittest.TestCase):
         )
         cls.authorization_bytes = cls.authorization_path.read_bytes()
         cls.authorization_document = json.loads(cls.authorization_bytes)
+        latest_authorization_path = (
+            REPOSITORY_ROOT
+            / FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_ROOT
+            / LATEST_CONSUMED_FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_ID
+            / "final_authorization.json"
+        )
+        latest_authorization_document = json.loads(
+            latest_authorization_path.read_bytes()
+        )
         cls.future_document = {
             "authorization_id": FUTURE_FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_ID,
             "prior_authorizations_non_reusable": sorted(
                 [
-                    *cls.authorization_document[
+                    *latest_authorization_document[
                         "prior_authorizations_non_reusable"
                     ],
-                    EXPIRED_FRESH_AUTHORIZATION_ID,
+                    LATEST_CONSUMED_FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_ID,
                 ]
             ),
         }

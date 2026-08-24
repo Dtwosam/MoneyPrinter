@@ -4,39 +4,41 @@ Date: 2026-08-24
 
 ## Current lane
 
-`V2-9.8B Latest Consumed Authorization Historical-Disposition Owner Design`
+`V2-9.8B Latest Consumed Authorization Historical-Disposition Narrow TDD Implementation`
 
 Status:
 
-`V2_9_8B_LATEST_CONSUMED_AUTHORIZATION_HISTORICAL_DISPOSITION_OWNER_DESIGN_PASS_READY_FOR_NEXT_LANE`
+`V2_9_8B_LATEST_CONSUMED_AUTHORIZATION_HISTORICAL_DISPOSITION_IMPLEMENTATION_PASS_READY_FOR_INDEPENDENT_BOUNDED_PROOF`
 
 Design:
 
 `docs/printer-v1-v2-9-8b-latest-consumed-authorization-historical-disposition-owner-design.md`
 
-Primary classification:
+Implementation classification:
 
 `EXACT_POLICY_ADOPTION_SUFFICIENT`
 
-The existing production vocabulary already supports
-`CONSUMED_CHILD_EXITED_NONZERO`, and exact-ID registrations in
-`_POLICY_TERMINAL_DISPOSITIONS` are the established owner. Immutable package,
-marker, wrapper, and child evidence proves that consumed authorization
-`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260824T123555Z_95dc47dd` has exactly that
-diagnostic disposition. The approved minimum future production change is one
-exact policy-map entry plus focused proof. No generic classifier, evidence
-class, root, schema, DB, runtime, or authorization change is designed.
+The canonical `_POLICY_TERMINAL_DISPOSITIONS` owner now contains exactly one
+new registration:
+
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260824T123555Z_95dc47dd -> CONSUMED_CHILD_EXITED_NONZERO`
+
+Focused RED-before-GREEN proof covers exact enumeration, wrong-ID isolation,
+trust-root omission, package/marker/child tamper, historical distinctions,
+current-versus-historical separation, temporal non-reactivation, and the
+derived 43-ID sorted unique future trust root. No generic classifier, evidence
+class, root, schema, DB, runtime, or authorization behavior changed.
 
 ## Exact next permitted action
 
-`V2-9.8B LATEST-CONSUMED AUTHORIZATION HISTORICAL-DISPOSITION NARROW TDD IMPLEMENTATION`
+`V2-9.8B LATEST-CONSUMED AUTHORIZATION HISTORICAL-DISPOSITION INDEPENDENT BOUNDED PROOF / ACTUAL PATCH INSPECTION ONLY`
 
-The next lane may use RED-before-GREEN TDD to add only the exact
-`...95dc47dd -> CONSUMED_CHILD_EXITED_NONZERO` registration in the existing
-owner and focused historical-evidence proof. It may not refactor enumeration,
-create a generic classifier, change evidence roots/classes, create an
-authorization, run a campaign, mutate the DB, call providers/runtime owners, or
-add retry/recovery/successor behavior.
+The next lane may inspect the actual committed patch and independently rerun
+only the bounded historical-disposition, trust-root, integrity, reconciliation,
+DB-invariance, and runtime-isolation proof. It is not closeout or rereadiness.
+It may not change implementation, create an authorization, run a campaign,
+mutate the DB, call providers/runtime owners, or add retry/recovery/successor
+behavior.
 
 ## Locks
 
