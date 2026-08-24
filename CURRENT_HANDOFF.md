@@ -4,34 +4,37 @@ Date: 2026-08-24
 
 ## Current lane
 
-`V2-9.8B Consumed 4/2/2 Pre-Lifecycle Terminal-Accounting Repair Closeout`
+`V2-9.8B Later-Cycle Pre-Admission Persistence Failure Forensic / Readiness Audit`
 
 Status:
 
-`V2_9_8B_CONSUMED_4_2_2_PRE_LIFECYCLE_TERMINAL_ACCOUNTING_REPAIR_CLOSEOUT_PASS`
+`V2_9_8B_LATER_CYCLE_PRE_ADMISSION_PERSISTENCE_FAILURE_FORENSIC_READINESS_AUDIT_PASS_NEXT_ACTION_IDENTIFIED`
 
-Closeout:
+Audit:
 
-`docs/printer-v1-v2-9-8b-consumed-4-2-2-pre-lifecycle-terminal-accounting-repair-closeout.md`
+`docs/printer-v1-v2-9-8b-later-cycle-pre-admission-persistence-failure-forensic-readiness-audit.md`
 
-The narrow repair is closed PASS. Focused production-path proof confirms the
-adapter-selected one-cycle no-accounting callback terminalizes once without a
-`TypeError`, while canonical two-cycle accounting and report fail-closed rules
-remain strict. No production or test code changed during closeout.
+Primary classification:
+
+`E. DIAGNOSTIC_GAP_BLOCKS_ROOT_CAUSE_IDENTIFICATION`
+
+The consumed campaign failed closed, but production discarded the narrower
+`PreAdmissionAttemptError` across distinct producer families. The authoritative
+DB and exact application artifacts cannot recover a specific code, atomicity,
+or SQLite/environment cause. Existing tests prove terminal handling, not the
+consumed underlying condition.
 
 The consumed authorization
-`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260824T123555Z_95dc47dd` is permanently
-consumed and non-reusable. Its post-attempt database and application evidence
-remain immutable incident evidence.
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260824T123555Z_95dc47dd` remains permanently
+dead and non-reusable.
 
 ## Exact next permitted action
 
-`V2-9.8B LATER-CYCLE PRE-ADMISSION PERSISTENCE FAILURE FORENSIC / READINESS AUDIT ONLY`
+`BOUNDED PERSISTENCE FAILURE DIAGNOSTIC DESIGN ONLY`
 
-The consumed real run encountered `LATER_CYCLE_ATTEMPT_PERSISTENCE_FAILED`, but
-its narrower original `PreAdmissionAttemptError` detail was not durably retained.
-Do not invent that cause. Do not create an authorization or run the Printer,
-providers, Source Governor, Central Scheduler, or a campaign.
+No repair implementation or fresh 4/2/2 authorization is ready. The next lane
+must remain design-only, retain a bounded/non-sensitive first cause, preserve
+fail-closed terminal handling, and add no retry or recovery.
 
 ## Locks
 
