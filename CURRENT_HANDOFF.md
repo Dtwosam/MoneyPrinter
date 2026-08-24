@@ -4,47 +4,41 @@ Date: 2026-08-24
 
 ## Current lane
 
-`V2-9.8B Bounded Later-Cycle Persistence Failure Diagnostic Implementation Closeout`
+`V2-9.8B Post-Diagnostic-Repair Exact-HEAD / Worktree / DB Rereadiness Gate`
 
 Status:
 
-`V2_9_8B_LATER_CYCLE_PERSISTENCE_FAILURE_DIAGNOSTIC_CLOSEOUT_PASS`
+`V2_9_8B_POST_DIAGNOSTIC_REPAIR_EXACT_HEAD_WORKTREE_DB_REREADINESS_BLOCKED`
 
-Design:
+Checkpoint:
 
-`docs/printer-v1-v2-9-8b-later-cycle-persistence-failure-diagnostic-design.md`
-
-Closeout:
-
-`docs/printer-v1-v2-9-8b-later-cycle-persistence-failure-diagnostic-closeout.md`
+`docs/printer-v1-v2-9-8b-post-diagnostic-repair-exact-head-worktree-db-rereadiness.md`
 
 Primary classification:
 
-`DIAGNOSTIC_GAP_BLOCKS_ROOT_CAUSE_IDENTIFICATION — PROSPECTIVELY RESOLVED`
+`LATEST_CONSUMED_AUTHORIZATION_HISTORICAL_DISPOSITION_OWNER_GAP`
 
-The closed bounded diagnostic mechanism preserves the unchanged top-level
-`LATER_CYCLE_ATTEMPT_PERSISTENCE_FAILED` cause and prospectively carries one
-first-cause, categorical, non-sensitive diagnostic in the exact attempt's
-existing Scheduler `last_error` owner. Its strict decoder is read-only and has
-no runtime authority. A later terminalization, commit, savepoint-cleanup, or
-rollback failure can no longer replace the initiating in-memory diagnostic.
-If terminal SQLite persistence cannot succeed, no durable diagnostic is claimed.
-No schema change or persistence repair was made. The consumed incident's exact
-subcause remains irrecoverable and was not backfilled; only future recurrence is
-boundedly diagnosable.
-
+Repository, reconciliation, Migration-061, schema admission, authoritative DB,
+zero-state, host safety, prepare-mode guards, and diagnostic isolation pass.
 The consumed authorization
 `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260824T123555Z_95dc47dd` remains permanently
-dead and non-reusable.
+dead and is correctly included in the prospective 43-ID non-reuse trust root.
+Its validated application evidence proves the existing disposition
+`CONSUMED_CHILD_EXITED_NONZERO`, but the real historical evidence enumerator
+emits `DISPOSITION_NOT_AVAILABLE` because the latest ID has no approved
+production disposition ownership. Fresh authorization preparation is blocked
+until that narrow owner gap is designed, repaired, independently proved, closed,
+and this read-only gate is repeated.
 
 ## Exact next permitted action
 
-`READ-ONLY POST-DIAGNOSTIC-REPAIR EXACT-HEAD / WORKTREE / DB REREADINESS GATE`
+`V2-9.8B BOUNDED LATEST-CONSUMED AUTHORIZATION HISTORICAL-DISPOSITION OWNER DESIGN ONLY`
 
-The next lane may perform only the fresh read-only exact-HEAD, worktree, and
-authoritative-DB rereadiness gate before any new 4/2/2 authorization
-preparation. It may not create an authorization, run a campaign, repair an
-unproven persistence defect, or add retry/recovery/successor behavior.
+The next lane may design only the narrow existing-vocabulary ownership needed
+for canonical historical evidence to derive the latest consumed authorization's
+terminal disposition from immutable validated marker/application/child
+evidence. It may not create an authorization, run a campaign, mutate the DB,
+call providers or runtime owners, or add retry/recovery/successor behavior.
 
 ## Locks
 
