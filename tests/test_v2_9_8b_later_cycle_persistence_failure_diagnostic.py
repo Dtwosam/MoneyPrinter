@@ -160,6 +160,30 @@ def _candidate(slot: int) -> LaterCycleDiscoveryCandidate:
     )
 
 
+def _pair_item(slot: int, *, attempt_id: str) -> attempts.PreAdmissionAttemptItem:
+    candidate = _candidate(slot)
+    return attempts.attach_frozen_tracking_lane(
+        attempts.PreAdmissionAttemptItem(
+            attempt_id=attempt_id,
+            slot_ordinal=slot,
+            token_identity=candidate.token_identity,
+            token_row_id=candidate.token_row_id,
+            mint_identity=candidate.mint_identity,
+            pair_identity=candidate.pair_identity,
+            pair_row_id=candidate.pair_row_id,
+            lifecycle_identity=candidate.lifecycle_identity,
+            canonical_market_identity=candidate.canonical_market_identity,
+            canonical_pool_identity=candidate.canonical_pool_identity,
+            canonical_evidence_json=candidate.canonical_evidence_json,
+            canonical_evidence_hash=candidate.canonical_evidence_hash,
+            evidence_version=candidate.evidence_version,
+            observed_at=candidate.observed_at,
+            channel_labels=tuple(sorted(candidate.channels)),
+        ),
+        now=NOW,
+    )
+
+
 def _callback(path: Path, supply) -> object:
     return AuthoritativeLiveOperationalCampaignOwner(
         later_cycle_candidate_supply=supply
@@ -336,6 +360,168 @@ def test_b_d_pair_item_two_constraint_rolls_back_pair_but_diagnostic_survives(
     finally:
         connection.close()
     _assert_no_retry_or_successor_authority(path)
+
+
+def test_primary_source_failure_survives_secondary_terminalization_failure(
+    database,
+) -> None:
+    path, request_id, response_id = database
+    connection = sqlite3.connect(path)
+    connection.execute(
+        "CREATE TRIGGER fixture_fail_attempt_failed_transition "
+        "BEFORE UPDATE OF attempt_state ON printer_pre_admission_discovery_attempts "
+        "WHEN NEW.attempt_state='FAILED' BEGIN "
+        "SELECT RAISE(ABORT,'fixture terminalization write failure'); END"
+    )
+    connection.commit()
+    connection.close()
+    callback = _callback(
+        path,
+        lambda **_: LaterCycleCandidateSupply(
+            (), _failing_source_evidence(request_id, response_id), "NO_PAIR"
+        ),
+    )
+
+    with pytest.raises(attempts.PreAdmissionAttemptError) as captured:
+        _invoke(callback)
+
+    primary = captured.value
+    assert primary.diagnostic is not None
+    assert primary.diagnostic.producer_code == "SOURCE_EVIDENCE_LINK_INSERT"
+    assert primary.diagnostic.failure_category == "CONSTRAINT_OR_INTEGRITY"
+    assert primary.diagnostic.operation_phase == "SOURCE_LINK"
+    assert isinstance(primary.__cause__, sqlite3.IntegrityError)
+    assert "fixture terminalization write failure" in str(primary.__cause__)
+    connection = sqlite3.connect(path)
+    connection.row_factory = sqlite3.Row
+    try:
+        attempt = connection.execute(
+            "SELECT * FROM printer_pre_admission_discovery_attempts"
+        ).fetchone()
+        job = connection.execute("SELECT * FROM printer_scheduler_jobs").fetchone()
+        assert attempt is not None and job is not None
+        assert attempt["attempt_state"] == "RUNNING"
+        assert attempt["first_terminal_cause"] is None
+        assert job["status"] == "RUNNING"
+        assert job["last_error"] is None
+        assert int(job["retry_count"]) == 0
+        assert attempts.load_pre_admission_persistence_diagnostic(
+            connection, attempt_id=attempt["attempt_id"]
+        ) == attempts.DIAGNOSTIC_UNAVAILABLE
+        assert int(job["id"]) not in scheduler._JOB_FAILURE_DIAGNOSTICS.get()
+    finally:
+        connection.close()
+
+
+class _CleanupAndRollbackFailingConnection(sqlite3.Connection):
+    def execute(self, sql, parameters=(), /):
+        if str(sql).strip().startswith(
+            "ROLLBACK TO SAVEPOINT persist_pre_admission_pair"
+        ):
+            raise sqlite3.OperationalError("fixture savepoint cleanup failure")
+        return super().execute(sql, parameters)
+
+    def rollback(self):
+        raise sqlite3.OperationalError("fixture full rollback failure")
+
+
+def test_pair_primary_survives_savepoint_and_full_rollback_failures(database) -> None:
+    path, _, _ = database
+    attempt_id = "attempt-cleanup-first-cause"
+    connection = sqlite3.connect(path)
+    connection.row_factory = sqlite3.Row
+    attempt = attempts.create_scheduled_pre_admission_attempt(
+        connection,
+        attempt_id=attempt_id,
+        campaign_id="campaign-1",
+        campaign_run_id="campaign-run-1",
+        configuration_id="configuration-1",
+        authoritative_factory_run_id="factory-1",
+        proposed_cycle_ordinal=2,
+        proposed_cycle_id="cycle-2",
+        cycle_cutoff=NOW,
+        evaluated_at=NOW,
+        selection_seed_identity="seed-cleanup-first-cause",
+        scheduled_for=NOW,
+        now=NOW,
+    )
+    assert scheduler.claim_due_job(
+        connection,
+        job_id=attempt.scheduler_job_id,
+        lock_owner=attempts.pre_admission_attempt_lock_owner(attempt_id),
+        now=NOW,
+    ) is LockResult.ACQUIRED
+    attempts.mark_pre_admission_attempt_running(
+        connection, attempt_id=attempt_id, now=NOW
+    )
+    connection.execute(
+        "CREATE TRIGGER fixture_fail_cleanup_pair_item_two BEFORE INSERT ON "
+        "printer_pre_admission_discovery_attempt_items "
+        "WHEN NEW.slot_ordinal=2 BEGIN "
+        "SELECT RAISE(ABORT,'fixture pair item two failure'); END"
+    )
+    connection.commit()
+    connection.close()
+
+    failing = sqlite3.connect(path, factory=_CleanupAndRollbackFailingConnection)
+    failing.row_factory = sqlite3.Row
+    failing.execute("PRAGMA foreign_keys=ON")
+    original_diagnostic = None
+    try:
+        with pytest.raises(attempts.PreAdmissionAttemptError) as captured:
+            attempts.persist_pre_admission_pair(
+                failing,
+                attempt_id=attempt_id,
+                items=(
+                    _pair_item(1, attempt_id=attempt_id),
+                    _pair_item(2, attempt_id=attempt_id),
+                ),
+                now=NOW,
+            )
+        primary = captured.value
+        original_diagnostic = primary.diagnostic
+        assert original_diagnostic is not None
+        assert original_diagnostic.producer_code == "PAIR_ITEM_INSERT"
+        assert original_diagnostic.failure_category == "CONSTRAINT_OR_INTEGRITY"
+        assert original_diagnostic.operation_phase == "PAIR_ITEM_2"
+        assert isinstance(primary.__cause__, sqlite3.OperationalError)
+        assert "fixture full rollback failure" in str(primary.__cause__)
+        assert isinstance(primary.__cause__.__context__, sqlite3.OperationalError)
+        assert "fixture savepoint cleanup failure" in str(
+            primary.__cause__.__context__
+        )
+    finally:
+        failing.close()
+
+    connection = sqlite3.connect(path)
+    try:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM printer_pre_admission_discovery_attempt_items "
+            "WHERE attempt_id=?",
+            (attempt_id,),
+        ).fetchone()[0] == 0
+        state, cause = connection.execute(
+            "SELECT attempt_state,first_terminal_cause "
+            "FROM printer_pre_admission_discovery_attempts WHERE attempt_id=?",
+            (attempt_id,),
+        ).fetchone()
+        assert state == "RUNNING" and cause is None
+        assert connection.execute(
+            "SELECT COUNT(*) FROM printer_memory_factory_campaign_cycles "
+            "WHERE cycle_ordinal=2"
+        ).fetchone()[0] == 0
+        assert connection.execute("SELECT COUNT(*) FROM printer_tracking_queue").fetchone()[0] == 0
+        job_status, retry_count = connection.execute(
+            "SELECT status,retry_count FROM printer_scheduler_jobs"
+        ).fetchone()
+        assert job_status == "RUNNING" and int(retry_count) == 0
+        assert connection.execute(
+            "SELECT COUNT(*) FROM printer_scheduler_jobs"
+        ).fetchone()[0] == 1
+        assert primary.diagnostic is original_diagnostic
+        assert primary.diagnostic.as_dict() == original_diagnostic.as_dict()
+    finally:
+        connection.close()
 
 
 class UnmappedPersistenceFault(RuntimeError):

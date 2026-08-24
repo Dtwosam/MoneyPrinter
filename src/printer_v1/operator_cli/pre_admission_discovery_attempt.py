@@ -995,7 +995,10 @@ def persist_pre_admission_pair(
             connection.execute("ROLLBACK TO SAVEPOINT persist_pre_admission_pair")
             connection.execute("RELEASE SAVEPOINT persist_pre_admission_pair")
         except sqlite3.Error as cleanup_exc:
-            connection.rollback()
+            try:
+                connection.rollback()
+            except Exception as rollback_exc:
+                raise primary from rollback_exc
             raise primary from cleanup_exc
         raise
 

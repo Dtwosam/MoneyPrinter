@@ -4,11 +4,11 @@ Date: 2026-08-24
 
 ## Current lane
 
-`V2-9.8B Bounded Later-Cycle Persistence Failure Diagnostic Narrow TDD Implementation`
+`V2-9.8B Bounded Later-Cycle Persistence Diagnostic First-Cause Preservation Repair`
 
 Status:
 
-`V2_9_8B_LATER_CYCLE_PERSISTENCE_FAILURE_DIAGNOSTIC_IMPLEMENTATION_PASS_READY_FOR_INDEPENDENT_BOUNDED_PROOF`
+`V2_9_8B_LATER_CYCLE_PERSISTENCE_DIAGNOSTIC_FIRST_CAUSE_REPAIR_PASS_READY_FOR_INDEPENDENT_REINSPECTION`
 
 Design:
 
@@ -18,12 +18,14 @@ Primary classification:
 
 `DIAGNOSTIC_GAP_BLOCKS_ROOT_CAUSE_IDENTIFICATION`
 
-The narrow implementation preserves the unchanged top-level
+The narrow first-cause repair preserves the unchanged top-level
 `LATER_CYCLE_ATTEMPT_PERSISTENCE_FAILED` cause and prospectively carries one
 first-cause, categorical, non-sensitive diagnostic in the exact attempt's
 existing Scheduler `last_error` owner. Its strict decoder is read-only and has
-no runtime authority. No schema change or persistence repair was made. The
-consumed incident's exact subcause remains irrecoverable and was not backfilled.
+no runtime authority. A later terminalization, commit, savepoint-cleanup, or
+rollback failure can no longer replace the initiating in-memory diagnostic.
+No schema change or persistence repair was made. The consumed incident's exact
+subcause remains irrecoverable and was not backfilled.
 
 The consumed authorization
 `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260824T123555Z_95dc47dd` remains permanently
@@ -31,11 +33,12 @@ dead and non-reusable.
 
 ## Exact next permitted action
 
-`INDEPENDENT BOUNDED PROOF / ACTUAL PATCH INSPECTION ONLY`
+`INDEPENDENT BOUNDED REINSPECTION / ACTUAL REPAIR PATCH INSPECTION ONLY`
 
-The next lane may inspect and independently prove only this bounded diagnostic
-patch. It may not authorize or run a campaign, repair an unproven persistence
-defect, add retry/recovery/successor behavior, or create/reuse an authorization.
+The next lane may inspect and independently prove only the bounded first-cause
+repair patch. It may not authorize or run a campaign, repair an unproven
+persistence defect, add retry/recovery/successor behavior, or create/reuse an
+authorization.
 
 ## Locks
 

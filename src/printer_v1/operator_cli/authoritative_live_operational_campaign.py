@@ -2509,13 +2509,16 @@ class AuthoritativeLiveOperationalCampaignOwner:
                                 max_retries=0,
                             )
                             connection.commit()
-                        except Exception:
+                        except Exception as secondary:
                             discard_job_failure_diagnostic(
                                 job_id=attempt.scheduler_job_id
                             )
-                            if connection.in_transaction:
-                                connection.rollback()
-                            raise
+                            try:
+                                if connection.in_transaction:
+                                    connection.rollback()
+                            except Exception as rollback_secondary:
+                                raise exc from rollback_secondary
+                            raise exc from secondary
                         final = load_pre_admission_attempt(
                             connection, attempt_id=attempt.attempt_id
                         )
