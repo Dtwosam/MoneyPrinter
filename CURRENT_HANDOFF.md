@@ -8,15 +8,17 @@ Date: 2026-08-24
 
 Status:
 
-`REPAIR_DESIGN_COMPLETE_TDD_IMPLEMENTATION_PENDING`
+`V2_9_8B_CONSUMED_4_2_2_PRE_LIFECYCLE_TERMINAL_ACCOUNTING_REPAIR_IMPLEMENTATION_PASS_READY_FOR_INDEPENDENT_BOUNDED_PROOF`
 
 The accepted narrow design is:
 
 `docs/printer-v1-v2-9-8b-consumed-4-2-2-pre-lifecycle-terminal-accounting-repair-design.md`
 
-It preserves the adapter's lawful no-accounting one-cycle mode and strict
-accounted two-cycle mode. The implementation boundary is the callback bridge
-in `one_command_15m_factory.py`; no adapter runtime change is authorized.
+The narrow TDD implementation is complete. It preserves the adapter's lawful
+no-accounting one-cycle mode and strict accounted two-cycle mode. The only
+production change is the callback bridge in `one_command_15m_factory.py`; the
+adapter, terminal owner, reporting owner, Scheduler, Source Governor, provider,
+schema, and capability locks are unchanged.
 
 The consumed authorization
 `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260824T123555Z_95dc47dd` is permanently
@@ -25,10 +27,10 @@ remain immutable incident evidence.
 
 ## Exact next permitted action
 
-Complete the approved narrow TDD repair and focused disposable-database proof.
-After an implementation PASS, the only next permitted action is independent
-bounded proof / patch inspection. Do not create an authorization or run the
-Printer, providers, or campaign.
+`INDEPENDENT BOUNDED PROOF / PATCH INSPECTION ONLY.`
+
+Do not close the repair lane in this run. Do not create an authorization or run
+the Printer, providers, or campaign.
 
 ## Locks
 

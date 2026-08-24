@@ -10860,8 +10860,36 @@ def run_one_command_15m_factory(
                 raise ValueError("authoritative shared terminal owner missing")
 
             def _shared_terminal_from_accounting(
-                *, terminal_accounting: Mapping[str, Any]
+                *, terminal_accounting: Mapping[str, Any] | None = None
             ) -> Mapping[str, Any]:
+                if terminal_accounting is None:
+                    if len(phase_a) != 1 or not isinstance(phase_a[0], Mapping):
+                        raise ValueError(
+                            "no-accounting shared terminal requires one Phase-A result"
+                        )
+                    shared_cause = phase_a[0].get("first_terminal_cause")
+                    phase_a_state = str(phase_a[0].get("cycle_state") or "")
+                    if phase_a_state == "TERMINAL_COMPLETED":
+                        shared_status = "COMPLETED"
+                    elif phase_a_state == "TERMINAL_FAILED":
+                        shared_status = "FAILED"
+                    elif phase_a_state in {
+                        "TERMINAL_STOPPED",
+                        "TERMINAL_BLOCKED",
+                    }:
+                        shared_status = "SAFE_STOPPED"
+                    else:
+                        raise ValueError(
+                            "no-accounting shared terminal has invalid Phase-A state"
+                        )
+                    if not str(shared_cause or "").strip():
+                        raise ValueError(
+                            "no-accounting shared terminal has no Phase-A cause"
+                        )
+                    return four_token_shared_terminalizer(
+                        terminal_cause=str(shared_cause),
+                        run_status=shared_status,
+                    )
                 aggregate_outcome = str(
                     terminal_accounting.get("execution_outcome") or ""
                 )
