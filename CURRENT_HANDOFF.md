@@ -4,11 +4,21 @@ Date: 2026-08-24
 
 ## Current lane
 
-`V2-9.8B Expired Fresh 4/2/2 Authorization Historical Adoption Implementation`
+`V2-9.8B Historical Operator Patch-Artifact Hash-Preserving Relocation`
 
 Status:
 
-`V2_9_8B_EXPIRED_FRESH_4_2_2_AUTH_HISTORICAL_ADOPTION_IMPLEMENTATION_PASS_READY_FOR_OPERATOR_ARTIFACT_RELOCATION`
+`V2_9_8B_HISTORICAL_OPERATOR_PATCH_ARTIFACT_RELOCATION_PASS_READY_FOR_WORKTREE_REREADINESS`
+
+The nine previously audited top-level historical operator patch/diff artifacts
+were relocated byte-for-byte outside the Git worktree to:
+
+`/Users/Dtwo1/MoneyPrinter-operator-artifact-archive/V2_9_8B_LANE2_PATCH_EXPORTS_20260824T111404Z`
+
+All nine destination SHA-256 and size values equal their pre-move source
+values. Their source paths are absent. No other file was relocated, and the
+canonical read-only evidence-set reconciliation has no uncovered
+`operator-runs` path or visible untracked path outside `operator-runs`.
 
 The create-once authorization
 `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260823T221645Z_6af1423a` is terminal by
@@ -39,13 +49,13 @@ permanently non-reusable historical authorization.
 
 ```text
 V2-9.8B
-HISTORICAL OPERATOR PATCH-ARTIFACT
-HASH-PRESERVING RELOCATION OUTSIDE WORKTREE
-SEPARATELY AUTHORIZED ONLY
+POST-ARTIFACT-RELOCATION
+EXACT-HEAD / WORKTREE REREADINESS
+READ-ONLY ONLY
 ```
 
-Do not skip directly to authorization preparation. The required order remains:
-artifact relocation, exact-HEAD/worktree rereadiness, completely new create-once
+Do not create a new authorization in the rereadiness lane. The required order
+remains: exact-HEAD/worktree rereadiness, completely new create-once
 authorization preparation, independent authorization review, separately
 operator-started campaign, then campaign closeout.
 
