@@ -4,28 +4,34 @@ Date: 2026-08-24
 
 ## Current lane
 
-`V2-9.8B Bounded Later-Cycle Persistence Diagnostic First-Cause Preservation Repair`
+`V2-9.8B Bounded Later-Cycle Persistence Failure Diagnostic Implementation Closeout`
 
 Status:
 
-`V2_9_8B_LATER_CYCLE_PERSISTENCE_DIAGNOSTIC_FIRST_CAUSE_REPAIR_PASS_READY_FOR_INDEPENDENT_REINSPECTION`
+`V2_9_8B_LATER_CYCLE_PERSISTENCE_FAILURE_DIAGNOSTIC_CLOSEOUT_PASS`
 
 Design:
 
 `docs/printer-v1-v2-9-8b-later-cycle-persistence-failure-diagnostic-design.md`
 
+Closeout:
+
+`docs/printer-v1-v2-9-8b-later-cycle-persistence-failure-diagnostic-closeout.md`
+
 Primary classification:
 
-`DIAGNOSTIC_GAP_BLOCKS_ROOT_CAUSE_IDENTIFICATION`
+`DIAGNOSTIC_GAP_BLOCKS_ROOT_CAUSE_IDENTIFICATION — PROSPECTIVELY RESOLVED`
 
-The narrow first-cause repair preserves the unchanged top-level
+The closed bounded diagnostic mechanism preserves the unchanged top-level
 `LATER_CYCLE_ATTEMPT_PERSISTENCE_FAILED` cause and prospectively carries one
 first-cause, categorical, non-sensitive diagnostic in the exact attempt's
 existing Scheduler `last_error` owner. Its strict decoder is read-only and has
 no runtime authority. A later terminalization, commit, savepoint-cleanup, or
 rollback failure can no longer replace the initiating in-memory diagnostic.
+If terminal SQLite persistence cannot succeed, no durable diagnostic is claimed.
 No schema change or persistence repair was made. The consumed incident's exact
-subcause remains irrecoverable and was not backfilled.
+subcause remains irrecoverable and was not backfilled; only future recurrence is
+boundedly diagnosable.
 
 The consumed authorization
 `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260824T123555Z_95dc47dd` remains permanently
@@ -33,12 +39,12 @@ dead and non-reusable.
 
 ## Exact next permitted action
 
-`INDEPENDENT BOUNDED REINSPECTION / ACTUAL REPAIR PATCH INSPECTION ONLY`
+`READ-ONLY POST-DIAGNOSTIC-REPAIR EXACT-HEAD / WORKTREE / DB REREADINESS GATE`
 
-The next lane may inspect and independently prove only the bounded first-cause
-repair patch. It may not authorize or run a campaign, repair an unproven
-persistence defect, add retry/recovery/successor behavior, or create/reuse an
-authorization.
+The next lane may perform only the fresh read-only exact-HEAD, worktree, and
+authoritative-DB rereadiness gate before any new 4/2/2 authorization
+preparation. It may not create an authorization, run a campaign, repair an
+unproven persistence defect, or add retry/recovery/successor behavior.
 
 ## Locks
 
