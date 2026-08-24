@@ -4,11 +4,15 @@ Date: 2026-08-24
 
 ## Current lane
 
-`V2-9.8B Latest Consumed Authorization Historical-Disposition Narrow TDD Implementation`
+`V2-9.8B Latest Consumed Authorization Historical-Disposition Implementation Closeout`
 
 Status:
 
-`V2_9_8B_LATEST_CONSUMED_AUTHORIZATION_HISTORICAL_DISPOSITION_IMPLEMENTATION_PASS_READY_FOR_INDEPENDENT_BOUNDED_PROOF`
+`V2_9_8B_LATEST_CONSUMED_AUTHORIZATION_HISTORICAL_DISPOSITION_CLOSEOUT_PASS`
+
+Closeout:
+
+`docs/printer-v1-v2-9-8b-latest-consumed-authorization-historical-disposition-closeout.md`
 
 Design:
 
@@ -18,27 +22,29 @@ Implementation classification:
 
 `EXACT_POLICY_ADOPTION_SUFFICIENT`
 
-The canonical `_POLICY_TERMINAL_DISPOSITIONS` owner now contains exactly one
-new registration:
+The independently accepted canonical `_POLICY_TERMINAL_DISPOSITIONS` owner
+contains exactly one adopted registration:
 
 `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260824T123555Z_95dc47dd -> CONSUMED_CHILD_EXITED_NONZERO`
 
-Focused RED-before-GREEN proof covers exact enumeration, wrong-ID isolation,
-trust-root omission, package/marker/child tamper, historical distinctions,
-current-versus-historical separation, temporal non-reactivation, and the
-derived 43-ID sorted unique future trust root. No generic classifier, evidence
-class, root, schema, DB, runtime, or authorization behavior changed.
+Closeout proof confirmed exact enumeration, wrong-ID isolation, trust-root
+omission, package/marker/child tamper rejection, historical distinctions,
+current-versus-historical separation, temporal non-reactivation, canonical
+reconciliation, DB invariance, and the derived 43-ID sorted unique future
+trust root. The exact `DISPOSITION_NOT_AVAILABLE` blocker is closed, but the
+historical consumed run is unchanged and the authorization remains permanently
+non-reusable. No generic classifier, evidence class, root, schema, DB, runtime,
+or authorization behavior changed.
 
 ## Exact next permitted action
 
-`V2-9.8B LATEST-CONSUMED AUTHORIZATION HISTORICAL-DISPOSITION INDEPENDENT BOUNDED PROOF / ACTUAL PATCH INSPECTION ONLY`
+`READ-ONLY POST-HISTORICAL-DISPOSITION-REPAIR EXACT-HEAD / WORKTREE / DB REREADINESS GATE`
 
-The next lane may inspect the actual committed patch and independently rerun
-only the bounded historical-disposition, trust-root, integrity, reconciliation,
-DB-invariance, and runtime-isolation proof. It is not closeout or rereadiness.
-It may not change implementation, create an authorization, run a campaign,
-mutate the DB, call providers/runtime owners, or add retry/recovery/successor
-behavior.
+The full rereadiness gate must be repeated read-only. Do not prepare an
+authorization yet. Any future authorization must bind the later exact final
+HEAD produced after all required rereadiness/checkpoint work. This handoff does
+not authorize a campaign, DB mutation, provider/runtime call, retry, recovery,
+or successor.
 
 ## Locks
 
