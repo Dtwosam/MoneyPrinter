@@ -25,12 +25,18 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
+import stat
 import subprocess
 import tempfile
 import unittest
 from unittest import mock
 
 from printer_v1.operator_cli import git_provenance_authorization_manifest as git_auth
+from printer_v1.operator_cli.authorization_temporal_validity import (
+    AuthorizationTemporalError,
+    validate_authorization_temporal_validity,
+)
 from printer_v1.operator_cli import (
     four_token_proof_one_shot_wrapper as four_token,
 )
@@ -64,6 +70,27 @@ MIGRATION_058_PATHS = frozenset(
 
 MIGRATION_061_ROOT = "operator-runs/v2-9-8b-migration-061-application"
 MIGRATION_061_EXECUTION_ID = "MIGRATION_061_20260823T200709Z"
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_ROOT = (
+    "operator-runs/v2-9-8b-four-token-standard-four-hour-final-authorization"
+)
+EXPIRED_FRESH_AUTHORIZATION_ID = (
+    "V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260823T221645Z_6af1423a"
+)
+EXPIRED_FRESH_AUTHORIZATION_RELATIVE_PATH = (
+    f"{FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_ROOT}/"
+    f"{EXPIRED_FRESH_AUTHORIZATION_ID}/final_authorization.json"
+)
+EXPIRED_FRESH_AUTHORIZATION_SHA256 = (
+    "c0d05a6c9de103e911f00d7f7e471e27d08fa983a57c6de33b6286a55388fb69"
+)
+CONSUMED_FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_ID = (
+    "V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260821T153458Z_512f2436"
+)
+FUTURE_FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_ID = (
+    "V2_9_8B_FOUR_TOKEN_STD4H_AUTH_FUTURE_TESTONLY"
+)
 
 PAIR_READY_ROOT = (
     "operator-runs/v2-9-8b-pair-ready-residual-reconciliation"
@@ -149,6 +176,273 @@ def _replace_historical_migration_packages(profile, packages):
         migration_package_kind=profile.migration_package_kind,
         historical_migration_packages=packages,
     )
+
+
+class ExpiredFreshAuthorizationHistoricalAdoptionTests(unittest.TestCase):
+    """Read-only production-path proof for the immutable expired package."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.authorization_path = (
+            REPOSITORY_ROOT / EXPIRED_FRESH_AUTHORIZATION_RELATIVE_PATH
+        )
+        cls.authorization_bytes = cls.authorization_path.read_bytes()
+        cls.authorization_document = json.loads(cls.authorization_bytes)
+        cls.future_document = {
+            "authorization_id": FUTURE_FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_ID,
+            "prior_authorizations_non_reusable": sorted(
+                [
+                    *cls.authorization_document[
+                        "prior_authorizations_non_reusable"
+                    ],
+                    EXPIRED_FRESH_AUTHORIZATION_ID,
+                ]
+            ),
+        }
+
+    @classmethod
+    def _approved_future_ids(cls) -> tuple[str, ...]:
+        return git_auth.extract_approved_historical_authorization_ids(
+            cls.future_document,
+            current_authorization_id=(
+                FUTURE_FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_ID
+            ),
+        )
+
+    @classmethod
+    def _enumerate_real_history(cls) -> tuple[dict[str, object], ...]:
+        profile = git_auth.FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE
+        return git_auth.enumerate_historical_authorization_evidence(
+            repository_root=REPOSITORY_ROOT,
+            current_authorization_id=(
+                FUTURE_FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_ID
+            ),
+            approved_historical_authorization_ids=cls._approved_future_ids(),
+            authorization_package_roots=(
+                profile.historical_authorization_package_roots
+            ),
+            current_authorization_package_root=(
+                profile.authorization_package_root
+            ),
+        )
+
+    def test_approved_complete_future_trust_root_emits_exact_expired_package(self) -> None:
+        """Break caught: the policy owner omits or misclassifies this package."""
+        self.assertEqual(
+            self.authorization_document["authorization_id"],
+            EXPIRED_FRESH_AUTHORIZATION_ID,
+        )
+        self.assertEqual(len(self.authorization_bytes), 4218)
+        self.assertEqual(
+            hashlib.sha256(self.authorization_bytes).hexdigest(),
+            EXPIRED_FRESH_AUTHORIZATION_SHA256,
+        )
+        self.assertEqual(
+            stat.S_IMODE(self.authorization_path.stat().st_mode), 0o444
+        )
+
+        approved = self._approved_future_ids()
+        self.assertEqual(approved, tuple(sorted(approved)))
+        self.assertEqual(len(approved), len(set(approved)))
+        self.assertIn(EXPIRED_FRESH_AUTHORIZATION_ID, approved)
+        self.assertTrue(
+            set(
+                self.authorization_document[
+                    "prior_authorizations_non_reusable"
+                ]
+            ).issubset(approved)
+        )
+
+        records = [
+            item
+            for item in self._enumerate_real_history()
+            if item["authorization_id"] == EXPIRED_FRESH_AUTHORIZATION_ID
+        ]
+        self.assertEqual(
+            records,
+            [
+                {
+                    "path": EXPIRED_FRESH_AUTHORIZATION_RELATIVE_PATH,
+                    "sha256": EXPIRED_FRESH_AUTHORIZATION_SHA256,
+                    "size": 4218,
+                    "evidence_class": (
+                        git_auth.HISTORICAL_AUTHORIZATION_EVIDENCE_CLASS
+                    ),
+                    "authorization_id": EXPIRED_FRESH_AUTHORIZATION_ID,
+                    "terminal_disposition": (
+                        "BLOCKED_UNCONSUMED_SUPERSEDED"
+                    ),
+                }
+            ],
+        )
+
+    def test_omission_from_future_trust_root_fails_closed(self) -> None:
+        """Break caught: directory discovery silently broadens future trust."""
+        profile = git_auth.FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE
+        omitted_document = {
+            "prior_authorizations_non_reusable": list(
+                self.authorization_document[
+                    "prior_authorizations_non_reusable"
+                ]
+            )
+        }
+        approved = git_auth.extract_approved_historical_authorization_ids(
+            omitted_document,
+            current_authorization_id=(
+                FUTURE_FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_ID
+            ),
+        )
+        with self.assertRaisesRegex(
+            git_auth.GitProvenanceAuthorizationError,
+            "unapproved historical authorization package",
+        ):
+            git_auth.enumerate_historical_authorization_evidence(
+                repository_root=REPOSITORY_ROOT,
+                current_authorization_id=(
+                    FUTURE_FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_ID
+                ),
+                approved_historical_authorization_ids=approved,
+                authorization_package_roots=(
+                    profile.historical_authorization_package_roots
+                ),
+                current_authorization_package_root=(
+                    profile.authorization_package_root
+                ),
+            )
+
+    def test_tampered_disposable_copy_fails_existing_sha_binding(self) -> None:
+        """Break caught: bound Ha bytes change after future enumeration."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            copied = root / EXPIRED_FRESH_AUTHORIZATION_RELATIVE_PATH
+            copied.parent.mkdir(parents=True)
+            shutil.copy2(self.authorization_path, copied)
+            records = git_auth.enumerate_historical_authorization_evidence(
+                repository_root=root,
+                current_authorization_id=(
+                    FUTURE_FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_ID
+                ),
+                approved_historical_authorization_ids=[
+                    EXPIRED_FRESH_AUTHORIZATION_ID
+                ],
+                tracked_operator_runs_paths=set(),
+                authorization_package_roots=(
+                    FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_ROOT,
+                ),
+                current_authorization_package_root=(
+                    FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_ROOT
+                ),
+            )
+            os.chmod(copied, 0o644)
+            tampered = bytearray(self.authorization_bytes)
+            tampered[0] = ord("[")
+            copied.write_bytes(tampered)
+            with self.assertRaisesRegex(
+                git_auth.GitProvenanceAuthorizationError, "SHA-256 mismatch"
+            ):
+                git_auth._validate_historical_authorization_evidence(
+                    {"historical_authorization_evidence": list(records)},
+                    root=root,
+                    authorization_id=(
+                        FUTURE_FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_ID
+                    ),
+                    approved_historical_authorization_ids=[
+                        EXPIRED_FRESH_AUTHORIZATION_ID
+                    ],
+                    tracked_paths=set(),
+                    current_manifest_paths=set(),
+                    profile=(
+                        git_auth.FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE
+                    ),
+                )
+
+    def test_wrong_authorization_id_is_not_adopted(self) -> None:
+        """Break caught: a lookalike package inherits the adopted diagnostic."""
+        wrong_id = f"{EXPIRED_FRESH_AUTHORIZATION_ID}_WRONG"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            copied = (
+                root
+                / FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_ROOT
+                / wrong_id
+                / "final_authorization.json"
+            )
+            copied.parent.mkdir(parents=True)
+            shutil.copy2(self.authorization_path, copied)
+            with self.assertRaisesRegex(
+                git_auth.GitProvenanceAuthorizationError,
+                "unapproved historical authorization package",
+            ):
+                git_auth.enumerate_historical_authorization_evidence(
+                    repository_root=root,
+                    current_authorization_id=(
+                        FUTURE_FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_ID
+                    ),
+                    approved_historical_authorization_ids=[
+                        EXPIRED_FRESH_AUTHORIZATION_ID
+                    ],
+                    tracked_operator_runs_paths=set(),
+                    authorization_package_roots=(
+                        FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_ROOT,
+                    ),
+                    current_authorization_package_root=(
+                        FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_ROOT
+                    ),
+                )
+        self.assertEqual(
+            git_auth._terminal_disposition_for(wrong_id),
+            git_auth.DEFAULT_TERMINAL_DISPOSITION,
+        )
+
+    def test_expired_package_is_historical_non_reusable_and_never_current(self) -> None:
+        """Break caught: diagnostic adoption revives current/reuse authority."""
+        records = self._enumerate_real_history()
+        expired = [
+            item
+            for item in records
+            if item["authorization_id"] == EXPIRED_FRESH_AUTHORIZATION_ID
+        ]
+        consumed = [
+            item
+            for item in records
+            if item["authorization_id"]
+            == CONSUMED_FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_ID
+        ]
+        self.assertEqual(len(expired), 1)
+        self.assertEqual(len(consumed), 1)
+        self.assertNotEqual(
+            expired[0]["authorization_id"], consumed[0]["authorization_id"]
+        )
+        self.assertEqual(
+            expired[0]["evidence_class"],
+            git_auth.HISTORICAL_AUTHORIZATION_EVIDENCE_CLASS,
+        )
+        future_current_authorization_path = (
+            f"{FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_ROOT}/"
+            f"{FUTURE_FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_ID}/"
+            "final_authorization.json"
+        )
+        self.assertNotEqual(
+            EXPIRED_FRESH_AUTHORIZATION_RELATIVE_PATH,
+            future_current_authorization_path,
+        )
+        one_shot = self.authorization_document["one_shot_policy"]
+        self.assertEqual(one_shot["allowed_invocation_count"], 1)
+        for flag in (
+            "automatic_retry_allowed",
+            "manual_rerun_allowed",
+            "resume_allowed",
+            "restart_allowed",
+            "successor_allowed",
+        ):
+            self.assertIs(one_shot[flag], False)
+        with self.assertRaisesRegex(
+            AuthorizationTemporalError, "AUTHORIZATION_EXPIRED"
+        ):
+            validate_authorization_temporal_validity(
+                self.authorization_document,
+                now=datetime(2026, 8, 24, 10, 20, 30, tzinfo=timezone.utc),
+            )
 
 
 class FourTokenHistoricalMigrationFixture:
