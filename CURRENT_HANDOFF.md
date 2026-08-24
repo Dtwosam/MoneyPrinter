@@ -4,21 +4,20 @@ Date: 2026-08-24
 
 ## Current lane
 
-`V2-9.8B Consumed 4/2/2 Pre-Lifecycle Terminal-Accounting Repair`
+`V2-9.8B Consumed 4/2/2 Pre-Lifecycle Terminal-Accounting Repair Closeout`
 
 Status:
 
-`V2_9_8B_CONSUMED_4_2_2_PRE_LIFECYCLE_TERMINAL_ACCOUNTING_REPAIR_IMPLEMENTATION_PASS_READY_FOR_INDEPENDENT_BOUNDED_PROOF`
+`V2_9_8B_CONSUMED_4_2_2_PRE_LIFECYCLE_TERMINAL_ACCOUNTING_REPAIR_CLOSEOUT_PASS`
 
-The accepted narrow design is:
+Closeout:
 
-`docs/printer-v1-v2-9-8b-consumed-4-2-2-pre-lifecycle-terminal-accounting-repair-design.md`
+`docs/printer-v1-v2-9-8b-consumed-4-2-2-pre-lifecycle-terminal-accounting-repair-closeout.md`
 
-The narrow TDD implementation is complete. It preserves the adapter's lawful
-no-accounting one-cycle mode and strict accounted two-cycle mode. The only
-production change is the callback bridge in `one_command_15m_factory.py`; the
-adapter, terminal owner, reporting owner, Scheduler, Source Governor, provider,
-schema, and capability locks are unchanged.
+The narrow repair is closed PASS. Focused production-path proof confirms the
+adapter-selected one-cycle no-accounting callback terminalizes once without a
+`TypeError`, while canonical two-cycle accounting and report fail-closed rules
+remain strict. No production or test code changed during closeout.
 
 The consumed authorization
 `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260824T123555Z_95dc47dd` is permanently
@@ -27,10 +26,12 @@ remain immutable incident evidence.
 
 ## Exact next permitted action
 
-`INDEPENDENT BOUNDED PROOF / PATCH INSPECTION ONLY.`
+`V2-9.8B LATER-CYCLE PRE-ADMISSION PERSISTENCE FAILURE FORENSIC / READINESS AUDIT ONLY`
 
-Do not close the repair lane in this run. Do not create an authorization or run
-the Printer, providers, or campaign.
+The consumed real run encountered `LATER_CYCLE_ATTEMPT_PERSISTENCE_FAILED`, but
+its narrower original `PreAdmissionAttemptError` detail was not durably retained.
+Do not invent that cause. Do not create an authorization or run the Printer,
+providers, Source Governor, Central Scheduler, or a campaign.
 
 ## Locks
 
