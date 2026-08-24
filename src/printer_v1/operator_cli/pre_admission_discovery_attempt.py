@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from enum import StrEnum
 import hashlib
 import json
+import re
 import sqlite3
 from typing import Any, Mapping, Sequence
 
@@ -21,8 +22,212 @@ from printer_v1.scheduler.contracts import JobKind, JobStatus, LockResult
 from printer_v1.scheduler.scheduler import enqueue_job
 
 
+PERSISTENCE_DIAGNOSTIC_SCHEMA = "PRE_ADMISSION_PERSISTENCE_DIAGNOSTIC_V1"
+PERSISTENCE_FAILURE_CODE = "LATER_CYCLE_ATTEMPT_PERSISTENCE_FAILED"
+DIAGNOSTIC_UNAVAILABLE = "DIAGNOSTIC_UNAVAILABLE"
+_DIAGNOSTIC_FIELDS = frozenset(
+    {
+        "diagnostic_schema",
+        "failure_code",
+        "producer_code",
+        "failure_category",
+        "operation_phase",
+        "exception_type",
+        "reason_code",
+    }
+)
+_PERSISTENCE_PRODUCERS = frozenset(
+    {
+        "RUNNING_ATTEMPT_FAILURE_TERMINALIZATION",
+        "SOURCE_EVIDENCE_LINK_ARGUMENT",
+        "SOURCE_EVIDENCE_LINK_INSERT",
+        "FROZEN_EVIDENCE_PROJECTION",
+        "FROZEN_LANE_CLASSIFICATION",
+        "PAIR_SHAPE_VALIDATION",
+        "FROZEN_LANE_FIELD_VALIDATION",
+        "PAIR_ATTEMPT_RUNNING_PREREQUISITE",
+        "PAIR_ITEM_INSERT",
+        "PAIR_READY_TRANSITION",
+        "PRE_ADMISSION_PERSISTENCE_UNKNOWN",
+    }
+)
+_PERSISTENCE_CATEGORIES = frozenset(
+    {
+        "APPLICATION_VALIDATION",
+        "PREREQUISITE_MISSING",
+        "CONSTRAINT_OR_INTEGRITY",
+        "SQLITE_BUSY_OR_LOCK",
+        "SQLITE_IO_OR_OPERATIONAL",
+        "UNKNOWN_PERSISTENCE_FAILURE",
+    }
+)
+_PERSISTENCE_PHASES = frozenset(
+    {
+        "TERMINALIZATION",
+        "SOURCE_LINK",
+        "FROZEN_CARRIER",
+        "PAIR_PRECHECK",
+        "PAIR_ITEM_1",
+        "PAIR_ITEM_2",
+        "PAIR_READY",
+        "UNKNOWN_PHASE",
+    }
+)
+_EXCEPTION_TYPE_PATTERN = re.compile(r"^[A-Za-z0-9_]{1,96}$")
+_REASON_CODE_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
+
+
+@dataclass(frozen=True)
+class PreAdmissionPersistenceDiagnostic:
+    diagnostic_schema: str
+    failure_code: str
+    producer_code: str
+    failure_category: str
+    operation_phase: str
+    exception_type: str
+    reason_code: str
+
+    def __post_init__(self) -> None:
+        if self.diagnostic_schema != PERSISTENCE_DIAGNOSTIC_SCHEMA:
+            raise ValueError("invalid diagnostic schema")
+        if self.failure_code != PERSISTENCE_FAILURE_CODE:
+            raise ValueError("invalid diagnostic failure code")
+        if self.producer_code not in _PERSISTENCE_PRODUCERS:
+            raise ValueError("invalid diagnostic producer")
+        if self.failure_category not in _PERSISTENCE_CATEGORIES:
+            raise ValueError("invalid diagnostic failure category")
+        if self.operation_phase not in _PERSISTENCE_PHASES:
+            raise ValueError("invalid diagnostic operation phase")
+        if _EXCEPTION_TYPE_PATTERN.fullmatch(self.exception_type) is None:
+            raise ValueError("invalid diagnostic exception type")
+        if _REASON_CODE_PATTERN.fullmatch(self.reason_code) is None:
+            raise ValueError("invalid diagnostic reason code")
+        if len(self.canonical_json()) > 1536:
+            raise ValueError("diagnostic exceeds Scheduler last_error bound")
+
+    def as_dict(self) -> dict[str, str]:
+        return {
+            "diagnostic_schema": self.diagnostic_schema,
+            "failure_code": self.failure_code,
+            "producer_code": self.producer_code,
+            "failure_category": self.failure_category,
+            "operation_phase": self.operation_phase,
+            "exception_type": self.exception_type,
+            "reason_code": self.reason_code,
+        }
+
+    def canonical_json(self) -> str:
+        return json.dumps(self.as_dict(), sort_keys=True, separators=(",", ":"))
+
+    @classmethod
+    def from_mapping(cls, value: object) -> "PreAdmissionPersistenceDiagnostic":
+        if (
+            not isinstance(value, Mapping)
+            or set(value) != _DIAGNOSTIC_FIELDS
+            or any(not isinstance(value[key], str) for key in _DIAGNOSTIC_FIELDS)
+        ):
+            raise ValueError("diagnostic key set invalid")
+        return cls(**{key: value[key] for key in _DIAGNOSTIC_FIELDS})  # type: ignore[arg-type]
+
+
 class PreAdmissionAttemptError(ValueError):
     """Fail-closed pre-admission persistence contract violation."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        diagnostic: PreAdmissionPersistenceDiagnostic | None = None,
+    ) -> None:
+        super().__init__(message)
+        self._diagnostic = diagnostic
+
+    @property
+    def diagnostic(self) -> PreAdmissionPersistenceDiagnostic | None:
+        return self._diagnostic
+
+
+def _safe_exception_type(exc: BaseException) -> str:
+    name = exc.__class__.__name__
+    return name if _EXCEPTION_TYPE_PATTERN.fullmatch(name) else "Exception"
+
+
+def _safe_reason_code(exc: BaseException) -> str:
+    if isinstance(exc, sqlite3.Error):
+        name = getattr(exc, "sqlite_errorname", None)
+        if isinstance(name, str) and _REASON_CODE_PATTERN.fullmatch(name):
+            return name
+        return "SQLITE_ERROR_NAME_UNAVAILABLE"
+    if isinstance(exc, PreAdmissionAttemptError):
+        code = str(exc)
+        if _REASON_CODE_PATTERN.fullmatch(code):
+            return code
+        return "UNCLASSIFIED_PRE_ADMISSION_ERROR"
+    return "UNKNOWN_PERSISTENCE_REASON"
+
+
+def _failure_category(exc: BaseException) -> str:
+    if isinstance(exc, sqlite3.IntegrityError):
+        return "CONSTRAINT_OR_INTEGRITY"
+    if isinstance(exc, sqlite3.Error):
+        primary = int(getattr(exc, "sqlite_errorcode", 0) or 0) & 0xFF
+        if primary in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}:
+            return "SQLITE_BUSY_OR_LOCK"
+        return "SQLITE_IO_OR_OPERATIONAL"
+    if isinstance(exc, PreAdmissionAttemptError):
+        return "APPLICATION_VALIDATION"
+    return "UNKNOWN_PERSISTENCE_FAILURE"
+
+
+def pre_admission_persistence_diagnostic_for_exception(
+    exc: BaseException,
+    *,
+    producer_code: str = "PRE_ADMISSION_PERSISTENCE_UNKNOWN",
+    operation_phase: str = "UNKNOWN_PHASE",
+    failure_category: str | None = None,
+) -> PreAdmissionPersistenceDiagnostic:
+    if isinstance(exc, PreAdmissionAttemptError) and exc.diagnostic is not None:
+        return exc.diagnostic
+    unknown_boundary = (
+        producer_code == "PRE_ADMISSION_PERSISTENCE_UNKNOWN"
+        and failure_category is None
+    )
+    return PreAdmissionPersistenceDiagnostic(
+        diagnostic_schema=PERSISTENCE_DIAGNOSTIC_SCHEMA,
+        failure_code=PERSISTENCE_FAILURE_CODE,
+        producer_code=producer_code,
+        failure_category=(
+            "UNKNOWN_PERSISTENCE_FAILURE"
+            if unknown_boundary
+            else failure_category or _failure_category(exc)
+        ),
+        operation_phase=operation_phase,
+        exception_type=_safe_exception_type(exc),
+        reason_code=(
+            "UNKNOWN_PERSISTENCE_REASON"
+            if unknown_boundary
+            else _safe_reason_code(exc)
+        ),
+    )
+
+
+def _annotate_persistence_error(
+    exc: BaseException,
+    *,
+    producer_code: str,
+    operation_phase: str,
+    failure_category: str | None = None,
+) -> PreAdmissionAttemptError:
+    if isinstance(exc, PreAdmissionAttemptError) and exc.diagnostic is not None:
+        return exc
+    diagnostic = pre_admission_persistence_diagnostic_for_exception(
+        exc,
+        producer_code=producer_code,
+        operation_phase=operation_phase,
+        failure_category=failure_category,
+    )
+    message = str(exc) if isinstance(exc, PreAdmissionAttemptError) else diagnostic.reason_code
+    return PreAdmissionAttemptError(message, diagnostic=diagnostic)
 
 
 class PreAdmissionAttemptState(StrEnum):
@@ -264,20 +469,34 @@ def attach_frozen_tracking_lane(
     item: PreAdmissionAttemptItem, *, now: datetime
 ) -> PreAdmissionAttemptItem:
     """Classify exact current evidence and freeze TRACK_FAST/TRACK_NORMAL provenance."""
-    classifier_input = project_classifier_candidate_from_pre_admission_evidence(
-        mint_identity=item.mint_identity,
-        pair_identity=item.pair_identity,
-        canonical_evidence_json=item.canonical_evidence_json,
-        channel_labels=item.channel_labels,
-        observed_at=item.observed_at,
-    )
-    lane_value, classification = classify_tracking_lane_from_candidate_evidence(
-        mint_identity=item.mint_identity,
-        pair_identity=item.pair_identity,
-        canonical_evidence_json=item.canonical_evidence_json,
-        channel_labels=item.channel_labels,
-        observed_at=item.observed_at,
-    )
+    try:
+        classifier_input = project_classifier_candidate_from_pre_admission_evidence(
+            mint_identity=item.mint_identity,
+            pair_identity=item.pair_identity,
+            canonical_evidence_json=item.canonical_evidence_json,
+            channel_labels=item.channel_labels,
+            observed_at=item.observed_at,
+        )
+    except PreAdmissionAttemptError as exc:
+        raise _annotate_persistence_error(
+            exc,
+            producer_code="FROZEN_EVIDENCE_PROJECTION",
+            operation_phase="FROZEN_CARRIER",
+        ) from exc
+    try:
+        lane_value, classification = classify_tracking_lane_from_candidate_evidence(
+            mint_identity=item.mint_identity,
+            pair_identity=item.pair_identity,
+            canonical_evidence_json=item.canonical_evidence_json,
+            channel_labels=item.channel_labels,
+            observed_at=item.observed_at,
+        )
+    except PreAdmissionAttemptError as exc:
+        raise _annotate_persistence_error(
+            exc,
+            producer_code="FROZEN_LANE_CLASSIFICATION",
+            operation_phase="FROZEN_CARRIER",
+        ) from exc
     return replace(
         item,
         frozen_tracking_lane=lane_value,
@@ -575,7 +794,7 @@ def create_scheduled_pre_admission_attempt(
         raise
 
 
-def terminalize_pre_admission_attempt(
+def _terminalize_pre_admission_attempt(
     connection: sqlite3.Connection,
     *,
     attempt_id: str,
@@ -619,6 +838,30 @@ def terminalize_pre_admission_attempt(
     )
 
 
+def terminalize_pre_admission_attempt(
+    connection: sqlite3.Connection,
+    *,
+    attempt_id: str,
+    state: PreAdmissionAttemptState,
+    cause: str,
+    now: datetime,
+) -> PreAdmissionDiscoveryAttempt:
+    try:
+        return _terminalize_pre_admission_attempt(
+            connection,
+            attempt_id=attempt_id,
+            state=state,
+            cause=cause,
+            now=now,
+        )
+    except PreAdmissionAttemptError as exc:
+        raise _annotate_persistence_error(
+            exc,
+            producer_code="RUNNING_ATTEMPT_FAILURE_TERMINALIZATION",
+            operation_phase="TERMINALIZATION",
+        ) from exc
+
+
 def _validate_pair(attempt_id: str, items: Sequence[PreAdmissionAttemptItem]) -> tuple[PreAdmissionAttemptItem, PreAdmissionAttemptItem]:
     if len(items) != 2:
         raise PreAdmissionAttemptError("EXACT_TWO_ITEMS_REQUIRED")
@@ -650,20 +893,46 @@ def persist_pre_admission_pair(
     items: Sequence[PreAdmissionAttemptItem],
     now: datetime,
 ) -> PreAdmissionDiscoveryAttempt:
-    exact_id = _required(attempt_id, "attempt_id")
-    ordered = _validate_pair(exact_id, items)
-    for item in ordered:
-        _require_frozen_tracking_lane_fields(
-            item, missing_code="FROZEN_TRACKING_LANE_MISSING"
-        )
-    if load_pre_admission_attempt(connection, attempt_id=exact_id).state is not PreAdmissionAttemptState.RUNNING:
-        raise PreAdmissionAttemptError("INVALID_ATTEMPT_TRANSITION")
+    try:
+        exact_id = _required(attempt_id, "attempt_id")
+        ordered = _validate_pair(exact_id, items)
+    except PreAdmissionAttemptError as exc:
+        raise _annotate_persistence_error(
+            exc,
+            producer_code="PAIR_SHAPE_VALIDATION",
+            operation_phase="PAIR_PRECHECK",
+        ) from exc
+    try:
+        for item in ordered:
+            _require_frozen_tracking_lane_fields(
+                item, missing_code="FROZEN_TRACKING_LANE_MISSING"
+            )
+    except PreAdmissionAttemptError as exc:
+        raise _annotate_persistence_error(
+            exc,
+            producer_code="FROZEN_LANE_FIELD_VALIDATION",
+            operation_phase="PAIR_PRECHECK",
+            failure_category="PREREQUISITE_MISSING",
+        ) from exc
+    try:
+        if load_pre_admission_attempt(
+            connection, attempt_id=exact_id
+        ).state is not PreAdmissionAttemptState.RUNNING:
+            raise PreAdmissionAttemptError("INVALID_ATTEMPT_TRANSITION")
+    except PreAdmissionAttemptError as exc:
+        raise _annotate_persistence_error(
+            exc,
+            producer_code="PAIR_ATTEMPT_RUNNING_PREREQUISITE",
+            operation_phase="PAIR_PRECHECK",
+            failure_category="PREREQUISITE_MISSING",
+        ) from exc
     instant = _timestamp(now, "now")
     connection.execute("SAVEPOINT persist_pre_admission_pair")
     try:
         for item in ordered:
-            connection.execute(
-                """INSERT INTO printer_pre_admission_discovery_attempt_items(
+            try:
+                connection.execute(
+                    """INSERT INTO printer_pre_admission_discovery_attempt_items(
                        attempt_id,slot_ordinal,token_identity,token_row_id,mint_identity,
                        pair_identity,pair_row_id,lifecycle_identity,
                        canonical_market_identity,canonical_pool_identity,channel_labels_json,
@@ -672,48 +941,63 @@ def persist_pre_admission_pair(
                        frozen_tracking_lane,frozen_discovery_action,frozen_discovery_label,
                        frozen_classification_reason,frozen_lane_evidence_hash,
                        frozen_lane_decided_at,frozen_lane_decision_owner
-                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (
-                    exact_id, item.slot_ordinal, _required(item.token_identity, "token_identity"),
-                    item.token_row_id, _required(item.mint_identity, "mint_identity"),
-                    _required(item.pair_identity, "pair_identity"), item.pair_row_id,
-                    _required(item.lifecycle_identity, "lifecycle_identity"),
-                    _required(item.canonical_market_identity, "canonical_market_identity"),
-                    _required(item.canonical_pool_identity, "canonical_pool_identity"),
-                    json.dumps(sorted(set(item.channel_labels)), separators=(",", ":")),
-                    _required(item.canonical_evidence_json, "canonical_evidence_json"),
-                    _required(item.canonical_evidence_hash, "canonical_evidence_hash"),
-                    _required(item.evidence_version, "evidence_version"),
-                    _timestamp(item.observed_at, "observed_at"), instant,
-                    _required(item.frozen_tracking_lane, "frozen_tracking_lane"),
-                    _required(item.frozen_discovery_action, "frozen_discovery_action"),
-                    _required(item.frozen_discovery_label, "frozen_discovery_label"),
-                    _required(
-                        item.frozen_classification_reason, "frozen_classification_reason"
+                       ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        exact_id, item.slot_ordinal, _required(item.token_identity, "token_identity"),
+                        item.token_row_id, _required(item.mint_identity, "mint_identity"),
+                        _required(item.pair_identity, "pair_identity"), item.pair_row_id,
+                        _required(item.lifecycle_identity, "lifecycle_identity"),
+                        _required(item.canonical_market_identity, "canonical_market_identity"),
+                        _required(item.canonical_pool_identity, "canonical_pool_identity"),
+                        json.dumps(sorted(set(item.channel_labels)), separators=(",", ":")),
+                        _required(item.canonical_evidence_json, "canonical_evidence_json"),
+                        _required(item.canonical_evidence_hash, "canonical_evidence_hash"),
+                        _required(item.evidence_version, "evidence_version"),
+                        _timestamp(item.observed_at, "observed_at"), instant,
+                        _required(item.frozen_tracking_lane, "frozen_tracking_lane"),
+                        _required(item.frozen_discovery_action, "frozen_discovery_action"),
+                        _required(item.frozen_discovery_label, "frozen_discovery_label"),
+                        _required(
+                            item.frozen_classification_reason, "frozen_classification_reason"
+                        ),
+                        _required(item.frozen_lane_evidence_hash, "frozen_lane_evidence_hash"),
+                        _timestamp(item.frozen_lane_decided_at, "frozen_lane_decided_at"),
+                        _required(
+                            item.frozen_lane_decision_owner, "frozen_lane_decision_owner"
+                        ),
                     ),
-                    _required(item.frozen_lane_evidence_hash, "frozen_lane_evidence_hash"),
-                    _timestamp(item.frozen_lane_decided_at, "frozen_lane_decided_at"),
-                    _required(
-                        item.frozen_lane_decision_owner, "frozen_lane_decision_owner"
-                    ),
-                ),
+                )
+            except Exception as exc:
+                raise _annotate_persistence_error(
+                    exc,
+                    producer_code="PAIR_ITEM_INSERT",
+                    operation_phase=f"PAIR_ITEM_{item.slot_ordinal}",
+                ) from exc
+        try:
+            result = _transition(
+                connection,
+                attempt_id=exact_id,
+                expected=PreAdmissionAttemptState.RUNNING,
+                target=PreAdmissionAttemptState.PAIR_READY,
+                cause="EXACT_PAIR_FROZEN",
+                now=now,
             )
-        result = _transition(
-            connection,
-            attempt_id=exact_id,
-            expected=PreAdmissionAttemptState.RUNNING,
-            target=PreAdmissionAttemptState.PAIR_READY,
-            cause="EXACT_PAIR_FROZEN",
-            now=now,
-        )
+        except Exception as exc:
+            raise _annotate_persistence_error(
+                exc,
+                producer_code="PAIR_READY_TRANSITION",
+                operation_phase="PAIR_READY",
+            ) from exc
         connection.execute("RELEASE SAVEPOINT persist_pre_admission_pair")
         return result
-    except (sqlite3.Error, PreAdmissionAttemptError) as exc:
-        connection.execute("ROLLBACK TO SAVEPOINT persist_pre_admission_pair")
-        connection.execute("RELEASE SAVEPOINT persist_pre_admission_pair")
-        if isinstance(exc, PreAdmissionAttemptError):
-            raise
-        raise PreAdmissionAttemptError("PAIR_PERSISTENCE_FAILED") from exc
+    except PreAdmissionAttemptError as primary:
+        try:
+            connection.execute("ROLLBACK TO SAVEPOINT persist_pre_admission_pair")
+            connection.execute("RELEASE SAVEPOINT persist_pre_admission_pair")
+        except sqlite3.Error as cleanup_exc:
+            connection.rollback()
+            raise primary from cleanup_exc
+        raise
 
 
 def load_pre_admission_pair(
@@ -883,39 +1167,94 @@ def link_pre_admission_source_evidence(
     source_failure_id: int | None = None,
     now: datetime,
 ) -> None:
-    if source_response_id is not None and source_failure_id is not None:
-        raise PreAdmissionAttemptError("AMBIGUOUS_SOURCE_EVIDENCE")
-    if type(link_ordinal) is not int or link_ordinal <= 0:
-        raise PreAdmissionAttemptError("LINK_ORDINAL_INVALID")
-    if type(source_request_id) is not int or source_request_id <= 0:
-        raise PreAdmissionAttemptError("SOURCE_REQUEST_ID_INVALID")
+    try:
+        if source_response_id is not None and source_failure_id is not None:
+            raise PreAdmissionAttemptError("AMBIGUOUS_SOURCE_EVIDENCE")
+        if type(link_ordinal) is not int or link_ordinal <= 0:
+            raise PreAdmissionAttemptError("LINK_ORDINAL_INVALID")
+        if type(source_request_id) is not int or source_request_id <= 0:
+            raise PreAdmissionAttemptError("SOURCE_REQUEST_ID_INVALID")
+        exact_attempt_id = _required(attempt_id, "attempt_id")
+        exact_stage = _required(logical_stage, "logical_stage")
+        created_at = _timestamp(now, "now")
+    except PreAdmissionAttemptError as exc:
+        raise _annotate_persistence_error(
+            exc,
+            producer_code="SOURCE_EVIDENCE_LINK_ARGUMENT",
+            operation_phase="SOURCE_LINK",
+        ) from exc
     try:
         connection.execute(
             """INSERT INTO printer_pre_admission_discovery_attempt_source_links(
                    attempt_id,link_ordinal,logical_stage,source_request_id,
                    source_response_id,source_failure_id,created_at
-               ) VALUES (?,?,?,?,?,?,?)""",
+            ) VALUES (?,?,?,?,?,?,?)""",
             (
-                _required(attempt_id, "attempt_id"), link_ordinal,
-                _required(logical_stage, "logical_stage"), source_request_id,
-                source_response_id, source_failure_id, _timestamp(now, "now"),
+                exact_attempt_id, link_ordinal, exact_stage, source_request_id,
+                source_response_id, source_failure_id, created_at,
             ),
         )
-    except sqlite3.IntegrityError as exc:
-        raise PreAdmissionAttemptError("SOURCE_EVIDENCE_LINK_INVALID") from exc
+    except Exception as exc:
+        raise _annotate_persistence_error(
+            exc,
+            producer_code="SOURCE_EVIDENCE_LINK_INSERT",
+            operation_phase="SOURCE_LINK",
+        ) from exc
+
+
+def load_pre_admission_persistence_diagnostic(
+    connection: sqlite3.Connection,
+    *,
+    attempt_id: str,
+) -> PreAdmissionPersistenceDiagnostic | str:
+    """Decode exact durable terminal evidence without mutation or policy authority."""
+    connection.row_factory = sqlite3.Row
+    row = connection.execute(
+        """SELECT a.attempt_state,a.first_terminal_cause,a.scheduler_job_id,
+                  j.job_kind,j.status,j.locked_at,j.lock_owner,j.last_error
+           FROM printer_pre_admission_discovery_attempts AS a
+           JOIN printer_scheduler_jobs AS j ON j.id=a.scheduler_job_id
+           WHERE a.attempt_id=?""",
+        (attempt_id,),
+    ).fetchone()
+    if (
+        row is None
+        or str(row["attempt_state"]) != PreAdmissionAttemptState.FAILED.value
+        or str(row["first_terminal_cause"] or "") != PERSISTENCE_FAILURE_CODE
+        or str(row["job_kind"]) != JobKind.PRE_ADMISSION_DISCOVERY_SELECTION.value
+        or str(row["status"]) != JobStatus.FAILED.value
+        or row["locked_at"] is not None
+        or row["lock_owner"] is not None
+        or not isinstance(row["last_error"], str)
+        or len(row["last_error"]) > 1536
+    ):
+        return DIAGNOSTIC_UNAVAILABLE
+    try:
+        decoded = json.loads(row["last_error"])
+        diagnostic = PreAdmissionPersistenceDiagnostic.from_mapping(decoded)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return DIAGNOSTIC_UNAVAILABLE
+    if diagnostic.failure_code != str(row["first_terminal_cause"]):
+        return DIAGNOSTIC_UNAVAILABLE
+    return diagnostic
 
 
 __all__ = [
+    "DIAGNOSTIC_UNAVAILABLE",
     "FROZEN_LANE_DECISION_OWNER",
+    "PERSISTENCE_DIAGNOSTIC_SCHEMA", "PERSISTENCE_FAILURE_CODE",
     "PreAdmissionAttemptError", "PreAdmissionAttemptItem",
+    "PreAdmissionPersistenceDiagnostic",
     "PreAdmissionAttemptState", "PreAdmissionDiscoveryAttempt",
     "attach_frozen_tracking_lane",
     "cancel_pair_ready_pre_admission_attempt_for_terminal_parent",
     "create_pre_admission_attempt", "create_scheduled_pre_admission_attempt",
     "link_pre_admission_source_evidence",
     "load_pre_admission_attempt", "load_pre_admission_pair",
+    "load_pre_admission_persistence_diagnostic",
     "mark_pre_admission_attempt_running", "persist_pre_admission_pair",
     "pre_admission_attempt_lock_owner",
     "project_classifier_candidate_from_pre_admission_evidence",
+    "pre_admission_persistence_diagnostic_for_exception",
     "terminalize_pre_admission_attempt",
 ]

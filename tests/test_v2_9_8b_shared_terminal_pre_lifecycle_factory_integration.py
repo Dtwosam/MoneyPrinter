@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 
 from printer_v1.operator_cli import one_command_15m_factory as factory
@@ -9,9 +10,6 @@ from printer_v1.operator_cli.authoritative_live_operational_campaign import (
 from printer_v1.operator_cli.four_token_proof_integration import (
     LaterCycleCandidateSupply,
     LaterCycleSourceEvidence,
-)
-from printer_v1.operator_cli.pre_admission_discovery_attempt import (
-    PreAdmissionAttemptError,
 )
 from printer_v1.operator_cli.unified_terminal_closure import reconcile_campaign_terminal
 from tests.test_v2_9_8b_callback_consume_materialize_integration import (
@@ -136,26 +134,20 @@ def test_real_cycle2_pre_admission_persistence_failure_terminalizes_once(
     db, backup, disposable_binding = _prepare(tmp_path)
     monkeypatch.setattr(factory, "_plan_opening_jobs", lambda *args, **kwargs: None)
 
-    from printer_v1.operator_cli import pre_admission_discovery_attempt as attempts
-
-    def fail_source_evidence_persistence(*_args, **_kwargs):
-        raise PreAdmissionAttemptError("SOURCE_EVIDENCE_LINK_INVALID")
-
-    monkeypatch.setattr(
-        attempts,
-        "link_pre_admission_source_evidence",
-        fail_source_evidence_persistence,
+    valid_evidence = LaterCycleSourceEvidence(
+        logical_stage="ELIGIBLE_SUPPLY",
+        source_request_id=1,
+        source_response_id=1,
+    )
+    invalid_evidence = LaterCycleSourceEvidence(
+        logical_stage="ELIGIBLE_SUPPLY",
+        source_request_id=1,
+        source_response_id=999_999,
     )
     later_callback = AuthoritativeLiveOperationalCampaignOwner(
         later_cycle_candidate_supply=lambda **_: LaterCycleCandidateSupply(
             candidates=(),
-            source_evidence=(
-                LaterCycleSourceEvidence(
-                    logical_stage="ELIGIBLE_SUPPLY",
-                    source_request_id=1,
-                    source_response_id=1,
-                ),
-            ),
+            source_evidence=(valid_evidence, invalid_evidence),
             terminal_cause="NO_EXACT_PAIR",
         )
     )._build_later_cycle_discovery_callback(
@@ -256,6 +248,20 @@ def test_real_cycle2_pre_admission_persistence_failure_terminalizes_once(
             "WHERE status IN ('PENDING','RUNNING','COOLDOWN') "
             "OR locked_at IS NOT NULL OR lock_owner IS NOT NULL"
         ).fetchone()[0] == 0
+        diagnostic = json.loads(
+            connection.execute(
+                "SELECT last_error FROM printer_scheduler_jobs"
+            ).fetchone()[0]
+        )
+        assert diagnostic == {
+            "diagnostic_schema": "PRE_ADMISSION_PERSISTENCE_DIAGNOSTIC_V1",
+            "exception_type": "IntegrityError",
+            "failure_category": "CONSTRAINT_OR_INTEGRITY",
+            "failure_code": "LATER_CYCLE_ATTEMPT_PERSISTENCE_FAILED",
+            "operation_phase": "SOURCE_LINK",
+            "producer_code": "SOURCE_EVIDENCE_LINK_INSERT",
+            "reason_code": "SQLITE_CONSTRAINT_TRIGGER",
+        }
     finally:
         connection.close()
 

@@ -15,6 +15,7 @@ from contextvars import ContextVar
 from datetime import datetime
 import json
 from pathlib import Path
+import re
 import sqlite3
 from typing import Mapping
 
@@ -37,6 +38,58 @@ _ALLOWED_DIAGNOSTIC_FIELDS = (
     "admission_authority",
     "nomination_source",
 )
+_PERSISTENCE_DIAGNOSTIC_FIELDS = frozenset(
+    {
+        "diagnostic_schema",
+        "failure_code",
+        "producer_code",
+        "failure_category",
+        "operation_phase",
+        "exception_type",
+        "reason_code",
+    }
+)
+_PERSISTENCE_DIAGNOSTIC_SCHEMA = "PRE_ADMISSION_PERSISTENCE_DIAGNOSTIC_V1"
+_PERSISTENCE_FAILURE_CODE = "LATER_CYCLE_ATTEMPT_PERSISTENCE_FAILED"
+_PERSISTENCE_PRODUCERS = frozenset(
+    {
+        "RUNNING_ATTEMPT_FAILURE_TERMINALIZATION",
+        "SOURCE_EVIDENCE_LINK_ARGUMENT",
+        "SOURCE_EVIDENCE_LINK_INSERT",
+        "FROZEN_EVIDENCE_PROJECTION",
+        "FROZEN_LANE_CLASSIFICATION",
+        "PAIR_SHAPE_VALIDATION",
+        "FROZEN_LANE_FIELD_VALIDATION",
+        "PAIR_ATTEMPT_RUNNING_PREREQUISITE",
+        "PAIR_ITEM_INSERT",
+        "PAIR_READY_TRANSITION",
+        "PRE_ADMISSION_PERSISTENCE_UNKNOWN",
+    }
+)
+_PERSISTENCE_CATEGORIES = frozenset(
+    {
+        "APPLICATION_VALIDATION",
+        "PREREQUISITE_MISSING",
+        "CONSTRAINT_OR_INTEGRITY",
+        "SQLITE_BUSY_OR_LOCK",
+        "SQLITE_IO_OR_OPERATIONAL",
+        "UNKNOWN_PERSISTENCE_FAILURE",
+    }
+)
+_PERSISTENCE_PHASES = frozenset(
+    {
+        "TERMINALIZATION",
+        "SOURCE_LINK",
+        "FROZEN_CARRIER",
+        "PAIR_PRECHECK",
+        "PAIR_ITEM_1",
+        "PAIR_ITEM_2",
+        "PAIR_READY",
+        "UNKNOWN_PHASE",
+    }
+)
+_EXCEPTION_TYPE_PATTERN = re.compile(r"^[A-Za-z0-9_]{1,96}$")
+_REASON_CODE_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
 
 
 def _bounded_diagnostic_value(
@@ -75,16 +128,45 @@ def stage_job_failure_diagnostic(
     if identity <= 0:
         raise ValueError("job_id must be positive")
     code = _normalize_diagnostic_code(failure_code)
-    payload: dict[str, str] = {"failure_code": code}
-    for key in _ALLOWED_DIAGNOSTIC_FIELDS:
-        bounded = _bounded_diagnostic_value(context.get(key))
-        if bounded is not None:
-            payload[key] = bounded
+    if "diagnostic_schema" in context:
+        if (
+            set(context) != _PERSISTENCE_DIAGNOSTIC_FIELDS
+            or any(
+                not isinstance(context[key], str)
+                for key in _PERSISTENCE_DIAGNOSTIC_FIELDS
+            )
+        ):
+            raise ValueError("pre-admission persistence diagnostic key set invalid")
+        payload = {key: context[key] for key in _PERSISTENCE_DIAGNOSTIC_FIELDS}
+        if (
+            payload["diagnostic_schema"] != _PERSISTENCE_DIAGNOSTIC_SCHEMA
+            or code != _PERSISTENCE_FAILURE_CODE
+            or payload["failure_code"] != code
+            or payload["producer_code"] not in _PERSISTENCE_PRODUCERS
+            or payload["failure_category"] not in _PERSISTENCE_CATEGORIES
+            or payload["operation_phase"] not in _PERSISTENCE_PHASES
+            or _EXCEPTION_TYPE_PATTERN.fullmatch(payload["exception_type"]) is None
+            or _REASON_CODE_PATTERN.fullmatch(payload["reason_code"]) is None
+        ):
+            raise ValueError("pre-admission persistence diagnostic invalid")
+    else:
+        payload = {"failure_code": code}
+        for key in _ALLOWED_DIAGNOSTIC_FIELDS:
+            bounded = _bounded_diagnostic_value(context.get(key))
+            if bounded is not None:
+                payload[key] = bounded
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     if len(canonical) > 1536:
         raise ValueError("scheduler failure diagnostic exceeds bound")
     staged = dict(_JOB_FAILURE_DIAGNOSTICS.get())
-    staged[identity] = (code, canonical)
+    if identity not in staged:
+        staged[identity] = (code, canonical)
+    _JOB_FAILURE_DIAGNOSTICS.set(staged)
+
+
+def discard_job_failure_diagnostic(*, job_id: int) -> None:
+    staged = dict(_JOB_FAILURE_DIAGNOSTICS.get())
+    staged.pop(int(job_id), None)
     _JOB_FAILURE_DIAGNOSTICS.set(staged)
 
 
@@ -178,6 +260,26 @@ def fail_job(
         first_terminal_cause=str(error),
     )
     return status
+
+
+def complete_job(
+    db_or_connection: str | Path | sqlite3.Connection,
+    *,
+    job_id: int,
+    now: datetime | None = None,
+) -> None:
+    discard_job_failure_diagnostic(job_id=job_id)
+    _base.complete_job(db_or_connection, job_id=job_id, now=now)
+
+
+def cancel_job(
+    db_or_connection: str | Path | sqlite3.Connection,
+    *,
+    job_id: int,
+    now: datetime | None = None,
+) -> None:
+    discard_job_failure_diagnostic(job_id=job_id)
+    _base.cancel_job(db_or_connection, job_id=job_id, now=now)
 
 
 # Public overrides after the compatibility re-export above.

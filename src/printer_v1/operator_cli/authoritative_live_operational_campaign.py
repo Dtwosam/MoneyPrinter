@@ -1980,6 +1980,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 load_pre_admission_attempt,
                 mark_pre_admission_attempt_running,
                 persist_pre_admission_pair,
+                pre_admission_persistence_diagnostic_for_exception,
                 pre_admission_attempt_lock_owner,
                 terminalize_pre_admission_attempt,
             )
@@ -1987,7 +1988,9 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 cancel_job,
                 claim_due_job,
                 complete_job,
+                discard_job_failure_diagnostic,
                 fail_job,
+                stage_job_failure_diagnostic,
                 yield_job,
             )
             from printer_v1.discovery.pre_lifecycle_temporal_acquisition import (
@@ -2462,22 +2465,57 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     current = load_pre_admission_attempt(
                         connection, attempt_id=attempt.attempt_id
                     )
-                    if current.state is PreAdmissionAttemptState.RUNNING:
-                        terminalize_pre_admission_attempt(
-                            connection,
-                            attempt_id=attempt.attempt_id,
-                            state=PreAdmissionAttemptState.FAILED,
-                            cause="LATER_CYCLE_ATTEMPT_PERSISTENCE_FAILED",
-                            now=instant,
+                    job = connection.execute(
+                        "SELECT job_kind,status,locked_at,lock_owner "
+                        "FROM printer_scheduler_jobs WHERE id=?",
+                        (attempt.scheduler_job_id,),
+                    ).fetchone()
+                    expected_lock_owner = pre_admission_attempt_lock_owner(
+                        attempt.attempt_id
+                    )
+                    if (
+                        current.state is PreAdmissionAttemptState.RUNNING
+                        and current.scheduler_job_id == attempt.scheduler_job_id
+                        and job is not None
+                        and str(job["job_kind"])
+                        == "PRE_ADMISSION_DISCOVERY_SELECTION"
+                        and str(job["status"]) == "RUNNING"
+                        and job["locked_at"] is not None
+                        and str(job["lock_owner"] or "") == expected_lock_owner
+                    ):
+                        failure_code = "LATER_CYCLE_ATTEMPT_PERSISTENCE_FAILED"
+                        diagnostic = (
+                            exc.diagnostic
+                            or pre_admission_persistence_diagnostic_for_exception(exc)
                         )
-                        fail_job(
-                            connection,
+                        stage_job_failure_diagnostic(
                             job_id=attempt.scheduler_job_id,
-                            error="LATER_CYCLE_ATTEMPT_PERSISTENCE_FAILED",
-                            now=instant,
-                            max_retries=0,
+                            failure_code=failure_code,
+                            context=diagnostic.as_dict(),
                         )
-                        connection.commit()
+                        try:
+                            terminalize_pre_admission_attempt(
+                                connection,
+                                attempt_id=attempt.attempt_id,
+                                state=PreAdmissionAttemptState.FAILED,
+                                cause=failure_code,
+                                now=instant,
+                            )
+                            fail_job(
+                                connection,
+                                job_id=attempt.scheduler_job_id,
+                                error=failure_code,
+                                now=instant,
+                                max_retries=0,
+                            )
+                            connection.commit()
+                        except Exception:
+                            discard_job_failure_diagnostic(
+                                job_id=attempt.scheduler_job_id
+                            )
+                            if connection.in_transaction:
+                                connection.rollback()
+                            raise
                         final = load_pre_admission_attempt(
                             connection, attempt_id=attempt.attempt_id
                         )
