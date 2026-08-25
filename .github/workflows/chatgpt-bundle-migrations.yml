@@ -1,0 +1,30 @@
+name: ChatGPT bundle canonical migrations 001-058
+
+on:
+  push:
+    branches:
+      - agent/chatgpt-aug25-historical055-proof
+    paths:
+      - .github/workflows/chatgpt-bundle-migrations.yml
+
+permissions:
+  contents: write
+
+jobs:
+  bundle:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bundle exact canonical migrations 001-058
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p proof_artifacts
+          tar -czf /tmp/migrations_001_058.tar.gz $(find migrations -maxdepth 1 -type f -name '*.sql' | sort | head -58)
+          base64 -w 0 /tmp/migrations_001_058.tar.gz > proof_artifacts/migrations_001_058.tar.gz.b64
+          printf '\n' >> proof_artifacts/migrations_001_058.tar.gz.b64
+          git config user.name 'chatgpt-proof-bot'
+          git config user.email 'chatgpt-proof-bot@users.noreply.github.com'
+          git add proof_artifacts/migrations_001_058.tar.gz.b64
+          git commit -m 'Bundle canonical migrations 001-058 for forensic proof'
+          git push
