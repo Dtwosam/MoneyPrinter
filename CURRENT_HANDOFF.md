@@ -4,11 +4,11 @@ Date: 2026-08-25
 
 ## Current lane
 
-`V2-9.8B 07d92adf Historical Disposition Repair Closeout`
+`V2-9.8B Post-07d92adf-Disposition Rereadiness Checkpoint`
 
 Status:
 
-`V2_9_8B_07D92ADF_HISTORICAL_DISPOSITION_REPAIR_CLOSEOUT_PASS_READY_FOR_POST_DISPOSITION_REREADINESS`
+`V2_9_8B_POST_07D92ADF_DISPOSITION_EXACT_HEAD_WORKTREE_DB_REREADINESS_PASS_READY_FOR_FRESH_AUTHORIZATION_PREPARATION`
 
 Design:
 
@@ -49,8 +49,26 @@ below do not apply to it.
 ## Exact next permitted action
 
 ```text
-READ-ONLY POST-07D92ADF HISTORICAL DISPOSITION REPAIR EXACT-HEAD / WORKTREE / DB REREADINESS GATE ONLY
+V2-9.8B FRESH EXACT-HEAD FOUR-TOKEN STANDARD-FOUR-HOUR 4/2/2
+AUTHORIZATION PREPARATION ONLY
 ```
+
+Rereadiness result:
+
+`V2_9_8B_POST_07D92ADF_DISPOSITION_EXACT_HEAD_WORKTREE_DB_REREADINESS_PASS_READY_FOR_FRESH_AUTHORIZATION_PREPARATION`
+
+This checkpoint authorizes only preparation of one brand-new replacement
+four-token Standard-4H 4/2/2 authorization bound to the exact checkpoint HEAD
+printed by the rereadiness runner. Preparation must stop before independent
+review.
+
+The consumed `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260825T105852Z_07d92adf` authorization remains historical, permanently
+non-reusable, and has terminal disposition `CONSUMED_CHILD_EXITED_NONZERO`.
+
+No tracked `CURRENT_HANDOFF.md` mutation is permitted after a new package is
+prepared; the already-preserved Transition A / Transition B / BLOCK clauses
+govern later independent-review and separate-start transitions.
+
 
 Closeout result:
 
