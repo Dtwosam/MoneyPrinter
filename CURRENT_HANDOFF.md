@@ -4,11 +4,11 @@ Date: 2026-08-25
 
 ## Current lane
 
-`V2-9.8B Authorization Handoff-Transition and Supersession Narrow TDD Implementation`
+`V2-9.8B Authorization Handoff-Transition and Supersession Closeout`
 
 Status:
 
-`V2_9_8B_AUTHORIZATION_HANDOFF_TRANSITION_AND_SUPERSESSION_IMPLEMENTATION_PASS_READY_FOR_INDEPENDENT_BOUNDED_PROOF`
+`V2_9_8B_AUTHORIZATION_HANDOFF_TRANSITION_AND_SUPERSESSION_CLOSEOUT_PASS`
 
 Design:
 
@@ -49,6 +49,19 @@ below do not apply to it.
 ## Exact next permitted action
 
 ```text
+READ-ONLY POST-AUTHORIZATION-HANDOFF-TRANSITION-AND-SUPERSESSION
+EXACT-HEAD / WORKTREE / DB REREADINESS GATE
+```
+
+This closeout authorizes only the separate read-only rereadiness gate named
+above. It does not prepare a replacement authorization, create a marker, start a
+child/campaign, mutate the DB, or weaken any permanent lock.
+
+### Historical implementation-proof boundary — CLOSED / NON-AUTHORITATIVE
+
+The prior implementation-lane exact action was:
+
+```text
 V2-9.8B AUTHORIZATION HANDOFF-TRANSITION AND SUPERSESSION
 INDEPENDENT BOUNDED PROOF / ACTUAL PATCH INSPECTION ONLY
 ```
@@ -61,6 +74,9 @@ replacement authorization, independently review, mark, apply, or run
 `...17181afc`; may not create marker, child, application, or campaign evidence;
 and may not add a generic classifier, CURRENT_HANDOFF parser, transition engine,
 schema, database, or runtime change.
+
+That boundary is now closed and retained only as historical implementation-proof
+context. It is not the current operator action.
 
 ## Durable prospective authority after later closeout and rereadiness
 
