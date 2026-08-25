@@ -1,57 +1,59 @@
 # CURRENT HANDOFF
 
-Date: 2026-08-24
+Date: 2026-08-25
 
 ## Current lane
 
-`V2-9.8B Post-Historical-Disposition-Repair Exact-HEAD / Worktree / DB Rereadiness Gate`
+`V2-9.8B Authorization Handoff-Transition and Supersession Design`
 
 Status:
 
-`V2_9_8B_POST_HISTORICAL_DISPOSITION_REPAIR_EXACT_HEAD_WORKTREE_DB_REREADINESS_PASS_READY_FOR_FRESH_AUTHORIZATION_PREPARATION`
-
-Rereadiness checkpoint:
-
-`docs/printer-v1-v2-9-8b-post-historical-disposition-repair-exact-head-worktree-db-rereadiness.md`
-
-Historical-disposition closeout:
-
-`docs/printer-v1-v2-9-8b-latest-consumed-authorization-historical-disposition-closeout.md`
+`V2_9_8B_AUTHORIZATION_HANDOFF_TRANSITION_AND_SUPERSESSION_DESIGN_PASS_READY_FOR_NARROW_IMPLEMENTATION`
 
 Design:
 
-`docs/printer-v1-v2-9-8b-latest-consumed-authorization-historical-disposition-owner-design.md`
+`docs/printer-v1-v2-9-8b-authorization-handoff-transition-and-supersession-design.md`
 
-Implementation classification:
+Blocker classification:
 
-`EXACT_POLICY_ADOPTION_SUFFICIENT`
+`AUTHORIZATION_WORKFLOW_HANDOFF_TRANSITION_DEFECT`
 
-The independently accepted canonical `_POLICY_TERMINAL_DISPOSITIONS` owner
-contains exactly one adopted registration:
+Blocked authorization:
 
-`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260824T123555Z_95dc47dd -> CONSUMED_CHILD_EXITED_NONZERO`
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260824T222638Z_17181afc`
 
-Fresh read-only rereadiness confirmed exact repair ancestry, canonical evidence
-reconciliation, the 43-ID sorted unique future non-reuse trust root, exact
-Migration-061 provenance, 61/061 schema admission, authoritative DB invariance,
-historical incident quiescence, all twelve zero-state domains at zero, host
-quiescence, diagnostic and historical-disposition repair isolation, and the
-zero-I/O source/composition/dependency/budget guards. No fresh authorization,
-marker, child, campaign, provider call, Scheduler runtime call, or DB write
-occurred. The consumed historical run is unchanged and remains permanently
-non-reusable.
+Package SHA-256:
+
+`99d2759e14da7d50ac301699a021d92bd3be0e024d36ec2a171ef23ff78a3f80`
+
+The package is valid on substantive checks and remains unconsumed. It MUST NOT
+be independently reviewed as executable authority, marked, applied, or run.
+Its bound HEAD left this handoff at `AUTHORIZATION PREPARATION ONLY`. A tracked
+post-preparation handoff mutation would change HEAD and invalidate the
+exact-HEAD package. Future review and start authority must therefore be encoded
+prospectively before authorization preparation.
+
+Designed supersession is one exact `_POLICY_TERMINAL_DISPOSITIONS` entry:
+
+`...17181afc -> BLOCKED_UNCONSUMED_SUPERSEDED`
+
+No generic classifier, schema, database, or runtime change is designed. This
+handoff does not install live Transition A or Transition B and does not
+authorize a replacement package.
 
 ## Exact next permitted action
 
-`V2-9.8B FRESH EXACT-HEAD FOUR-TOKEN STANDARD-FOUR-HOUR 4/2/2 AUTHORIZATION PREPARATION ONLY`
+```text
+V2-9.8B AUTHORIZATION HANDOFF-TRANSITION AND SUPERSESSION
+NARROW IMPLEMENTATION
+```
 
-The next lane may prepare exactly one completely fresh authorization ID bound
-to the final commit containing this handoff, the unchanged authoritative DB
-SHA, the complete historical non-reuse trust root including `...95dc47dd`, and
-current Migration-061 provenance. It must stop before execution and require a
-separate independent authorization review. This handoff does not authorize a
-campaign, marker application, child, DB mutation, provider/runtime call, retry,
-recovery, or successor.
+The next lane may add only the exact historical-disposition registration and
+the durable prospective Transition A / Transition B / fail-closed BLOCK
+encoding specified by the design, plus focused proof. It may not independently
+review, mark, apply, or run `...17181afc`; may not create a replacement
+authorization; may not create marker, child, or application evidence; and may
+not add a generic classifier or a schema, database, or runtime change.
 
 ## Locks
 
