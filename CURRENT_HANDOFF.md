@@ -4,11 +4,11 @@ Date: 2026-08-25
 
 ## Current lane
 
-`V2-9.8B Authorization Handoff-Transition and Supersession Closeout`
+`V2-9.8B Post-Authorization-Handoff-Transition Rereadiness Checkpoint`
 
 Status:
 
-`V2_9_8B_AUTHORIZATION_HANDOFF_TRANSITION_AND_SUPERSESSION_CLOSEOUT_PASS`
+`V2_9_8B_POST_AUTHORIZATION_HANDOFF_TRANSITION_AND_SUPERSESSION_EXACT_HEAD_WORKTREE_DB_REREADINESS_PASS_READY_FOR_FRESH_AUTHORIZATION_PREPARATION`
 
 Design:
 
@@ -49,13 +49,15 @@ below do not apply to it.
 ## Exact next permitted action
 
 ```text
-READ-ONLY POST-AUTHORIZATION-HANDOFF-TRANSITION-AND-SUPERSESSION
-EXACT-HEAD / WORKTREE / DB REREADINESS GATE
+V2-9.8B FRESH EXACT-HEAD FOUR-TOKEN STANDARD-FOUR-HOUR 4/2/2
+AUTHORIZATION PREPARATION ONLY
 ```
 
-This closeout authorizes only the separate read-only rereadiness gate named
-above. It does not prepare a replacement authorization, create a marker, start a
-child/campaign, mutate the DB, or weaken any permanent lock.
+This rereadiness checkpoint authorizes only preparation of one brand-new
+replacement four-token Standard-4H 4/2/2 authorization bound to this
+checkpoint's exact tracked HEAD. Preparation must stop before independent
+review. The already-tracked Transition A / Transition B / BLOCK clauses below
+govern later no-HEAD-change transitions.
 
 ### Historical implementation-proof boundary — CLOSED / NON-AUTHORITATIVE
 
