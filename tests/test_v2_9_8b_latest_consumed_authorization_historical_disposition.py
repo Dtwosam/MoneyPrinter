@@ -50,6 +50,9 @@ EXPIRED_UNCONSUMED_AUTHORIZATION_ID = (
 SUPERSEDED_UNCONSUMED_AUTHORIZATION_ID = (
     "V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260824T222638Z_17181afc"
 )
+NEWER_CONSUMED_AUTHORIZATION_ID = (
+    "V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260825T105852Z_07d92adf"
+)
 APPLICATION_ROOT = Path(
     "/Users/Dtwo1/PrinterOperations/v2-9-8/"
     "four-token-standard-four-hour-one-shot-applications"
@@ -75,6 +78,7 @@ class LatestConsumedAuthorizationHistoricalDispositionTests(unittest.TestCase):
                     ],
                     AUTHORIZATION_ID,
                     SUPERSEDED_UNCONSUMED_AUTHORIZATION_ID,
+                    NEWER_CONSUMED_AUTHORIZATION_ID,
                 ]
             )
         )
@@ -434,12 +438,13 @@ class LatestConsumedAuthorizationHistoricalDispositionTests(unittest.TestCase):
         )
         self.assertEqual(validated, tuple(sorted(validated)))
         self.assertEqual(len(validated), len(set(validated)))
-        self.assertEqual(len(validated), 44)
+        self.assertEqual(len(validated), 45)
         for required in (
             OLDER_CONSUMED_AUTHORIZATION_ID,
             EXPIRED_UNCONSUMED_AUTHORIZATION_ID,
             AUTHORIZATION_ID,
             SUPERSEDED_UNCONSUMED_AUTHORIZATION_ID,
+            NEWER_CONSUMED_AUTHORIZATION_ID,
         ):
             self.assertIn(required, validated)
 

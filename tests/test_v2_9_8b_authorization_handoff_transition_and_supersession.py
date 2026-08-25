@@ -47,6 +47,9 @@ EXPIRED_UNCONSUMED_AUTHORIZATION_ID = (
 LATEST_CONSUMED_AUTHORIZATION_ID = (
     "V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260824T123555Z_95dc47dd"
 )
+NEWER_CONSUMED_AUTHORIZATION_ID = (
+    "V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260825T105852Z_07d92adf"
+)
 APPLICATION_NAMESPACE = Path(
     "/Users/Dtwo1/PrinterOperations/v2-9-8/"
     "four-token-standard-four-hour-one-shot-applications"
@@ -77,6 +80,7 @@ class AuthorizationHandoffTransitionAndSupersessionTests(unittest.TestCase):
                         "prior_authorizations_non_reusable"
                     ],
                     AUTHORIZATION_ID,
+                    NEWER_CONSUMED_AUTHORIZATION_ID,
                 ]
             )
         )
@@ -424,17 +428,18 @@ class AuthorizationHandoffTransitionAndSupersessionTests(unittest.TestCase):
         duplicate_count = len(validated) - len(set(validated))
         self.assertEqual(duplicate_count, 0)
         # Observational current count only. Never a production constant.
-        self.assertEqual(len(validated), 44)
+        self.assertEqual(len(validated), 45)
         self.assertNotIn("TRUST_ROOT_COUNT", self.production_source)
         self.assertNotRegex(
             self.production_source,
-            r"prior_authorizations_non_reusable.*=.*\b44\b",
+            r"prior_authorizations_non_reusable.*=.*\b45\b",
         )
         for required in (
             OLDER_CONSUMED_AUTHORIZATION_ID,
             EXPIRED_UNCONSUMED_AUTHORIZATION_ID,
             LATEST_CONSUMED_AUTHORIZATION_ID,
             AUTHORIZATION_ID,
+            NEWER_CONSUMED_AUTHORIZATION_ID,
         ):
             self.assertIn(required, validated)
 

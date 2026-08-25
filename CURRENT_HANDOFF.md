@@ -4,11 +4,11 @@ Date: 2026-08-25
 
 ## Current lane
 
-`V2-9.8B 07d92adf Historical Disposition Repair Design`
+`V2-9.8B 07d92adf Historical Disposition Repair Implementation`
 
 Status:
 
-`V2_9_8B_07D92ADF_HISTORICAL_DISPOSITION_REPAIR_DESIGN_PASS_READY_FOR_NARROW_IMPLEMENTATION`
+`V2_9_8B_07D92ADF_HISTORICAL_DISPOSITION_REPAIR_IMPLEMENTATION_PASS_READY_FOR_CLOSEOUT`
 
 Design:
 
@@ -49,8 +49,32 @@ below do not apply to it.
 ## Exact next permitted action
 
 ```text
-V2-9.8B 07D92ADF HISTORICAL DISPOSITION REPAIR IMPLEMENTATION ONLY
+V2-9.8B 07D92ADF HISTORICAL DISPOSITION REPAIR CLOSEOUT ONLY
 ```
+
+Implementation/proof result:
+
+`V2_9_8B_07D92ADF_HISTORICAL_DISPOSITION_REPAIR_IMPLEMENTATION_PASS_READY_FOR_CLOSEOUT`
+
+Only production semantic change:
+
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260825T105852Z_07d92adf -> CONSUMED_CHILD_EXITED_NONZERO`
+
+Three older provenance test fixtures were aligned to the newly complete 45-ID
+future historical trust root. This is test-only proof maintenance; production
+enumeration remains fail-closed and no trust-root bypass was introduced.
+
+Pre-patch, the exact 12 focused failures were proven to arise because those
+fixtures omitted the newly untracked consumed package. Post-patch, the same
+focused provenance suites plus the new repair-specific suite are green.
+
+Bounded proof:
+
+`59 passed, 7 subtests passed in 2.16s`
+
+The 45-ID future non-reuse root was re-derived sorted/unique, canonical evidence
+reconciliation remained PASS, and DB/application evidence remained unchanged.
+
 
 Closeout result:
 

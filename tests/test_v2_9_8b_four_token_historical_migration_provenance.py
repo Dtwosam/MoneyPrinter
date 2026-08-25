@@ -94,6 +94,9 @@ LATEST_CONSUMED_FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_ID = (
 SUPERSEDED_UNCONSUMED_FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_ID = (
     "V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260824T222638Z_17181afc"
 )
+NEWER_CONSUMED_FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_ID = (
+    "V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260825T105852Z_07d92adf"
+)
 FUTURE_FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_ID = (
     "V2_9_8B_FOUR_TOKEN_STD4H_AUTH_FUTURE_TESTONLY"
 )
@@ -211,6 +214,7 @@ class ExpiredFreshAuthorizationHistoricalAdoptionTests(unittest.TestCase):
                         "prior_authorizations_non_reusable"
                     ],
                     SUPERSEDED_UNCONSUMED_FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_ID,
+                    NEWER_CONSUMED_FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_ID,
                 ]
             ),
         }
@@ -266,6 +270,10 @@ class ExpiredFreshAuthorizationHistoricalAdoptionTests(unittest.TestCase):
         )
         self.assertIn(
             SUPERSEDED_UNCONSUMED_FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_ID,
+            approved,
+        )
+        self.assertIn(
+            NEWER_CONSUMED_FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_ID,
             approved,
         )
         self.assertTrue(
