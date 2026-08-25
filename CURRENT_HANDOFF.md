@@ -4,11 +4,11 @@ Date: 2026-08-25
 
 ## Current lane
 
-`V2-9.8B Durable-Admission Terminal-Accounting Scope Repair Design`
+`V2-9.8B Durable-Admission Terminal-Accounting Scope Repair Implementation`
 
 Status:
 
-`V2_9_8B_DURABLE_ADMISSION_TERMINAL_ACCOUNTING_SCOPE_REPAIR_DESIGN_PASS_READY_FOR_NARROW_IMPLEMENTATION`
+`V2_9_8B_DURABLE_ADMISSION_TERMINAL_ACCOUNTING_SCOPE_REPAIR_IMPLEMENTATION_PASS_READY_FOR_CLOSEOUT`
 
 Design:
 
@@ -49,8 +49,36 @@ below do not apply to it.
 ## Exact next permitted action
 
 ```text
-NARROW DURABLE-ADMISSION TERMINAL-ACCOUNTING SCOPE REPAIR IMPLEMENTATION ONLY
+V2-9.8B DURABLE-ADMISSION TERMINAL-ACCOUNTING SCOPE REPAIR CLOSEOUT ONLY
 ```
+
+Implementation/proof result:
+
+`V2_9_8B_DURABLE_ADMISSION_TERMINAL_ACCOUNTING_SCOPE_REPAIR_IMPLEMENTATION_PASS_READY_FOR_CLOSEOUT`
+
+Narrow production change:
+
+- durable admitted campaign cycles, not accounting-registry cardinality, choose
+  canonical terminal-accounting scope;
+- exact ordinal `(1,)` may ignore exactly one terminal, unconsumed ordinal-2
+  pre-admission owner only when the durable attempt proves that identity;
+- exact admitted ordinals `(1,2)` still require exact registered-owner identity
+  and `CampaignSixUnitProjection`;
+- terminal reconciliation sealing is limited to durable admitted cycles;
+- single-cycle action-local accounting is sliced to the admitted cycle;
+- the exception path delegates projection selection to the same durable scope
+  resolver;
+- `TerminalClosureError` is imported from `unified_terminal_closure`.
+
+`FROZEN_TRACKING_LANE_UNAVAILABLE` remains unchanged and fail-closed.
+
+Bounded proof:
+
+`BASELINE_EQUIVALENT:5_PRE_EXISTING_FAILURES_UNCHANGED;NEW_REPAIR_TESTS_GREEN`
+
+No authoritative DB write, provider call, authorization, retry, rerun, resume,
+restart, or successor was created by this implementation proof.
+
 
 This rereadiness checkpoint authorizes only preparation of one brand-new
 replacement four-token Standard-4H 4/2/2 authorization bound to this

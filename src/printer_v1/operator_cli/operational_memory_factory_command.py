@@ -97,6 +97,7 @@ from printer_v1.operator_cli.readiness_source_contract_preflight import (
     build_readiness_source_contract_preflight,
 )
 from printer_v1.operator_cli.unified_terminal_closure import (
+    TerminalClosureError,
     assemble_campaign_terminal_reporting,
     assert_runtime_dependency_preflight,
     build_campaign_terminal_report,
@@ -2127,6 +2128,127 @@ def _existing_first_terminal_cause(command: AbstractCampaignCommand) -> str | No
     return str(row["campaign_cause"] or row["supervision_cause"] or "").strip() or None
 
 
+
+@dataclass(frozen=True)
+class _DurableTerminalAccountingScope:
+    admitted_cycle_ids: tuple[str, ...]
+    accounting_owner: Any
+    accounting_projection_factory: Callable[[], Any] | None
+    action_local_ledger: Any
+    multi_cycle: bool
+
+
+def _load_durable_admitted_cycle_ids(
+    db_path: str | Path,
+    *,
+    campaign_id: str,
+    campaign_run_id: str,
+) -> tuple[str, ...]:
+    connection = _connect_query_only(Path(db_path))
+    try:
+        rows = connection.execute(
+            "SELECT cycle_id,cycle_ordinal "
+            "FROM printer_memory_factory_campaign_cycles "
+            "WHERE campaign_id=? AND run_id=? "
+            "ORDER BY cycle_ordinal,cycle_id",
+            (campaign_id, campaign_run_id),
+        ).fetchall()
+    finally:
+        connection.close()
+    admitted_ids = tuple(str(row["cycle_id"]) for row in rows)
+    admitted_ordinals = tuple(int(row["cycle_ordinal"]) for row in rows)
+    if admitted_ordinals not in {(1,), (1, 2)}:
+        raise TerminalClosureError(
+            "DURABLE_ADMISSION_ACCOUNTING_SCOPE_INVALID:"
+            f"admitted_ordinals={admitted_ordinals!r}"
+        )
+    return admitted_ids
+
+
+def _resolve_durable_terminal_accounting_scope(
+    db_path: str | Path,
+    *,
+    campaign_id: str,
+    campaign_run_id: str,
+    primary_cycle_id: str,
+    cycle_accounting_registry: Any,
+    action_local_ledger: Any,
+) -> _DurableTerminalAccountingScope:
+    admitted_ids = _load_durable_admitted_cycle_ids(
+        db_path,
+        campaign_id=campaign_id,
+        campaign_run_id=campaign_run_id,
+    )
+    registered_ids = tuple(
+        str(value) for value in cycle_accounting_registry.registered_cycle_ids
+    )
+    if admitted_ids == (str(primary_cycle_id),):
+        if admitted_ids[0] not in registered_ids:
+            raise TerminalClosureError(
+                "DURABLE_ADMISSION_ACCOUNTING_OWNER_MISMATCH:"
+                "primary admitted cycle has no registered owner"
+            )
+        provisional_ids = tuple(
+            cycle_id for cycle_id in registered_ids if cycle_id not in admitted_ids
+        )
+        if provisional_ids:
+            if len(provisional_ids) != 1:
+                raise TerminalClosureError(
+                    "PROVISIONAL_ACCOUNTING_OWNER_NOT_PROVEN:"
+                    f"registered_extras={provisional_ids!r}"
+                )
+            placeholders = ",".join("?" for _ in provisional_ids)
+            connection = _connect_query_only(Path(db_path))
+            try:
+                rows = connection.execute(
+                    "SELECT proposed_cycle_id,proposed_cycle_ordinal,attempt_state,"
+                    "consumed_cycle_id,terminal_at "
+                    "FROM printer_pre_admission_discovery_attempts "
+                    "WHERE campaign_id=? AND campaign_run_id=? "
+                    f"AND proposed_cycle_id IN ({placeholders})",
+                    (campaign_id, campaign_run_id, *provisional_ids),
+                ).fetchall()
+            finally:
+                connection.close()
+            by_cycle: dict[str, list[sqlite3.Row]] = {}
+            for row in rows:
+                by_cycle.setdefault(str(row["proposed_cycle_id"]), []).append(row)
+            for provisional_id in provisional_ids:
+                matches = by_cycle.get(provisional_id, [])
+                if (
+                    len(matches) != 1
+                    or int(matches[0]["proposed_cycle_ordinal"]) != 2
+                    or matches[0]["consumed_cycle_id"] is not None
+                    or not str(matches[0]["terminal_at"] or "").strip()
+                ):
+                    raise TerminalClosureError(
+                        "PROVISIONAL_ACCOUNTING_OWNER_NOT_PROVEN:"
+                        f"{provisional_id}"
+                    )
+        owner = cycle_accounting_registry.owner_for_cycle(admitted_ids[0])
+        return _DurableTerminalAccountingScope(
+            admitted_cycle_ids=admitted_ids,
+            accounting_owner=owner,
+            accounting_projection_factory=None,
+            action_local_ledger=action_local_ledger.slice_for_cycle(
+                admitted_ids[0]
+            ),
+            multi_cycle=False,
+        )
+    if registered_ids != admitted_ids:
+        raise TerminalClosureError(
+            "DURABLE_ADMISSION_ACCOUNTING_OWNER_MISMATCH:"
+            f"registered={registered_ids!r}:admitted={admitted_ids!r}"
+        )
+    return _DurableTerminalAccountingScope(
+        admitted_cycle_ids=admitted_ids,
+        accounting_owner=cycle_accounting_registry.campaign_projection(),
+        accounting_projection_factory=cycle_accounting_registry.campaign_projection,
+        action_local_ledger=action_local_ledger,
+        multi_cycle=True,
+    )
+
+
 def _is_sqlite_locked_error(exc: BaseException) -> bool:
     if isinstance(exc, sqlite3.OperationalError):
         text = str(exc).lower()
@@ -3577,7 +3699,6 @@ def _run_operational_campaign(
     from printer_v1.sources.campaign_six_unit_accounting import (
         CampaignActionLocalLedger,
         CampaignCycleAccountingRegistry,
-        CampaignSixUnitError,
         CampaignSixUnitOwner,
     )
     cycle_accounting_registry = CampaignCycleAccountingRegistry(
@@ -4220,7 +4341,12 @@ def _run_operational_campaign(
             and cleanup.get("lease_released") is True
             else "FAILED"
         )
-        for terminal_cycle_id in cycle_accounting_registry.registered_cycle_ids:
+        durable_terminal_cycle_ids = _load_durable_admitted_cycle_ids(
+            command.db_path,
+            campaign_id=command.campaign_id,
+            campaign_run_id=command.run_id,
+        )
+        for terminal_cycle_id in durable_terminal_cycle_ids:
             terminal_stage_id = build_campaign_stage_id(
                 campaign_id=command.campaign_id,
                 run_id=command.run_id,
@@ -4263,15 +4389,18 @@ def _run_operational_campaign(
                     local_validation_identities=terminal_validations,
                 )
             )
-        campaign_accounting_projection: Any = campaign_units
-        campaign_accounting_projection_factory: Any | None = None
-        if len(cycle_accounting_registry.registered_cycle_ids) > 1:
-            campaign_accounting_projection_factory = (
-                cycle_accounting_registry.campaign_projection
-            )
-            campaign_accounting_projection = (
-                campaign_accounting_projection_factory()
-            )
+        terminal_accounting_scope = _resolve_durable_terminal_accounting_scope(
+            command.db_path,
+            campaign_id=command.campaign_id,
+            campaign_run_id=command.run_id,
+            primary_cycle_id=cycle_id,
+            cycle_accounting_registry=cycle_accounting_registry,
+            action_local_ledger=action_local_ledger,
+        )
+        campaign_accounting_projection = terminal_accounting_scope.accounting_owner
+        campaign_accounting_projection_factory = (
+            terminal_accounting_scope.accounting_projection_factory
+        )
         # Repaired lifecycle acceptance finalizes the same coordinator-created
         # per-cycle owners through one derived campaign projection and the
         # independently observed action-local ledger before report persistence.
@@ -4292,7 +4421,7 @@ def _run_operational_campaign(
             accounting_owner=campaign_accounting_projection,
             accounting_stage_evidence_owner=campaign_units,
             accounting_projection_factory=campaign_accounting_projection_factory,
-            action_local_ledger=action_local_ledger,
+            action_local_ledger=terminal_accounting_scope.action_local_ledger,
             runtime_terminal_status=(
                 "COMPLETED"
                 if str(lifecycle.get("run_status") or "") == "COMPLETED"
@@ -4319,6 +4448,7 @@ def _run_operational_campaign(
         )
         if (
             four_token_proof_controller is not None
+            and terminal_accounting_scope.multi_cycle
             and not isinstance(canonical_terminal_accounting, Mapping)
         ):
             raise TerminalClosureError(
@@ -4502,12 +4632,19 @@ def _run_operational_campaign(
         try:
             terminal_accounting_owner: Any = campaign_units
             if len(cycle_accounting_registry.registered_cycle_ids) > 1:
-                try:
-                    terminal_accounting_owner = (
-                        cycle_accounting_registry.campaign_projection()
+                terminal_accounting_scope = (
+                    _resolve_durable_terminal_accounting_scope(
+                        command.db_path,
+                        campaign_id=command.campaign_id,
+                        campaign_run_id=command.run_id,
+                        primary_cycle_id=cycle_id,
+                        cycle_accounting_registry=cycle_accounting_registry,
+                        action_local_ledger=action_local_ledger,
                     )
-                except CampaignSixUnitError as projection_exc:
-                    campaign_units.block(str(projection_exc))
+                )
+                terminal_accounting_owner = (
+                    terminal_accounting_scope.accounting_owner
+                )
             _terminalize_initialized_failure(
                 original_exception=exc,
                 command=command,
