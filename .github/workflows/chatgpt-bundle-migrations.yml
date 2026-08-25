@@ -8,7 +8,7 @@ on:
       - .github/workflows/chatgpt-bundle-migrations.yml
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   bundle:
@@ -19,12 +19,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p proof_artifacts
-          tar -czf /tmp/migrations_001_058.tar.gz $(find migrations -maxdepth 1 -type f -name '*.sql' | sort | head -58)
-          base64 -w 0 /tmp/migrations_001_058.tar.gz > proof_artifacts/migrations_001_058.tar.gz.b64
-          printf '\n' >> proof_artifacts/migrations_001_058.tar.gz.b64
-          git config user.name 'chatgpt-proof-bot'
-          git config user.email 'chatgpt-proof-bot@users.noreply.github.com'
-          git add proof_artifacts/migrations_001_058.tar.gz.b64
-          git commit -m 'Bundle canonical migrations 001-058 for forensic proof'
-          git push
+          tar -czf migrations_001_058.tar.gz $(find migrations -maxdepth 1 -type f -name '*.sql' | sort | head -58)
+          test "$(tar -tzf migrations_001_058.tar.gz | wc -l)" -eq 58
+      - name: Upload exact migration bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: migrations-001-058-canonical
+          path: migrations_001_058.tar.gz
+          if-no-files-found: error
+          retention-days: 1
