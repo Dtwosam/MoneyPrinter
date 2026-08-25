@@ -4,11 +4,11 @@ Date: 2026-08-25
 
 ## Current lane
 
-`V2-9.8B Post-Authorization-Handoff-Transition Rereadiness Checkpoint`
+`V2-9.8B Consumed 07d92adf Forensic Audit`
 
 Status:
 
-`V2_9_8B_POST_AUTHORIZATION_HANDOFF_TRANSITION_AND_SUPERSESSION_EXACT_HEAD_WORKTREE_DB_REREADINESS_PASS_READY_FOR_FRESH_AUTHORIZATION_PREPARATION`
+`V2_9_8B_CONSUMED_07D92ADF_FORENSIC_AUDIT_PASS_NARROW_REPAIR_DESIGN_REQUIRED`
 
 Design:
 
@@ -49,8 +49,7 @@ below do not apply to it.
 ## Exact next permitted action
 
 ```text
-V2-9.8B FRESH EXACT-HEAD FOUR-TOKEN STANDARD-FOUR-HOUR 4/2/2
-AUTHORIZATION PREPARATION ONLY
+NARROW DURABLE-ADMISSION TERMINAL-ACCOUNTING SCOPE REPAIR DESIGN ONLY
 ```
 
 This rereadiness checkpoint authorizes only preparation of one brand-new
