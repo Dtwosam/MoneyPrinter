@@ -4,11 +4,11 @@ Date: 2026-08-25
 
 ## Current lane
 
-`V2-9.8B Post-Repair Exact-Head / Worktree / DB Rereadiness Audit`
+`V2-9.8B 07d92adf Historical Disposition Repair Design`
 
 Status:
 
-`V2_9_8B_POST_REPAIR_REREADINESS_BLOCKED_SOLELY_BY_07D92ADF_HISTORICAL_DISPOSITION`
+`V2_9_8B_07D92ADF_HISTORICAL_DISPOSITION_REPAIR_DESIGN_PASS_READY_FOR_NARROW_IMPLEMENTATION`
 
 Design:
 
@@ -49,7 +49,7 @@ below do not apply to it.
 ## Exact next permitted action
 
 ```text
-V2-9.8B 07D92ADF HISTORICAL DISPOSITION REPAIR DESIGN ONLY
+V2-9.8B 07D92ADF HISTORICAL DISPOSITION REPAIR IMPLEMENTATION ONLY
 ```
 
 Closeout result:
