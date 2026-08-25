@@ -1,0 +1,49 @@
+{
+  "artifact_kind": "PRINTER_V1_AUG25_A_TO_Z_REPAIR_BUNDLE",
+  "authorization_status": "FRESH_LIVE_AUTHORIZATION_PREPARATION_NOT_AUTHORIZED_FROM_FORENSIC_CAPTURE",
+  "consumed_authorization_id": "V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260825T134723Z_4563a9dd",
+  "forensic_audit_archive_sha256": "408132e1e292f8e3f44d878a54a5faa1dbc49ff0adfe563a38701c281b9e537f",
+  "forensic_source_head": "d9c73432f9155c39d75c692867d5c7e73b5c83a1",
+  "local_repair_commit": "c92474dc32c8c7af1bc51535e2e976afdddfa3c2",
+  "local_verified_baseline_commit": "080bbab2b41ca1c65cb9f29e56e1b97c498936c1",
+  "production_files": {
+    "src/printer_v1/operator_cli/authoritative_live_operational_campaign.py": "493d444f01fc7aa6c4ac7262808139380236e8b530d9daf7e3c4c2c091d7ae2b",
+    "src/printer_v1/operator_cli/campaign_full_run_accounting.py": "87f70da1eff084e7cbedc8988a1ec2fbd4f637207180e83d35758c5ad25fefd5",
+    "src/printer_v1/operator_cli/campaign_ownership.py": "b590a6c1c73f8943339e4804a1d219d2a683f7d77820698f687785f25dd4641f",
+    "src/printer_v1/operator_cli/git_provenance_authorization_manifest.py": "0102e2081f14dd9fc5549a362a43d790b20e2ad5767e6360e22f7c5f46323377",
+    "src/printer_v1/operator_cli/one_command_15m_factory.py": "75fca16052a01f21d5a64513061d018f9c5fc0bec4a080e8a82ecf990cba2f23",
+    "src/printer_v1/operator_cli/operational_memory_factory_command.py": "add193cbcddc7f9e9919561ed2378a1047bd46ee63abee587361c2c093b3f412",
+    "src/printer_v1/operator_cli/pre_admission_discovery_attempt.py": "7a2bd449142cc756795668d9c49845b7b984a78feec0cc22c6a391d5ae656e12"
+  },
+  "proof_only_migration_reconstruction": {
+    "canonical_provenance": false,
+    "files": {
+      "059_pair_ready_parent_terminal_cancellation_transition.sql": "bec54ac1b4fdc98916551636227e7332e6d21f5dc171250c8359da2e0d8966fb",
+      "060_pre_admission_frozen_tracking_lane_provenance.sql": "14954a78d166dec264aee6d9ff8e0e54bf699dfe50373907e70af042abd4e915",
+      "061_standard_4h_progression_fault_preservation.sql": "fd6e1ca8032d4b9783c3b4e9504ebcfb3bde757e7a22218730487b79a2eb7bfe"
+    },
+    "reason": "Exact original 059-061 SQL bytes were not present in the forensic archive or reachable refs.",
+    "semantic_schema_proof": "119/119 tables; zero missing/extra tables; zero column differences; zero primary-key differences versus captured Aug-25 db_schema.json"
+  },
+  "verdict": "AUG25_FOUR_TOKEN_A_TO_Z_REPAIR_BOUNDED_PROOF_PASS",
+  "verification": {
+    "bounded_standard_4h_offline_proof": "1/1",
+    "compile_changed_production_modules": "PASS",
+    "controller_zero_state_provenance_scheduler": "32/32 plus 20 subtests",
+    "focused_regressions": "14/14",
+    "git_diff_check": "PASS",
+    "historical_migration_055": "3/3 local and 3/3 GitHub Actions",
+    "lane4_schema_applicable_callers_guards": "8/8",
+    "lane4_schema_core": "18/18",
+    "original_failure_groups": {
+      "A": "12/12",
+      "B": "GREEN",
+      "C": "5/5",
+      "D": "5/5",
+      "E": "3/3",
+      "F": "8/8",
+      "G": "5/5"
+    },
+    "standard_4h_operational_command": "23/23"
+  }
+}
