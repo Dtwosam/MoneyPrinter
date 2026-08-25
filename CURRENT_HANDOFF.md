@@ -4,11 +4,11 @@ Date: 2026-08-25
 
 ## Current lane
 
-`V2-9.8B Consumed 07d92adf Forensic Audit`
+`V2-9.8B Durable-Admission Terminal-Accounting Scope Repair Design`
 
 Status:
 
-`V2_9_8B_CONSUMED_07D92ADF_FORENSIC_AUDIT_PASS_NARROW_REPAIR_DESIGN_REQUIRED`
+`V2_9_8B_DURABLE_ADMISSION_TERMINAL_ACCOUNTING_SCOPE_REPAIR_DESIGN_PASS_READY_FOR_NARROW_IMPLEMENTATION`
 
 Design:
 
@@ -49,7 +49,7 @@ below do not apply to it.
 ## Exact next permitted action
 
 ```text
-NARROW DURABLE-ADMISSION TERMINAL-ACCOUNTING SCOPE REPAIR DESIGN ONLY
+NARROW DURABLE-ADMISSION TERMINAL-ACCOUNTING SCOPE REPAIR IMPLEMENTATION ONLY
 ```
 
 This rereadiness checkpoint authorizes only preparation of one brand-new
