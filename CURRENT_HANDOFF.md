@@ -4,11 +4,11 @@ Date: 2026-08-25
 
 ## Current lane
 
-`V2-9.8B 07d92adf Historical Disposition Repair Implementation`
+`V2-9.8B 07d92adf Historical Disposition Repair Closeout`
 
 Status:
 
-`V2_9_8B_07D92ADF_HISTORICAL_DISPOSITION_REPAIR_IMPLEMENTATION_PASS_READY_FOR_CLOSEOUT`
+`V2_9_8B_07D92ADF_HISTORICAL_DISPOSITION_REPAIR_CLOSEOUT_PASS_READY_FOR_POST_DISPOSITION_REREADINESS`
 
 Design:
 
@@ -49,8 +49,25 @@ below do not apply to it.
 ## Exact next permitted action
 
 ```text
-V2-9.8B 07D92ADF HISTORICAL DISPOSITION REPAIR CLOSEOUT ONLY
+READ-ONLY POST-07D92ADF HISTORICAL DISPOSITION REPAIR EXACT-HEAD / WORKTREE / DB REREADINESS GATE ONLY
 ```
+
+Closeout result:
+
+`V2_9_8B_07D92ADF_HISTORICAL_DISPOSITION_REPAIR_CLOSEOUT_PASS_READY_FOR_POST_DISPOSITION_REREADINESS`
+
+The exact historical disposition repair is closed on bounded provenance proof.
+Only one production semantic mapping was adopted:
+
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260825T105852Z_07d92adf -> CONSUMED_CHILD_EXITED_NONZERO`
+
+Three pre-existing provenance test fixtures were aligned to the now-complete
+45-ID historical trust root. Production enumeration/default fail-closed
+behavior was not weakened.
+
+No fresh authorization is permitted from this closeout. The next step is the
+separate read-only exact-HEAD/worktree/DB rereadiness gate.
+
 
 Implementation/proof result:
 
