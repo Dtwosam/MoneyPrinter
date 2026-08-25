@@ -4,11 +4,11 @@ Date: 2026-08-25
 
 ## Current lane
 
-`V2-9.8B Durable-Admission Terminal-Accounting Scope Repair Implementation`
+`V2-9.8B Durable-Admission Terminal-Accounting Scope Repair Closeout`
 
 Status:
 
-`V2_9_8B_DURABLE_ADMISSION_TERMINAL_ACCOUNTING_SCOPE_REPAIR_IMPLEMENTATION_PASS_READY_FOR_CLOSEOUT`
+`V2_9_8B_DURABLE_ADMISSION_TERMINAL_ACCOUNTING_SCOPE_REPAIR_CLOSEOUT_PASS_READY_FOR_POST_REPAIR_REREADINESS`
 
 Design:
 
@@ -49,8 +49,22 @@ below do not apply to it.
 ## Exact next permitted action
 
 ```text
-V2-9.8B DURABLE-ADMISSION TERMINAL-ACCOUNTING SCOPE REPAIR CLOSEOUT ONLY
+READ-ONLY POST-DURABLE-ADMISSION TERMINAL-ACCOUNTING SCOPE REPAIR
+EXACT-HEAD / WORKTREE / DB REREADINESS GATE
 ```
+
+Closeout result:
+
+`V2_9_8B_DURABLE_ADMISSION_TERMINAL_ACCOUNTING_SCOPE_REPAIR_CLOSEOUT_PASS_READY_FOR_POST_REPAIR_REREADINESS`
+
+The implementation is closed on bounded evidence. The five focused failures
+documented by implementation remain pre-existing baseline debt and are not
+part of this repair lane. They were re-observed unchanged at closeout and are
+not treated as passing tests.
+
+No new authorization is permitted from this closeout. The next step is the
+separate read-only exact-HEAD/worktree/DB rereadiness gate named above.
+
 
 Implementation/proof result:
 
