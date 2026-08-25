@@ -1,0 +1,24 @@
+name: ChatGPT historical 055 proof
+
+on:
+  push:
+    branches:
+      - agent/chatgpt-aug25-historical055-proof
+
+permissions:
+  contents: read
+
+jobs:
+  historical-055-proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check pytest
+      - name: Run exact historical reconciliation proof
+        env:
+          PYTHONPATH: src
+        run: python -m pytest -q tests/test_chatgpt_historical055_fixture_reproof.py
