@@ -118,6 +118,48 @@ READINESS_DURATION_CEILING_SECONDS = 360.0
 LATER_CYCLE_SOURCE_OPERATION_TIMEOUT_SECONDS = 5.0
 
 
+def _resolve_current_cycle_ordinal_for_historical_disjointness(
+    connection: sqlite3.Connection,
+    *,
+    campaign_id: str,
+    campaign_run_id: str,
+    cycle_id: str,
+) -> int:
+    """Resolve the executing cycle ordinal for historical-disjointness gating.
+
+    Enforcement depends on the authoritative identity of the currently
+    executing campaign cycle. Never derive it from COUNT(*) of campaign-cycle
+    rows, historical slot count, or history presence. Missing, ambiguous,
+    malformed, or invalid current-cycle identity fails closed.
+    """
+    canonical_campaign_id = str(campaign_id or "").strip()
+    canonical_run_id = str(campaign_run_id or "").strip()
+    canonical_cycle_id = str(cycle_id or "").strip()
+    if not canonical_campaign_id or not canonical_run_id or not canonical_cycle_id:
+        raise LiveOperationalError(
+            "CURRENT_CYCLE_IDENTITY_INVALID",
+            "exact current campaign/run/cycle identity missing",
+        )
+    row = connection.execute(
+        """SELECT cycle_ordinal
+           FROM printer_memory_factory_campaign_cycles
+           WHERE campaign_id=? AND run_id=? AND cycle_id=?""",
+        (canonical_campaign_id, canonical_run_id, canonical_cycle_id),
+    ).fetchone()
+    if row is None:
+        raise LiveOperationalError(
+            "CURRENT_CYCLE_IDENTITY_INVALID",
+            "exact current cycle row missing",
+        )
+    raw_ordinal = row[0]
+    if type(raw_ordinal) is not int or raw_ordinal < 1:
+        raise LiveOperationalError(
+            "CURRENT_CYCLE_IDENTITY_INVALID",
+            "current cycle_ordinal invalid",
+        )
+    return raw_ordinal
+
+
 def _persist_completed_later_cycle_refresh_progress(
     progress_by_cycle: dict[str, dict[str, Any]],
     *,
@@ -4477,16 +4519,17 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 )
                 # Post-filter freeze depth is the sole admission authority.
                 # Never use raw observation_rows count for coverage decisions.
-                # Later-cycle fresh slots: when prior admitted cycles exist for
-                # this campaign/run, load coordinator historical identity sets
-                # and filter before the existing seeded freeze/selector.
-                prior_cycle_count = int(
-                    connection.execute(
-                        """SELECT COUNT(*)
-                           FROM printer_memory_factory_campaign_cycles
-                           WHERE campaign_id=? AND run_id=?""",
-                        (str(command.campaign_id), str(command.run_id)),
-                    ).fetchone()[0]
+                # Historical-disjointness enforcement depends on the authoritative
+                # CURRENT cycle ordinal. Real production persists Cycle 1 before
+                # freeze, so COUNT(*) of campaign-cycle rows is not a prior-cycle
+                # proxy and must not decide enforcement.
+                current_cycle_ordinal = (
+                    _resolve_current_cycle_ordinal_for_historical_disjointness(
+                        connection,
+                        campaign_id=str(command.campaign_id),
+                        campaign_run_id=str(command.run_id),
+                        cycle_id=str(cycle_id),
+                    )
                 )
                 frozen_eligible_reserve = freeze_eligible_reserve_for_campaign(
                     connection,
@@ -4495,7 +4538,9 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     at=datetime.now(timezone.utc).isoformat(),
                     campaign_id=str(command.campaign_id),
                     campaign_run_id=str(command.run_id),
-                    enforce_campaign_historical_disjointness=prior_cycle_count >= 1,
+                    enforce_campaign_historical_disjointness=(
+                        current_cycle_ordinal > 1
+                    ),
                 )
                 freeze_authority = dict(
                     frozen_eligible_reserve.selection_authority or {}
