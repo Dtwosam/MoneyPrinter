@@ -140,4 +140,4 @@ Printer V1 remains:
 
 Preserve the V2 sequence and use minimum sufficient risk-based verification.
 
-Do not create authorization, reuse a consumed authorization, start Printer, contact providers/RPC, or run Central Scheduler merely because this anchor or the source-stack adoption exists. The next lane is post-synchronization fresh next-bounded-campaign authorization readiness/governance only.
+Do not create authorization, reuse a consumed authorization, start Printer, contact providers/RPC, or run Central Scheduler merely because this anchor or the source-stack adoption exists. The exact current next permitted lane is post-repair fresh next-bounded-campaign authorization readiness/governance only.
