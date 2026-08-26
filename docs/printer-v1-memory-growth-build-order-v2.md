@@ -969,27 +969,42 @@ otherwise.
 Goal: operate bounded, persistent Memory Factory campaigns only after V2-9.7
 passes and the operator activates the gate.
 
-Status: V2-9.7F passed (`V2_9_7F_ACTIVATION_READINESS_PASS`). Active bounded
-campaigns remain locked until V2-9.8A operator activation. This is real
+Status: V2-9.7F passed (`V2_9_7F_ACTIVATION_READINESS_PASS`). Historical
+V2-9.8 program note — not current next-lane authority: active bounded campaigns
+remained locked until the later closed V2-9.8A operator activation. This is real
 persistent corpus production, not design, fixtures, implementation-only work,
-or a one-off proof.
+or a one-off proof. Current next-lane authority is the 2026-08-26 source-stack
+adoption / post-synchronization fresh next-bounded-campaign authorization
+readiness/governance lane.
 
-#### V2-9.8A — Operator Activation Gate
+#### V2-9.8A — Operator Activation Gate — HISTORICAL
 
-Before any active bounded memory-growth campaign, the assistant must say exactly:
+Historical V2-9.8A operator-activation instruction — preserved for provenance,
+not current execution authority.
+
+Status at the closed V2-9.8A gate: before any then-authorized active bounded
+memory-growth campaign, the assistant had to say exactly:
 
 ```text
 This is the time for us to send a command to PowerShell and start growing
 Printer's real quality memory.
 ```
 
-This may happen only after V2-9.7 passes. At that gate, the assistant must
-provide the exact verified PowerShell command from the committed implementation.
-The command must contain no placeholders; target the authoritative persistent
-corpus DB; not use a proof DB or the V2-9 proof launcher; run bounded automatic
-cycles; use Source Governor and Central Scheduler; perform discovery through
-reporting and safe shutdown; never automatically restart after terminal failure;
-and preserve all retrieval and financial locks.
+That may have happened only after V2-9.7 passed. At that closed gate, the
+assistant had to provide the exact verified PowerShell command from the
+committed implementation. The command had to contain no placeholders; target the
+authoritative persistent corpus DB; not use a proof DB or the V2-9 proof
+launcher; run bounded automatic cycles; use Source Governor and Central
+Scheduler; perform discovery through reporting and safe shutdown; never
+automatically restart after terminal failure; and preserve all retrieval and
+financial locks.
+
+Current command/launch authority is not created by this historical V2-9.8A text
+or by the 2026-08-26 four-token standard-4h source-stack adoption. Any live
+operational command may be provided only under a later fresh exact-HEAD
+authorization lane after required post-synchronization readiness/governance,
+with separate explicit operator approval. No existing or consumed authorization
+may be reused.
 
 #### V2-9.8B - Active Bounded Memory Growth Operations
 
@@ -1016,10 +1031,14 @@ deferred/experimental. Their implementation, tables, migrations and evidence
 remain preserved and importable, but they are not an operational prerequisite
 and their cursors/recovery rows are not active factory authority.
 
-This restoration is offline-only. On PASS, the exact next permitted task is
-operator review of the restoration branch and closeout. It does not authorize
-the published operational command, a live campaign, provider/RPC work, N2, N7,
-recovery, cursor reset, a retry, retrieval or any financial capability.
+This restoration is offline-only. Historical restoration checkpoint — preserved
+for provenance, not current next-lane authority: on restoration PASS, the exact
+next permitted task was operator review of the restoration branch and closeout.
+It did not authorize the published operational command, a live campaign,
+provider/RPC work, N2, N7, recovery, cursor reset, a retry, retrieval or any
+financial capability. Current next-lane authority is the 2026-08-26 source-stack
+adoption / post-synchronization fresh next-bounded-campaign authorization
+readiness/governance lane.
 
 ##### Historical Candidate-Acquisition Foundation Adoption (Deferred)
 

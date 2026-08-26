@@ -862,10 +862,14 @@ operational prerequisite or authority for the active factory. The active
 operational command must not read, reset, advance or interpret their cursors or
 recovery rows.
 
-On restoration PASS, the exact next permitted task is operator review of the
-restoration branch and closeout only. PASS does not authorize the published
-operational command, a campaign, N2, N7, recovery, cursor reset, provider/RPC
-work, retrieval or any financial capability.
+Historical restoration checkpoint — preserved for provenance, not current
+next-lane authority: on restoration PASS, the exact next permitted task was
+operator review of the restoration branch and closeout only. PASS did not
+authorize the published operational command, a campaign, N2, N7, recovery,
+cursor reset, provider/RPC work, retrieval or any financial capability. Current
+next-lane authority is the 2026-08-26 four-token standard-4h source-stack
+adoption / post-synchronization fresh next-bounded-campaign authorization
+readiness/governance lane.
 
 The candidate-acquisition history below is preserved as a historical/deferred
 record. It does not override this restoration anchor.

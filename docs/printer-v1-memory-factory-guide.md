@@ -1243,17 +1243,27 @@ auto_restart_after_terminal_failure: forbidden
 authorization_created_by_this_guide: false
 ```
 
-At V2-9.8A, the assistant must provide the exact verified PowerShell command
-from the committed implementation. It must contain no placeholders, target the
+Historical V2-9.8A operator-activation instruction — preserved for provenance,
+not current execution authority: at the closed V2-9.8A gate, the assistant was
+required to provide the exact verified PowerShell command from the committed
+implementation. That command had to contain no placeholders, target the
 authoritative persistent corpus DB, avoid proof DBs and the V2-9 proof launcher,
 run bounded automatic cycles, use Source Governor and Central Scheduler, perform
 discovery through reporting and safe shutdown, never automatically restart after
 terminal failure, and preserve all retrieval and financial locks.
 
+Current command/launch authority is not created by this guide or by the
+2026-08-26 source-stack synchronization. Any live operational command may be
+provided only under a later fresh exact-HEAD authorization lane after the
+required post-synchronization readiness/governance step, with separate explicit
+operator approval. No existing or consumed authorization may be reused.
+
 The first goal is not trading.
 
 The first goal is proving that the Memory Factory can grow clean persistent
-memory without polluting the corpus database.## 21. Required Future Build Pattern
+memory without polluting the corpus database.
+
+## 21. Required Future Build Pattern
 
 Every future Memory Factory implementation lane must specify:
 
