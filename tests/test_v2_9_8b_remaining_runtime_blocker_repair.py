@@ -286,13 +286,23 @@ def _permanent_supply(
             # Reuse earlier mint/pool identities so freeze drops duplicates.
             mint = origins[i - 4].mint
             pool = _POOLS[i - 4]
+        market_request_id = 9200 + i
+        market_response_id = 8200 + i
         candidates[mint.lower()] = {
             "mint": mint,
             "pool": pool,
             "pumpswap_pool": pool,
             "market_identity": f"solana-mainnet:pumpswap:{pool}",
             "provenance": "LATEST_GRADUATED" if i % 2 == 0 else "PERSISTED_GRADUATED",
-            "liquidity": {"liquidity_usd": 5000.0 + i * 100},
+            # Permanent memory-observation fixtures use MARKET_PRESENT so the
+            # pre-freeze retained-role gate can pass without inventing Pump
+            # origin/pumpswap retained rows.
+            "admission_authority": "MARKET_PRESENT_POOL",
+            "liquidity": {
+                "liquidity_usd": 5000.0 + i * 100,
+                "source_request_id": market_request_id,
+                "source_response_id": market_response_id,
+            },
             "liquidity_usd": 5000.0 + i * 100,
             "evidence_expires_at": expiry,
             "memory_observation_eligible": True,
@@ -311,6 +321,8 @@ def _permanent_supply(
             base_i = i if i < 4 else i - 4
             mint = origins[base_i].mint
             pool = _POOLS[base_i]
+            market_request_id = 9300 + i
+            market_response_id = 8300 + i
             candidates[proof.mint.lower()] = {
                 "mint": mint,  # identity used for freeze after remap? 
                 # Actually freeze uses item mint from candidate dict.
@@ -321,7 +333,12 @@ def _permanent_supply(
                 "pumpswap_pool": pool,
                 "market_identity": f"solana-mainnet:pumpswap:{pool}",
                 "provenance": "LATEST_GRADUATED",
-                "liquidity": {"liquidity_usd": 5000.0},
+                "admission_authority": "MARKET_PRESENT_POOL",
+                "liquidity": {
+                    "liquidity_usd": 5000.0,
+                    "source_request_id": market_request_id,
+                    "source_response_id": market_response_id,
+                },
                 "liquidity_usd": 5000.0,
                 "evidence_expires_at": EXPIRES,
                 "memory_observation_eligible": True,

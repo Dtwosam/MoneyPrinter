@@ -1434,6 +1434,89 @@ def _role_ids_from_candidate(
     return (None, None, None)
 
 
+def _admission_authority_from_freeze_item(item: Mapping[str, Any]) -> Any:
+    """Resolve freeze-item admission authority; missing defaults fail closed."""
+    from printer_v1.discovery.memory_observation_activation import AdmissionAuthority
+
+    return AdmissionAuthority(
+        str(item.get("admission_authority") or "DIRECT_PUMP_PUMPSWAP")
+    )
+
+
+def _present_retained_evidence_roles_from_freeze_item(
+    item: Mapping[str, Any],
+) -> set[Any]:
+    """Candidate-local roles that already carry request/response IDs."""
+    from printer_v1.discovery.memory_observation_activation import EvidenceRole
+
+    liquidity = dict(item.get("liquidity") or {})
+    present: set[Any] = set()
+    for role in EvidenceRole:
+        request_id, response_id, _failure_id = _role_ids_from_candidate(
+            item, liquidity, role.value
+        )
+        if request_id is not None and response_id is not None:
+            present.add(role)
+    return present
+
+
+def _filter_observation_rows_by_retained_role_completeness(
+    rows: Sequence[Mapping[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Exclude role-incomplete nominees before the neutral seeded freeze."""
+    from printer_v1.discovery.memory_observation_activation import (
+        RETAINED_EVIDENCE_ROLE_INCOMPLETE_PRE_FREEZE,
+        assess_retained_evidence_role_completeness,
+    )
+
+    complete_rows: list[dict[str, Any]] = []
+    exclusions: list[dict[str, Any]] = []
+    for raw in rows:
+        item = dict(raw)
+        mint = str(item.get("mint") or "")
+        pool = str(item.get("pool") or item.get("pumpswap_pool") or "")
+        try:
+            admission_authority = _admission_authority_from_freeze_item(item)
+        except ValueError:
+            exclusions.append(
+                {
+                    "mint": mint,
+                    "pool": pool,
+                    "admission_authority": str(item.get("admission_authority") or ""),
+                    "required_roles": (),
+                    "present_roles": (),
+                    "missing_roles": (),
+                    "disposition": RETAINED_EVIDENCE_ROLE_INCOMPLETE_PRE_FREEZE,
+                    "detail": "ADMISSION_AUTHORITY_UNSUPPORTED",
+                }
+            )
+            continue
+        present_roles = _present_retained_evidence_roles_from_freeze_item(item)
+        assessment = assess_retained_evidence_role_completeness(
+            admission_authority=admission_authority,
+            present_roles=present_roles,
+            mint=mint,
+        )
+        if assessment["complete"]:
+            # Preserve the resolved authority on the freeze item so activation
+            # construction cannot re-default an explicit MARKET_PRESENT nominee.
+            item["admission_authority"] = admission_authority.value
+            complete_rows.append(item)
+            continue
+        exclusions.append(
+            {
+                "mint": mint,
+                "pool": pool,
+                "admission_authority": assessment["admission_authority"],
+                "required_roles": list(assessment["required_roles"]),
+                "present_roles": list(assessment["present_roles"]),
+                "missing_roles": list(assessment["missing_roles"]),
+                "disposition": assessment["disposition"],
+            }
+        )
+    return complete_rows, exclusions
+
+
 def _build_frozen_memory_activation_set(
     connection: sqlite3.Connection,
     *,
@@ -1459,7 +1542,7 @@ def _build_frozen_memory_activation_set(
         MemoryObservationActivationError,
         RetainedEvidenceReference,
         TrackingFeasibility,
-        required_evidence_roles_for_candidate,
+        required_evidence_roles_for_admission_authority,
     )
 
     manifest_by_id = {
@@ -1551,7 +1634,7 @@ def _build_frozen_memory_activation_set(
             cycle_id=cycle_id,
         )
 
-    def candidate(raw: Mapping[str, Any], ordinal: int) -> Any:
+    def candidate(raw: Mapping[str, Any], ordinal: int, *, soft: bool = False) -> Any:
         item = dict(raw)
         mint = str(item.get("mint") or "")
         pool = str(item.get("pool") or "")
@@ -1564,13 +1647,18 @@ def _build_frozen_memory_activation_set(
         # Preserve the categorical incomplete-market signal before role checks so
         # disposable fixtures that omit market response rows keep their exact
         # blocker code. Missing origin/pumpswap roles still fail closed below.
+        # Soft/report-only alternate projection may omit market IDs without
+        # terminalizing the selected activation pair.
         market_req, market_resp, _market_fail = _role_ids_from_candidate(
             item, liquidity, EvidenceRole.MARKET_OBSERVATION.value
         )
         if market_req is None or market_resp is None:
-            raise MemoryObservationActivationError(
-                "RETAINED_EVIDENCE_REFERENCE_INCOMPLETE", mint
-            )
+            if soft:
+                pass
+            else:
+                raise MemoryObservationActivationError(
+                    "RETAINED_EVIDENCE_REFERENCE_INCOMPLETE", mint
+                )
 
         try:
             admission_authority = AdmissionAuthority(
@@ -1581,40 +1669,16 @@ def _build_frozen_memory_activation_set(
                 "ADMISSION_AUTHORITY_UNSUPPORTED", mint
             ) from exc
         claims_pump = admission_authority is AdmissionAuthority.DIRECT_PUMP_PUMPSWAP
-        role_contract = FrozenMemoryActivationCandidate(
-            slot_ordinal=ordinal,
-            mint=mint,
-            pool=pool,
-            market_identity=str(item.get("market_identity") or ""),
-            lifecycle_identity="PRESENT_POOL_CONFIRMED",
-            activation_route=admission_authority.value,
-            provenance=str(item.get("provenance") or ""),
-            memory_observation_eligible=True,
-            fully_eligible=False,
-            holder_condition="UNKNOWN",
-            holder_evidence_status="UNKNOWN",
-            future_action_eligibility="BLOCKED_OR_UNKNOWN",
-            evidence_expires_at=str(item.get("evidence_expires_at") or frozen_at),
-            liquidity_observed_at=retained_time or frozen_at,
-            tracking_feasibility=TrackingFeasibility(
-                eligible=True,
-                reason_code="ROLE_MATRIX_ONLY",
-                tracking_queue_id=None,
-                tracking_queue_status=None,
-                requalification_required=False,
-                cooldown_until=None,
-                assessed_at=frozen_at,
-            ),
-            retained_evidence_references=(),
-            admission_authority=admission_authority,
-            claims_pump_origin=claims_pump,
-            claims_pumpswap_graduation=claims_pump,
+        required_roles = required_evidence_roles_for_admission_authority(
+            admission_authority
         )
         role_refs: list[Any] = []
-        for role in required_evidence_roles_for_candidate(role_contract):
+        for role in required_roles:
             req_raw, resp_raw, fail_raw = _role_ids_from_candidate(
                 item, liquidity, role.value
             )
+            if soft and (req_raw is None or resp_raw is None):
+                continue
             (
                 request_id,
                 response_id,
@@ -1669,9 +1733,12 @@ def _build_frozen_memory_activation_set(
                 )
             )
         if not retained_time:
-            raise MemoryObservationActivationError(
-                "RETAINED_OBSERVATION_TIME_MISSING", mint
-            )
+            if soft:
+                retained_time = frozen_at
+            else:
+                raise MemoryObservationActivationError(
+                    "RETAINED_OBSERVATION_TIME_MISSING", mint
+                )
         holder_condition = str(item.get("holder_condition") or "UNKNOWN")
         return FrozenMemoryActivationCandidate(
             slot_ordinal=ordinal,
@@ -1729,12 +1796,84 @@ def _build_frozen_memory_activation_set(
             claims_pumpswap_graduation=claims_pump,
         )
 
+    def report_only_alternate(raw: Mapping[str, Any], ordinal: int) -> Any:
+        """Project report/diagnostic alternates without selected activation authority.
+
+        Alternates must never independently terminalize an otherwise valid
+        selected activation pair via hard selected-role construction.
+        """
+        try:
+            return candidate(raw, ordinal, soft=True)
+        except MemoryObservationActivationError:
+            item = dict(raw)
+            mint = str(item.get("mint") or f"alternate-{ordinal}")
+            pool = str(item.get("pool") or f"alternate-pool-{ordinal}")
+            try:
+                admission_authority = AdmissionAuthority(
+                    str(item.get("admission_authority") or "MARKET_PRESENT_POOL")
+                )
+            except ValueError:
+                admission_authority = AdmissionAuthority.MARKET_PRESENT_POOL
+            claims_pump = (
+                admission_authority is AdmissionAuthority.DIRECT_PUMP_PUMPSWAP
+            )
+            return FrozenMemoryActivationCandidate(
+                slot_ordinal=ordinal,
+                mint=mint,
+                pool=pool,
+                market_identity=str(
+                    item.get("market_identity")
+                    or f"solana-mainnet:pumpswap:{pool}"
+                ),
+                lifecycle_identity=(
+                    GRADUATED_LIFECYCLE
+                    if claims_pump
+                    else "PRESENT_POOL_CONFIRMED"
+                ),
+                activation_route=str(
+                    item.get("activation_route") or admission_authority.value
+                ),
+                provenance=str(item.get("provenance") or ""),
+                memory_observation_eligible=True,
+                fully_eligible=False,
+                holder_condition=str(item.get("holder_condition") or "UNKNOWN"),
+                holder_evidence_status=str(
+                    item.get("holder_evidence_status") or "UNKNOWN"
+                ),
+                future_action_eligibility=str(
+                    item.get("future_action_eligibility") or "BLOCKED_OR_UNKNOWN"
+                ),
+                evidence_expires_at=str(
+                    item.get("evidence_expires_at") or expires_at
+                ),
+                liquidity_observed_at=str(
+                    item.get("liquidity_observed_at")
+                    or (item.get("liquidity") or {}).get("liquidity_observed_at")
+                    or frozen_at
+                ),
+                tracking_feasibility=TrackingFeasibility(
+                    eligible=bool(item.get("tracking_handoff_eligible", True)),
+                    reason_code=str(
+                        item.get("tracking_handoff_reason") or "REPORT_ONLY_ALTERNATE"
+                    ),
+                    tracking_queue_id=None,
+                    tracking_queue_status=None,
+                    requalification_required=False,
+                    cooldown_until=None,
+                    assessed_at=frozen_at,
+                ),
+                retained_evidence_references=(),
+                admission_authority=admission_authority,
+                claims_pump_origin=claims_pump,
+                claims_pumpswap_graduation=claims_pump,
+            )
+
     selected = tuple(
-        candidate(item, ordinal)
+        candidate(item, ordinal, soft=False)
         for ordinal, item in enumerate(frozen_reserve.selected, start=1)
     )
     alternates = tuple(
-        candidate(item, ordinal)
+        report_only_alternate(item, ordinal)
         for ordinal, item in enumerate(frozen_reserve.alternates[:2], start=3)
     )
     return FrozenMemoryActivationSet(
@@ -4517,6 +4656,21 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 supply.diagnostics["memory_observation_tracking_exclusions"] = (
                     tracking_exclusions
                 )
+                # Retained-evidence role completeness is binary eligibility before
+                # the neutral seeded freeze. Incomplete DIRECT_PUMP / MARKET
+                # nominees must never reach select-then-reject activation build.
+                (
+                    role_complete_observation_rows,
+                    retained_role_pre_freeze_exclusions,
+                ) = _filter_observation_rows_by_retained_role_completeness(
+                    observation_rows
+                )
+                supply.diagnostics["retained_evidence_role_pre_freeze"] = {
+                    "input_count": len(observation_rows),
+                    "complete_count": len(role_complete_observation_rows),
+                    "excluded_count": len(retained_role_pre_freeze_exclusions),
+                    "exclusions": retained_role_pre_freeze_exclusions,
+                }
                 # Post-filter freeze depth is the sole admission authority.
                 # Never use raw observation_rows count for coverage decisions.
                 # Historical-disjointness enforcement depends on the authoritative
@@ -4533,7 +4687,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 )
                 frozen_eligible_reserve = freeze_eligible_reserve_for_campaign(
                     connection,
-                    observation_rows,
+                    role_complete_observation_rows,
                     cycle_seed=selection_seed,
                     at=datetime.now(timezone.utc).isoformat(),
                     campaign_id=str(command.campaign_id),
@@ -5056,6 +5210,12 @@ class AuthoritativeLiveOperationalCampaignOwner:
             "provider_failures": supply_diagnostics.get("provider_failures", 0),
             "pre_source_tracking_exclusions": supply_diagnostics.get(
                 "pre_source_tracking_exclusions", 0
+            ),
+            "retained_evidence_role_pre_freeze": dict(
+                supply_diagnostics.get("retained_evidence_role_pre_freeze") or {}
+            ),
+            "memory_activation_contract": dict(
+                supply_diagnostics.get("memory_activation_contract") or {}
             ),
             "candidates": admission_candidates,
             "campaign_source_calls": int(

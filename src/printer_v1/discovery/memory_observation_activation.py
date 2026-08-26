@@ -120,17 +120,82 @@ class FrozenMemoryActivationCandidate:
     claims_pumpswap_graduation: bool = True
 
 
+RETAINED_EVIDENCE_ROLE_INCOMPLETE_PRE_FREEZE = (
+    "RETAINED_EVIDENCE_ROLE_INCOMPLETE_PRE_FREEZE"
+)
+
+
+def required_evidence_roles_for_claims(
+    *,
+    claims_pump_origin: bool,
+    claims_pumpswap_graduation: bool,
+) -> tuple[EvidenceRole, ...]:
+    """Canonical retained-role matrix from explicit origin/graduation claims."""
+    roles: list[EvidenceRole] = []
+    if claims_pump_origin:
+        roles.append(EvidenceRole.ORIGIN_LINEAGE)
+    if claims_pumpswap_graduation:
+        roles.append(EvidenceRole.PUMPSWAP_CONFIRMATION)
+    roles.append(EvidenceRole.MARKET_OBSERVATION)
+    return tuple(roles)
+
+
+def required_evidence_roles_for_admission_authority(
+    admission_authority: AdmissionAuthority,
+) -> tuple[EvidenceRole, ...]:
+    """Canonical retained-role matrix from one admission authority."""
+    claims_pump = admission_authority is AdmissionAuthority.DIRECT_PUMP_PUMPSWAP
+    return required_evidence_roles_for_claims(
+        claims_pump_origin=claims_pump,
+        claims_pumpswap_graduation=claims_pump,
+    )
+
+
 def required_evidence_roles_for_candidate(
     candidate: FrozenMemoryActivationCandidate,
 ) -> tuple[EvidenceRole, ...]:
     """Return the retained role matrix asserted by this candidate's authority."""
-    roles: list[EvidenceRole] = []
-    if candidate.claims_pump_origin:
-        roles.append(EvidenceRole.ORIGIN_LINEAGE)
-    if candidate.claims_pumpswap_graduation:
-        roles.append(EvidenceRole.PUMPSWAP_CONFIRMATION)
-    roles.append(EvidenceRole.MARKET_OBSERVATION)
-    return tuple(roles)
+    return required_evidence_roles_for_claims(
+        claims_pump_origin=bool(candidate.claims_pump_origin),
+        claims_pumpswap_graduation=bool(candidate.claims_pumpswap_graduation),
+    )
+
+
+def assess_retained_evidence_role_completeness(
+    *,
+    admission_authority: AdmissionAuthority,
+    present_roles: Sequence[EvidenceRole] | set[EvidenceRole] | frozenset[EvidenceRole],
+    mint: str = "",
+) -> dict[str, Any]:
+    """Binary pre-freeze completeness against the canonical role matrix.
+
+    Completeness is role presence only. Final activation validation remains the
+    fail-closed owner of DB rows, manifest binding, transport identity, and
+    payload hash.
+    """
+    required = required_evidence_roles_for_admission_authority(admission_authority)
+    present_set: set[EvidenceRole] = set()
+    for role in present_roles:
+        if isinstance(role, EvidenceRole):
+            present_set.add(role)
+        else:
+            present_set.add(EvidenceRole(str(role)))
+    missing = tuple(role for role in required if role not in present_set)
+    return {
+        "complete": len(missing) == 0,
+        "mint": mint,
+        "admission_authority": admission_authority.value,
+        "required_roles": tuple(role.value for role in required),
+        "present_roles": tuple(
+            role.value for role in required if role in present_set
+        ),
+        "missing_roles": tuple(role.value for role in missing),
+        "disposition": (
+            None
+            if not missing
+            else RETAINED_EVIDENCE_ROLE_INCOMPLETE_PRE_FREEZE
+        ),
+    }
 
 
 @dataclass(frozen=True)
@@ -1225,11 +1290,15 @@ __all__ = [
     "ManifestRequestEntry",
     "MemoryObservationActivationError",
     "REQUIRED_EVIDENCE_ROLES",
+    "RETAINED_EVIDENCE_ROLE_INCOMPLETE_PRE_FREEZE",
     "RetainedEvidenceReference",
     "TrackingFeasibility",
+    "assess_retained_evidence_role_completeness",
     "measure_source_row_ids",
     "reconcile_activation_source_rows",
+    "required_evidence_roles_for_admission_authority",
     "required_evidence_roles_for_candidate",
+    "required_evidence_roles_for_claims",
     "role_reference_for_candidate",
     "transport_identity_key_from_mapping",
     "transport_identity_keys_from_payload",
