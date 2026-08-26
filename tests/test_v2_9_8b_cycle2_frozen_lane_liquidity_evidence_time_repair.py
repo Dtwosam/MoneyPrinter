@@ -21,6 +21,7 @@ from printer_v1.discovery.permanent_discovery_availability import (
     MARKET_READY,
     promote_confirmed_with_retained_liquidity,
     record_fresh_pool_nominations,
+    resolve_source_derived_liquidity_observed_at,
 )
 from printer_v1.operator_cli.pre_admission_discovery_attempt import (
     PreAdmissionAttemptError,
@@ -283,6 +284,167 @@ def _item_from_liquidity(
     )
 
 
+class TestClaimedProvingResponseFailClosed:
+    def test_claimed_response_id_absent_fails_closed(self, database) -> None:
+        _, connection = database
+        with pytest.raises(ValueError, match="LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID"):
+            resolve_source_derived_liquidity_observed_at(
+                connection,
+                candidate_observed_at=CLAIM_AT,
+                fallback_now=CLAIM_AT,
+                source_response_id=999999,
+            )
+        with pytest.raises(ValueError, match="LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID"):
+            record_fresh_pool_nominations(
+                connection,
+                observations=[
+                    {
+                        "mint": MINT,
+                        "pool": POOL,
+                        "base_mint": MINT,
+                        "quote_mint": WSOL,
+                        "venue": "pumpswap",
+                        "liquidity_usd": 4500.0,
+                    }
+                ],
+                source="dexscreener",
+                request_id=11,
+                now=CLAIM_AT,
+                campaign_id="camp-absent-response",
+                response_id=999999,
+            )
+
+    def test_claimed_response_non_complete_fails_closed(self, database) -> None:
+        _, connection = database
+        request_id, response_id = _insert_complete_response(
+            connection,
+            received_at=RECEIVED_AT,
+            pairs=[_qualifying_pair()],
+        )
+        connection.execute(
+            "UPDATE printer_source_responses SET source_status='STALE' WHERE id=?",
+            (response_id,),
+        )
+        with pytest.raises(ValueError, match="LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID"):
+            resolve_source_derived_liquidity_observed_at(
+                connection,
+                candidate_observed_at=CLAIM_AT,
+                fallback_now=CLAIM_AT,
+                source_response_id=response_id,
+            )
+        del request_id
+
+    def test_claimed_response_missing_received_at_fails_closed(self, database) -> None:
+        _, connection = database
+        request_id, response_id = _insert_complete_response(
+            connection,
+            received_at=RECEIVED_AT,
+            pairs=[_qualifying_pair()],
+        )
+        connection.execute(
+            "UPDATE printer_source_responses SET received_at='' WHERE id=?",
+            (response_id,),
+        )
+        with pytest.raises(ValueError, match="LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID"):
+            resolve_source_derived_liquidity_observed_at(
+                connection,
+                candidate_observed_at=CLAIM_AT,
+                fallback_now=CLAIM_AT,
+                source_response_id=response_id,
+            )
+        del request_id
+
+    def test_malformed_claimed_response_timestamp_fails_closed(self, database) -> None:
+        _, connection = database
+        request_id, response_id = _insert_complete_response(
+            connection,
+            received_at=RECEIVED_AT,
+            pairs=[_qualifying_pair()],
+        )
+        connection.execute(
+            "UPDATE printer_source_responses SET received_at='not-a-timestamp' WHERE id=?",
+            (response_id,),
+        )
+        with pytest.raises(ValueError, match="LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID"):
+            resolve_source_derived_liquidity_observed_at(
+                connection,
+                candidate_observed_at=CLAIM_AT,
+                fallback_now=CLAIM_AT,
+                source_response_id=response_id,
+            )
+        del request_id
+
+    def test_invalid_claimed_response_id_type_fails_closed(self, database) -> None:
+        _, connection = database
+        with pytest.raises(ValueError, match="LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID"):
+            resolve_source_derived_liquidity_observed_at(
+                connection,
+                candidate_observed_at=CLAIM_AT,
+                fallback_now=CLAIM_AT,
+                source_response_id=True,  # bool must not coerce to 1
+            )
+
+    def test_no_source_response_id_preserves_legacy_callback_time(
+        self, database
+    ) -> None:
+        _, connection = database
+        observed = resolve_source_derived_liquidity_observed_at(
+            connection,
+            candidate_observed_at=None,
+            fallback_now=CLAIM_AT,
+            source_response_id=None,
+        )
+        assert observed == CLAIM_AT
+        record_fresh_pool_nominations(
+            connection,
+            observations=[
+                {
+                    "mint": MINT,
+                    "pool": POOL,
+                    "base_mint": MINT,
+                    "quote_mint": WSOL,
+                    "venue": "pumpswap",
+                    "liquidity_usd": 4500.0,
+                }
+            ],
+            source="dexscreener",
+            request_id=11,
+            now=CLAIM_AT,
+            campaign_id="camp-no-response",
+            response_id=None,
+        )
+        row = connection.execute(
+            """
+            SELECT observed_at, evidence_json FROM printer_discovery_reserve_layers
+             WHERE mint_identity=? AND reserve_layer=?
+            """,
+            (MINT, BROAD_NOMINATED),
+        ).fetchone()
+        evidence = json.loads(str(row["evidence_json"]))
+        assert row["observed_at"] == CLAIM_AT
+        assert evidence["liquidity_observed_at"] == CLAIM_AT
+        assert evidence.get("response_id") is None
+
+    def test_resolver_returns_only_timestamp_not_liquidity_proven_status(
+        self, database
+    ) -> None:
+        _, connection = database
+        _, response_id = _insert_complete_response(
+            connection,
+            received_at=RECEIVED_AT,
+            pairs=[_qualifying_pair()],
+        )
+        resolved = resolve_source_derived_liquidity_observed_at(
+            connection,
+            candidate_observed_at=CLAIM_AT,
+            fallback_now=CLAIM_AT,
+            source_response_id=response_id,
+        )
+        assert isinstance(resolved, str)
+        assert resolved == RECEIVED_AT
+        assert "LIQUIDITY_PROVEN" not in resolved
+
+
 class TestProducerEvidenceTimeTruthfulness:
     def test_callback_earlier_than_received_at_does_not_stamp_earlier(
         self, database
@@ -355,6 +517,11 @@ class TestAug26IncidentFrozenLaneReplay:
         _nominate(connection, request_id=request_id, response_id=response_id, now=CLAIM_AT)
         liquidity = _market_ready_liquidity(connection)
         assert liquidity["liquidity_observed_at"] >= RECEIVED_AT
+        # Isolated attach DB uses fixed response id 10; keep the claimed proving
+        # identity coherent with the linked COMPLETE body under validation.
+        liquidity = dict(liquidity)
+        liquidity["source_response_id"] = 10
+        liquidity["source_request_id"] = 1
 
         link_conn, _, _ = _linked_attach_connection(
             pairs=[_qualifying_pair()],
@@ -533,6 +700,55 @@ class TestFrozenCarrierChronologyInvariant:
             ):
                 attach_frozen_tracking_lane(
                     _item_from_liquidity(liquidity, observed_at=CLAIM_AT),
+                    now=datetime.fromisoformat(LAWFUL_CUTOFF),
+                    connection=conn,
+                )
+        finally:
+            conn.close()
+
+    def test_claimed_absent_proving_response_fails_closed_on_carrier(self) -> None:
+        liquidity = {
+            "liquidity_usd": 36910.59,
+            "source_response_id": 404,
+            "liquidity_observed_at": RECEIVED_AT,
+        }
+        conn, _, _ = _linked_attach_connection(
+            pairs=[_qualifying_pair()],
+            received_at=RECEIVED_AT,
+        )
+        try:
+            with pytest.raises(
+                PreAdmissionAttemptError,
+                match="LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID",
+            ):
+                attach_frozen_tracking_lane(
+                    _item_from_liquidity(liquidity, observed_at=RECEIVED_AT),
+                    now=datetime.fromisoformat(LAWFUL_CUTOFF),
+                    connection=conn,
+                )
+        finally:
+            conn.close()
+
+    def test_claimed_non_complete_proving_response_fails_closed_on_carrier(self) -> None:
+        liquidity = {
+            "liquidity_usd": 36910.59,
+            "source_response_id": 10,
+            "liquidity_observed_at": RECEIVED_AT,
+        }
+        conn, _, _ = _linked_attach_connection(
+            pairs=[_qualifying_pair()],
+            received_at=RECEIVED_AT,
+        )
+        try:
+            conn.execute(
+                "UPDATE printer_source_responses SET source_status='STALE' WHERE id=10"
+            )
+            with pytest.raises(
+                PreAdmissionAttemptError,
+                match="LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID",
+            ):
+                attach_frozen_tracking_lane(
+                    _item_from_liquidity(liquidity, observed_at=RECEIVED_AT),
                     now=datetime.fromisoformat(LAWFUL_CUTOFF),
                     connection=conn,
                 )

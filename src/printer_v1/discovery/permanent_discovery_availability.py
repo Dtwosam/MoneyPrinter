@@ -228,19 +228,25 @@ def resolve_source_derived_liquidity_observed_at(
 ) -> str:
     """Resolve retained liquidity evidence time for a governed source response.
 
-    When liquidity is derived from a COMPLETE proving ``printer_source_responses``
-    row, the effective evidence time must not precede that row's ``received_at``.
-    A trustworthy later source observation is preserved via max-semantics.
-    Claim/evaluated_at/`now` alone must never invent an earlier chronology than
-    the proving response.
+    When ``source_response_id`` is None, preserve legacy/non-source-derived
+    behavior using the candidate observation or fallback ``now``.
+
+    When a proving ``source_response_id`` is claimed, the referenced response
+    must exist, be COMPLETE, and carry a lawful ``received_at``. The effective
+    evidence time is ``max(candidate, received_at)``. Claiming an unvalidated
+    proving response and falling back to callback/`now` is forbidden.
     """
     candidate = str(candidate_observed_at or "").strip() or str(fallback_now)
     if source_response_id is None:
         return candidate
+    if isinstance(source_response_id, bool):
+        raise ValueError("LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID")
     try:
         response_id = int(source_response_id)
-    except (TypeError, ValueError):
-        return candidate
+    except (TypeError, ValueError) as exc:
+        raise ValueError("LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID") from exc
+    if response_id <= 0:
+        raise ValueError("LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID")
     row = connection.execute(
         """
         SELECT received_at, source_status
@@ -250,17 +256,20 @@ def resolve_source_derived_liquidity_observed_at(
         (response_id,),
     ).fetchone()
     if row is None:
-        return candidate
+        raise ValueError("LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID")
     if str(row["source_status"] or "").strip().upper() != "COMPLETE":
-        return candidate
+        raise ValueError("LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID")
     received_raw = str(row["received_at"] or "").strip()
     if not received_raw:
-        return candidate
+        raise ValueError("LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID")
+    try:
+        received_dt = _parse_iso(received_raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID") from exc
     try:
         candidate_dt = _parse_iso(candidate)
-        received_dt = _parse_iso(received_raw)
     except (TypeError, ValueError):
-        return candidate
+        return received_raw
     if candidate_dt >= received_dt:
         return candidate
     return received_raw

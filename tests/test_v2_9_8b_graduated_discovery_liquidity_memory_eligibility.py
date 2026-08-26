@@ -103,6 +103,23 @@ def _obs(
 class TestLiquidityPreservation:
     def test_dexscreener_fresh_nomination_preserves_exact_pool_liquidity(self, database):
         _, connection = database
+        connection.execute(
+            """
+            INSERT INTO printer_source_requests(
+                id, source_name, request_kind, requested_at, source_status, data_quality_label
+            ) VALUES (11, 'dexscreener', 'dexscreener_fresh_profiles', ?, 'COMPLETE', 'CLEAN_DATA')
+            """,
+            (NOW,),
+        )
+        connection.execute(
+            """
+            INSERT INTO printer_source_responses(
+                id, source_request_id, source_name, received_at, source_status,
+                data_quality_label, normalized_payload_json
+            ) VALUES (21, 11, 'dexscreener', ?, 'COMPLETE', 'CLEAN_DATA', '{}')
+            """,
+            (NOW,),
+        )
         report = record_fresh_pool_nominations(
             connection,
             observations=[_obs(_MINT_A, _POOL_A, liquidity_usd=4500.0)],

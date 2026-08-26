@@ -394,10 +394,13 @@ def _reject_liquidity_evidence_time_before_proving_response(
     *,
     candidate: Mapping[str, Any],
 ) -> None:
-    """Fail closed when retained liquidity chronology precedes its proving response.
+    """Fail closed when retained liquidity claims an unusable proving response.
 
-    This is a narrow invariant at the frozen-carrier boundary. It does not weaken
-    the linked-market temporal consumer and does not invent missing market fields.
+    A claimed ``source_response_id`` must resolve to a COMPLETE response with a
+    lawful ``received_at``. Invalid provenance fails closed and must not fall
+    through to WATCH_ONLY. When observed time is also present, it must not
+    precede that proving response. This does not weaken the linked-market
+    temporal consumer.
     """
     liquidity = candidate.get("liquidity")
     blob: Mapping[str, Any]
@@ -406,15 +409,18 @@ def _reject_liquidity_evidence_time_before_proving_response(
     else:
         blob = candidate
     response_id_raw = blob.get("source_response_id")
-    observed_raw = blob.get("liquidity_observed_at")
-    if response_id_raw is None or observed_raw is None:
+    if response_id_raw is None:
         return
+    if isinstance(response_id_raw, bool):
+        raise PreAdmissionAttemptError("LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID")
     try:
         response_id = int(response_id_raw)
     except (TypeError, ValueError) as exc:
         raise PreAdmissionAttemptError(
-            "LIQUIDITY_EVIDENCE_TIME_PRECEDES_SOURCE_RESPONSE"
+            "LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID"
         ) from exc
+    if response_id <= 0:
+        raise PreAdmissionAttemptError("LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID")
     row = connection.execute(
         """
         SELECT received_at, source_status
@@ -424,19 +430,27 @@ def _reject_liquidity_evidence_time_before_proving_response(
         (response_id,),
     ).fetchone()
     if row is None:
-        return
+        raise PreAdmissionAttemptError("LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID")
     if str(row["source_status"] or "").strip().upper() != "COMPLETE":
-        return
+        raise PreAdmissionAttemptError("LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID")
     received_raw = row["received_at"]
-    if received_raw is None:
+    if received_raw is None or not str(received_raw).strip():
+        raise PreAdmissionAttemptError("LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID")
+    try:
+        received = _parse_timestamp(received_raw, "source_response_received_at")
+    except PreAdmissionAttemptError as exc:
+        raise PreAdmissionAttemptError(
+            "LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID"
+        ) from exc
+    observed_raw = blob.get("liquidity_observed_at")
+    if observed_raw is None:
         return
     try:
         observed = _parse_timestamp(observed_raw, "liquidity_observed_at")
-        received = _parse_timestamp(received_raw, "source_response_received_at")
-    except PreAdmissionAttemptError:
+    except PreAdmissionAttemptError as exc:
         raise PreAdmissionAttemptError(
-            "LIQUIDITY_EVIDENCE_TIME_PRECEDES_SOURCE_RESPONSE"
-        ) from None
+            "LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID"
+        ) from exc
     if observed < received:
         raise PreAdmissionAttemptError(
             "LIQUIDITY_EVIDENCE_TIME_PRECEDES_SOURCE_RESPONSE"
