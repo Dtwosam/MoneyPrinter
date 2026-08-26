@@ -4,17 +4,24 @@ Date: 2026-08-26
 
 ## Current lane
 
-`V2-9.8B Aug-25 Four-Token A-to-Z Repair Implementation`
+`V2-9.8B Aug-25 Four-Token A-to-Z Repair Closeout`
 
 Status:
 
-`V2_9_8B_AUG25_A_TO_Z_REPAIR_IMPLEMENTATION_PASS_READY_FOR_CLOSEOUT`
+`V2_9_8B_AUG25_A_TO_Z_REPAIR_CLOSEOUT_PASS_READY_FOR_POST_COMMIT_REREADINESS`
 
-The proven uncommitted Aug-25 four-token A→Z overlay is now the tracked
-implementation. Final genuine-checkout rereadiness of that overlay was already
-closed `V2_9_8B_AUG25_A_TO_Z_REPAIR_REREADINESS_PASS`. This implementation
-commit does not create authorization and does not replace the later
-post-commit exact-HEAD rereadiness.
+Implementation commit:
+
+`87a49f04b0f7d35bbb878f2745f159675ec70a38`
+
+Closeout:
+
+`docs/printer-v1-v2-9-8b-aug25-four-token-a-to-z-repair-closeout.md`
+
+The Aug-25 four-token A→Z repair is closed on the tracked implementation and
+the already-proven overlay rereadiness. This closeout does not create
+authorization and does not replace the later post-commit exact-HEAD
+rereadiness.
 
 Latest consumed four-token Standard-4H authorization remains historical and
 non-reusable:
@@ -43,8 +50,20 @@ below do not apply to it.
 ## Exact next permitted action
 
 ```text
-V2-9.8B AUG-25 FOUR-TOKEN A-TO-Z REPAIR CLOSEOUT ONLY
+POST-COMMIT EXACT-HEAD / WORKTREE / DB REREADINESS ONLY
 ```
+
+Closeout result:
+
+`V2_9_8B_AUG25_A_TO_Z_REPAIR_CLOSEOUT_PASS_READY_FOR_POST_COMMIT_REREADINESS`
+
+The repair is closed. Authorization preparation remains
+`AUTHORIZATION_PREPARATION_NOT_PERMITTED` until the separate post-commit
+exact-HEAD / worktree / DB rereadiness passes.
+
+No tracked `CURRENT_HANDOFF.md` mutation is permitted after a new package is
+prepared; the already-preserved Transition A / Transition B / BLOCK clauses
+govern later independent-review and separate-start transitions.
 
 Implementation/proof result:
 
@@ -68,10 +87,6 @@ created or reused by this implementation commit.
 Pre-implementation overlay rereadiness:
 
 `V2_9_8B_AUG25_A_TO_Z_REPAIR_REREADINESS_PASS`
-
-No tracked `CURRENT_HANDOFF.md` mutation is permitted after a new package is
-prepared; the already-preserved Transition A / Transition B / BLOCK clauses
-govern later independent-review and separate-start transitions.
 
 
 Closeout result:
