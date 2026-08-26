@@ -239,6 +239,91 @@ def precreate_15m_campaign_window(
     return window_id
 
 
+def bind_precreated_15m_campaign_window_memory_row(
+    connection: sqlite3.Connection,
+    *,
+    campaign_id: str,
+    run_id: str,
+    cycle_id: str,
+    token_slot_id: str,
+    token_row_id: int,
+    pair_row_id: int,
+    campaign_window_id: str,
+    memory_window_row_id: int,
+    now: str | None = None,
+) -> dict[str, Any]:
+    """Bind one pre-created WINDOW_15M campaign row to a physical memory row.
+
+    Identity only. Does not change window_state, first_terminal_cause,
+    terminal_at, or physical memory quality labels.
+    """
+    stamp = now or _utc_now()
+    expected_window_id = str(campaign_window_id)
+    rows = connection.execute(
+        """SELECT window_id,campaign_id,run_id,cycle_id,token_slot_id,
+                  token_row_id,pair_row_id,window_kind,window_state,
+                  memory_window_row_id,first_terminal_cause,terminal_at
+           FROM printer_memory_factory_campaign_windows
+           WHERE campaign_id=? AND run_id=? AND cycle_id=? AND token_slot_id=?
+             AND window_kind=?""",
+        (campaign_id, run_id, cycle_id, token_slot_id, WINDOW_15M),
+    ).fetchall()
+    if len(rows) == 0:
+        raise Selective1hError("precreated 15m campaign window is absent")
+    if len(rows) != 1:
+        raise Selective1hError("precreated 15m campaign window identity is ambiguous")
+    row = rows[0]
+    if str(row["window_id"]) != expected_window_id:
+        raise Selective1hError("precreated 15m campaign window id mismatch")
+    if (
+        str(row["campaign_id"]) != str(campaign_id)
+        or str(row["run_id"]) != str(run_id)
+        or str(row["cycle_id"]) != str(cycle_id)
+        or str(row["token_slot_id"]) != str(token_slot_id)
+        or int(row["token_row_id"]) != int(token_row_id)
+        or int(row["pair_row_id"]) != int(pair_row_id)
+        or str(row["window_kind"]) != WINDOW_15M
+    ):
+        raise Selective1hError("precreated 15m campaign window identity mismatch")
+    prior_state = str(row["window_state"])
+    prior_cause = row["first_terminal_cause"]
+    prior_terminal_at = row["terminal_at"]
+    try:
+        changed = bind_window_memory_row_id(
+            connection,
+            window_id=expected_window_id,
+            memory_window_row_id=int(memory_window_row_id),
+            now=stamp,
+        )
+    except CampaignOwnershipError as exc:
+        raise Selective1hError(str(exc)) from exc
+    verify = connection.execute(
+        """SELECT window_id,memory_window_row_id,window_state,
+                  first_terminal_cause,terminal_at
+           FROM printer_memory_factory_campaign_windows
+           WHERE window_id=?""",
+        (expected_window_id,),
+    ).fetchone()
+    if (
+        verify is None
+        or str(verify["window_id"]) != expected_window_id
+        or verify["memory_window_row_id"] is None
+        or int(verify["memory_window_row_id"]) != int(memory_window_row_id)
+        or str(verify["window_state"]) != prior_state
+        or verify["first_terminal_cause"] != prior_cause
+        or verify["terminal_at"] != prior_terminal_at
+    ):
+        raise Selective1hError("precreated 15m campaign window bind readback failed")
+    return {
+        "window_id": expected_window_id,
+        "memory_window_row_id": int(memory_window_row_id),
+        "window_kind": WINDOW_15M,
+        "window_state": prior_state,
+        "bound": bool(changed),
+        "idempotent": not bool(changed),
+    }
+
+
 def persist_15m_campaign_window(
     connection: sqlite3.Connection,
     *,

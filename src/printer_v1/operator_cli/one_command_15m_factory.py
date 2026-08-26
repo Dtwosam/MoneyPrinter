@@ -3906,6 +3906,75 @@ def _close_context_result(step: sqlite3.Row) -> dict[str, Any]:
     return payload
 
 
+def _bind_precreated_15m_campaign_window_before_e2z(
+    conn: sqlite3.Connection,
+    *,
+    step: sqlite3.Row,
+    memory_window_row_id: int,
+) -> dict[str, Any] | None:
+    """Identity-bind a precreated WINDOW_15M campaign row before Lane Q/E2Z.
+
+    Non-campaign closes skip. Campaign-owned closes fail closed on slot
+    identity mismatch, absent/ambiguous precreated row, or bind readback
+    failure. Does not change window_state, first_terminal_cause, or
+    terminal_at.
+    """
+    if step["scheduler_job_id"] is None:
+        return None
+    owner = _lifecycle_operation_cycle_identity(
+        conn, int(step["scheduler_job_id"])
+    )
+    if not owner:
+        return None
+    slot = conn.execute(
+        """SELECT token_slot_id, token_row_id, pair_row_id
+           FROM printer_memory_factory_campaign_token_slots
+           WHERE campaign_id=? AND run_id=? AND cycle_id=?
+             AND token_slot_id=?""",
+        (
+            str(owner["campaign_id"]),
+            str(owner["campaign_run_id"]),
+            str(owner["cycle_id"]),
+            str(owner["token_slot_id"]),
+        ),
+    ).fetchone()
+    if (
+        slot is None
+        or str(slot["token_slot_id"]) != str(owner["token_slot_id"])
+        or int(slot["token_row_id"]) != int(step["token_id"])
+        or int(slot["pair_row_id"]) != int(step["pair_id"])
+    ):
+        raise ValueError("WINDOW_15M_CAMPAIGN_SLOT_IDENTITY_MISMATCH")
+    from printer_v1.operator_cli.operational_selective_1h import (
+        bind_precreated_15m_campaign_window_memory_row,
+    )
+
+    bound = bind_precreated_15m_campaign_window_memory_row(
+        conn,
+        campaign_id=str(owner["campaign_id"]),
+        run_id=str(owner["campaign_run_id"]),
+        cycle_id=str(owner["cycle_id"]),
+        token_slot_id=str(owner["token_slot_id"]),
+        token_row_id=int(step["token_id"]),
+        pair_row_id=int(step["pair_id"]),
+        campaign_window_id=str(owner["window_id"]),
+        memory_window_row_id=int(memory_window_row_id),
+    )
+    verify = conn.execute(
+        """SELECT memory_window_row_id
+           FROM printer_memory_factory_campaign_windows
+           WHERE window_id=?""",
+        (str(owner["window_id"]),),
+    ).fetchone()
+    if (
+        verify is None
+        or verify["memory_window_row_id"] is None
+        or int(verify["memory_window_row_id"]) != int(memory_window_row_id)
+    ):
+        raise ValueError("WINDOW_15M_CAMPAIGN_WINDOW_BIND_READBACK_FAILED")
+    return bound
+
+
 def _audit_15m_close_from_evidence(
     conn: sqlite3.Connection,
     step: sqlite3.Row,
@@ -3992,7 +4061,26 @@ def _audit_15m_close_from_evidence(
         snapshot_end_id=int(closing_snapshot_id),
     )
     result["window_audit"] = audit_15m_memory_window(conn, int(window_id))
+    result["campaign_window_bind"] = (
+        _bind_precreated_15m_campaign_window_before_e2z(
+            conn,
+            step=step,
+            memory_window_row_id=int(window_id),
+        )
+    )
     conn.commit()
+    bound = conn.execute(
+        """SELECT memory_window_row_id
+           FROM printer_memory_factory_campaign_windows
+           WHERE memory_window_row_id=?""",
+        (int(window_id),),
+    ).fetchone()
+    if result.get("campaign_window_bind") is not None and (
+        bound is None
+        or bound["memory_window_row_id"] is None
+        or int(bound["memory_window_row_id"]) != int(window_id)
+    ):
+        raise ValueError("WINDOW_15M_CAMPAIGN_WINDOW_BIND_NOT_VISIBLE")
     result["memory_pipeline"] = run_e2z_pipeline(
         str(conn.execute("PRAGMA database_list").fetchone()[2]),
         operator_approved=True,
