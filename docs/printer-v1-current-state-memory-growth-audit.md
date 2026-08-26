@@ -1304,12 +1304,17 @@ Current adopted envelope (capability only; not an authorization):
 - candidate-acquisition N2/N7/cursor/recovery deferred;
 - implemented ≠ exercised ≠ authorized now.
 
-Exact next permitted lane after the synchronization is proved/closed:
+The exact current next permitted lane is:
 
 ```text
-POST-SYNCHRONIZATION FRESH NEXT-BOUNDED-CAMPAIGN AUTHORIZATION
+POST-REPAIR FRESH NEXT-BOUNDED-CAMPAIGN AUTHORIZATION
 READINESS / GOVERNANCE ONLY
 ```
+
+Historical at the time of the 2026-08-26 source-stack synchronization:
+`POST-SYNCHRONIZATION FRESH NEXT-BOUNDED-CAMPAIGN AUTHORIZATION READINESS /
+GOVERNANCE ONLY`. That pointer is superseded by the later Cycle-1
+historical-disjointness repair closeout and `CURRENT_HANDOFF.md`.
 
 The historical `NEXT_RECOMMENDED_LANE: V2-1 Adopt/Reset Build Order` verdict
 above is retained as V2-0 provenance only.

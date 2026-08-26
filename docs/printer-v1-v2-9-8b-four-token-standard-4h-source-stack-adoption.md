@@ -171,11 +171,21 @@ Printer V1 remains:
 
 ## 11. Next permitted governance lane
 
-After this synchronization is itself proved and closed, the exact next
-permitted lane is:
+Historical at the time of this adoption; superseded by the later Cycle-1
+historical-disjointness repair closeout and `CURRENT_HANDOFF.md`.
+
+After this synchronization was itself proved and closed, the exact next
+permitted lane at that historical time was:
 
 ```text
 POST-SYNCHRONIZATION FRESH NEXT-BOUNDED-CAMPAIGN AUTHORIZATION
+READINESS / GOVERNANCE ONLY
+```
+
+The exact current next permitted lane is:
+
+```text
+POST-REPAIR FRESH NEXT-BOUNDED-CAMPAIGN AUTHORIZATION
 READINESS / GOVERNANCE ONLY
 ```
 

@@ -866,10 +866,12 @@ Historical restoration checkpoint — preserved for provenance, not current
 next-lane authority: on restoration PASS, the exact next permitted task was
 operator review of the restoration branch and closeout only. PASS did not
 authorize the published operational command, a campaign, N2, N7, recovery,
-cursor reset, provider/RPC work, retrieval or any financial capability. Current
-next-lane authority is the 2026-08-26 four-token standard-4h source-stack
-adoption / post-synchronization fresh next-bounded-campaign authorization
-readiness/governance lane.
+cursor reset, provider/RPC work, retrieval or any financial capability. The
+later 2026-08-26 four-token standard-4h source-stack adoption and its
+post-synchronization readiness pointer are themselves historical for next-lane
+purposes. Current next-lane authority is the Cycle-1 historical-disjointness
+repair closeout / `CURRENT_HANDOFF.md` post-repair fresh next-bounded-campaign
+authorization readiness/governance lane.
 
 The candidate-acquisition history below is preserved as a historical/deferred
 record. It does not override this restoration anchor.
@@ -1101,12 +1103,17 @@ authority. Current adopted envelope:
 - `WINDOW_12H` / `WINDOW_24H` locked;
 - no authorization is created by the adoption itself.
 
-Exact next permitted lane after the synchronization is proved/closed:
+The exact current next permitted lane is:
 
 ```text
-POST-SYNCHRONIZATION FRESH NEXT-BOUNDED-CAMPAIGN AUTHORIZATION
+POST-REPAIR FRESH NEXT-BOUNDED-CAMPAIGN AUTHORIZATION
 READINESS / GOVERNANCE ONLY
 ```
+
+Historical at the time of the 2026-08-26 source-stack synchronization:
+`POST-SYNCHRONIZATION FRESH NEXT-BOUNDED-CAMPAIGN AUTHORIZATION READINESS /
+GOVERNANCE ONLY`. That pointer is superseded by the later Cycle-1
+historical-disjointness repair closeout and `CURRENT_HANDOFF.md`.
 
 No automatic run, retry, recovery, successor, cursor reset, N7, provider/RPC
 work, or operational campaign is authorized by this anchor text alone.
@@ -1163,12 +1170,17 @@ Current adopted operational envelope:
 - candidate-acquisition N2/N7/cursor/recovery deferred
 - implemented capability ≠ previously exercised capability ≠ authorization now
 
-Exact next permitted lane:
+The exact current next permitted lane is:
 
 ```text
-POST-SYNCHRONIZATION FRESH NEXT-BOUNDED-CAMPAIGN AUTHORIZATION
+POST-REPAIR FRESH NEXT-BOUNDED-CAMPAIGN AUTHORIZATION
 READINESS / GOVERNANCE ONLY
 ```
+
+Historical at the time of this adoption closeout:
+`POST-SYNCHRONIZATION FRESH NEXT-BOUNDED-CAMPAIGN AUTHORIZATION READINESS /
+GOVERNANCE ONLY`. That pointer is superseded by the later Cycle-1
+historical-disjointness repair closeout and `CURRENT_HANDOFF.md`.
 
 This adoption creates no authorization, automatically authorizes no campaign,
 unlocks no live runtime, and leaves fresh exact-HEAD authorization as a

@@ -120,13 +120,22 @@ Closeout requires:
 
 ## Next permitted action
 
-Exactly:
+Historical at the time of this closeout; superseded by the later Cycle-1
+historical-disjointness repair closeout and `CURRENT_HANDOFF.md`.
+
+Exactly at this closeout:
 
 **`POST-SYNCHRONIZATION FRESH NEXT-BOUNDED-CAMPAIGN AUTHORIZATION READINESS / GOVERNANCE ONLY`**
 
-This next lane is still governance/readiness only.
+The exact current next permitted lane is now:
 
-It must establish the exact current repository HEAD, authoritative DB binding, adopted V2-9.8B profile, one-shot authorization contract, non-reuse semantics, Source Governor ownership, Central Scheduler ownership, and pre-issuance readiness prerequisites.
+**`POST-REPAIR FRESH NEXT-BOUNDED-CAMPAIGN AUTHORIZATION READINESS / GOVERNANCE ONLY`**
+
+That later post-repair readiness/governance lane must re-bind the exact current
+repository HEAD, authoritative DB binding, adopted V2-9.8B profile, one-shot
+authorization contract, non-reuse semantics, Source Governor ownership, Central
+Scheduler ownership, completed repair invariants, and pre-issuance readiness
+prerequisites.
 
 This closeout does **not** itself create a fresh authorization.
 

@@ -1167,12 +1167,17 @@ Current adopted operational envelope (2026-08-26):
 - Cycle-2 fresh slots must be campaign-history disjoint;
 - adoption creates no authorization and unlocks no campaign.
 
-Exact next permitted lane after the synchronization is proved/closed:
+The exact current next permitted lane is:
 
 ```text
-POST-SYNCHRONIZATION FRESH NEXT-BOUNDED-CAMPAIGN AUTHORIZATION
+POST-REPAIR FRESH NEXT-BOUNDED-CAMPAIGN AUTHORIZATION
 READINESS / GOVERNANCE ONLY
 ```
+
+Historical at the time of the 2026-08-26 source-stack synchronization:
+`POST-SYNCHRONIZATION FRESH NEXT-BOUNDED-CAMPAIGN AUTHORIZATION READINESS /
+GOVERNANCE ONLY`. That pointer is superseded by the later Cycle-1
+historical-disjointness repair closeout and `CURRENT_HANDOFF.md`.
 
 Do not treat this guide, a prior run, or a consumed authorization as current
 execution authority. Do not start an operational campaign, invoke providers/RPC,

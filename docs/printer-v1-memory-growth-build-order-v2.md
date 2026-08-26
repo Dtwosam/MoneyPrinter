@@ -1859,12 +1859,17 @@ explicit source-stack lane reactivates them.
 Implemented capability ≠ previously exercised capability ≠ authorization to run
 now. This adoption creates no authorization and unlocks no campaign.
 
-Exact next permitted lane:
+The exact current next permitted lane is:
 
 ```text
-POST-SYNCHRONIZATION FRESH NEXT-BOUNDED-CAMPAIGN AUTHORIZATION
+POST-REPAIR FRESH NEXT-BOUNDED-CAMPAIGN AUTHORIZATION
 READINESS / GOVERNANCE ONLY
 ```
+
+Historical at the time of the 2026-08-26 source-stack synchronization:
+`POST-SYNCHRONIZATION FRESH NEXT-BOUNDED-CAMPAIGN AUTHORIZATION READINESS /
+GOVERNANCE ONLY`. That pointer is superseded by the later Cycle-1
+historical-disjointness repair closeout and `CURRENT_HANDOFF.md`.
 
 A future operational campaign still requires separate fresh exact-HEAD
 authorization, explicit operator approval, exact DB binding, Source Governor,

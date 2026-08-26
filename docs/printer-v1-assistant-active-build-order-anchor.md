@@ -61,17 +61,25 @@ No historical authorization may be reused. Consumed authorizations remain perman
 
 ## Exact next permitted lane
 
+The exact current next permitted lane is:
+
 ```text
-POST-SYNCHRONIZATION FRESH NEXT-BOUNDED-CAMPAIGN AUTHORIZATION
+POST-REPAIR FRESH NEXT-BOUNDED-CAMPAIGN AUTHORIZATION
 READINESS / GOVERNANCE ONLY
 ```
 
-This source-stack synchronization:
+Historical at the time of the 2026-08-26 source-stack synchronization:
+`POST-SYNCHRONIZATION FRESH NEXT-BOUNDED-CAMPAIGN AUTHORIZATION READINESS /
+GOVERNANCE ONLY`. That pointer is superseded by the later Cycle-1
+historical-disjointness repair closeout and `CURRENT_HANDOFF.md`.
+
+This lane is readiness/governance only:
 
 - creates no authorization;
 - automatically authorizes no campaign;
 - unlocks no live runtime;
-- leaves fresh exact-HEAD authorization as a separate later lane.
+- leaves fresh exact-HEAD authorization as a separate later lane after a new
+  readiness PASS at the then-current HEAD.
 
 A future operational campaign still requires separate fresh exact-HEAD authorization, explicit operator approval, exact DB binding, Source Governor, Central Scheduler, one-shot semantics, consumed-authorization non-reuse, and no automatic retry/resume/restart/successor. Source scarcity and honest evidence blockers remain valid terminals. The profile does not promise 4/2/2 success.
 
