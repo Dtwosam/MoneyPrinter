@@ -1,333 +1,104 @@
-# CURRENT HANDOFF
+# CURRENT_HANDOFF
 
-Date: 2026-08-26
+Updated: 2026-08-26
 
 ## Current lane
 
-`V2-9.8B Aug-25 Four-Token A-to-Z Repair Closeout`
+V2-9.8B — 15m→1h campaign-window bind-order repair is CLOSED PASS.
 
-Status:
+## Current repository identity
 
-`V2_9_8B_AUG25_A_TO_Z_REPAIR_CLOSEOUT_PASS_READY_FOR_POST_COMMIT_REREADINESS`
+- branch: `agent/v2-9-8b-aug25-a2z-repair-application`
+- implementation HEAD before closeout docs: `9fd1378c7d5c42060b344cfc0d48de0a79c8cc5f`
+- implementation parent: `cc4324fc05c98d5a19808e4ad693c7c4e2a9e51e`
 
-Implementation commit:
+## Latest completed work
 
-`87a49f04b0f7d35bbb878f2745f159675ec70a38`
+Completed sequence:
 
-Closeout:
+1. readiness audit: `WINDOW_15M_TO_1H_BLOCKER_UNDERSTOOD`
+2. design: `V2_9_8B_15M_TO_1H_BIND_ORDER_DESIGN_PASS`
+3. implementation commit: `9fd1378c7d5c42060b344cfc0d48de0a79c8cc5f`
+4. independent proof: `V2_9_8B_15M_TO_1H_BIND_ORDER_BOUNDED_PROOF_PASS`
+5. closeout: `V2_9_8B_15M_TO_1H_BIND_ORDER_REPAIR_CLOSEOUT_PASS`
 
-`docs/printer-v1-v2-9-8b-aug25-four-token-a-to-z-repair-closeout.md`
+Closeout document:
 
-The Aug-25 four-token A→Z repair is closed on the tracked implementation and
-the already-proven overlay rereadiness. This closeout does not create
-authorization and does not replace the later post-commit exact-HEAD
-rereadiness.
+`docs/printer-v1-v2-9-8b-15m-to-1h-campaign-window-bind-order-repair-closeout.md`
 
-Latest consumed four-token Standard-4H authorization remains historical and
-non-reusable:
-
-`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260825T134723Z_4563a9dd -> CONSUMED_CHILD_EXITED_ZERO`
-
-Prior same-day `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260825T105852Z_07d92adf` remains
-`CONSUMED_CHILD_EXITED_NONZERO`.
-
-The superseded unconsumed package remains:
-
-- path:
-  `operator-runs/v2-9-8b-four-token-standard-four-hour-final-authorization/V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260824T222638Z_17181afc/final_authorization.json`;
-- SHA-256:
-  `99d2759e14da7d50ac301699a021d92bd3be0e024d36ec2a171ef23ff78a3f80`;
-- size: `4344`;
-- mode: `0444`;
-- bound HEAD: `ec59f29c79533a4b3612cce467ae604e70b5904b`;
-- bound authoritative DB SHA-256:
-  `9962fc4fe9e47c785e0732450102d0b2f5cd62fff6081b8517102b04a2a9efc5`.
-
-`...17181afc` is permanently historical and unconsumed. Independent review and
-operator start of that exact package remain forbidden. Transitions A and B
-below do not apply to it.
-
-## Exact next permitted action
+The repaired close order is:
 
 ```text
-POST-COMMIT EXACT-HEAD / WORKTREE / DB REREADINESS ONLY
+physical 15m close/audit
+→ exact pre-created campaign-window binding
+→ commit + readback
+→ E2Z / Lane Q
+→ genuine Lane-K downgrade if required
+→ existing terminal registration
+→ existing selective 1h evaluation
 ```
 
-Closeout result:
+Lane Q/K were not weakened and 1h is not forced.
 
-`V2_9_8B_AUG25_A_TO_Z_REPAIR_CLOSEOUT_PASS_READY_FOR_POST_COMMIT_REREADINESS`
+## Proof summary
 
-The repair is closed. Authorization preparation remains
-`AUTHORIZATION_PREPARATION_NOT_PERMITTED` until the separate post-commit
-exact-HEAD / worktree / DB rereadiness passes.
+Parent `cc4324fc...` meaningful RED: `memory_window_row_id` was NULL at the E2Z/Lane-Q boundary (`AssertionError: None != 1`).
 
-No tracked `CURRENT_HANDOFF.md` mutation is permitted after a new package is
-prepared; the already-preserved Transition A / Transition B / BLOCK clauses
-govern later independent-review and separate-start transitions.
+Current `9fd1378...` GREEN:
 
-Implementation/proof result:
+- new regression suite: `6/6 PASS`
+- neighboring focused suites: `36 PASS`
+- genuine missing/mismatch remains fail-closed
+- genuine Lane-Q blocker still dirties
+- dirty predecessor does not force 1h
+- terminal registration reuses the early exact bind
 
-`V2_9_8B_AUG25_A_TO_Z_REPAIR_IMPLEMENTATION_PASS_READY_FOR_CLOSEOUT`
+Pre-existing baseline failures, reproduced on parent and not introduced by this repair:
 
-Narrow production change:
+- `test_e2z_promotes_clean_1h_once`
+- `test_selective_two_token_factory_ceilings_are_cadence_derived`
 
-- lawful typed `TIMELY_ACQUISITION_NOT_PRODUCIBLE` preclose skip is
-  terminal-acceptable without converting failed jobs into success;
-- cooperative Scheduler yield may mirror campaign `scheduler_work`
-  `RUNNING -> PENDING` only after the bound Central Scheduler job is already
-  released `PENDING`;
-- Cycle-2 frozen tracking lane may use already-linked exact-pair market
-  responses as projection-only classifier evidence; no new source request;
-- `owned_proof_cycle_id` is initialized before the outer exception owner;
-- `...4563a9dd` is registered `CONSUMED_CHILD_EXITED_ZERO`.
+Do not repair them without a separate source-grounded lane.
 
-Source Governor and Central Scheduler remain mandatory. No authorization is
-created or reused by this implementation commit.
+## Authoritative DB
 
-Pre-implementation overlay rereadiness:
+- path: `/Users/Dtwo1/Developer/MoneyPrinter/data/printer_v1.sqlite3`
+- SHA-256: `7f3e725fb435c24c507f6e12fbee26789472017e6e0c63361404ab6589f7128c`
+- integrity: `ok`
+- foreign keys: `0 rows`
+- migration head: 061
+- no migration added by this repair
 
-`V2_9_8B_AUG25_A_TO_Z_REPAIR_REREADINESS_PASS`
+## Authorization state
 
+Consumed authorization:
 
-Closeout result:
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260826T114542Z_d3bc361a`
 
-`V2_9_8B_07D92ADF_HISTORICAL_DISPOSITION_REPAIR_CLOSEOUT_PASS_READY_FOR_POST_DISPOSITION_REREADINESS`
+Permanently non-reusable. No new authorization exists from this repair lane.
 
-The exact historical disposition repair is closed on bounded provenance proof.
-Only one production semantic mapping was adopted:
+## Open blocker / unresolved operational issue
 
-`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260825T105852Z_07d92adf -> CONSUMED_CHILD_EXITED_NONZERO`
+Cycle 2 remains separate and unresolved:
 
-Three pre-existing provenance test fixtures were aligned to the now-complete
-45-ID historical trust root. Production enumeration/default fail-closed
-behavior was not weakened.
+- `LATER_CYCLE_ATTEMPT_PERSISTENCE_FAILED`
+- producer `FROZEN_LANE_CLASSIFICATION`
+- phase `FROZEN_CARRIER`
+- reason `FROZEN_TRACKING_LANE_UNAVAILABLE`
+- category `APPLICATION_VALIDATION`
 
-No fresh authorization is permitted from this closeout. The next step is the
-separate read-only exact-HEAD/worktree/DB rereadiness gate.
+Cycle 2 was never admitted. Exact selected classifier inputs were not persisted as attempt items, so a committed Cycle-2 classifier defect is not yet proven.
 
+Live 1h/4h progression and four-token 4/2/2 success remain unproven.
 
-Implementation/proof result:
+## Next permitted action
 
-`V2_9_8B_07D92ADF_HISTORICAL_DISPOSITION_REPAIR_IMPLEMENTATION_PASS_READY_FOR_CLOSEOUT`
+`V2-9.8B CYCLE-2 FROZEN-LANE CLASSIFIER-INPUT READINESS AUDIT ONLY`
 
-Only production semantic change:
+Read-only first. No Cycle-2 implementation before audit → design/specification if justified → bounded implementation → proof → closeout.
 
-`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260825T105852Z_07d92adf -> CONSUMED_CHILD_EXITED_NONZERO`
+## Still not permitted
 
-Three older provenance test fixtures were aligned to the newly complete 45-ID
-future historical trust root. This is test-only proof maintenance; production
-enumeration remains fail-closed and no trust-root bypass was introduced.
+No live Printer run, fresh authorization/successor, consumed-auth reuse, Source Governor/Scheduler bypass, 12h/24h, retrieval, BUY/SELL/HOLD, positions/trades/audits/PnL, live wallet/keys/signing/funds/execution, paid APIs, scoring/ranking/confidence/weighted logic, or embeddings/vectors.
 
-Pre-patch, the exact 12 focused failures were proven to arise because those
-fixtures omitted the newly untracked consumed package. Post-patch, the same
-focused provenance suites plus the new repair-specific suite are green.
-
-Bounded proof:
-
-`59 passed, 7 subtests passed in 2.16s`
-
-The 45-ID future non-reuse root was re-derived sorted/unique, canonical evidence
-reconciliation remained PASS, and DB/application evidence remained unchanged.
-
-
-Closeout result:
-
-`V2_9_8B_DURABLE_ADMISSION_TERMINAL_ACCOUNTING_SCOPE_REPAIR_CLOSEOUT_PASS_READY_FOR_POST_REPAIR_REREADINESS`
-
-The implementation is closed on bounded evidence. The five focused failures
-documented by implementation remain pre-existing baseline debt and are not
-part of this repair lane. They were re-observed unchanged at closeout and are
-not treated as passing tests.
-
-No new authorization is permitted from this closeout. The next step is the
-separate read-only exact-HEAD/worktree/DB rereadiness gate named above.
-
-
-Implementation/proof result:
-
-`V2_9_8B_DURABLE_ADMISSION_TERMINAL_ACCOUNTING_SCOPE_REPAIR_IMPLEMENTATION_PASS_READY_FOR_CLOSEOUT`
-
-Narrow production change:
-
-- durable admitted campaign cycles, not accounting-registry cardinality, choose
-  canonical terminal-accounting scope;
-- exact ordinal `(1,)` may ignore exactly one terminal, unconsumed ordinal-2
-  pre-admission owner only when the durable attempt proves that identity;
-- exact admitted ordinals `(1,2)` still require exact registered-owner identity
-  and `CampaignSixUnitProjection`;
-- terminal reconciliation sealing is limited to durable admitted cycles;
-- single-cycle action-local accounting is sliced to the admitted cycle;
-- the exception path delegates projection selection to the same durable scope
-  resolver;
-- `TerminalClosureError` is imported from `unified_terminal_closure`.
-
-`FROZEN_TRACKING_LANE_UNAVAILABLE` remains unchanged and fail-closed.
-
-Bounded proof:
-
-`BASELINE_EQUIVALENT:5_PRE_EXISTING_FAILURES_UNCHANGED;NEW_REPAIR_TESTS_GREEN`
-
-No authoritative DB write, provider call, authorization, retry, rerun, resume,
-restart, or successor was created by this implementation proof.
-
-
-The prior post-07d92adf rereadiness that permitted fresh authorization
-preparation is historical and non-authoritative after this A→Z implementation
-commit. HEAD will change. Authorization preparation remains forbidden until a
-later post-commit exact-HEAD / worktree / DB rereadiness. The already-tracked
-Transition A / Transition B / BLOCK clauses below remain required for that
-later no-HEAD-change sequence.
-
-### Historical implementation-proof boundary — CLOSED / NON-AUTHORITATIVE
-
-The prior implementation-lane exact action was:
-
-```text
-V2-9.8B AUTHORIZATION HANDOFF-TRANSITION AND SUPERSESSION
-INDEPENDENT BOUNDED PROOF / ACTUAL PATCH INSPECTION ONLY
-```
-
-The next lane may inspect the actual committed patch and independently rerun
-only the bounded historical-disposition, trust-root, integrity, reconciliation,
-handoff-authority, DB-invariance, and runtime-isolation proof. It is not
-closeout or rereadiness. It may not change implementation, prepare a
-replacement authorization, independently review, mark, apply, or run
-`...17181afc`; may not create marker, child, application, or campaign evidence;
-and may not add a generic classifier, CURRENT_HANDOFF parser, transition engine,
-schema, database, or runtime change.
-
-That boundary is now closed and retained only as historical implementation-proof
-context. It is not the current operator action.
-
-## Durable prospective authority after later closeout and rereadiness
-
-These clauses are tracked operator authority. They are not a runtime parser,
-state machine, or execution engine. Runtime enforcement remains with the
-existing canonical package validator, pre-marker validator, exact-HEAD checks,
-DB/migration/evidence checks, and create-once application wrapper.
-
-IMMEDIATE NEXT ACTION AFTER THIS IMPLEMENTATION LANE IS LATER CLOSED/REREADIED:
-
-fresh authorization preparation only.
-
-That later rereadiness checkpoint must preserve Transition A, Transition B, and
-the fail-closed BLOCK clauses below. Dropping them would recreate the
-handoff-transition defect. The immediate next-action line at that later
-preparation HEAD remains authorization preparation only. Transitions A and B
-are conditional permissions already present at that HEAD. No tracked
-`CURRENT_HANDOFF.md` rewrite is permitted after the replacement package exists.
-
-### TRANSITION A — `TRANSITION_A_INDEPENDENT_REVIEW_ONLY`
-
-If future authorization preparation returns PASS and:
-
-- the replacement package binds the unchanged tracked HEAD that already contains
-  these prospective clauses;
-- tracked tree/index remain clean;
-- the package is PREPARED / NOT_CONSUMED;
-- no marker exists;
-- no child exists;
-- no campaign exists;
-- no execution manifest/staging exists;
-- no BLOCK condition below is true;
-
-then WITHOUT tracked mutation:
-
-exact next action becomes:
-
-```text
-FRESH EXACT-HEAD FOUR-TOKEN STANDARD-FOUR-HOUR 4/2/2
-AUTHORIZATION INDEPENDENT REVIEW ONLY
-```
-
-Transition A does not consume the authorization, create a marker, start a
-child, or permit operator start.
-
-### TRANSITION B — `TRANSITION_B_SEPARATE_OPERATOR_START_ONLY`
-
-If independent review of that exact replacement authorization returns PASS and:
-
-- exact HEAD remains unchanged;
-- package integrity remains exact;
-- DB binding remains exact;
-- migration/evidence/trust-root bindings remain exact;
-- temporal validity remains true;
-- zero-state/schema/host safety remain valid;
-- marker remains absent;
-- no BLOCK condition below is true;
-
-then WITHOUT tracked mutation:
-
-exact next action becomes:
-
-```text
-SEPARATE OPERATOR START OF THAT EXACT REVIEWED AUTHORIZATION
-```
-
-Transition B does not create a successor, retry, rerun, resume, or restart. It
-does not authorize a different authorization ID, a refreshed package, or a
-tracked handoff rewrite.
-
-### BLOCK — `TRANSITION_BLOCK_OPERATOR_START_FORBIDDEN`
-
-Any:
-
-- preparation BLOCKED;
-- review BLOCKED;
-- HEAD drift;
-- package drift;
-- DB drift;
-- evidence/trust-root drift;
-- schema blocker;
-- zero-state blocker;
-- host blocker;
-- temporal expiry;
-- existing marker/application/child/campaign;
-
-must forbid operator start for that exact authorization.
-
-No automatic replacement/retry/rerun/resume/restart/successor.
-
-BLOCK is fail-closed and non-repairable for that exact authorization identity.
-
-### Retroactive exclusion of `...17181afc`
-
-Transitions A and B MUST NOT apply retroactively to
-`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260824T222638Z_17181afc`.
-
-That package binds historical HEAD `ec59f29c79533a4b3612cce467ae604e70b5904b`.
-That HEAD did not contain this prospective authority chain. Current tracked
-HEAD is later. Exact-HEAD mismatch independently blocks that package.
-
-This handoff must not be read as authority to review, mark, apply, or start
-`...17181afc`.
-
-### Future production path after later rereadiness
-
-```text
-later rereadiness checkpoint containing prospective A/B/BLOCK clauses
--> replacement authorization preparation
--> package binds that exact unchanged HEAD
--> Transition A
--> independent review
--> Transition B
--> separate operator start
--> start-time canonical checks
--> create-once marker
--> permanent consumption
--> exactly one child
-```
-
-No tracked handoff mutation is required between package preparation and
-operator start.
-
-## Locks
-
-Solana-only; Solana memecoin-only; paper-only. No live wallet/private keys/
-signing/real funds/live execution. No paid API dependency. No scoring/ranking/
-confidence/weighted logic. No embeddings/vectors. No Source Governor or Central
-Scheduler bypass. Dirty memory remains excluded from retrieval and decisions.
-`WINDOW_5M_MICRO_EVENT` remains support-only. Cycle 3, 12h/24h, retrieval,
-BUY/SELL/HOLD, positions, trade events, paper audits, and PnL remain locked.
-
-The active authority stack wins any conflict with this handoff.
+`WINDOW_5M_MICRO_EVENT` remains support-only.
