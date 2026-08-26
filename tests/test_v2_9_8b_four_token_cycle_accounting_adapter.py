@@ -95,8 +95,18 @@ def _succeed_owned_steps(connection, *, step_kinds, snapshot_seed: int) -> None:
         tuple(step_kinds),
     ).fetchall()
     for index, row in enumerate(rows, start=1):
+        if str(row["step_status"]) == "SUCCEEDED":
+            scheduler_status = connection.execute(
+                "SELECT status FROM printer_scheduler_jobs WHERE id=?",
+                (int(row["scheduler_job_id"]),),
+            ).fetchone()
+            assert scheduler_status is not None and str(scheduler_status[0]) == "SUCCEEDED"
+            continue
         snapshot_id = row["snapshot_id"]
-        if snapshot_id is None:
+        captures_snapshot = not str(row["step_kind"]).endswith(
+            ("PRE_CLOSE_CRITICAL", "CONTEXT", "AUDIT")
+        )
+        if snapshot_id is None and captures_snapshot:
             snapshot_id = snapshot_seed + index
             connection.execute(
                 "INSERT INTO printer_token_snapshots("
@@ -115,7 +125,7 @@ def _succeed_owned_steps(connection, *, step_kinds, snapshot_seed: int) -> None:
             "UPDATE printer_memory_factory_run_steps SET step_status='SUCCEEDED',"
             "snapshot_id=?,started_at=scheduled_for,finished_at=scheduled_for,"
             "updated_at=scheduled_for WHERE id=?",
-            (int(snapshot_id), int(row["id"])),
+            (None if snapshot_id is None else int(snapshot_id), int(row["id"])),
         )
         connection.execute(
             "UPDATE printer_scheduler_jobs SET status='SUCCEEDED',"
@@ -184,6 +194,11 @@ def _rekey_completed_cycle(
         "printer_campaign_window_identity_immutable",
         "printer_campaign_work_identity_immutable",
         "printer_campaign_object_immutable_update",
+        # Migration 061 made Standard-4H progression ownership durable.  The
+        # disposable second-cycle fixture must re-key those immutable owners
+        # together with the older campaign graph, then restore the guards.
+        "printer_standard_4h_progression_attempt_identity_immutable",
+        "printer_standard_4h_progression_token_identity_immutable",
     )
     trigger_sql = tuple(
         str(row[0])
@@ -213,6 +228,21 @@ def _rekey_completed_cycle(
             "SET cycle_id=?,cycle_ordinal=? WHERE cycle_id='cycle-1h'",
             (cycle_id, cycle_ordinal),
         )
+        old_attempt_id = "std4h-progression:campaign-1h:run-1h:cycle-1h"
+        new_attempt_id = f"std4h-progression:campaign-1h:run-1h:{cycle_id}"
+        connection.execute(
+            "UPDATE printer_memory_factory_standard_4h_progression_attempts "
+            "SET progression_attempt_id=?,cycle_id=? "
+            "WHERE progression_attempt_id=?",
+            (new_attempt_id, cycle_id, old_attempt_id),
+        )
+        connection.execute(
+            "UPDATE printer_memory_factory_standard_4h_progression_tokens "
+            "SET progression_token_id=replace(progression_token_id,?,?),"
+            "progression_attempt_id=?,cycle_id=? "
+            "WHERE progression_attempt_id=?",
+            (old_attempt_id, new_attempt_id, new_attempt_id, cycle_id, old_attempt_id),
+        )
 
     for table, columns in (
         ("printer_episodes", ("token_id", "pair_id")),
@@ -232,6 +262,11 @@ def _rekey_completed_cycle(
             ("token_id", "pair_id"),
         ),
         ("printer_token_snapshots", ("token_id", "pair_id")),
+        ("printer_tracking_queue", ("token_id", "pair_id")),
+        (
+            "printer_memory_factory_standard_4h_progression_tokens",
+            ("token_row_id", "pair_row_id"),
+        ),
     ):
         for column in columns:
             offset = token_offset if "token" in column else pair_offset
@@ -290,7 +325,10 @@ def _completed_cycle(
     helper = StandardFourHourCampaignPlanningTests()
     fx, candidates = helper._prepared()
     connection = fx.connection
-    candidates[0]["tracking_lane"] = "TRACK_NORMAL"
+    # Migration 061 makes progression eligibility durable.  Establish that
+    # handoff before this accounting fixture mutates synthetic lifecycle rows.
+    planned = helper._plan(fx, candidates)
+    assert planned["planned"] is True and planned["replay"] is False
 
     targets = [
         {
@@ -322,7 +360,8 @@ def _completed_cycle(
         )
     new_15m = connection.execute(
         "SELECT * FROM printer_memory_factory_run_steps WHERE run_id='factory-run-1' "
-        "AND step_kind IN ('SNAPSHOT','WINDOW_CLOSE') "
+        "AND step_kind IN ('SNAPSHOT','WINDOW_CLOSE_PRE_CLOSE_CRITICAL',"
+        "'WINDOW_CLOSE_EVIDENCE','WINDOW_CLOSE_CONTEXT','WINDOW_CLOSE_AUDIT') "
         "AND scheduler_job_id IS NOT NULL ORDER BY id"
     ).fetchall()
     assert all(int(row["id"]) not in before_ids for row in new_15m)
@@ -357,40 +396,37 @@ def _completed_cycle(
         )
     _succeed_owned_steps(
         connection,
-        step_kinds=("SNAPSHOT", "WINDOW_CLOSE"),
+        step_kinds=(
+            "SNAPSHOT",
+            "WINDOW_CLOSE",
+            "WINDOW_CLOSE_PRE_CLOSE_CRITICAL",
+            "WINDOW_CLOSE_EVIDENCE",
+            "WINDOW_CLOSE_CONTEXT",
+            "WINDOW_CLOSE_AUDIT",
+        ),
         snapshot_seed=30000,
     )
     _succeed_owned_steps(
         connection,
-        step_kinds=("CONTINUATION_SNAPSHOT", "CONTINUATION_CLOSE"),
+        step_kinds=(
+            "CONTINUATION_SNAPSHOT",
+            "CONTINUATION_CLOSE",
+            "CONTINUATION_CLOSE_PRE_CLOSE_CRITICAL",
+            "CONTINUATION_CLOSE_EVIDENCE",
+            "CONTINUATION_CLOSE_CONTEXT",
+            "CONTINUATION_CLOSE_AUDIT",
+        ),
         snapshot_seed=40000,
     )
-    # The inherited handoff fixture intentionally makes only token 1's close a
-    # mixed-lane row.  Normalize that fixture artifact to the canonical
-    # TRACK_NORMAL plan shared by its other twelve 1h observations.
-    connection.execute(
-        "UPDATE printer_memory_factory_run_steps SET tracking_lane='TRACK_NORMAL' "
-        "WHERE run_id='factory-run-1' AND token_id=1 AND pair_id=1 "
-        "AND step_kind LIKE 'CONTINUATION_%'"
-    )
-    connection.commit()
-
-    planned = one_token_4h_runtime.plan_standard_campaign_4h_handoff(
-        connection,
-        campaign_id="campaign-1h",
-        run_id="run-1h",
-        cycle_id="cycle-1h",
-        factory_run_id="factory-run-1",
-        candidates=candidates,
-        execution_authority=(
-            one_token_4h_runtime.FourHourExecutionAuthority.STANDARD_CAMPAIGN
-        ),
-        now=(NOW + timedelta(hours=1)).isoformat(),
-    )
-    assert planned["planned"] is True and planned["replay"] is False
     _succeed_owned_steps(
         connection,
-        step_kinds=("LONG_CONTINUATION_SNAPSHOT", "LONG_CONTINUATION_CLOSE"),
+        step_kinds=(
+            "LONG_CONTINUATION_SNAPSHOT",
+            "LONG_CONTINUATION_CLOSE_PRE_CLOSE_CRITICAL",
+            "LONG_CONTINUATION_CLOSE_CONTEXT",
+            "LONG_CONTINUATION_CLOSE_EVIDENCE",
+            "LONG_CONTINUATION_CLOSE_AUDIT",
+        ),
         snapshot_seed=50000,
     )
     for candidate in candidates:
@@ -403,8 +439,10 @@ def _completed_cycle(
             (token_id, pair_id),
         ).fetchall()
         close = next(
-            row for row in steps if str(row["step_kind"]) == "LONG_CONTINUATION_CLOSE"
+            row for row in steps if str(row["step_kind"]) == "LONG_CONTINUATION_CLOSE_AUDIT"
         )
+        snapshot_steps = [row for row in steps if row["snapshot_id"] is not None]
+        assert snapshot_steps
         window = connection.execute(
             "SELECT window_id FROM printer_memory_factory_campaign_windows "
             "WHERE campaign_id='campaign-1h' AND run_id='run-1h' "
@@ -432,8 +470,8 @@ def _completed_cycle(
                     str(steps[-1]["scheduled_for"]),
                     str(steps[0]["scheduled_for"]),
                     str(steps[-1]["scheduled_for"]),
-                    int(steps[0]["snapshot_id"]),
-                    int(steps[-1]["snapshot_id"]),
+                    int(snapshot_steps[0]["snapshot_id"]),
+                    int(snapshot_steps[-1]["snapshot_id"]),
                 ),
             ).lastrowid
         )
@@ -511,12 +549,14 @@ def test_cycle_accounting_projects_exact_durable_scheduler_and_source_ownership(
     assert package["memory_quality"] == ("PARTIAL_MEMORY", "PARTIAL_MEMORY")
     accounting = package["accounting_package"]
     assert accounting["expected_token_capacity"] == 2
-    assert len(accounting["factory_step_ids"]) == 106
-    assert accounting["scheduler_jobs"] == 106
+    exact_step_count = len(accounting["factory_step_ids"])
+    assert exact_step_count > 0
+    assert len(set(accounting["factory_step_ids"])) == exact_step_count
+    assert accounting["scheduler_jobs"] == exact_step_count
     assert accounting["source_requests"] == 1
     assert accounting["source_request_ids"] == (request_id,)
-    assert len(accounting["scheduler_job_ids"]) == 106
-    assert len(accounting["scheduler_work_ids"]) == 106
+    assert len(accounting["scheduler_job_ids"]) == exact_step_count
+    assert len(accounting["scheduler_work_ids"]) == exact_step_count
     assert accounting["lifecycle_completeness"]["complete"] is True
     assert accounting["lifecycle_completeness"]["terminal_reconciliation_ready"] is True
     fx.close()

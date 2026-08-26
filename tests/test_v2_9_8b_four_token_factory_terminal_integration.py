@@ -15,6 +15,9 @@ from printer_v1.operator_cli.authoritative_live_operational_campaign import (
     AuthoritativeLiveOperationalCampaignOwner,
 )
 from printer_v1.operator_cli.campaign_ownership import create_cycle_with_two_slots
+from printer_v1.operator_cli.four_token_factory_adapter import (
+    FourTokenFactoryAdapterError,
+)
 from printer_v1.operator_cli.four_token_proof_integration import (
     FourTokenControllerReadiness,
     LaterCycleCandidateSupply,
@@ -203,9 +206,7 @@ def test_real_factory_terminal_path_runs_cycle_phase_then_shared_owner_once(
         )
         return {**reconciled, "clean_terminal": True, "lease_released": True}
 
-    report = factory.run_one_command_15m_factory(
-        db,
-        backup,
+    run_kwargs = dict(
         operator_approved=True,
         proof_mode=False,
         operational_persistent_mode=True,
@@ -241,47 +242,54 @@ def test_real_factory_terminal_path_runs_cycle_phase_then_shared_owner_once(
         _sleep=lambda _seconds: None,
         _monotonic=lambda: 0.0,
     )
+    if two_cycles:
+        # This fixture merely pre-creates Cycle 2; it never runs Cycle-2
+        # lifecycle work.  A campaign completion cause must therefore not be
+        # projected onto that incomplete cycle.
+        with pytest.raises(
+            FourTokenFactoryAdapterError,
+            match="incomplete cycle cannot consume a completion stop cause",
+        ):
+            factory.run_one_command_15m_factory(db, backup, **run_kwargs)
+        connection = sqlite3.connect(db)
+        try:
+            cycle_two_state = connection.execute(
+                "SELECT cycle_state FROM printer_memory_factory_campaign_cycles "
+                "WHERE cycle_ordinal=2"
+            ).fetchone()[0]
+            assert cycle_two_state != "TERMINAL_COMPLETED"
+        finally:
+            connection.close()
+        assert shared_calls == []
+        return
+
+    report = factory.run_one_command_15m_factory(db, backup, **run_kwargs)
 
     connection = sqlite3.connect(db)
     states = connection.execute(
         "SELECT cycle_ordinal,cycle_state FROM printer_memory_factory_campaign_cycles "
         "ORDER BY cycle_ordinal"
     ).fetchall()
-    assert [str(row[1]) for row in states] == (
-        ["TERMINAL_COMPLETED", "TERMINAL_COMPLETED"]
-        if two_cycles
-        else ["TERMINAL_BLOCKED"]
-    )
-    assert len(states) == (2 if two_cycles else 1)
+    assert [str(row[1]) for row in states] == ["TERMINAL_BLOCKED"]
+    assert len(states) == 1
     assert connection.execute(
         "SELECT run_state FROM printer_memory_factory_campaign_runs"
-    ).fetchone()[0] == (
-        "TERMINAL_COMPLETED" if two_cycles else "TERMINAL_BLOCKED"
-    )
+    ).fetchone()[0] == "TERMINAL_BLOCKED"
     assert connection.execute(
         "SELECT run_status FROM printer_memory_factory_runs"
-    ).fetchone()[0] == ("COMPLETED" if two_cycles else "SAFE_STOPPED")
-    if not two_cycles:
-        attempt = connection.execute(
+    ).fetchone()[0] == "SAFE_STOPPED"
+    attempt = connection.execute(
             "SELECT attempt_state,first_terminal_cause,consumed_cycle_id "
             "FROM printer_pre_admission_discovery_attempts"
-        ).fetchall()
-        assert attempt == [("NO_PAIR", "NO_EXACT_PAIR", None)]
-        assert connection.execute(
-            "SELECT COUNT(*) FROM printer_memory_factory_campaign_cycles"
-        ).fetchone()[0] == 1
-    assert shared_calls == [
-        "COMPLETED_CLEAN_OR_DIRTY_RESULTS_REPORTED"
-        if two_cycles
-        else "NO_EXACT_PAIR"
-    ]
+    ).fetchall()
+    assert attempt == [("NO_PAIR", "NO_EXACT_PAIR", None)]
+    assert connection.execute(
+        "SELECT COUNT(*) FROM printer_memory_factory_campaign_cycles"
+    ).fetchone()[0] == 1
+    assert shared_calls == ["NO_EXACT_PAIR"]
     assert report["four_token_terminal"]["shared_cleanup_count"] == 1
-    assert len(report["four_token_terminal"]["phase_a"]) == (
-        2 if two_cycles else 1
-    )
+    assert len(report["four_token_terminal"]["phase_a"]) == 1
     assert report["four_token_terminal"]["admitted_shape"] == (
-        "TWO_CYCLE_COMPLETION"
-        if two_cycles
-        else "ONE_CYCLE_HONEST_NO_ADMISSION"
+        "ONE_CYCLE_HONEST_NO_ADMISSION"
     )
     connection.close()

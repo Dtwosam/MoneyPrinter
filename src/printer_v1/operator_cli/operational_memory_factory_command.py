@@ -1902,7 +1902,7 @@ def _build_pre_lifecycle_temporal_refresh_owner(
     contract_versions, git_identity = (
         operational_discovery_batch_identity_inputs()
     )
-    failure_event = heartbeat.failure_event if heartbeat is not None else None
+    failure_event = getattr(heartbeat, "failure_event", None)
 
     def supervision_probe() -> dict[str, Any]:
         """Map the existing heartbeat/cancellation boundary onto the contract."""

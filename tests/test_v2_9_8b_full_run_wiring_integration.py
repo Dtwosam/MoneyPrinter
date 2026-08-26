@@ -519,28 +519,41 @@ class FullRunWiringIntegrationTests(unittest.TestCase):
             item for item in raw_records
             if item["boundary"] == "GOVERNED_SOURCE_ATTEMPT"
         ]
-        self.assertEqual(len(attempts), 28)
-        self.assertEqual(
-            sum(item["request_kind"] != "pair_market_snapshot" for item in attempts),
-            10,
-        )
-        self.assertEqual(
-            sum(item["result"] == "FAILED" for item in attempts), 10
-        )
+        # The compressed 80ms fixture cannot lawfully schedule pre-close
+        # context acquisition. The timely-closing contract therefore performs
+        # zero pre-close provider requests and closes both windows DIRTY using
+        # the independently valid exact-pair evidence path.
+        self.assertEqual(len(attempts), 18)
+        self.assertTrue(all(
+            item["request_kind"] == "pair_market_snapshot" for item in attempts
+        ))
+        self.assertEqual(sum(item["result"] == "FAILED" for item in attempts), 0)
         self.assertEqual(
             sum(item["boundary"] == "LIFECYCLE_RESERVATION" for item in raw_records),
-            28,
+            18,
         )
         conn = sqlite3.connect(self.db)
         try:
             closes = conn.execute(
                 "SELECT COUNT(*) FROM printer_memory_factory_run_steps "
-                "WHERE run_id=? AND step_kind='WINDOW_CLOSE' AND step_status='SUCCEEDED'",
+                "WHERE run_id=? AND step_kind='WINDOW_CLOSE_AUDIT' AND step_status='SUCCEEDED'",
                 (self.captured_run_id,),
             ).fetchone()[0]
+            skipped_preclose = conn.execute(
+                "SELECT COUNT(*) FROM printer_memory_factory_run_steps "
+                "WHERE run_id=? AND step_kind='WINDOW_CLOSE_PRE_CLOSE_CRITICAL' "
+                "AND step_status='SKIPPED' AND "
+                "error_or_skip_reason='TIMELY_ACQUISITION_NOT_PRODUCIBLE'",
+                (self.captured_run_id,),
+            ).fetchone()[0]
+            memory_states = conn.execute(
+                "SELECT memory_status FROM printer_memory_windows ORDER BY id"
+            ).fetchall()
         finally:
             conn.close()
         self.assertEqual(closes, 2)
+        self.assertEqual(skipped_preclose, 2)
+        self.assertEqual(memory_states, [("DIRTY_MEMORY",), ("DIRTY_MEMORY",)])
 
     def test_finalize_registers_two_windows_projects_jobs_and_reconciles(self) -> None:
         _result, raw = self._drive_real_factory()
@@ -563,7 +576,10 @@ class FullRunWiringIntegrationTests(unittest.TestCase):
             step_jobs = conn.execute(
                 "SELECT COUNT(DISTINCT scheduler_job_id) FROM "
                 "printer_memory_factory_run_steps WHERE run_id=? AND "
-                "step_kind IN ('SNAPSHOT','WINDOW_CLOSE')",
+                "step_status IN ('SUCCEEDED','SKIPPED') AND step_kind IN "
+                "('SNAPSHOT','WINDOW_CLOSE_PRE_CLOSE_CRITICAL',"
+                "'WINDOW_CLOSE_EVIDENCE','WINDOW_CLOSE_CONTEXT',"
+                "'WINDOW_CLOSE_AUDIT')",
                 (self.captured_run_id,),
             ).fetchone()[0]
             # Both memory windows carry the exact cycle id.
@@ -591,7 +607,7 @@ class FullRunWiringIntegrationTests(unittest.TestCase):
         self.assertEqual(
             report["full_run_accounting"]["scheduler_attribution"],
             {"discovery": 1, "selection": 1, "handoff": 2,
-             "lifecycle": 18, "cleanup": 0},
+             "lifecycle": 24, "cleanup": 0},
         )
         self.assertEqual(
             sorted(report["selection_and_lifecycle"]["terminal_window_ids"]),
@@ -613,11 +629,17 @@ class FullRunWiringIntegrationTests(unittest.TestCase):
     def test_missing_preclose_context_attempt_blocks(self) -> None:
         _result, raw = self._drive_real_factory()
         ledger = self._build_action_local(self._context(), raw)
-        index = next(
-            index for index, identity in enumerate(ledger.transport_identities)
-            if identity["governed_request_kind"] != "pair_market_snapshot"
+        # This compressed fixture lawfully produces no pre-close transport;
+        # remove one real exact-pair lifecycle transport instead and preserve
+        # the original reconciliation invariant.
+        self.assertTrue(ledger.transport_identities)
+        self.assertTrue(
+            all(
+                identity["governed_request_kind"] == "pair_market_snapshot"
+                for identity in ledger.transport_identities
+            )
         )
-        ledger.transport_identities.pop(index)
+        ledger.transport_identities.pop(0)
         outcome = self._bind_and_finalize(self._context(), ledger)
         self.assertEqual(outcome["verdict"], VERDICT_BLOCKED_UNSAFE)
         self.assertIn(

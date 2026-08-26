@@ -46,7 +46,7 @@ from printer_v1.sources.pumpfun_direct import _b58decode
 from printer_v1.sources.pumpswap_graduated_registry import (
     lookup_graduated_candidate,
 )
-from test_v2_9_8b_candidate_acquisition_foundation import (
+from tests.test_v2_9_8b_candidate_acquisition_foundation import (
     _pinned_migration_fixture,
 )
 

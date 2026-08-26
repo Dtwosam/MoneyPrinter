@@ -638,6 +638,16 @@ def test_terminal_checkpoint_is_never_executed_again(
     ).fetchone()[0] == 1
 
 
+def test_positive_preclose_reservation_requires_bound_unit_identity(
+    connection: sqlite3.Connection,
+) -> None:
+    step = _add_preclose(connection)
+    with pytest.raises(ValueError, match="PRE_CLOSE_RESERVATION_UNIT_IDENTITY_INVALID"):
+        factory._lifecycle_reservation_records_for_step(
+            run_id="preclose-run", pending=step, projected_requests=1
+        )
+
+
 def test_impossible_lead_is_typed_unschedulable_with_zero_provider_calls(
     connection: sqlite3.Connection,
 ) -> None:
@@ -654,9 +664,14 @@ def test_impossible_lead_is_typed_unschedulable_with_zero_provider_calls(
         "SELECT COUNT(*) FROM printer_source_requests"
     ).fetchone()[0] == 0
     calls: list[str] = []
+    claimed = _claim(connection, step)
+    assert factory._projected_requests_for_step(connection, claimed) == 0
+    assert factory._lifecycle_reservation_records_for_step(
+        run_id="preclose-run", pending=claimed, projected_requests=0
+    ) == []
     result = factory._execute_preclose_critical_phase(
         connection,
-        _claim(connection, step),
+        claimed,
         timeout_seconds=1.0,
         context_adapter_factories=_goplus_factories(calls),
         claimed_at=NOW,

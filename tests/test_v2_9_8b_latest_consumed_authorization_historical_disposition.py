@@ -24,6 +24,10 @@ from printer_v1.operator_cli.window_15m_child_terminal import (
     read_child_terminal_envelope,
 )
 
+from tests.support.four_token_historical_authorization_portable import (
+    build_portable_four_token_history,
+)
+
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 AUTHORIZATION_ROOT = (
@@ -53,6 +57,9 @@ SUPERSEDED_UNCONSUMED_AUTHORIZATION_ID = (
 NEWER_CONSUMED_AUTHORIZATION_ID = (
     "V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260825T105852Z_07d92adf"
 )
+AUG25_CONSUMED_AUTHORIZATION_ID = (
+    "V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260825T134723Z_4563a9dd"
+)
 APPLICATION_ROOT = Path(
     "/Users/Dtwo1/PrinterOperations/v2-9-8/"
     "four-token-standard-four-hour-one-shot-applications"
@@ -67,7 +74,58 @@ class LatestConsumedAuthorizationHistoricalDispositionTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.authorization_path = REPOSITORY_ROOT / AUTHORIZATION_RELATIVE_PATH
+        cls._portable_history = None
+        real_authorization_path = REPOSITORY_ROOT / AUTHORIZATION_RELATIVE_PATH
+        real_marker_path = APPLICATION_ROOT / "application-marker.json"
+        real_manifest_path = APPLICATION_ROOT / "git-provenance-manifest.json"
+        real_child_path = APPLICATION_ROOT / "child-terminal.json"
+        real_wrapper_path = APPLICATION_ROOT / "wrapper-terminal.json"
+        if all(
+            path.is_file()
+            for path in (
+                real_authorization_path,
+                real_marker_path,
+                real_manifest_path,
+                real_child_path,
+                real_wrapper_path,
+            )
+        ):
+            cls.authorization_path = real_authorization_path
+            cls.history_repository_root = REPOSITORY_ROOT
+            cls.authorization_sha256 = AUTHORIZATION_SHA256
+            cls.authorization_size = 4281
+            cls.marker_path = real_marker_path
+            cls.manifest_path = real_manifest_path
+            cls.child_terminal_path = real_child_path
+            cls.wrapper_terminal_path = real_wrapper_path
+            cls.marker_sha256 = MARKER_SHA256
+            cls.synthetic_untracked_history = False
+        else:
+            cls._portable_history = build_portable_four_token_history(
+                target_id=AUTHORIZATION_ID,
+                prior_ids=[
+                    OLDER_CONSUMED_AUTHORIZATION_ID,
+                    EXPIRED_UNCONSUMED_AUTHORIZATION_ID,
+                ],
+                package_ids=[
+                    OLDER_CONSUMED_AUTHORIZATION_ID,
+                    EXPIRED_UNCONSUMED_AUTHORIZATION_ID,
+                    AUTHORIZATION_ID,
+                ],
+                application_consumed_ids=[OLDER_CONSUMED_AUTHORIZATION_ID],
+                target_consumed=True,
+                authorized_at="2026-08-24T12:00:00+00:00",
+            )
+            cls.authorization_path = cls._portable_history.authorization_path
+            cls.history_repository_root = cls._portable_history.root
+            cls.authorization_sha256 = cls._portable_history.authorization_sha256
+            cls.authorization_size = cls._portable_history.authorization_size
+            cls.marker_path = cls._portable_history.marker_path
+            cls.manifest_path = cls._portable_history.manifest_path
+            cls.child_terminal_path = cls._portable_history.child_terminal_path
+            cls.wrapper_terminal_path = cls._portable_history.wrapper_terminal_path
+            cls.marker_sha256 = cls._portable_history.marker_sha256
+            cls.synthetic_untracked_history = True
         cls.authorization_bytes = cls.authorization_path.read_bytes()
         cls.authorization_document = json.loads(cls.authorization_bytes)
         cls.future_ids = tuple(
@@ -79,26 +137,31 @@ class LatestConsumedAuthorizationHistoricalDispositionTests(unittest.TestCase):
                     AUTHORIZATION_ID,
                     SUPERSEDED_UNCONSUMED_AUTHORIZATION_ID,
                     NEWER_CONSUMED_AUTHORIZATION_ID,
+                    AUG25_CONSUMED_AUTHORIZATION_ID,
                 ]
             )
         )
-        cls.marker_path = APPLICATION_ROOT / "application-marker.json"
-        cls.manifest_path = APPLICATION_ROOT / "git-provenance-manifest.json"
-        cls.child_terminal_path = APPLICATION_ROOT / "child-terminal.json"
-        cls.wrapper_terminal_path = APPLICATION_ROOT / "wrapper-terminal.json"
         cls.marker = json.loads(cls.marker_path.read_bytes())
         cls.child_terminal = json.loads(cls.child_terminal_path.read_bytes())
         cls.wrapper_terminal = json.loads(cls.wrapper_terminal_path.read_bytes())
 
     @classmethod
+    def tearDownClass(cls) -> None:
+        if cls._portable_history is not None:
+            cls._portable_history.close()
+
+    @classmethod
     def _real_history(cls) -> tuple[dict[str, object], ...]:
         profile = git_auth.FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE
         return git_auth.enumerate_historical_authorization_evidence(
-            repository_root=REPOSITORY_ROOT,
+            repository_root=cls.history_repository_root,
             current_authorization_id=FUTURE_AUTHORIZATION_ID,
             approved_historical_authorization_ids=cls.future_ids,
             authorization_package_roots=profile.historical_authorization_package_roots,
             current_authorization_package_root=profile.authorization_package_root,
+            tracked_operator_runs_paths=(
+                set() if cls.synthetic_untracked_history else None
+            ),
         )
 
     def test_exact_latest_consumed_package_has_approved_historical_disposition(
@@ -108,21 +171,21 @@ class LatestConsumedAuthorizationHistoricalDispositionTests(unittest.TestCase):
         self.assertEqual(
             self.authorization_document["authorization_id"], AUTHORIZATION_ID
         )
-        self.assertEqual(len(self.authorization_bytes), 4281)
+        self.assertEqual(len(self.authorization_bytes), self.authorization_size)
         self.assertEqual(
             hashlib.sha256(self.authorization_bytes).hexdigest(),
-            AUTHORIZATION_SHA256,
+            self.authorization_sha256,
         )
         self.assertEqual(
             stat.S_IMODE(self.authorization_path.stat().st_mode), 0o444
         )
         self.assertEqual(
             hashlib.sha256(self.marker_path.read_bytes()).hexdigest(),
-            MARKER_SHA256,
+            self.marker_sha256,
         )
         self.assertEqual(self.marker["authorization_id"], AUTHORIZATION_ID)
         self.assertEqual(
-            self.marker["authorization_sha256"], AUTHORIZATION_SHA256
+            self.marker["authorization_sha256"], self.authorization_sha256
         )
         self.assertEqual(
             hashlib.sha256(self.manifest_path.read_bytes()).hexdigest(),
@@ -144,8 +207,8 @@ class LatestConsumedAuthorizationHistoricalDispositionTests(unittest.TestCase):
             [
                 {
                     "path": AUTHORIZATION_RELATIVE_PATH,
-                    "sha256": AUTHORIZATION_SHA256,
-                    "size": 4281,
+                    "sha256": self.authorization_sha256,
+                    "size": self.authorization_size,
                     "evidence_class": (
                         git_auth.HISTORICAL_AUTHORIZATION_EVIDENCE_CLASS
                     ),
@@ -196,7 +259,7 @@ class LatestConsumedAuthorizationHistoricalDispositionTests(unittest.TestCase):
             "unapproved historical authorization package",
         ):
             git_auth.enumerate_historical_authorization_evidence(
-                repository_root=REPOSITORY_ROOT,
+                repository_root=self.history_repository_root,
                 current_authorization_id=FUTURE_AUTHORIZATION_ID,
                 approved_historical_authorization_ids=approved_without_latest,
                 authorization_package_roots=(
@@ -204,6 +267,9 @@ class LatestConsumedAuthorizationHistoricalDispositionTests(unittest.TestCase):
                 ),
                 current_authorization_package_root=(
                     profile.authorization_package_root
+                ),
+                tracked_operator_runs_paths=(
+                    set() if self.synthetic_untracked_history else None
                 ),
             )
 
@@ -250,7 +316,7 @@ class LatestConsumedAuthorizationHistoricalDispositionTests(unittest.TestCase):
                 )
 
             wrong_size = json.loads(json.dumps(latest_record))
-            wrong_size["size"] = 4282
+            wrong_size["size"] = self.authorization_size + 1
             with self.assertRaisesRegex(
                 git_auth.GitProvenanceAuthorizationError, "size mismatch"
             ):
@@ -268,9 +334,9 @@ class LatestConsumedAuthorizationHistoricalDispositionTests(unittest.TestCase):
             shutil.copy2(self.marker_path, marker_path)
             git_auth._validate_marker(
                 marker_path,
-                marker_sha256=MARKER_SHA256,
+                marker_sha256=self.marker_sha256,
                 authorization_id=AUTHORIZATION_ID,
-                authorization_sha256=AUTHORIZATION_SHA256,
+                authorization_sha256=self.authorization_sha256,
                 manifest_sha256=self.marker["manifest_sha256"],
                 allowed_file_set_sha256=self.marker["allowed_file_set_sha256"],
                 branch=self.marker["repository_branch"],
@@ -292,7 +358,7 @@ class LatestConsumedAuthorizationHistoricalDispositionTests(unittest.TestCase):
                     marker_path,
                     marker_sha256=hashlib.sha256(marker_path.read_bytes()).hexdigest(),
                     authorization_id=AUTHORIZATION_ID,
-                    authorization_sha256=AUTHORIZATION_SHA256,
+                    authorization_sha256=self.authorization_sha256,
                     manifest_sha256=self.marker["manifest_sha256"],
                     allowed_file_set_sha256=(
                         self.marker["allowed_file_set_sha256"]
@@ -314,7 +380,7 @@ class LatestConsumedAuthorizationHistoricalDispositionTests(unittest.TestCase):
                 child_path,
                 expected_authorization_id=AUTHORIZATION_ID,
                 expected_marker_path=marker_path,
-                expected_marker_sha256=MARKER_SHA256,
+                expected_marker_sha256=self.marker_sha256,
                 expected_exit_code=1,
                 expected_mode="four-token-standard-four-hour-run",
             )
@@ -330,7 +396,7 @@ class LatestConsumedAuthorizationHistoricalDispositionTests(unittest.TestCase):
                     child_path,
                     expected_authorization_id=AUTHORIZATION_ID,
                     expected_marker_path=marker_path,
-                    expected_marker_sha256=MARKER_SHA256,
+                    expected_marker_sha256=self.marker_sha256,
                     expected_exit_code=1,
                     expected_mode="four-token-standard-four-hour-run",
                 )
@@ -438,13 +504,15 @@ class LatestConsumedAuthorizationHistoricalDispositionTests(unittest.TestCase):
         )
         self.assertEqual(validated, tuple(sorted(validated)))
         self.assertEqual(len(validated), len(set(validated)))
-        self.assertEqual(len(validated), 45)
+        # Exact historical IDs establish completeness; the total grows whenever
+        # a new immutable consumed package is preserved.
         for required in (
             OLDER_CONSUMED_AUTHORIZATION_ID,
             EXPIRED_UNCONSUMED_AUTHORIZATION_ID,
             AUTHORIZATION_ID,
             SUPERSEDED_UNCONSUMED_AUTHORIZATION_ID,
             NEWER_CONSUMED_AUTHORIZATION_ID,
+            AUG25_CONSUMED_AUTHORIZATION_ID,
         ):
             self.assertIn(required, validated)
 

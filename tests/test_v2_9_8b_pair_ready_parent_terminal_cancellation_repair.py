@@ -540,7 +540,7 @@ def test_migration_059_preserves_item_and_source_link_immutability(db_path) -> N
         connection.close()
 
 
-def test_fresh_migration_path_reaches_060_with_integrity_and_foreign_keys(db_path) -> None:
+def test_fresh_migration_path_reaches_current_head_with_integrity_and_foreign_keys(db_path) -> None:
     connection = _open(db_path)
     try:
         applied = tuple(
@@ -550,8 +550,8 @@ def test_fresh_migration_path_reaches_060_with_integrity_and_foreign_keys(db_pat
             )
         )
         assert applied == canonical_migration_names()
-        assert len(applied) == 60
-        assert applied[-1] == MIGRATION_060
+        assert len(applied) == len(canonical_migration_names())
+        assert applied[-1] == canonical_migration_names()[-1]
         assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
     finally:

@@ -24,9 +24,14 @@ from urllib import error as url_error
 import pytest
 
 import printer_v1.sources.dexscreener as dex
-from printer_v1.db.migrate import apply_migrations
+from printer_v1.db.migrate import apply_migrations, canonical_migration_names
 from printer_v1.discovery.direct_migration_discovery import (
     run_direct_migration_discovery,
+)
+from printer_v1.discovery.combined_executor import (
+    CombinedDiscoveryFixtures,
+    FixturePumpSwapProof,
+    FixtureSourceFact,
 )
 from printer_v1.operator_cli.origin_lifecycle_campaign import (
     POST_HANDOFF_STAGES,
@@ -50,9 +55,11 @@ from printer_v1.sources.direct_pump_migration import (
 )
 from printer_v1.sources.measured_transport import SIX_UNITS
 
-from test_v2_9_8b_candidate_acquisition_foundation import _pinned_migration_fixture
-from test_v2_9_8b_restored_factory_source_compatibility_reset import _verifier_factory
-from test_v2_9_7e_8_origin_to_lifecycle_integration import _IntegrationBase
+from tests.test_v2_9_8b_candidate_acquisition_foundation import _pinned_migration_fixture
+from tests.test_v2_9_8b_restored_factory_source_compatibility_reset import _verifier_factory
+from tests.test_v2_9_7e_8_origin_to_lifecycle_integration import (
+    CUTOFF, MINT_A, MINT_B, NOW, POOL_A, POOL_B, SEED, _IntegrationBase,
+)
 
 
 _NOW = "2026-07-30T22:00:00+00:00"
@@ -484,6 +491,71 @@ class _PostHandoffHarness(_IntegrationBase):
     def runTest(self) -> None:  # pragma: no cover - satisfies TestCase
         pass
 
+    def _two_origin_fixtures(self) -> CombinedDiscoveryFixtures:
+        # Current Cycle-1 cadence authority derives TRACK_FAST/TRACK_NORMAL from
+        # a current-batch governed market observation.  The historical fixture
+        # supplied only Pump origin/PumpSwap proof, so it now fails before the
+        # intended post-handoff injection at DISCOVERY_TRACKING_LANE_MISSING.
+        # Keep the exact origin proofs as verification authority, but nominate
+        # both mints through one frozen DexScreener response carrying sufficient
+        # market facts for the existing classifier.
+        origin_a = self._origin("a", MINT_A, POOL_A, 10)
+        origin_b = self._origin("b", MINT_B, POOL_B, 11)
+        return CombinedDiscoveryFixtures(
+            cycle_id="cyc",
+            cycle_cutoff=CUTOFF,
+            campaign_selection_seed=SEED,
+            provider_contract_versions={"dexscreener": "fixture"},
+            git_provenance_identity="git-integration",
+            evaluated_at=NOW,
+            dexscreener_ops=(
+                FixtureSourceFact(
+                    request_kind="dexscreener_fresh_profiles",
+                    source_name="dexscreener",
+                    receipt_time=NOW,
+                    body={
+                        "pairs": [
+                            {
+                                "chainId": "solana",
+                                "dexId": "pumpswap",
+                                "pairAddress": POOL_A,
+                                "baseToken": {"address": MINT_A},
+                                "quoteToken": {"address": WSOL},
+                                "priceUsd": "0.01",
+                                "liquidity": {"usd": 1500.0},
+                                "volume": {"m5": 50.0, "h1": 200.0, "h24": 500.0},
+                                "txns": {
+                                    "m5": {"buys": 1, "sells": 1},
+                                    "h1": {"buys": 3, "sells": 2},
+                                    "h24": {"buys": 6, "sells": 4},
+                                },
+                            },
+                            {
+                                "chainId": "solana",
+                                "dexId": "pumpswap",
+                                "pairAddress": POOL_B,
+                                "baseToken": {"address": MINT_B},
+                                "quoteToken": {"address": WSOL},
+                                "priceUsd": "0.01",
+                                "liquidity": {"usd": 1500.0},
+                                "volume": {"m5": 50.0, "h1": 200.0, "h24": 500.0},
+                                "txns": {
+                                    "m5": {"buys": 1, "sells": 1},
+                                    "h1": {"buys": 3, "sells": 2},
+                                    "h24": {"buys": 6, "sells": 4},
+                                },
+                            },
+                        ]
+                    },
+                ),
+            ),
+            origin_proofs={MINT_A: origin_a, MINT_B: origin_b},
+            pumpswap_proofs={
+                MINT_A: FixturePumpSwapProof(mint=MINT_A, pool_address=POOL_A),
+                MINT_B: FixturePumpSwapProof(mint=MINT_B, pool_address=POOL_B),
+            },
+        )
+
     def run_with_fault(self, stage):
         driver = OriginToLifecycleCampaignDriver()
         snapshot_factory, _calls = self._snapshot_adapter_factory()
@@ -564,7 +636,7 @@ def test_post_handoff_fault_compensation_terminalizes_to_zero_active_work(stage)
                     "SELECT version FROM printer_schema_migrations ORDER BY version"
                 )
             ][-1]
-            assert head.startswith("050")
+            assert head == canonical_migration_names()[-1]
         finally:
             connection.close()
     finally:
@@ -605,7 +677,7 @@ def test_normal_success_two_slots_two_window_15m_jobs(tmp_path: Path) -> None:
                 "SELECT version FROM printer_schema_migrations ORDER BY version"
             )
         ][-1]
-        assert head.startswith("050")
+        assert head == canonical_migration_names()[-1]
         assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     finally:
         connection.close()

@@ -284,7 +284,10 @@ def test_full_run_acceptance_does_not_attributeerror_on_readonly_projection(tmp_
     assert outcome["campaign_acceptance"]["pass"] is False
     assert "AttributeError" not in reason
     assert "ingest_stage_evidence" not in reason
-    assert "MULTI_CYCLE_STAGE_EVIDENCE_OWNER_REQUIRED" in reason
+    # Current Lane-4 finalization validates the admitted two-cycle graph before
+    # stage-evidence ownership.  This fixture intentionally has no admitted
+    # campaign cycles, so the exact-ordinal invariant is the lawful first block.
+    assert "full-run accounting requires exact admitted ordinals 1 and 2" in reason
 
 
 def test_full_run_acceptance_ingests_through_mutable_owner_not_projection(tmp_path):

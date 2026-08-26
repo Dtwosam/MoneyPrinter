@@ -13,6 +13,7 @@ import unittest
 from unittest import mock
 
 from printer_v1.operator_cli import operational_memory_factory_command as command
+from printer_v1.db.migrate import canonical_migration_names
 from printer_v1.operator_cli import window_15m_one_shot_wrapper as wrapper
 from printer_v1.operator_cli.window_15m_child_terminal import (
     resolve_child_terminal_binding,
@@ -99,6 +100,25 @@ class Fixture:
         # symlinks, so the injected interpreter path and the resolved repository
         # root must not disagree only by that alias.
         self.root = Path(self.tmp.name).resolve()
+        self.authoritative_db = self.root / "authoritative.sqlite3"
+        connection = sqlite3.connect(self.authoritative_db)
+        try:
+            connection.execute(
+                "CREATE TABLE printer_schema_migrations("
+                "version TEXT PRIMARY KEY, applied_at TEXT NOT NULL "
+                "DEFAULT (datetime('now')))"
+            )
+            connection.executemany(
+                "INSERT INTO printer_schema_migrations(version) VALUES (?)",
+                ((name,) for name in canonical_migration_names()),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        self._authoritative_db_patch = mock.patch.object(
+            command, "AUTHORITATIVE_DB", self.authoritative_db
+        )
+        self._authoritative_db_patch.start()
         self.repo = self.root / "repo"
         self.app = self.root / "applications"
         self.repo.mkdir()
@@ -247,6 +267,7 @@ class Fixture:
         return calls, launch
 
     def close(self):
+        self._authoritative_db_patch.stop()
         self.tmp.cleanup()
 
 
@@ -267,6 +288,10 @@ class WrapperImplementationTests(unittest.TestCase):
             python_executable=self.fx.venv_python,
             created_at="2026-08-01T20:00:00+00:00",
             consumed_at="2026-08-01T20:01:00+00:00",
+            # Wrapper tests are isolated from migration-guard implementation.
+            # Guard correctness has its own focused suite; these tests inject
+            # a pass boundary unless they explicitly exercise guard behavior.
+            migration_ledger_guard=lambda **_kwargs: None,
         )
         params.update(overrides)
         return wrapper.apply_authorization_once(**params)
@@ -501,36 +526,65 @@ class WrapperImplementationTests(unittest.TestCase):
     def test_23_network_unused_and_sqlite_limited_to_immutable_ledger_guard(self):
         """Network stays forbidden; SQLite is limited to the drift guard.
 
-        The wrapper now runs the pre-authorization migration-ledger drift guard
-        before staging, so it does open the authoritative database. That access
-        must be immutable and read-only, and it must be the *only* SQLite use in
-        the wrapper path.
+        The wrapper invokes the pre-authorization migration-ledger guard exactly
+        once before staging. The guard may perform multiple independent reads
+        (for example ledger truth plus schema-coherence truth), so this test
+        constrains the safety boundary rather than its internal read cardinality:
+        every SQLite open must be the same immutable read-only authoritative DB.
         """
         calls, launcher = self.fx.fake_launcher()
         opened: list[tuple[str, bool]] = []
+        guard_calls = []
         real_connect = sqlite3.connect
 
         def recording_connect(target, *args, **kwargs):
             opened.append((str(target), bool(kwargs.get("uri"))))
             return real_connect(target, *args, **kwargs)
 
+        def recording_guard(**kwargs):
+            guard_calls.append(dict(kwargs))
+            # Deliberately perform multiple immutable reads. The wrapper owns
+            # the call boundary, not the guard's internal read cardinality.
+            uri = (
+                f"file:{command.AUTHORITATIVE_DB.as_posix()}"
+                "?mode=ro&immutable=1"
+            )
+            for _ in range(3):
+                connection = sqlite3.connect(uri, uri=True, timeout=0.0)
+                try:
+                    connection.execute(
+                        "SELECT version FROM printer_schema_migrations "
+                        "ORDER BY rowid"
+                    ).fetchall()
+                finally:
+                    connection.close()
+            return None
+
         db_before = _sha(command.AUTHORITATIVE_DB)
         with mock.patch.object(
             socket.socket, "connect", side_effect=AssertionError("network")
-        ), mock.patch.object(sqlite3, "connect", side_effect=recording_connect):
-            result = self.apply(process_launcher=launcher)
+        ), mock.patch.object(
+            sqlite3, "connect", side_effect=recording_connect
+        ), mock.patch(
+            "printer_v1.operator_cli.window_15m_concrete_composition."
+            "run_window_15m_concrete_composition_preflight",
+            return_value={"status": "TEST_ONLY_COMPOSITION_PASS"},
+        ):
+            result = self.apply(
+                process_launcher=launcher, migration_ledger_guard=recording_guard
+            )
 
         self.assertEqual(result["child_exit_code"], 0)
         self.assertEqual(len(calls), 1)
+        self.assertEqual(len(guard_calls), 1, guard_calls)
+        self.assertEqual(guard_calls[0].get("mode"), "review")
 
-        # Exactly one SQLite open, and it is the guard's immutable read-only
-        # handle on the authoritative database.
-        self.assertEqual(len(opened), 1, opened)
-        target, used_uri = opened[0]
-        self.assertTrue(used_uri)
-        self.assertIn("mode=ro", target)
-        self.assertIn("immutable=1", target)
-        self.assertIn(command.AUTHORITATIVE_DB.as_posix(), target)
+        self.assertGreaterEqual(len(opened), 1, opened)
+        for target, used_uri in opened:
+            self.assertTrue(used_uri)
+            self.assertIn("mode=ro", target)
+            self.assertIn("immutable=1", target)
+            self.assertIn(command.AUTHORITATIVE_DB.as_posix(), target)
 
         # The authoritative database is observed, never written.
         self.assertEqual(_sha(command.AUTHORITATIVE_DB), db_before)

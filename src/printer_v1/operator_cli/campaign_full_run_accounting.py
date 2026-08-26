@@ -1067,6 +1067,12 @@ def build_full_run_terminal_report(
     all_lifecycle_jobs_succeeded = bool(
         scheduler_ownership.get("all_lifecycle_jobs_succeeded", False)
     )
+    all_lifecycle_jobs_terminal_acceptable = bool(
+        scheduler_ownership.get(
+            "all_lifecycle_jobs_terminal_acceptable",
+            all_lifecycle_jobs_succeeded,
+        )
+    )
     transport_records = list(owner_evidence.get("transport_operations") or [])
     sealed_stage_diagnostics = list(
         owner_evidence.get("sealed_stage_diagnostics")
@@ -1152,6 +1158,9 @@ def build_full_run_terminal_report(
             ),
             "scheduler_correspondence_exact": scheduler_correspondence_ok,
             "all_lifecycle_scheduler_jobs_succeeded": all_lifecycle_jobs_succeeded,
+            "all_lifecycle_scheduler_jobs_terminal_acceptable": (
+                all_lifecycle_jobs_terminal_acceptable
+            ),
             "missing_or_mismatched_evidence": list(
                 reconciliation.get("missing_mandatory_stage_kinds") or []
             ),
@@ -1394,7 +1403,10 @@ def evaluate_campaign_acceptance_gate(
             accounting.get("scheduler_correspondence_exact", False)
         ),
         "all_lifecycle_scheduler_jobs_succeeded": bool(
-            accounting.get("all_lifecycle_scheduler_jobs_succeeded", False)
+            accounting.get(
+                "all_lifecycle_scheduler_jobs_terminal_acceptable",
+                accounting.get("all_lifecycle_scheduler_jobs_succeeded", False),
+            )
         ),
         "complete_scheduler_family_attribution": (
             _scheduler_family_attribution_complete(accounting)
@@ -1667,6 +1679,7 @@ _WINDOW_15M_ACTION_LOCAL_STEP_KINDS = frozenset(
     {
         "SNAPSHOT",
         "WINDOW_CLOSE",
+        "WINDOW_CLOSE_PRE_CLOSE_CRITICAL",
         "WINDOW_CLOSE_EVIDENCE",
         "WINDOW_CLOSE_CONTEXT",
         "WINDOW_CLOSE_AUDIT",
@@ -1742,6 +1755,7 @@ def _load_terminal_scheduler_correspondence(
     allowed = {
         "SNAPSHOT": "WINDOW_15M",
         "WINDOW_CLOSE": "WINDOW_15M",
+        "WINDOW_CLOSE_PRE_CLOSE_CRITICAL": "WINDOW_15M",
         "WINDOW_CLOSE_EVIDENCE": "WINDOW_15M",
         "WINDOW_CLOSE_CONTEXT": "WINDOW_15M",
         "WINDOW_CLOSE_AUDIT": "WINDOW_15M",
@@ -1751,11 +1765,13 @@ def _load_terminal_scheduler_correspondence(
             {
                 "CONTINUATION_SNAPSHOT": "WINDOW_1H",
                 "CONTINUATION_CLOSE": "WINDOW_1H",
+                "CONTINUATION_CLOSE_PRE_CLOSE_CRITICAL": "WINDOW_1H",
                 "CONTINUATION_CLOSE_EVIDENCE": "WINDOW_1H",
                 "CONTINUATION_CLOSE_CONTEXT": "WINDOW_1H",
                 "CONTINUATION_CLOSE_AUDIT": "WINDOW_1H",
                 "LONG_CONTINUATION_SNAPSHOT": "WINDOW_4H",
                 "LONG_CONTINUATION_CLOSE": "WINDOW_4H",
+                "LONG_CONTINUATION_CLOSE_PRE_CLOSE_CRITICAL": "WINDOW_4H",
                 "LONG_CONTINUATION_CLOSE_EVIDENCE": "WINDOW_4H",
                 "LONG_CONTINUATION_CLOSE_CONTEXT": "WINDOW_4H",
                 "LONG_CONTINUATION_CLOSE_AUDIT": "WINDOW_4H",
@@ -1765,7 +1781,8 @@ def _load_terminal_scheduler_correspondence(
     placeholders = ",".join("?" for _ in allowed)
     steps = connection.execute(
         f"""SELECT s.id, s.scheduler_job_id, s.step_kind, s.token_id,
-                   s.pair_id, s.step_key, j.status AS scheduler_job_status
+                   s.pair_id, s.step_key, s.step_status, s.error_or_skip_reason,
+                   j.status AS scheduler_job_status
             FROM printer_memory_factory_run_steps AS s
             LEFT JOIN printer_scheduler_jobs AS j ON j.id=s.scheduler_job_id
             WHERE s.run_id=? AND s.scheduler_job_id IS NOT NULL
@@ -1817,6 +1834,12 @@ def _load_terminal_scheduler_correspondence(
     matched: set[int] = set()
     lineage_mismatches: list[int] = []
     lifecycle_job_states: dict[int, str] = {}
+    lawful_skipped_preclose_job_ids: set[int] = set()
+    preclose_step_kinds = {
+        "WINDOW_CLOSE_PRE_CLOSE_CRITICAL",
+        "CONTINUATION_CLOSE_PRE_CLOSE_CRITICAL",
+        "LONG_CONTINUATION_CLOSE_PRE_CLOSE_CRITICAL",
+    }
 
     for step in steps:
         job_id = int(step["scheduler_job_id"])
@@ -1824,6 +1847,14 @@ def _load_terminal_scheduler_correspondence(
         lifecycle_job_states[job_id] = _JOB_STATUS_TO_WORK_STATE.get(
             raw_status, raw_status or "MISSING"
         )
+        if (
+            str(step["step_kind"] or "") in preclose_step_kinds
+            and lifecycle_job_states[job_id] == "SKIPPED"
+            and str(step["step_status"] or "").upper() == "SKIPPED"
+            and str(step["error_or_skip_reason"] or "")
+            == "TIMELY_ACQUISITION_NOT_PRODUCIBLE"
+        ):
+            lawful_skipped_preclose_job_ids.add(job_id)
         candidates = owned_by_job.get(job_id, [])
         if len(candidates) != 1:
             lineage_mismatches.append(job_id)
@@ -1871,6 +1902,10 @@ def _load_terminal_scheduler_correspondence(
     all_succeeded = bool(lifecycle_job_states) and all(
         state == "SUCCEEDED" for state in lifecycle_job_states.values()
     )
+    all_terminal_acceptable = bool(lifecycle_job_states) and all(
+        state == "SUCCEEDED" or job_id in lawful_skipped_preclose_job_ids
+        for job_id, state in lifecycle_job_states.items()
+    )
     return {
         "lifecycle_job_ids": sorted(expected_job_set),
         "owned_job_ids": sorted(owned_job_set),
@@ -1890,8 +1925,12 @@ def _load_terminal_scheduler_correspondence(
             for key, value in sorted(lifecycle_job_states.items())
             if value != "SUCCEEDED"
         },
+        "lawful_skipped_preclose_job_ids": sorted(
+            lawful_skipped_preclose_job_ids
+        ),
         "correspondence_exact": correspondence_exact,
         "all_lifecycle_jobs_succeeded": all_succeeded,
+        "all_lifecycle_jobs_terminal_acceptable": all_terminal_acceptable,
     }
 
 
@@ -3872,8 +3911,8 @@ def finalize_full_run_ownership_and_report(
            LEFT JOIN printer_source_requests q ON q.id = s.source_request_id
            LEFT JOIN printer_source_responses r ON r.id = s.source_response_id
            WHERE s.run_id=? AND s.step_kind IN (
-               'SNAPSHOT','WINDOW_CLOSE','WINDOW_CLOSE_EVIDENCE',
-               'WINDOW_CLOSE_CONTEXT','WINDOW_CLOSE_AUDIT'
+               'SNAPSHOT','WINDOW_CLOSE','WINDOW_CLOSE_PRE_CLOSE_CRITICAL',
+               'WINDOW_CLOSE_EVIDENCE','WINDOW_CLOSE_CONTEXT','WINDOW_CLOSE_AUDIT'
            )
              AND s.scheduler_job_id IS NOT NULL
              {lifecycle_step_filter}
@@ -3994,6 +4033,12 @@ def finalize_full_run_ownership_and_report(
         factory_step_ids=(primary_step_ids if multi_cycle_accounting else None),
         proof_root_stage_step_ids=proof_root_stage_step_ids,
     )
+    lawful_skipped_preclose_job_ids = {
+        int(job_id)
+        for job_id in (
+            scheduler_ownership.get("lawful_skipped_preclose_job_ids") or ()
+        )
+    }
 
     # --- Seal the four approved mandatory stages from durable evidence. ---
     slot_stage_ids: list[str] = []
@@ -4042,6 +4087,18 @@ def finalize_full_run_ownership_and_report(
                 token_id=token_id,
                 pair_id=pair_id,
             )
+            # Timely pre-close planning can truthfully terminalize a pre-close
+            # step without reserving or attempting any provider operation when
+            # its desired start predates the earliest exact-identity boundary.
+            # The execution owner records that as zero lifecycle reservations;
+            # terminal accounting must verify the same durable fact rather than
+            # re-inflating the static one-operation schedulable policy.
+            if (
+                step_kind == "WINDOW_CLOSE_PRE_CLOSE_CRITICAL"
+                and str(step_result.get("preclose_plan_state") or "")
+                == "TIMELY_ACQUISITION_NOT_PRODUCIBLE"
+            ):
+                expected_reservations = []
             actual_ordinals = [
                 int(item.get("reservation_ordinal"))
                 for item in raw_reservations
@@ -4133,9 +4190,13 @@ def finalize_full_run_ownership_and_report(
             (
                 item
                 for item in steps
-                if str(item["step_status"]) in {"CANCELLED", "SKIPPED"}
-                or str(item["scheduler_job_status"] or "")
-                in {"CANCELLED", "SKIPPED"}
+                if (
+                    str(item["step_status"]) in {"CANCELLED", "SKIPPED"}
+                    or str(item["scheduler_job_status"] or "")
+                    in {"CANCELLED", "SKIPPED"}
+                )
+                and int(item["scheduler_job_id"])
+                not in lawful_skipped_preclose_job_ids
             ),
             None,
         )

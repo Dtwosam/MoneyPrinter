@@ -25,8 +25,7 @@ from printer_v1.operator_cli.origin_lifecycle_campaign import ActivationResult
 from tests.support.window_15m_authorization_fixtures import (
     validated_window_15m_authorization,
 )
-
-from test_v2_9_8b_10_post_selection_lifecycle_integrity import (
+from tests.test_v2_9_8b_10_post_selection_lifecycle_integrity import (
     _command,
     _provenance,
     _seed_running_campaign,
@@ -455,9 +454,35 @@ def test_factory_uuid_mismatch_still_fails_closed(tmp_path):
     assert "initialized factory-run identity changed" in str(raised.value)
 
 
-def test_exception_envelope_unknown_mutation_when_action_run_exists():
+def test_exception_envelope_unknown_mutation_when_action_run_exists(tmp_path):
     """Proof 11: do not hardcode database_writes=0 after campaign identity."""
     stderr = io.StringIO()
+    isolated_db = tmp_path / "exception-envelope.sqlite3"
+    apply_migrations(isolated_db)
+    seeded_source_calls = 30
+    connection = sqlite3.connect(isolated_db)
+    try:
+        for index in range(seeded_source_calls):
+            connection.execute(
+                """
+                INSERT INTO printer_source_requests(
+                    source_name, request_kind, requested_at, request_key,
+                    tracking_priority, source_status, data_quality_label
+                ) VALUES (?,?,?,?,?,?,?)
+                """,
+                (
+                    "dexscreener",
+                    "pair_market_snapshot",
+                    "2026-08-03T21:28:01Z",
+                    f"exception-envelope-request-{index}",
+                    0,
+                    "COMPLETE",
+                    "CLEAN_DATA",
+                ),
+            )
+        connection.commit()
+    finally:
+        connection.close()
 
     def _failing_run(**_kwargs):
         public._ACTION_RUN_CONTEXT["run_id"] = CAMPAIGN_RUN_ID
@@ -465,14 +490,26 @@ def test_exception_envelope_unknown_mutation_when_action_run_exists():
             "initialized factory-run identity changed"
         )
 
+    wrapper_env = {
+        name: f"fixture-{index}"
+        for index, name in enumerate(public.GIT_PROVENANCE_MANIFEST_ENV_VARS, start=1)
+    }
     with (
+        patch.dict("os.environ", wrapper_env, clear=True),
+        patch.object(public, "AUTHORITATIVE_DB", isolated_db.resolve()),
         patch.object(
             public,
             "_resolve_git_provenance_authorization",
             return_value=object(),
         ),
+        patch(
+            "printer_v1.operator_cli.window_15m_child_terminal.resolve_child_terminal_binding",
+            return_value=object(),
+        ),
+        patch(
+            "printer_v1.operator_cli.window_15m_child_terminal.write_child_terminal_envelope"
+        ),
         patch.object(public, "run_operational_campaign", side_effect=_failing_run),
-        patch.object(public, "_latest_campaign_source_total", return_value=30),
         patch("sys.stderr", stderr),
     ):
         code = public.main(["run", "--operator-approved"])
@@ -482,8 +519,8 @@ def test_exception_envelope_unknown_mutation_when_action_run_exists():
     assert payload["action_run_id"] == CAMPAIGN_RUN_ID
     assert payload["database_writes"] is None
     assert payload["database_mutation_known"] is False
-    assert payload["database_mutation_status"] == "UNKNOWN_ON_EXCEPTION"
-    assert payload["campaign_source_calls"] == 30
+    assert payload["database_mutation_status"] == "UNKNOWN_NOT_ATTRIBUTABLE"
+    assert payload["campaign_source_calls"] == seeded_source_calls
 
 
 def test_exception_envelope_proven_zero_without_action_identity():

@@ -17,6 +17,7 @@ from printer_v1.discovery.classifier import (
     classify_discovery_candidate,
 )
 from printer_v1.discovery.contracts import DiscoveryChannelLabel
+from printer_v1.discovery.parser import normalize_candidates
 from printer_v1.lifecycle.contracts import TokenLifecycleState
 from printer_v1.scheduler.contracts import JobKind, JobStatus, LockResult
 from printer_v1.scheduler.scheduler import enqueue_job
@@ -388,6 +389,110 @@ def _candidate_liquidity_usd(candidate: Mapping[str, Any]) -> Any:
     return None
 
 
+_CLASSIFIER_MARKET_FIELDS = (
+    "price_usd",
+    "liquidity_usd",
+    "volume_5m",
+    "volume_1h",
+    "volume_24h",
+    "txns_5m",
+    "txns_1h",
+    "txns_24h",
+)
+_LINKED_MARKET_SOURCES = frozenset({"dexscreener", "geckoterminal"})
+
+
+def _linked_exact_market_candidate_evidence(
+    connection: sqlite3.Connection,
+    *,
+    attempt_id: str,
+    mint_identity: str,
+    pair_identity: str,
+    observed_at: datetime,
+) -> dict[str, Any] | None:
+    """Read the newest already-linked exact-pair market response, if any.
+
+    This is a projection-only helper. It performs no source request and no DB
+    write. Only COMPLETE DexScreener/GeckoTerminal responses already linked to
+    this exact pre-admission attempt may supplement missing classifier fields.
+    """
+    exact_attempt = _required(attempt_id, "attempt_id")
+    mint = _required(mint_identity, "mint_identity")
+    pair = _required(pair_identity, "pair_identity")
+    instant = _utc(observed_at, "observed_at")
+    rows = connection.execute(
+        """
+        SELECT l.link_ordinal, q.source_name, r.normalized_payload_json,
+               r.received_at, r.source_status
+          FROM printer_pre_admission_discovery_attempt_source_links AS l
+          JOIN printer_source_requests AS q ON q.id=l.source_request_id
+          JOIN printer_source_responses AS r ON r.id=l.source_response_id
+         WHERE l.attempt_id=?
+           AND l.source_response_id IS NOT NULL
+         ORDER BY r.received_at ASC, l.link_ordinal ASC, r.id ASC
+        """,
+        (exact_attempt,),
+    ).fetchall()
+    exact_candidates: list[tuple[datetime, int, dict[str, Any]]] = []
+    for row in rows:
+        source_name = str(row[1] or "").strip()
+        source_status = str(row[4] or "").strip().upper()
+        if source_name not in _LINKED_MARKET_SOURCES or source_status != "COMPLETE":
+            continue
+        try:
+            payload = json.loads(str(row[2]))
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, Mapping):
+            continue
+        try:
+            normalized = normalize_candidates(source_name, payload, now=instant)
+        except (TypeError, ValueError):
+            continue
+        exact = [
+            dict(candidate)
+            for candidate in normalized
+            if str(candidate.get("chain") or "").casefold() == PRINTER_CHAIN
+            and str(candidate.get("token_mint") or "") == mint
+            and str(candidate.get("pair_address") or "") == pair
+        ]
+        # Ambiguous exact identity is never a lawful supplement.
+        if len(exact) != 1:
+            continue
+        try:
+            received = _parse_timestamp(row[3], "linked_source_response_received_at")
+        except PreAdmissionAttemptError:
+            continue
+        if received > instant:
+            continue
+        exact_candidates.append((received, int(row[0]), exact[0]))
+    if not exact_candidates:
+        return None
+    exact_candidates.sort(key=lambda entry: (entry[0], entry[1]))
+    return dict(exact_candidates[-1][2])
+
+
+def _merge_missing_classifier_evidence(
+    candidate: Mapping[str, Any],
+    supplemental: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    merged = dict(candidate)
+    if not isinstance(supplemental, Mapping):
+        return merged
+    for field in _CLASSIFIER_MARKET_FIELDS:
+        if field == "liquidity_usd":
+            if _candidate_liquidity_usd(merged) is not None:
+                continue
+        elif merged.get(field) is not None:
+            continue
+        if supplemental.get(field) is not None:
+            merged[field] = supplemental.get(field)
+    # Supplemental linked responses contribute market facts only. Source/capture
+    # provenance remains owned by the frozen carrier/attempt projection so the
+    # generic discovery parser cannot synthesize a missing capture timestamp.
+    return merged
+
+
 def project_classifier_candidate_from_pre_admission_evidence(
     *,
     mint_identity: str,
@@ -395,12 +500,15 @@ def project_classifier_candidate_from_pre_admission_evidence(
     canonical_evidence_json: str,
     channel_labels: Sequence[str] = (),
     observed_at: datetime | None = None,
+    supplemental_candidate_evidence: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Project exact mint/pair frozen evidence into classifier input shape."""
     mint = _required(mint_identity, "mint_identity")
     pair = _required(pair_identity, "pair_identity")
     evidence = _required(canonical_evidence_json, "canonical_evidence_json")
-    candidate = _decode_evidence_candidate(evidence)
+    candidate = _merge_missing_classifier_evidence(
+        _decode_evidence_candidate(evidence), supplemental_candidate_evidence
+    )
     labels = tuple(
         label
         for label in channel_labels
@@ -446,6 +554,7 @@ def classify_tracking_lane_from_candidate_evidence(
     canonical_evidence_json: str,
     channel_labels: Sequence[str] = (),
     observed_at: datetime,
+    supplemental_candidate_evidence: Mapping[str, Any] | None = None,
 ) -> tuple[str, Any]:
     """Return (TRACK_FAST|TRACK_NORMAL, classification) or raise if unavailable."""
     classifier_input = project_classifier_candidate_from_pre_admission_evidence(
@@ -454,6 +563,7 @@ def classify_tracking_lane_from_candidate_evidence(
         canonical_evidence_json=canonical_evidence_json,
         channel_labels=channel_labels,
         observed_at=observed_at,
+        supplemental_candidate_evidence=supplemental_candidate_evidence,
     )
     classification = classify_discovery_candidate(classifier_input)
     lane = choose_tracking_lane(classifier_input, classification)
@@ -466,9 +576,21 @@ def classify_tracking_lane_from_candidate_evidence(
 
 
 def attach_frozen_tracking_lane(
-    item: PreAdmissionAttemptItem, *, now: datetime
+    item: PreAdmissionAttemptItem,
+    *,
+    now: datetime,
+    connection: sqlite3.Connection | None = None,
 ) -> PreAdmissionAttemptItem:
     """Classify exact current evidence and freeze TRACK_FAST/TRACK_NORMAL provenance."""
+    supplemental = None
+    if connection is not None:
+        supplemental = _linked_exact_market_candidate_evidence(
+            connection,
+            attempt_id=item.attempt_id,
+            mint_identity=item.mint_identity,
+            pair_identity=item.pair_identity,
+            observed_at=item.observed_at,
+        )
     try:
         classifier_input = project_classifier_candidate_from_pre_admission_evidence(
             mint_identity=item.mint_identity,
@@ -476,6 +598,7 @@ def attach_frozen_tracking_lane(
             canonical_evidence_json=item.canonical_evidence_json,
             channel_labels=item.channel_labels,
             observed_at=item.observed_at,
+            supplemental_candidate_evidence=supplemental,
         )
     except PreAdmissionAttemptError as exc:
         raise _annotate_persistence_error(
@@ -490,6 +613,7 @@ def attach_frozen_tracking_lane(
             canonical_evidence_json=item.canonical_evidence_json,
             channel_labels=item.channel_labels,
             observed_at=item.observed_at,
+            supplemental_candidate_evidence=supplemental,
         )
     except PreAdmissionAttemptError as exc:
         raise _annotate_persistence_error(

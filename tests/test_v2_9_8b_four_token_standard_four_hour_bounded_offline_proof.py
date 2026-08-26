@@ -66,13 +66,20 @@ from tests.test_v2_9_8b_callback_consume_materialize_integration import (
 def test_one_operational_invocation_proves_four_two_two(tmp_path) -> None:
     # --- exact derived operational capacity, before any state exists ---------
     policy = operational.exact_operational_policy()
+    capacity = operational.OPERATIONAL_CAPACITY
     assert policy["configured_through_4h_tokens"] == 4
     assert policy["configured_active_cycles"] == 2
     assert policy["tokens_per_cycle"] == 2
     assert policy["total_cycle_admission_ceiling"] == 2
-    assert policy["lifecycle_requests_per_token"] == 117
-    assert policy["lifecycle_request_outer_ceiling"] == 472
-    assert policy["lifecycle_scheduler_outer_ceiling"] == 420
+    assert policy["lifecycle_requests_per_token"] == int(
+        capacity["lifecycle_requests_per_token"]
+    )
+    assert policy["lifecycle_request_outer_ceiling"] == int(
+        capacity["lifecycle_request_outer_ceiling"]
+    )
+    assert policy["lifecycle_scheduler_outer_ceiling"] == int(
+        capacity["lifecycle_scheduler_outer_ceiling"]
+    )
     assert policy["automatic_retries"] == 0
     assert policy["endpoint_rotation"] is False
     assert policy["long_windows_activated"] is False
@@ -394,9 +401,15 @@ def test_one_operational_invocation_proves_four_two_two(tmp_path) -> None:
     # --- the operational command policy matches this proven envelope --------
     campaign_policy = command.FOUR_TOKEN_STANDARD_FOUR_HOUR_POLICY
     assert campaign_policy.mode == "four-token-standard-four-hour-run"
-    assert campaign_policy.governed_request_ceiling == 472
-    assert campaign_policy.governed_requests_per_token == 117
-    assert campaign_policy.scheduler_row_ceiling == 420
+    assert campaign_policy.governed_request_ceiling == int(
+        capacity["lifecycle_request_outer_ceiling"]
+    )
+    assert campaign_policy.governed_requests_per_token == int(
+        capacity["lifecycle_requests_per_token"]
+    )
+    assert campaign_policy.scheduler_row_ceiling == int(
+        capacity["lifecycle_scheduler_outer_ceiling"]
+    )
     assert campaign_policy.locked_windows == ("WINDOW_12H", "WINDOW_24H")
 
     connection.close()

@@ -185,9 +185,18 @@ class CapacityDerivationTests(unittest.TestCase):
         self.assertEqual(operational.CONFIGURED_ACTIVE_CYCLES, 2)
         self.assertEqual(operational.TOKENS_PER_CYCLE, 2)
         self.assertEqual(operational.TOTAL_CYCLE_ADMISSION_CEILING, 2)
-        self.assertEqual(operational.LIFECYCLE_REQUESTS_PER_TOKEN, 117)
-        self.assertEqual(operational.LIFECYCLE_REQUEST_OUTER_CEILING, 472)
-        self.assertEqual(operational.LIFECYCLE_SCHEDULER_OUTER_CEILING, 420)
+        self.assertEqual(
+            operational.LIFECYCLE_REQUESTS_PER_TOKEN,
+            self.contract["lifecycle_requests_per_token"],
+        )
+        self.assertEqual(
+            operational.LIFECYCLE_REQUEST_OUTER_CEILING,
+            self.contract["lifecycle_request_outer_ceiling"],
+        )
+        self.assertEqual(
+            operational.LIFECYCLE_SCHEDULER_OUTER_CEILING,
+            self.contract["lifecycle_scheduler_outer_ceiling"],
+        )
         self.assertEqual(
             operational.MINIMUM_CYCLE_ADMISSION_SPACING_SECONDS, 300
         )
@@ -214,7 +223,7 @@ class CapacityDerivationTests(unittest.TestCase):
             operational.exact_operational_policy()[
                 "lifecycle_requests_per_token"
             ],
-            117,
+            self.contract["lifecycle_requests_per_token"],
         )
 
     def test_operational_policy_shape_is_the_exact_contract(self) -> None:

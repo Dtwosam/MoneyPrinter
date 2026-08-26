@@ -6308,6 +6308,12 @@ def _lifecycle_reservation_records_for_step(
     }
     if step_kind not in supported:
         return []
+    # A zero projected request count is a truthful no-reservation boundary.
+    # In particular, TIMELY_ACQUISITION_NOT_PRODUCIBLE pre-close work has no
+    # active source-unit claim by design and must terminalize SKIPPED without
+    # fabricating a reservation identity.
+    if int(projected_requests) == 0:
+        return []
     preclose_unit_identity: str | None = None
     preclose_unit_ordinal = 0
     if step_kind in PRE_CLOSE_STEP_KINDS:
@@ -9386,6 +9392,8 @@ def run_one_command_15m_factory(
     governed_observer_token = None
     four_token_attempt_terminal_cause: str | None = None
     four_token_cycle_one_opening_completed = False
+    # May be read by the outer exception owner before any Scheduler job is claimed.
+    owned_proof_cycle_id: str | None = None
     if lifecycle_operation_observer is not None:
         from printer_v1.sources.governed_execution import (
             set_governed_attempt_observer,
@@ -9807,7 +9815,7 @@ def run_one_command_15m_factory(
                 if pending is None:
                     raise ValueError("PRE_CLOSE_CLAIM_STEP_MISSING")
             effective_lifecycle_ownership_context = lifecycle_ownership_context
-            owned_proof_cycle_id: str | None = None
+            owned_proof_cycle_id = None
             if four_token_proof_controller is not None:
                 from printer_v1.operator_cli.four_token_proof_integration import (
                     resolve_owned_cycle_for_scheduler_job,

@@ -2400,6 +2400,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                                             ),
                                         ),
                                         now=instant,
+                                        connection=connection,
                                     )
                                     for ordinal, item in enumerate(selected, start=1)
                                 ),

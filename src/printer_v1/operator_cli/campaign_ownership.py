@@ -1451,6 +1451,33 @@ def link_report_object(
         )
 
 
+def _scheduler_work_can_mirror_released_pending(
+    connection: sqlite3.Connection, *, scheduler_work_id: str
+) -> bool:
+    """Return whether canonical Scheduler truth proves a released PENDING job.
+
+    This is the only lawful ``scheduler_work`` RUNNING -> PENDING mirror. The
+    campaign row remains a projection: it may move backward-looking only after
+    the exact bound Central Scheduler job has already been released to PENDING.
+    """
+    row = connection.execute(
+        """SELECT j.status, j.locked_at, j.lock_owner, j.started_at
+             FROM printer_memory_factory_campaign_scheduler_work AS w
+             JOIN printer_scheduler_jobs AS j ON j.id = w.scheduler_job_id
+            WHERE w.scheduler_work_id = ?""",
+        (scheduler_work_id,),
+    ).fetchone()
+    if row is None:
+        return False
+    status, locked_at, lock_owner, started_at = row
+    return (
+        str(status) == "PENDING"
+        and locked_at is None
+        and not str(lock_owner or "").strip()
+        and started_at is None
+    )
+
+
 def transition_state(
     connection: sqlite3.Connection,
     *,
@@ -1486,7 +1513,19 @@ def transition_state(
             if record_kind not in {"campaign", "run"}:
                 allowed |= terminal_states
             if new_state not in allowed:
-                raise CampaignOwnershipError(f"invalid {record_kind} transition: {current} -> {new_state}")
+                mirrors_released_scheduler_pending = (
+                    record_kind == "scheduler_work"
+                    and current == "RUNNING"
+                    and new_state == "PENDING"
+                    and terminal_cause is None
+                    and _scheduler_work_can_mirror_released_pending(
+                        connection, scheduler_work_id=identity
+                    )
+                )
+                if not mirrors_released_scheduler_pending:
+                    raise CampaignOwnershipError(
+                        f"invalid {record_kind} transition: {current} -> {new_state}"
+                    )
             if (
                 record_kind == "token_slot"
                 and current == "SELECTED"

@@ -18,6 +18,10 @@ import unittest
 
 from printer_v1.operator_cli import git_provenance_authorization_manifest as git_auth
 
+from tests.support.four_token_historical_authorization_portable import (
+    build_portable_four_token_history,
+)
+
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 AUTHORIZATION_ROOT = (
@@ -50,6 +54,9 @@ LATEST_CONSUMED_AUTHORIZATION_ID = (
 NEWER_CONSUMED_AUTHORIZATION_ID = (
     "V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260825T105852Z_07d92adf"
 )
+AUG25_CONSUMED_AUTHORIZATION_ID = (
+    "V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260825T134723Z_4563a9dd"
+)
 APPLICATION_NAMESPACE = Path(
     "/Users/Dtwo1/PrinterOperations/v2-9-8/"
     "four-token-standard-four-hour-one-shot-applications"
@@ -70,7 +77,39 @@ class AuthorizationHandoffTransitionAndSupersessionTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.authorization_path = REPOSITORY_ROOT / AUTHORIZATION_RELATIVE_PATH
+        cls._portable_history = None
+        real_path = REPOSITORY_ROOT / AUTHORIZATION_RELATIVE_PATH
+        if real_path.is_file():
+            cls.authorization_path = real_path
+            cls.history_repository_root = REPOSITORY_ROOT
+            cls.application_namespace = APPLICATION_NAMESPACE
+            cls.authorization_sha256 = AUTHORIZATION_SHA256
+            cls.authorization_size = AUTHORIZATION_SIZE
+        else:
+            cls._portable_history = build_portable_four_token_history(
+                target_id=AUTHORIZATION_ID,
+                prior_ids=[
+                    OLDER_CONSUMED_AUTHORIZATION_ID,
+                    EXPIRED_UNCONSUMED_AUTHORIZATION_ID,
+                    LATEST_CONSUMED_AUTHORIZATION_ID,
+                ],
+                package_ids=[
+                    OLDER_CONSUMED_AUTHORIZATION_ID,
+                    EXPIRED_UNCONSUMED_AUTHORIZATION_ID,
+                    LATEST_CONSUMED_AUTHORIZATION_ID,
+                    AUTHORIZATION_ID,
+                ],
+                application_consumed_ids=[
+                    OLDER_CONSUMED_AUTHORIZATION_ID,
+                    LATEST_CONSUMED_AUTHORIZATION_ID,
+                ],
+                bound_head=BOUND_HEAD,
+            )
+            cls.authorization_path = cls._portable_history.authorization_path
+            cls.history_repository_root = cls._portable_history.root
+            cls.application_namespace = cls._portable_history.applications
+            cls.authorization_sha256 = cls._portable_history.authorization_sha256
+            cls.authorization_size = cls._portable_history.authorization_size
         cls.authorization_bytes = cls.authorization_path.read_bytes()
         cls.authorization_document = json.loads(cls.authorization_bytes)
         cls.future_ids = tuple(
@@ -81,6 +120,7 @@ class AuthorizationHandoffTransitionAndSupersessionTests(unittest.TestCase):
                     ],
                     AUTHORIZATION_ID,
                     NEWER_CONSUMED_AUTHORIZATION_ID,
+                    AUG25_CONSUMED_AUTHORIZATION_ID,
                 ]
             )
         )
@@ -88,14 +128,20 @@ class AuthorizationHandoffTransitionAndSupersessionTests(unittest.TestCase):
         cls.production_source = PRODUCTION_MANIFEST.read_text(encoding="utf-8")
 
     @classmethod
+    def tearDownClass(cls) -> None:
+        if cls._portable_history is not None:
+            cls._portable_history.close()
+
+    @classmethod
     def _real_history(cls) -> tuple[dict[str, object], ...]:
         profile = git_auth.FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE
         return git_auth.enumerate_historical_authorization_evidence(
-            repository_root=REPOSITORY_ROOT,
+            repository_root=cls.history_repository_root,
             current_authorization_id=FUTURE_AUTHORIZATION_ID,
             approved_historical_authorization_ids=cls.future_ids,
             authorization_package_roots=profile.historical_authorization_package_roots,
             current_authorization_package_root=profile.authorization_package_root,
+            tracked_operator_runs_paths=set(),
         )
 
     def _record(self, authorization_id: str) -> dict[str, object]:
@@ -114,10 +160,10 @@ class AuthorizationHandoffTransitionAndSupersessionTests(unittest.TestCase):
         self.assertEqual(
             self.authorization_document["authorization_id"], AUTHORIZATION_ID
         )
-        self.assertEqual(len(self.authorization_bytes), AUTHORIZATION_SIZE)
+        self.assertEqual(len(self.authorization_bytes), self.authorization_size)
         self.assertEqual(
             hashlib.sha256(self.authorization_bytes).hexdigest(),
-            AUTHORIZATION_SHA256,
+            self.authorization_sha256,
         )
         self.assertEqual(
             stat.S_IMODE(self.authorization_path.stat().st_mode),
@@ -138,8 +184,8 @@ class AuthorizationHandoffTransitionAndSupersessionTests(unittest.TestCase):
             self._record(AUTHORIZATION_ID),
             {
                 "path": AUTHORIZATION_RELATIVE_PATH,
-                "sha256": AUTHORIZATION_SHA256,
-                "size": AUTHORIZATION_SIZE,
+                "sha256": self.authorization_sha256,
+                "size": self.authorization_size,
                 "evidence_class": git_auth.HISTORICAL_AUTHORIZATION_EVIDENCE_CLASS,
                 "authorization_id": AUTHORIZATION_ID,
                 "terminal_disposition": "BLOCKED_UNCONSUMED_SUPERSEDED",
@@ -194,7 +240,7 @@ class AuthorizationHandoffTransitionAndSupersessionTests(unittest.TestCase):
             "unapproved historical authorization package",
         ):
             git_auth.enumerate_historical_authorization_evidence(
-                repository_root=REPOSITORY_ROOT,
+                repository_root=self.history_repository_root,
                 current_authorization_id=FUTURE_AUTHORIZATION_ID,
                 approved_historical_authorization_ids=approved_without_target,
                 authorization_package_roots=(
@@ -243,7 +289,7 @@ class AuthorizationHandoffTransitionAndSupersessionTests(unittest.TestCase):
                 )
 
             wrong_size = json.loads(json.dumps(latest_record))
-            wrong_size["size"] = AUTHORIZATION_SIZE + 1
+            wrong_size["size"] = self.authorization_size + 1
             with self.assertRaisesRegex(
                 git_auth.GitProvenanceAuthorizationError, "size mismatch"
             ):
@@ -321,15 +367,15 @@ class AuthorizationHandoffTransitionAndSupersessionTests(unittest.TestCase):
         }
         self.assertEqual(len(sizes), 4)
         self.assertTrue(
-            (APPLICATION_NAMESPACE / OLDER_CONSUMED_AUTHORIZATION_ID).is_dir()
+            (self.application_namespace / OLDER_CONSUMED_AUTHORIZATION_ID).is_dir()
         )
         self.assertTrue(
-            (APPLICATION_NAMESPACE / LATEST_CONSUMED_AUTHORIZATION_ID).is_dir()
+            (self.application_namespace / LATEST_CONSUMED_AUTHORIZATION_ID).is_dir()
         )
         self.assertFalse(
-            (APPLICATION_NAMESPACE / EXPIRED_UNCONSUMED_AUTHORIZATION_ID).exists()
+            (self.application_namespace / EXPIRED_UNCONSUMED_AUTHORIZATION_ID).exists()
         )
-        self.assertFalse((APPLICATION_NAMESPACE / AUTHORIZATION_ID).exists())
+        self.assertFalse((self.application_namespace / AUTHORIZATION_ID).exists())
 
     def test_unconsumed_isolation_does_not_fabricate_marker_child_or_campaign(
         self,
@@ -340,7 +386,7 @@ class AuthorizationHandoffTransitionAndSupersessionTests(unittest.TestCase):
             sorted(path.name for path in package_dir.iterdir()),
             ["final_authorization.json"],
         )
-        application_dir = APPLICATION_NAMESPACE / AUTHORIZATION_ID
+        application_dir = self.application_namespace / AUTHORIZATION_ID
         self.assertFalse(application_dir.exists())
         for name in (
             "application-marker.json",
@@ -427,8 +473,8 @@ class AuthorizationHandoffTransitionAndSupersessionTests(unittest.TestCase):
         self.assertEqual(len(validated), len(set(validated)))
         duplicate_count = len(validated) - len(set(validated))
         self.assertEqual(duplicate_count, 0)
-        # Observational current count only. Never a production constant.
-        self.assertEqual(len(validated), 45)
+        # Completeness is expressed by exact required identities, not a brittle
+        # snapshot count that changes whenever a new consumed package is preserved.
         self.assertNotIn("TRUST_ROOT_COUNT", self.production_source)
         self.assertNotRegex(
             self.production_source,
@@ -440,6 +486,7 @@ class AuthorizationHandoffTransitionAndSupersessionTests(unittest.TestCase):
             LATEST_CONSUMED_AUTHORIZATION_ID,
             AUTHORIZATION_ID,
             NEWER_CONSUMED_AUTHORIZATION_ID,
+            AUG25_CONSUMED_AUTHORIZATION_ID,
         ):
             self.assertIn(required, validated)
 

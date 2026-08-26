@@ -6,10 +6,11 @@ import json
 from pathlib import Path
 import shutil
 import sqlite3
+import tempfile
 
 import pytest
 
-from printer_v1.db import apply_migrations
+import printer_v1.db.migrate as migration_runner
 from printer_v1.operator_cli import operational_campaign_recovery as recovery
 from printer_v1.operator_cli.campaign_ownership import create_cycle_with_two_slots
 from printer_v1.operator_cli.campaign_supervision import acquire_campaign_supervision
@@ -39,24 +40,31 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _downgrade_fixture_to_055(db: Path) -> None:
-    connection = sqlite3.connect(db)
-    try:
-        connection.executescript(
-            """
-            DROP TRIGGER IF EXISTS printer_four_token_pre_lifecycle_provenance_exact_shape;
-            DROP TRIGGER IF EXISTS printer_four_token_pre_lifecycle_provenance_immutable_update;
-            DROP TRIGGER IF EXISTS printer_four_token_pre_lifecycle_provenance_immutable_delete;
-            DROP TRIGGER IF EXISTS printer_pre_admission_attempt_forbids_pre_lifecycle_provenance;
-            DROP TRIGGER IF EXISTS printer_pre_admission_attempt_immutable_delete;
-            DROP TABLE IF EXISTS printer_four_token_pre_lifecycle_terminal_provenance;
-            DELETE FROM printer_schema_migrations
-            WHERE version='056_four_token_pre_lifecycle_terminal_provenance.sql';
-            """
-        )
-        connection.commit()
-    finally:
-        connection.close()
+def _apply_migrations_through_055(db: Path) -> None:
+    """Build the historical fixture from the real canonical 001..055 SQL.
+
+    Historical reconciliation is SHA/ledger/schema sensitive.  Applying the
+    current catalogue and then deleting newer ledger rows is not a historical
+    database: later schema objects would remain.  Use a temporary catalogue
+    containing the canonical first 55 migration files and let the production
+    migration runner apply that exact prefix.
+    """
+    canonical = migration_runner.canonical_migration_names()
+    assert len(canonical) >= 55
+    assert canonical[54] == "055_pre_admission_discovery_attempt_ownership.sql"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        historical_dir = Path(tmp) / "migrations-055"
+        historical_dir.mkdir()
+        for name in canonical[:55]:
+            shutil.copy2(migration_runner.MIGRATIONS_DIR / name, historical_dir / name)
+
+        original = migration_runner.MIGRATIONS_DIR
+        migration_runner.MIGRATIONS_DIR = historical_dir
+        try:
+            migration_runner.apply_migrations(db)
+        finally:
+            migration_runner.MIGRATIONS_DIR = original
 
 
 def _locked_snapshot(db: Path) -> dict[str, list[tuple[object, ...]]]:
@@ -98,8 +106,7 @@ def _artifact_payloads() -> dict[str, bytes]:
 
 def _prepare_exact_residue(tmp_path: Path, *, include_discovery_batch: bool = False):
     db = tmp_path / "historical.sqlite3"
-    apply_migrations(db)
-    _downgrade_fixture_to_055(db)
+    _apply_migrations_through_055(db)
     pre_campaign = tmp_path / "printer_v1.pre-campaign.backup.sqlite3"
     shutil.copy2(db, pre_campaign)
 

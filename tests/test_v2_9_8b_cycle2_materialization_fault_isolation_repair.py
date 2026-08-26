@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import json
 import sqlite3
@@ -391,6 +392,23 @@ def test_factory_loop_cycle2_local_failure_preserves_and_drains_cycle1(
     clock = Clock()
     original_plan = factory._plan_opening_jobs
 
+    def virtual_clock_snapshot_factory(*, token_mint, timeout_seconds):
+        inner = _snapshot_factory(
+            token_mint=token_mint, timeout_seconds=timeout_seconds
+        )
+
+        class VirtualClockSnapshotAdapter:
+            def __getattr__(self, name):
+                return getattr(inner, name)
+
+            def execute(self, context):
+                return replace(
+                    inner.execute(context),
+                    received_at=clock.now().isoformat(),
+                )
+
+        return VirtualClockSnapshotAdapter()
+
     def plan_future_cycle1_opening(connection, run_id, targets, now, **kwargs):
         cycle_ordinal = int(kwargs.get("cycle_ordinal") or 1)
         if cycle_ordinal != 1:
@@ -529,7 +547,6 @@ def test_factory_loop_cycle2_local_failure_preserves_and_drains_cycle1(
 
     monkeypatch.setattr(factory, "_now", clock.now)
     monkeypatch.setattr(factory, "_plan_opening_jobs", plan_future_cycle1_opening)
-    monkeypatch.setattr(factory, "_plan_anchored_jobs", lambda *args, **kwargs: None)
     monkeypatch.setattr(coordinator, "admit_two_token_cycle_from_attempt", admit)
     monkeypatch.setattr(
         materialization, "materialize_consumed_pre_admission_pair", materialize
@@ -575,7 +592,7 @@ def test_factory_loop_cycle2_local_failure_preserves_and_drains_cycle1(
         four_token_shared_terminalizer=shared_terminalizer,
         source_governor_owner=OwnerPort(SOURCE_GOVERNOR_OWNER, True),
         central_scheduler_owner=OwnerPort(CENTRAL_SCHEDULER_OWNER, True),
-        snapshot_adapter_factory=_snapshot_factory,
+        snapshot_adapter_factory=virtual_clock_snapshot_factory,
         context_adapter_factories=context_factories,
         lifecycle_operation_observer=observe,
         _sleep=clock.sleep,

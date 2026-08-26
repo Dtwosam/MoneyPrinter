@@ -1,34 +1,30 @@
 # CURRENT HANDOFF
 
-Date: 2026-08-25
+Date: 2026-08-26
 
 ## Current lane
 
-`V2-9.8B Post-07d92adf-Disposition Rereadiness Checkpoint`
+`V2-9.8B Aug-25 Four-Token A-to-Z Repair Implementation`
 
 Status:
 
-`V2_9_8B_POST_07D92ADF_DISPOSITION_EXACT_HEAD_WORKTREE_DB_REREADINESS_PASS_READY_FOR_FRESH_AUTHORIZATION_PREPARATION`
+`V2_9_8B_AUG25_A_TO_Z_REPAIR_IMPLEMENTATION_PASS_READY_FOR_CLOSEOUT`
 
-Design:
+The proven uncommitted Aug-25 four-token A→Z overlay is now the tracked
+implementation. Final genuine-checkout rereadiness of that overlay was already
+closed `V2_9_8B_AUG25_A_TO_Z_REPAIR_REREADINESS_PASS`. This implementation
+commit does not create authorization and does not replace the later
+post-commit exact-HEAD rereadiness.
 
-`docs/printer-v1-v2-9-8b-authorization-handoff-transition-and-supersession-design.md`
+Latest consumed four-token Standard-4H authorization remains historical and
+non-reusable:
 
-Implementation classification:
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260825T134723Z_4563a9dd -> CONSUMED_CHILD_EXITED_ZERO`
 
-`EXACT_POLICY_ADOPTION_AND_PROSPECTIVE_HANDOFF_ENCODING_SUFFICIENT`
+Prior same-day `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260825T105852Z_07d92adf` remains
+`CONSUMED_CHILD_EXITED_NONZERO`.
 
-The canonical `_POLICY_TERMINAL_DISPOSITIONS` owner now contains exactly one
-new registration:
-
-`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260824T222638Z_17181afc -> BLOCKED_UNCONSUMED_SUPERSEDED`
-
-This diagnostic means only: prepared but unconsumed authorization intentionally
-superseded because its exact-HEAD authority became unusable after tracked
-workflow repair. It does not imply consumption, child execution, Printer
-runtime failure, or expiry.
-
-The immutable package remains:
+The superseded unconsumed package remains:
 
 - path:
   `operator-runs/v2-9-8b-four-token-standard-four-hour-final-authorization/V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260824T222638Z_17181afc/final_authorization.json`;
@@ -40,8 +36,6 @@ The immutable package remains:
 - bound authoritative DB SHA-256:
   `9962fc4fe9e47c785e0732450102d0b2f5cd62fff6081b8517102b04a2a9efc5`.
 
-No marker. No child. No application evidence. No campaign.
-
 `...17181afc` is permanently historical and unconsumed. Independent review and
 operator start of that exact package remain forbidden. Transitions A and B
 below do not apply to it.
@@ -49,21 +43,31 @@ below do not apply to it.
 ## Exact next permitted action
 
 ```text
-V2-9.8B FRESH EXACT-HEAD FOUR-TOKEN STANDARD-FOUR-HOUR 4/2/2
-AUTHORIZATION PREPARATION ONLY
+V2-9.8B AUG-25 FOUR-TOKEN A-TO-Z REPAIR CLOSEOUT ONLY
 ```
 
-Rereadiness result:
+Implementation/proof result:
 
-`V2_9_8B_POST_07D92ADF_DISPOSITION_EXACT_HEAD_WORKTREE_DB_REREADINESS_PASS_READY_FOR_FRESH_AUTHORIZATION_PREPARATION`
+`V2_9_8B_AUG25_A_TO_Z_REPAIR_IMPLEMENTATION_PASS_READY_FOR_CLOSEOUT`
 
-This checkpoint authorizes only preparation of one brand-new replacement
-four-token Standard-4H 4/2/2 authorization bound to the exact checkpoint HEAD
-printed by the rereadiness runner. Preparation must stop before independent
-review.
+Narrow production change:
 
-The consumed `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260825T105852Z_07d92adf` authorization remains historical, permanently
-non-reusable, and has terminal disposition `CONSUMED_CHILD_EXITED_NONZERO`.
+- lawful typed `TIMELY_ACQUISITION_NOT_PRODUCIBLE` preclose skip is
+  terminal-acceptable without converting failed jobs into success;
+- cooperative Scheduler yield may mirror campaign `scheduler_work`
+  `RUNNING -> PENDING` only after the bound Central Scheduler job is already
+  released `PENDING`;
+- Cycle-2 frozen tracking lane may use already-linked exact-pair market
+  responses as projection-only classifier evidence; no new source request;
+- `owned_proof_cycle_id` is initialized before the outer exception owner;
+- `...4563a9dd` is registered `CONSUMED_CHILD_EXITED_ZERO`.
+
+Source Governor and Central Scheduler remain mandatory. No authorization is
+created or reused by this implementation commit.
+
+Pre-implementation overlay rereadiness:
+
+`V2_9_8B_AUG25_A_TO_Z_REPAIR_REREADINESS_PASS`
 
 No tracked `CURRENT_HANDOFF.md` mutation is permitted after a new package is
 prepared; the already-preserved Transition A / Transition B / BLOCK clauses
@@ -152,11 +156,12 @@ No authoritative DB write, provider call, authorization, retry, rerun, resume,
 restart, or successor was created by this implementation proof.
 
 
-This rereadiness checkpoint authorizes only preparation of one brand-new
-replacement four-token Standard-4H 4/2/2 authorization bound to this
-checkpoint's exact tracked HEAD. Preparation must stop before independent
-review. The already-tracked Transition A / Transition B / BLOCK clauses below
-govern later no-HEAD-change transitions.
+The prior post-07d92adf rereadiness that permitted fresh authorization
+preparation is historical and non-authoritative after this A→Z implementation
+commit. HEAD will change. Authorization preparation remains forbidden until a
+later post-commit exact-HEAD / worktree / DB rereadiness. The already-tracked
+Transition A / Transition B / BLOCK clauses below remain required for that
+later no-HEAD-change sequence.
 
 ### Historical implementation-proof boundary — CLOSED / NON-AUTHORITATIVE
 
