@@ -438,7 +438,13 @@ Role:
 - medium-term behavior
 - shows whether the token survived beyond the first hype cycle
 
-Under the post-DTW100 standard-four-hour policy, every otherwise-valid activated token with a genuine eligible first-hour predecessor continues to the 4h checkpoint. Outcome and learning-need labels do not qualify that continuation. Real 4h collection still requires the later explicit campaign-integration/rereadiness activation gate; this policy statement alone does not enable runtime.
+Under the post-DTW100 standard-four-hour policy and the 2026-08-26 four-token
+standard-4h source-stack adoption, every otherwise-valid activated token with a
+genuine eligible first-hour predecessor continues to the 4h checkpoint under the
+adopted operational envelope. Outcome and learning-need labels do not qualify
+that continuation. Automatic continuation stops at 4h; `WINDOW_12H` /
+`WINDOW_24H` remain locked. Source-stack adoption of this lifecycle does not by
+itself create authorization or start a campaign.
 
 ### WINDOW_12H
 
@@ -1137,35 +1143,56 @@ V2-9 closed PASS at commit 51bcfdb
 ```
 
 V2-9.7A through V2-9.7F and V2-9.8A are closed PASS. V2-9.8B remains the active
-memory-growth lane. The operational factory active-path restoration supersedes
-the candidate-acquisition prerequisite chain. Its selected implementation
-checkpoint is `7c38f13816169c69697ed19893b7e12802d9b1b7`; candidate-foundation
-adoption first entered the critical path at
+bounded operational Memory Factory lane. The operational factory active-path
+restoration supersedes the candidate-acquisition prerequisite chain. Its
+selected implementation checkpoint is `7c38f13816169c69697ed19893b7e12802d9b1b7`;
+candidate-foundation adoption first entered the critical path at
 `219ad8125a75f52686bfbf5953be0fa4cdca4712`.
 
-The proven two-token discovery/selection/tracking route is active in the
-restoration design. Candidate-acquisition N2/N7, global Pump cursor, recovery
+The proven two-token discovery/selection/tracking route remains the concurrent
+active-slot baseline. Candidate-acquisition N2/N7, global Pump cursor, recovery
 and migration-observation admission remain implemented and historically
 evidenced but are deferred/experimental, not operational prerequisites.
-Migration 049 remains supported.
 
-On restoration PASS, the exact next task is operator review of the restoration
-branch and closeout only. Do not start the operational campaign, run the
-published PowerShell command, invoke providers/RPC, run N2/N7 or recovery,
-start V2-10, exceed runtime capacity two, run another selective-1h proof, or
-unlock retrieval/paper/financial capabilities from this guide.
+Current adopted operational envelope (2026-08-26):
+
+`docs/printer-v1-v2-9-8b-four-token-standard-4h-source-stack-adoption.md`
+
+- two cycles;
+- exactly two concurrently active token slots;
+- up to four distinct token identities across the campaign;
+- concurrent capacity remains exactly 2;
+- standard `WINDOW_15M` → hard-gated `WINDOW_1H` → hard-gated `WINDOW_4H` → stop;
+- `WINDOW_12H` / `WINDOW_24H` locked;
+- Cycle-2 fresh slots must be campaign-history disjoint;
+- adoption creates no authorization and unlocks no campaign.
+
+Exact next permitted lane after the synchronization is proved/closed:
+
+```text
+POST-SYNCHRONIZATION FRESH NEXT-BOUNDED-CAMPAIGN AUTHORIZATION
+READINESS / GOVERNANCE ONLY
+```
+
+Do not treat this guide, a prior run, or a consumed authorization as current
+execution authority. Do not start an operational campaign, invoke providers/RPC,
+run N2/N7 or recovery, start V2-10, exceed concurrent capacity two, or unlock
+retrieval/paper/financial capabilities from this guide alone.
 
 Do not use this guide to skip V2-9.7, V2-9.8A, corpus-quality reviews, Lane 9
 BUY policy, or Lane 10 paper-position policy.
 
 If the active memory-growth build order is updated later, this roadmap placement
-must be updated to match the approved order.## 20. First Recommended Memory Factory Configuration
+must be updated to match the approved order.
+
+## 20. First Recommended Memory Factory Configuration
 
 The first operational Memory Factory configuration is not authorized by this
-guide alone. It must come from the committed V2-9.7 implementation and may be
-provided only at V2-9.8A.
+guide alone. It must come from the committed V2-9.8B operational authority and a
+later separate fresh exact-HEAD authorization.
 
-Policy requirements for the first active bounded campaign:
+Historical restoration-proof configuration (preserved; superseded for current
+envelope authority by the 2026-08-26 adoption):
 
 ```text
 active_tokens: 2 first
@@ -1186,6 +1213,34 @@ PnL: locked
 retrieval_activation: locked
 safe_stop: required
 auto_restart_after_terminal_failure: forbidden
+```
+
+Current adopted bounded operational envelope (capability only; not an
+authorization):
+
+```text
+policy_family: V2-9.8B-FOUR-TOKEN-STANDARD-4H-OPERATIONAL-V1
+active_cycles: 2
+concurrent_active_token_slots: 2
+distinct_token_identities_across_campaign: up_to_4
+increase_to_3_or_4_concurrent: locked
+candidate_acquisition_n2_n7: deferred_not_prerequisite
+candidate_cursor_recovery_authority: off
+WINDOW_5M_MICRO_EVENT: conditional support-only
+WINDOW_15M: root main closeout
+WINDOW_1H: hard-gated standard continuation
+WINDOW_4H: hard-gated standard continuation; automatic stop boundary
+WINDOW_12H: locked
+WINDOW_24H: locked
+cycle2_fresh_slots: campaign_history_disjoint_required
+paper_decisions: off
+BUY: locked
+positions: locked
+PnL: locked
+retrieval_activation: locked
+safe_stop: required
+auto_restart_after_terminal_failure: forbidden
+authorization_created_by_this_guide: false
 ```
 
 At V2-9.8A, the assistant must provide the exact verified PowerShell command

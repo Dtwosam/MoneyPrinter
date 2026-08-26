@@ -1094,10 +1094,14 @@ optional-global accounting. The next permitted task is operator review of that
 terminal closeout and redacted evidence. No automatic run, retry, recovery,
 successor, cursor reset, N7, or operational campaign is authorized.
 
-Restored active-path rules:
+Restored active-path rules (historical restoration baseline; current envelope
+clarified by the 2026-08-26 four-token standard-4h source-stack adoption):
 
 - begin with 2 active tokens;
-- active capacity remains exactly 2; no increase to 3 is authorized;
+- concurrent active capacity remains exactly 2; no increase to 3 or 4
+  concurrent tokens is authorized;
+- later adopted 4/2/2 means two cycles × two concurrent slots and up to four
+  distinct token identities across the campaign, not concurrent capacity four;
 - use the proven governed discovery/selection/tracking handoff;
 - do not require or consume candidate-acquisition N2, N7, cursor or recovery state;
 - retain trustworthy positive and negative outcomes as clean when evidence is
@@ -1791,131 +1795,117 @@ learning quality, evidence quality, report clarity, or lock safety is not done.
 
 V2-9.7A through V2-9.7F and V2-9.8A are closed. V2-9.8A verdict is
 `V2_9_8A_OPERATOR_ACTIVATION_GATE_PASS`. V2-9.8B remains the active
-memory-growth lane. Inside it, the operational factory active-path restoration
-remains the restored intake anchor, and later V2-9.8B terminal-safety,
-first-authoritative campaign, forensic audit, and accounting/exact-identity
-report-only repair work has advanced beyond the restoration operator-review
-pointer.
+bounded operational Memory Factory lane.
+
+### Current adopted operational envelope (2026-08-26)
+
+Canonical adoption:
+
+`docs/printer-v1-v2-9-8b-four-token-standard-4h-source-stack-adoption.md`
+
+Adopted authority family:
+
+- `V2-9.8B-FOUR-TOKEN-STANDARD-4H-OPERATIONAL-V1`
+- public mode family: `four-token-standard-four-hour-run`
+
+Exact capacity semantics:
+
+- two cycles;
+- exactly two concurrently active token slots;
+- up to four distinct token identities across the full two-cycle campaign;
+- "four-token" does **not** mean concurrent capacity four;
+- concurrent capacity remains exactly `2`;
+- no capacity increase to 3 or 4 concurrent tokens is authorized.
+
+Standard observation lifecycle:
+
+```text
+WINDOW_15M
+-> hard-gated WINDOW_1H
+-> hard-gated WINDOW_4H
+-> stop
+```
+
+`WINDOW_12H` and `WINDOW_24H` remain locked. `WINDOW_5M_MICRO_EVENT` remains
+support-only.
+
+Cycle-2 fresh-slot identity must be campaign-history disjoint from all earlier
+admitted cycles. Historical identities may appear in discovery diagnostics but
+cannot consume later-cycle fresh slots.
+
+Candidate-acquisition foundation / N2 / N7 / global Pump cursor/recovery remain
+preserved but deferred and are not an operational prerequisite unless a later
+explicit source-stack lane reactivates them.
+
+Implemented capability ≠ previously exercised capability ≠ authorization to run
+now. This adoption creates no authorization and unlocks no campaign.
+
+Exact next permitted lane:
+
+```text
+POST-SYNCHRONIZATION FRESH NEXT-BOUNDED-CAMPAIGN AUTHORIZATION
+READINESS / GOVERNANCE ONLY
+```
+
+A future operational campaign still requires separate fresh exact-HEAD
+authorization, explicit operator approval, exact DB binding, Source Governor,
+Central Scheduler, one-shot semantics, consumed-authorization non-reuse, and no
+automatic retry/resume/restart/successor. Source scarcity and honest evidence
+blockers remain valid terminals. The profile does not promise 4/2/2 success.
+
+Retrieval, paper decisions, BUY/SELL/HOLD, positions, trades, audits, and PnL
+remain locked.
+
+Assistant active anchor:
+`docs/printer-v1-assistant-active-build-order-anchor.md`
+
+### Historical next-lane pointers (preserved; superseded for current authority)
+
+##### Accounting / exact-identity report-only checkpoint — HISTORICAL
 
 The accounting and exact-identity report-only repair is closed:
 
 - design baseline `e71e543d197154eba427b41e2e01574a59f527f5`
 - implementation commits `b168c57`, `fd35b41`, `0118a37`
-- implementation PASS, operator-review PASS, and closeout PASS
+- closeout:
+  `docs/printer-v1-v2-9-8b-accounting-exact-identity-report-only-repair-closeout.md`
 
-Closeout:
-`docs/printer-v1-v2-9-8b-accounting-exact-identity-report-only-repair-closeout.md`
-
-Assistant active anchor:
-`docs/printer-v1-assistant-active-build-order-anchor.md`
-
-The exact next permitted task is the audit-only:
+At that checkpoint the exact next permitted task was:
 
 ```text
 V2-9.8B Post-Accounting-Repair Authoritative WINDOW_15M Campaign Readiness Audit
 ```
 
-That readiness audit may not run providers/RPC, mutate the authoritative
-database, execute a campaign, repair the historical July 31 attempt, generate
-memory, or unlock retrieval or financial capabilities. A readiness PASS may
-authorize only the next approved design/specification or final-authorization
-step.
+That pointer is historical only and is superseded by the 2026-08-26 adoption
+above.
 
-The candidate foundation, N2/N7, global Pump cursor, recovery and
-migration-observation history remains preserved but deferred. No automatic
-run, retry, recovery, cursor reset, N7, provider/RPC execution, operational
-campaign or later runtime lane is authorized.
-
-Retrieval, paper decisions, BUY/SELL/HOLD, positions, trades, audits, and PnL
-remain locked.
-
-##### Post-Authoritative-Readiness Roadmap Review (2026-08-01)
+##### Post-Authoritative-Readiness Roadmap Review (2026-08-01) — HISTORICAL
 
 Verdict:
 
 `V2_9_8B_WINDOW_15M_POST_AUTHORITATIVE_READINESS_ROADMAP_REVIEW_PASS`
 
-The repeated authoritative readiness audit at `21262837322b31301cbfc495f814d7f84f149774` closes the
+The repeated authoritative readiness audit at `21262837322b31301cbfc495f814d7f84f149774` closed the
 current-vs-historical `operator-runs/` reconciliation blocker.
 
-Static review of the exact current operational path finds:
-
-- `git_provenance_authorization_manifest.py` implements strict external
-  manifest/marker validation;
-- `operational_memory_factory_command.py` consumes the four external
-  manifest/marker environment bindings for ordinary preflight/run;
-- `Start-PrinterV1-MemoryFactory.ps1` does not construct or supply those
-  bindings;
-- production has no manifest builder, marker builder, or atomic external
-  one-shot launcher;
-- `_build_manifest` and `_build_marker` exist only in disposable tests;
-- no authoritative external manifest/marker pair exists for reuse;
-- the earlier authorization is consumed and historical-only.
-
-Therefore readiness PASS cannot advance directly to authorization or runtime.
-
-Exact next lane:
+At that 2026-08-01 checkpoint the exact next lane was:
 
 ```text
 V2-9.8B WINDOW_15M External One-Shot Wrapper Manifest and Application Marker Design
 ```
 
-Type: design/specification only.
-
-Required design subjects:
-
-- one authoritative wrapper owner and one child process;
-- exact external root outside the repository;
-- fresh exact branch/HEAD and clean tracked-tree binding;
-- exact current evidence package identities and full file hash/size inventory;
-- preserved tracked historical evidence outside the current allowlist;
-- immutable manifest write and digest;
-- authorization-bound, create-once application marker;
-- marker creation timing as the authorization-consumption boundary;
-- all-or-none four-variable child environment injection;
-- environment removal from parent/successor processes;
-- one invocation only;
-- no automatic retry, manual rerun, resume, restart, or successor;
-- fail-closed behavior before and after marker creation;
-- crash/interruption and partial-artifact handling;
-- no evidence, DB, source, Scheduler, campaign, memory, retrieval, or financial
-  work during design;
-- disposable proof matrix and independent closeout requirements.
-
-Minimum sequence after this roadmap review:
-
-1. design/specification;
-2. narrow implementation if approved;
-3. bounded disposable proof;
-4. independent closeout;
-5. fresh authoritative readiness audit;
-6. fresh final authorization bound to the exact implementation HEAD;
-7. separately approved ordinary `WINDOW_15M` wrapper application;
-8. campaign closeout.
-
-Money-usefulness contribution: prevents another scarce one-shot authorization
-from being consumed by missing or non-atomic provenance artifacts before useful
-paper-only collection begins.
-
-What this lane improves: removes roadmap ambiguity after readiness PASS and
-separates already-built validation from missing real construction/launch
-ownership.
-
-What it still does not unlock: wrapper implementation, manifest or marker
-creation, authorization, provider/source calls, Scheduler/runtime, campaign,
-memory, retrieval, decisions, positions, trades, audits, PnL, or longer windows.
+That wrapper-design next-lane pointer is historical only. Wrapper/manifest/
+marker construction and later standard-4h / four-token operational authority
+advanced afterward and are synchronized into the active source stack by the
+2026-08-26 adoption above. No historical consumed authorization may be reused.
 
 #### Functionality Risks / Setbacks / Efficiency Blockers
 
 | Risk / blocker | Required disposition |
 | --- | --- |
-| Readiness PASS is treated as campaign approval | Block; design is next |
-| Validator existence is mistaken for artifact construction | Record validation/consumer as built and construction as missing |
-| Test fixture is promoted as production wrapper | Prohibited |
-| Consumed authorization is reused | Prohibited; historical-only |
-| Marker is created too early | Design must define exact consumption boundary |
-| Marker is created after child launch | Prohibited; child must receive immutable bound artifacts |
-| Partial manifest/marker write survives | Atomic create-once and fail-closed cleanup contract required |
-| Parent leaks env bindings to later processes | Explicit environment isolation required |
-| Wrapper adds retries or successors | Prohibited |
-| Design drifts into runtime or financial work | Stop immediately |
+| Source-stack adoption is treated as campaign approval | Block; fresh authorization readiness/governance is next |
+| Prior run or consumed authorization is treated as current authority | Prohibited; historical-only |
+| Four-token is misread as >2 concurrent capacity | Block; concurrent capacity remains exactly 2 |
+| Candidate-acquisition N2/N7 is treated as current required next lane | Block; deferred unless later explicit reactivation |
+| Automatic retry/resume/restart/successor is assumed | Prohibited |
+| Design drifts into runtime or financial work during sync closeout | Stop immediately |

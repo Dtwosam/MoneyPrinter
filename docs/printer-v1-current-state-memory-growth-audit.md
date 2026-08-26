@@ -1285,3 +1285,31 @@ BUY_SELL_HOLD_UNLOCKED: NO
 POSITIONS_TRADES_AUDITS_PNL_CREATED: NO
 NEXT_RECOMMENDED_LANE: V2-1 Adopt/Reset Build Order
 ```
+
+## Addendum — 2026-08-26 Four-Token Standard-4H Source-Stack Adoption
+
+This V2-0 audit body remains historical. Current active source-stack authority
+for V2-9.8B operational envelope semantics is:
+
+`docs/printer-v1-v2-9-8b-four-token-standard-4h-source-stack-adoption.md`
+
+Current adopted envelope (capability only; not an authorization):
+
+- V2-9.8B remains the active bounded operational Memory Factory lane;
+- two cycles; exactly 2 concurrent active token slots; up to 4 distinct token
+  identities across the campaign;
+- concurrent capacity remains exactly 2;
+- standard `WINDOW_15M` → hard-gated `WINDOW_1H` → hard-gated `WINDOW_4H` → stop;
+- `WINDOW_12H` / `WINDOW_24H` locked;
+- candidate-acquisition N2/N7/cursor/recovery deferred;
+- implemented ≠ exercised ≠ authorized now.
+
+Exact next permitted lane after the synchronization is proved/closed:
+
+```text
+POST-SYNCHRONIZATION FRESH NEXT-BOUNDED-CAMPAIGN AUTHORIZATION
+READINESS / GOVERNANCE ONLY
+```
+
+The historical `NEXT_RECOMMENDED_LANE: V2-1 Adopt/Reset Build Order` verdict
+above is retained as V2-0 provenance only.

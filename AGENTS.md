@@ -799,6 +799,7 @@ Required supporting audit/readiness/source-stack documents:
 - docs/printer-v1-v2-9-final-closeout.md
 - docs/printer-v1-v2-9-8b-operational-factory-active-path-restoration.md
 - docs/printer-v1-v2-9-8b-operational-factory-active-path-restoration-closeout.md
+- docs/printer-v1-v2-9-8b-four-token-standard-4h-source-stack-adoption.md
 - docs/printer-v1-v2-9-8b-candidate-acquisition-capacity-feasibility-audit.md
 - docs/printer-v1-v2-9-8b-candidate-acquisition-foundation-roadmap-adoption.md
 - docs/printer-v1-v2-9-8b-candidate-acquisition-foundation-combined-audit.md
@@ -820,6 +821,23 @@ Historical proposal:
 Current active memory-growth lane after V2-9.8A operator activation PASS:
 
 - V2-9.8B — Active Bounded Memory Growth Operations
+
+Current adopted bounded operational envelope (2026-08-26 source-stack sync):
+
+- docs/printer-v1-v2-9-8b-four-token-standard-4h-source-stack-adoption.md
+- policy family: `V2-9.8B-FOUR-TOKEN-STANDARD-4H-OPERATIONAL-V1`
+- two cycles; exactly two concurrently active token slots; up to four distinct
+  token identities across the full two-cycle campaign
+- "four-token" does not mean concurrent capacity four; concurrent capacity
+  remains exactly 2; no increase to 3 or 4 concurrent tokens is authorized
+- standard lifecycle: `WINDOW_15M` → hard-gated `WINDOW_1H` → hard-gated
+  `WINDOW_4H` → stop; `WINDOW_12H` / `WINDOW_24H` remain locked
+- Cycle-2 fresh slots must be campaign-history disjoint from earlier admitted
+  cycles
+- candidate-acquisition foundation / N2 / N7 / global Pump cursor/recovery
+  remain preserved but deferred and are not an operational prerequisite
+- this adoption establishes the capability envelope only; it creates no
+  authorization and unlocks no campaign
 
 ### Operational Factory Active-Path Restoration (2026-07-29)
 
@@ -1058,17 +1076,36 @@ The active memory-growth lane remains:
 
 - `V2-9.8B — Active Bounded Memory Growth Operations`
 
-V2-9.8A is closed PASS. V2-9.8B is the separately operator-run bounded
-persistent 15m campaign lane. It does not unlock retrieval, paper decisions,
-BUY/SELL/HOLD, positions, trades, audits, or PnL.
+V2-9.8A is closed PASS. V2-9.8B remains the active bounded operational Memory
+Factory lane. It does not unlock retrieval, paper decisions, BUY/SELL/HOLD,
+positions, trades, audits, or PnL.
 
 Within V2-9.8B, the operational factory active-path restoration supersedes the
 candidate-acquisition prerequisite chain. Candidate foundation, N2/N7, global
 Pump cursor, recovery and migration-observation admission code and evidence are
-deferred, not deleted. The exact next permitted work after restoration PASS is
-operator review of the restoration branch and closeout only. No automatic run,
-retry, recovery, successor, cursor reset, N7, provider/RPC work or operational
-campaign is authorized.
+deferred, not deleted.
+
+The 2026-08-26 four-token standard-4h source-stack adoption supersedes stale
+restoration-only and 2026-08-01 wrapper-design next-lane pointers for current
+authority. Current adopted envelope:
+
+- two cycles;
+- exactly two concurrently active token slots;
+- up to four distinct token identities across the campaign;
+- concurrent capacity remains exactly 2;
+- standard `WINDOW_15M` → hard-gated `WINDOW_1H` → hard-gated `WINDOW_4H` → stop;
+- `WINDOW_12H` / `WINDOW_24H` locked;
+- no authorization is created by the adoption itself.
+
+Exact next permitted lane after the synchronization is proved/closed:
+
+```text
+POST-SYNCHRONIZATION FRESH NEXT-BOUNDED-CAMPAIGN AUTHORIZATION
+READINESS / GOVERNANCE ONLY
+```
+
+No automatic run, retry, recovery, successor, cursor reset, N7, provider/RPC
+work, or operational campaign is authorized by this anchor text alone.
 
 ## Printer V1 Python Builder Guide
 
@@ -1085,7 +1122,12 @@ it must perform the guide's Mandatory Source-Grounded Blocker Investigation and
 classify the issue. Do not issue a repair prompt until the classification shows
 that code is justified.
 
-## V2-9.8B Post-Authoritative-Readiness Roadmap Anchor (2026-08-01)
+## V2-9.8B Post-Authoritative-Readiness Roadmap Anchor (2026-08-01) — HISTORICAL
+
+Historical only. Preserved for provenance. Superseded for current next-lane
+authority by the 2026-08-26 four-token standard-4h source-stack adoption:
+
+- `docs/printer-v1-v2-9-8b-four-token-standard-4h-source-stack-adoption.md`
 
 The repeated post-trust-boundary authoritative readiness audit is closed:
 
@@ -1093,47 +1135,39 @@ The repeated post-trust-boundary authoritative readiness audit is closed:
 - verdict:
   `V2_9_8B_WINDOW_15M_REPEATED_POST_TRUST_BOUNDARY_REPAIR_AUTHORITATIVE_READINESS_AUDIT_PASS`
 
-The repaired current-vs-historical `operator-runs/` reconciliation is ready.
-This does not mean the ordinary `WINDOW_15M` campaign may run.
-
-Current static inspection confirms:
-
-- the production validator already accepts externally supplied manifest and
-  application-marker identities;
-- the operational Python command already consumes the four exact environment
-  bindings;
-- the public PowerShell command does not construct or supply them;
-- real manifest/marker construction and atomic one-shot launch are not
-  implemented;
-- the only constructors are disposable test fixtures;
-- the previous authorization is consumed, historical-only, and not reusable.
-
-The exact next permitted lane is:
+At that 2026-08-01 checkpoint the exact next permitted lane was:
 
 ```text
 V2-9.8B WINDOW_15M External One-Shot Wrapper Manifest and Application Marker Design
 ```
 
-It is design/specification only. It may define ownership, external artifact
-location, atomic creation, immutability, exact branch/HEAD binding, current
-evidence enumeration, authorization consumption, child environment isolation,
-one-attempt/no-retry behavior, cleanup, failure semantics, and proof plan.
+That wrapper-design lane is no longer the current next lane. Wrapper/manifest/
+marker construction and later standard-4h / four-token operational authority
+advanced afterward and are now synchronized into the active source stack by the
+2026-08-26 adoption above. No historical consumed authorization may be reused.
 
-It may not implement the wrapper, create a real manifest or marker, issue
-authorization, contact providers, run Source Governor or Central Scheduler,
-execute a campaign, mutate the authoritative database, generate memory,
-activate retrieval, or unlock paper trading.
+## V2-9.8B Four-Token Standard-4H Source-Stack Adoption Anchor (2026-08-26)
 
-The minimum future sequence is:
+Current adopted operational envelope:
 
-1. external one-shot wrapper manifest/application-marker design;
-2. narrow implementation, if approved;
-3. bounded disposable proof;
-4. independent closeout;
-5. fresh authoritative readiness audit;
-6. fresh exact-HEAD one-shot authorization;
-7. one separately operator-approved ordinary `WINDOW_15M` attempt;
-8. independent campaign closeout.
+- `docs/printer-v1-v2-9-8b-four-token-standard-4h-source-stack-adoption.md`
+- two cycles; exactly 2 concurrent active token slots; up to 4 distinct token
+  identities across the campaign
+- concurrent capacity remains exactly 2
+- standard `WINDOW_15M` → hard-gated `WINDOW_1H` → hard-gated `WINDOW_4H` → stop
+- `WINDOW_12H` / `WINDOW_24H` locked
+- candidate-acquisition N2/N7/cursor/recovery deferred
+- implemented capability ≠ previously exercised capability ≠ authorization now
 
-No existing consumed authorization, `application_started.json`, campaign exit,
-terminal evidence, or historical artifact may be reused as execution authority.
+Exact next permitted lane:
+
+```text
+POST-SYNCHRONIZATION FRESH NEXT-BOUNDED-CAMPAIGN AUTHORIZATION
+READINESS / GOVERNANCE ONLY
+```
+
+This adoption creates no authorization, automatically authorizes no campaign,
+unlocks no live runtime, and leaves fresh exact-HEAD authorization as a
+separate later lane. No existing consumed authorization,
+`application_started.json`, campaign exit, terminal evidence, or historical
+artifact may be reused as execution authority.
