@@ -310,31 +310,142 @@ def _slot_rows(
     return [dict(zip(columns, tuple(row))) for row in cursor.fetchall()]
 
 
-def _historical_slot_identity_sets(
+_CAMPAIGN_HISTORICAL_SLOT_IDENTITY_FIELDS = (
+    "token_slot_id",
+    "token_identity",
+    "token_row_id",
+    "mint_identity",
+    "pair_identity",
+    "pair_row_id",
+)
+
+# Candidate-resolvable fields enforced at later-cycle fresh selection.
+# token_slot_id remains admission-only: a not-yet-admitted candidate has no new
+# persisted slot to compare. lifecycle_identity is not a pairwise-disjoint rule.
+_CAMPAIGN_HISTORICAL_DISJOINT_CANDIDATE_FIELDS = (
+    "mint_identity",
+    "pair_identity",
+    "token_row_id",
+    "pair_row_id",
+    "token_identity",
+)
+
+
+def _historical_slot_identity_sets_for_campaign_run(
     connection: sqlite3.Connection,
     *,
-    binding: MultiCycleCampaignBinding,
+    campaign_id: str,
+    campaign_run_id: str,
 ) -> dict[str, set[object]]:
-    fields = (
-        "token_slot_id",
-        "token_identity",
-        "token_row_id",
-        "mint_identity",
-        "pair_identity",
-        "pair_row_id",
-    )
-    values = {field: set() for field in fields}
+    values = {field: set() for field in _CAMPAIGN_HISTORICAL_SLOT_IDENTITY_FIELDS}
     cursor = connection.execute(
         """SELECT token_slot_id,token_identity,token_row_id,mint_identity,
                   pair_identity,pair_row_id
            FROM printer_memory_factory_campaign_token_slots
            WHERE campaign_id=? AND run_id=?""",
-        (binding.campaign_id, binding.campaign_run_id),
+        (campaign_id, campaign_run_id),
     )
     for row in cursor.fetchall():
-        for index, field in enumerate(fields):
+        for index, field in enumerate(_CAMPAIGN_HISTORICAL_SLOT_IDENTITY_FIELDS):
             values[field].add(row[index])
     return values
+
+
+def _historical_slot_identity_sets(
+    connection: sqlite3.Connection,
+    *,
+    binding: MultiCycleCampaignBinding,
+) -> dict[str, set[object]]:
+    return _historical_slot_identity_sets_for_campaign_run(
+        connection,
+        campaign_id=binding.campaign_id,
+        campaign_run_id=binding.campaign_run_id,
+    )
+
+
+def load_campaign_historical_slot_identity_sets(
+    connection: sqlite3.Connection,
+    *,
+    campaign_id: str,
+    campaign_run_id: str,
+) -> dict[str, set[object]]:
+    """Read-only campaign/run historical admitted-slot identity sets.
+
+    Reuses the exact slot-table semantics owned by this coordinator. Callers must
+    not reconstruct a parallel campaign-history policy elsewhere.
+    """
+    return _historical_slot_identity_sets_for_campaign_run(
+        connection,
+        campaign_id=_required(campaign_id, "campaign_id"),
+        campaign_run_id=_required(campaign_run_id, "campaign_run_id"),
+    )
+
+
+def _candidate_resolvable_historical_identity(
+    candidate: Mapping[str, Any],
+    *,
+    field: str,
+) -> object | None:
+    if field == "mint_identity":
+        for key in ("mint_identity", "mint"):
+            value = candidate.get(key)
+            if value is not None and str(value).strip() != "":
+                return value
+        return None
+    if field == "pair_identity":
+        for key in ("pair_identity", "pool", "pair_address", "pumpswap_pool"):
+            value = candidate.get(key)
+            if value is not None and str(value).strip() != "":
+                return value
+        return None
+    value = candidate.get(field)
+    if value is None:
+        return None
+    if isinstance(value, str) and value.strip() == "":
+        return None
+    return value
+
+
+def filter_candidates_by_campaign_historical_disjointness(
+    candidates: Sequence[Mapping[str, Any]],
+    *,
+    historical: Mapping[str, set[object]],
+) -> tuple[tuple[dict[str, Any], ...], tuple[dict[str, Any], ...]]:
+    """Split eligible inventory into fresh vs campaign-history collisions.
+
+    Historical candidates remain available as diagnostic/rejection evidence. They
+    must not consume a later-cycle fresh selection slot. Filter first; callers
+    then invoke the existing seeded selector/freeze authority over fresh only.
+    """
+    if not isinstance(historical, Mapping):
+        raise MultiCycleCoordinatorError(
+            "campaign historical identity sets are unavailable"
+        )
+    fresh: list[dict[str, Any]] = []
+    excluded: list[dict[str, Any]] = []
+    for raw in candidates:
+        item = dict(raw)
+        collided_field: str | None = None
+        for field in _CAMPAIGN_HISTORICAL_DISJOINT_CANDIDATE_FIELDS:
+            history_values = historical.get(field)
+            if not isinstance(history_values, set):
+                raise MultiCycleCoordinatorError(
+                    "campaign historical identity sets are unavailable"
+                )
+            value = _candidate_resolvable_historical_identity(item, field=field)
+            if value is None:
+                continue
+            if value in history_values:
+                collided_field = field
+                break
+        if collided_field is not None:
+            exclusion = dict(item)
+            exclusion["campaign_historical_disjointness_rejected"] = True
+            exclusion["campaign_historical_disjointness_field"] = collided_field
+            excluded.append(exclusion)
+        else:
+            fresh.append(item)
+    return tuple(fresh), tuple(excluded)
 
 
 def _validate_cycle_history(

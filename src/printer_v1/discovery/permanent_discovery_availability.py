@@ -2621,6 +2621,8 @@ def freeze_eligible_reserve(
     *,
     cycle_seed: str,
     at: str,
+    campaign_historical_identity_sets: Mapping[str, set[object]] | None = None,
+    require_campaign_historical_identity_sets: bool = False,
 ) -> FrozenEligibleReserve:
     """Freeze MEMORY_OBSERVATION_ELIGIBLE rows; select two neutrally, retain spares.
 
@@ -2630,12 +2632,37 @@ def freeze_eligible_reserve(
 
     Post-filter valid depth in selection_authority is the sole freeze-depth
     authority for campaign admission (never raw input count).
+
+    When campaign historical identity sets are supplied, campaign-history
+    collisions are removed before the existing seeded selector runs. Discovery
+    diagnostics may still retain those rows as rejection evidence.
     """
     from printer_v1.discovery.selection_authority import (
         candidate_from_front_door_mapping,
         deterministic_candidate_order,
         select_two_candidates,
     )
+    from printer_v1.operator_cli.multi_cycle_campaign_coordinator import (
+        MultiCycleCoordinatorError,
+        filter_candidates_by_campaign_historical_disjointness,
+    )
+
+    if require_campaign_historical_identity_sets and (
+        campaign_historical_identity_sets is None
+    ):
+        raise MultiCycleCoordinatorError(
+            "campaign historical identity sets are unavailable"
+        )
+
+    selection_input: Sequence[Mapping[str, Any]] = candidates
+    historical_exclusions: tuple[dict[str, Any], ...] = ()
+    if campaign_historical_identity_sets is not None:
+        selection_input, historical_exclusions = (
+            filter_candidates_by_campaign_historical_disjointness(
+                candidates,
+                historical=campaign_historical_identity_sets,
+            )
+        )
 
     instant = _parse_iso(at)
     fresh: list[dict[str, Any]] = []
@@ -2649,7 +2676,7 @@ def freeze_eligible_reserve(
     duplicate_pool_count = 0
     tracking_ineligible_count = 0
     tracking_requalification_required_count = 0
-    for raw in candidates:
+    for raw in selection_input:
         input_count += 1
         item = dict(raw)
         mint = str(item.get("mint") or item.get("mint_identity") or "")
@@ -2716,6 +2743,20 @@ def freeze_eligible_reserve(
         "surplus_target_met": bool(depth_status["surplus_target_met"]),
         "coverage_blocker": bool(depth_status["coverage_blocker"]),
         "surplus_status": depth_status["surplus_status"],
+        "campaign_historical_exclusion_count": len(historical_exclusions),
+        "campaign_historical_exclusions": [
+            {
+                "mint": item.get("mint") or item.get("mint_identity"),
+                "pool": (
+                    item.get("pool")
+                    or item.get("pair_identity")
+                    or item.get("pair_address")
+                    or item.get("pumpswap_pool")
+                ),
+                "field": item.get("campaign_historical_disjointness_field"),
+            }
+            for item in historical_exclusions
+        ],
     }
 
     # MINIMUM_FREEZE_DEPTH is an admission gate, not only a diagnostic.

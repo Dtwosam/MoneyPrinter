@@ -317,12 +317,14 @@ def build_later_cycle_graduated_supply(
     kwargs["cooperative_stage_budget"] = cooperative_stage_budget
     # Exactly one categorical direct-acquisition mode per Scheduler claim.
     kwargs["cooperative_direct_mode"] = cooperative_direct_mode
+    kwargs.pop("enforce_campaign_historical_disjointness", None)
     supply = build_graduated_supply(
         db_path,
         cycle_seed=selection_seed,
         migration_transport=migration_transport,
         now=instant.isoformat(),
         **kwargs,
+        enforce_campaign_historical_disjointness=True,
     )
     if not isinstance(supply, GraduatedSupply):
         raise LaterCycleGraduatedSupplyError("GRADUATED_SUPPLY_RESULT_INVALID")

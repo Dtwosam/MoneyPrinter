@@ -814,6 +814,7 @@ def build_graduated_supply(
     cooperative_phase: str | None = None,
     cooperative_stage_budget: Any | None = None,
     cooperative_direct_mode: str | None = None,
+    enforce_campaign_historical_disjointness: bool = False,
 ) -> GraduatedSupply:
     """Compose discovery + front door via persistent multi-round supply loop.
 
@@ -1004,10 +1005,53 @@ def build_graduated_supply(
         candidate_from_front_door_mapping,
         select_two_candidates,
     )
+    from printer_v1.operator_cli.multi_cycle_campaign_coordinator import (
+        MultiCycleCoordinatorError,
+        filter_candidates_by_campaign_historical_disjointness,
+        load_campaign_historical_slot_identity_sets,
+    )
 
-    # Canonical neutral two-candidate contract over the eligible reserve.
+    # Later-cycle fresh slots: FILTER campaign-history collisions FIRST, then
+    # run the existing seeded selector over the remaining fresh inventory.
+    historical_exclusions: tuple[Mapping[str, Any], ...] = ()
+    selection_reserve = list(reserve)
+    if enforce_campaign_historical_disjointness:
+        if not campaign_id or not run_id:
+            raise GraduatedSupplyError(
+                "INTERNAL_CAMPAIGN_HISTORICAL_IDENTITY_UNAVAILABLE"
+            )
+        import sqlite3 as _sqlite3
+
+        history_connection = _sqlite3.connect(str(db_path))
+        try:
+            try:
+                historical = load_campaign_historical_slot_identity_sets(
+                    history_connection,
+                    campaign_id=str(campaign_id),
+                    campaign_run_id=str(run_id),
+                )
+            except (MultiCycleCoordinatorError, _sqlite3.Error, TypeError, ValueError) as exc:
+                raise GraduatedSupplyError(
+                    "INTERNAL_CAMPAIGN_HISTORICAL_IDENTITY_UNAVAILABLE"
+                ) from exc
+        finally:
+            history_connection.close()
+        # Genuine later cycles must observe earlier admitted slots. Empty history
+        # must not silently become historical_exclusions = empty.
+        if not historical.get("mint_identity"):
+            raise GraduatedSupplyError(
+                "INTERNAL_CAMPAIGN_HISTORICAL_IDENTITY_UNAVAILABLE"
+            )
+        selection_reserve, historical_exclusions = (
+            filter_candidates_by_campaign_historical_disjointness(
+                selection_reserve,
+                historical=historical,
+            )
+        )
+
+    # Canonical neutral two-candidate contract over the fresh eligible reserve.
     authority = select_two_candidates(
-        [candidate_from_front_door_mapping(item) for item in reserve],
+        [candidate_from_front_door_mapping(item) for item in selection_reserve],
         cycle_seed=cycle_seed,
     )
     selected = [item.as_dict() for item in authority.selected]
@@ -1085,6 +1129,24 @@ def build_graduated_supply(
             "discovery_request_key_prefix": active_discovery_prefix,
             "front_door_request_key_prefix": active_front_door_prefix,
             "request_key_prefix": active_front_door_prefix,
+            "campaign_historical_disjointness_enforced": bool(
+                enforce_campaign_historical_disjointness
+            ),
+            "campaign_historical_exclusion_count": len(historical_exclusions),
+            "campaign_historical_exclusions": [
+                {
+                    "mint": item.get("mint") or item.get("mint_identity"),
+                    "pool": (
+                        item.get("pool")
+                        or item.get("pair_identity")
+                        or item.get("pair_address")
+                        or item.get("pumpswap_pool")
+                    ),
+                    "field": item.get("campaign_historical_disjointness_field"),
+                }
+                for item in historical_exclusions
+            ],
+            "fresh_selection_reserve_count": len(selection_reserve),
         }
     )
     if scope_obj is not None:
