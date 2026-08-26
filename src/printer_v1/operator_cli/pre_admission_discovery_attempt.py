@@ -389,6 +389,60 @@ def _candidate_liquidity_usd(candidate: Mapping[str, Any]) -> Any:
     return None
 
 
+def _reject_liquidity_evidence_time_before_proving_response(
+    connection: sqlite3.Connection,
+    *,
+    candidate: Mapping[str, Any],
+) -> None:
+    """Fail closed when retained liquidity chronology precedes its proving response.
+
+    This is a narrow invariant at the frozen-carrier boundary. It does not weaken
+    the linked-market temporal consumer and does not invent missing market fields.
+    """
+    liquidity = candidate.get("liquidity")
+    blob: Mapping[str, Any]
+    if isinstance(liquidity, Mapping):
+        blob = liquidity
+    else:
+        blob = candidate
+    response_id_raw = blob.get("source_response_id")
+    observed_raw = blob.get("liquidity_observed_at")
+    if response_id_raw is None or observed_raw is None:
+        return
+    try:
+        response_id = int(response_id_raw)
+    except (TypeError, ValueError) as exc:
+        raise PreAdmissionAttemptError(
+            "LIQUIDITY_EVIDENCE_TIME_PRECEDES_SOURCE_RESPONSE"
+        ) from exc
+    row = connection.execute(
+        """
+        SELECT received_at, source_status
+          FROM printer_source_responses
+         WHERE id=?
+        """,
+        (response_id,),
+    ).fetchone()
+    if row is None:
+        return
+    if str(row["source_status"] or "").strip().upper() != "COMPLETE":
+        return
+    received_raw = row["received_at"]
+    if received_raw is None:
+        return
+    try:
+        observed = _parse_timestamp(observed_raw, "liquidity_observed_at")
+        received = _parse_timestamp(received_raw, "source_response_received_at")
+    except PreAdmissionAttemptError:
+        raise PreAdmissionAttemptError(
+            "LIQUIDITY_EVIDENCE_TIME_PRECEDES_SOURCE_RESPONSE"
+        ) from None
+    if observed < received:
+        raise PreAdmissionAttemptError(
+            "LIQUIDITY_EVIDENCE_TIME_PRECEDES_SOURCE_RESPONSE"
+        )
+
+
 _CLASSIFIER_MARKET_FIELDS = (
     "price_usd",
     "liquidity_usd",
@@ -592,6 +646,11 @@ def attach_frozen_tracking_lane(
             observed_at=item.observed_at,
         )
     try:
+        if connection is not None:
+            _reject_liquidity_evidence_time_before_proving_response(
+                connection,
+                candidate=_decode_evidence_candidate(item.canonical_evidence_json),
+            )
         classifier_input = project_classifier_candidate_from_pre_admission_evidence(
             mint_identity=item.mint_identity,
             pair_identity=item.pair_identity,

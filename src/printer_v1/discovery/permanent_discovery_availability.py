@@ -219,6 +219,53 @@ def _parse_iso(value: str) -> datetime:
     return parsed
 
 
+def resolve_source_derived_liquidity_observed_at(
+    connection: sqlite3.Connection,
+    *,
+    candidate_observed_at: str | None,
+    fallback_now: str,
+    source_response_id: int | None,
+) -> str:
+    """Resolve retained liquidity evidence time for a governed source response.
+
+    When liquidity is derived from a COMPLETE proving ``printer_source_responses``
+    row, the effective evidence time must not precede that row's ``received_at``.
+    A trustworthy later source observation is preserved via max-semantics.
+    Claim/evaluated_at/`now` alone must never invent an earlier chronology than
+    the proving response.
+    """
+    candidate = str(candidate_observed_at or "").strip() or str(fallback_now)
+    if source_response_id is None:
+        return candidate
+    try:
+        response_id = int(source_response_id)
+    except (TypeError, ValueError):
+        return candidate
+    row = connection.execute(
+        """
+        SELECT received_at, source_status
+          FROM printer_source_responses
+         WHERE id=?
+        """,
+        (response_id,),
+    ).fetchone()
+    if row is None:
+        return candidate
+    if str(row["source_status"] or "").strip().upper() != "COMPLETE":
+        return candidate
+    received_raw = str(row["received_at"] or "").strip()
+    if not received_raw:
+        return candidate
+    try:
+        candidate_dt = _parse_iso(candidate)
+        received_dt = _parse_iso(received_raw)
+    except (TypeError, ValueError):
+        return candidate
+    if candidate_dt >= received_dt:
+        return candidate
+    return received_raw
+
+
 def _canonical_json(value: Mapping[str, Any]) -> str:
     return json.dumps(dict(value), sort_keys=True, separators=(",", ":"))
 
@@ -2083,7 +2130,21 @@ def record_fresh_pool_nominations(
             if raw.get("liquidity_usd") is not None
             else raw.get("liquidity")
         )
-        observed_at = str(raw.get("observed_at") or raw.get("liquidity_observed_at") or now)
+        raw_observed = raw.get("observed_at")
+        if raw_observed is None or (
+            isinstance(raw_observed, str) and not str(raw_observed).strip()
+        ):
+            raw_observed = raw.get("liquidity_observed_at")
+        if isinstance(raw_observed, str) and not str(raw_observed).strip():
+            raw_observed = None
+        observed_at = resolve_source_derived_liquidity_observed_at(
+            connection,
+            candidate_observed_at=(
+                None if raw_observed is None else str(raw_observed)
+            ),
+            fallback_now=now,
+            source_response_id=response_id,
+        )
         explicit_expiry = raw.get("liquidity_evidence_expires_at") or raw.get(
             "evidence_expires_at"
         )
@@ -2784,8 +2845,23 @@ def promote_confirmed_with_retained_liquidity(
         ),
         "source_request_id": evidence.get("request_id"),
         "source_response_id": evidence.get("response_id"),
-        "liquidity_observed_at": str(
-            evidence.get("observed_at") or retained.get("observed_at") or now
+        "liquidity_observed_at": resolve_source_derived_liquidity_observed_at(
+            connection,
+            candidate_observed_at=(
+                str(
+                    evidence.get("observed_at")
+                    or evidence.get("liquidity_observed_at")
+                    or retained.get("observed_at")
+                    or ""
+                ).strip()
+                or None
+            ),
+            fallback_now=now,
+            source_response_id=(
+                None
+                if evidence.get("response_id") is None
+                else int(evidence["response_id"])
+            ),
         ),
     }
     for layer, reason in (
@@ -5797,7 +5873,17 @@ def run_bounded_unknown_liquidity_backup(
                 else:
                     outcome_label = "LIQUIDITY_UNKNOWN"
                     report["still_unknown"] += 1
-                observed_at = now
+                backup_response_id = (
+                    None
+                    if execution.response_record is None
+                    else int(execution.response_record.id)
+                )
+                observed_at = resolve_source_derived_liquidity_observed_at(
+                    connection,
+                    candidate_observed_at=None,
+                    fallback_now=now,
+                    source_response_id=backup_response_id,
+                )
                 item_expires = resolve_liquidity_evidence_expiry(
                     observed_at=observed_at,
                     explicit_expiry=None,
@@ -5806,11 +5892,7 @@ def run_bounded_unknown_liquidity_backup(
                 provenance = {
                     "source": backup_source,
                     "request_id": rid,
-                    "response_id": (
-                        None
-                        if execution.response_record is None
-                        else int(execution.response_record.id)
-                    ),
+                    "response_id": backup_response_id,
                     "liquidity_usd": liquidity_usd,
                     "liquidity_observed_at": observed_at,
                     "liquidity_evidence_expires_at": item_expires,
@@ -6062,6 +6144,7 @@ __all__ = [
     "reconcile_pool_identity",
     "resolve_dexscreener_mint_batch",
     "resolve_liquidity_evidence_expiry",
+    "resolve_source_derived_liquidity_observed_at",
     "run_bounded_unknown_liquidity_backup",
     "run_dexscreener_batch_market_resolution",
     "run_geckoterminal_fresh_nomination",
