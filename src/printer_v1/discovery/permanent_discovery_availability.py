@@ -2643,24 +2643,23 @@ def freeze_eligible_reserve(
         select_two_candidates,
     )
     from printer_v1.operator_cli.multi_cycle_campaign_coordinator import (
-        MultiCycleCoordinatorError,
         filter_candidates_by_campaign_historical_disjointness,
+        require_established_campaign_historical_identity_sets,
     )
 
-    if require_campaign_historical_identity_sets and (
-        campaign_historical_identity_sets is None
-    ):
-        raise MultiCycleCoordinatorError(
-            "campaign historical identity sets are unavailable"
+    historical_sets = campaign_historical_identity_sets
+    if require_campaign_historical_identity_sets:
+        historical_sets = require_established_campaign_historical_identity_sets(
+            historical_sets
         )
 
     selection_input: Sequence[Mapping[str, Any]] = candidates
     historical_exclusions: tuple[dict[str, Any], ...] = ()
-    if campaign_historical_identity_sets is not None:
+    if historical_sets is not None:
         selection_input, historical_exclusions = (
             filter_candidates_by_campaign_historical_disjointness(
                 candidates,
-                historical=campaign_historical_identity_sets,
+                historical=historical_sets,
             )
         )
 
@@ -2794,6 +2793,57 @@ def freeze_eligible_reserve(
         rejected_stale=tuple(sorted(stale, key=lambda item: str(item.get("mint") or ""))),
         frozen_at=at,
         selection_authority=selection_dict,
+    )
+
+
+def freeze_eligible_reserve_for_campaign(
+    connection: sqlite3.Connection,
+    candidates: Sequence[Mapping[str, Any]],
+    *,
+    cycle_seed: str,
+    at: str,
+    campaign_id: str,
+    campaign_run_id: str,
+    enforce_campaign_historical_disjointness: bool,
+) -> FrozenEligibleReserve:
+    """Authoritative freeze boundary with optional campaign-history enforcement.
+
+    When enforcement is required, loads the exact campaign/run historical
+    admitted-slot identity sets from the coordinator owner and fails closed if
+    that history is missing or empty. First-cycle callers pass
+    ``enforce_campaign_historical_disjointness=False`` and remain unchanged.
+    """
+    from printer_v1.operator_cli.multi_cycle_campaign_coordinator import (
+        MultiCycleCoordinatorError,
+        load_campaign_historical_slot_identity_sets,
+        require_established_campaign_historical_identity_sets,
+    )
+
+    if not enforce_campaign_historical_disjointness:
+        return freeze_eligible_reserve(
+            candidates,
+            cycle_seed=cycle_seed,
+            at=at,
+        )
+    try:
+        historical = load_campaign_historical_slot_identity_sets(
+            connection,
+            campaign_id=str(campaign_id),
+            campaign_run_id=str(campaign_run_id),
+        )
+        historical = require_established_campaign_historical_identity_sets(historical)
+    except MultiCycleCoordinatorError:
+        raise
+    except (sqlite3.Error, TypeError, ValueError) as exc:
+        raise MultiCycleCoordinatorError(
+            "INTERNAL_CAMPAIGN_HISTORICAL_IDENTITY_UNAVAILABLE"
+        ) from exc
+    return freeze_eligible_reserve(
+        candidates,
+        cycle_seed=cycle_seed,
+        at=at,
+        campaign_historical_identity_sets=historical,
+        require_campaign_historical_identity_sets=True,
     )
 
 
@@ -6294,6 +6344,7 @@ __all__ = [
     "derive_campaign_source_request_key_root",
     "format_source_request_reconciliation_detail",
     "freeze_eligible_reserve",
+    "freeze_eligible_reserve_for_campaign",
     "inspect_preexisting_source_request_scope_collision",
     "validate_cooperative_resume_source_request_scope",
     "interleave_candidate_observations",

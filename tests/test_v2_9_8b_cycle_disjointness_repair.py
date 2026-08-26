@@ -16,6 +16,7 @@ from printer_v1.db import apply_migrations
 from printer_v1.discovery.permanent_discovery_availability import (
     MINIMUM_FREEZE_DEPTH,
     freeze_eligible_reserve,
+    freeze_eligible_reserve_for_campaign,
 )
 from printer_v1.discovery.selection_authority import (
     candidate_from_front_door_mapping,
@@ -32,6 +33,7 @@ from printer_v1.operator_cli.multi_cycle_campaign_coordinator import (
     filter_candidates_by_campaign_historical_disjointness,
     load_campaign_historical_slot_identity_sets,
     multi_cycle_configuration_contract,
+    require_established_campaign_historical_identity_sets,
 )
 
 
@@ -512,7 +514,10 @@ def test_seeded_selection_unchanged_when_exclusions_empty() -> None:
 
 def test_require_history_fails_closed_when_sets_missing() -> None:
     inventory = [_moe(FRESH_B_MINT, FRESH_B_POOL), _moe(FRESH_C_MINT, FRESH_C_POOL)]
-    with pytest.raises(MultiCycleCoordinatorError, match="historical identity sets"):
+    with pytest.raises(
+        MultiCycleCoordinatorError,
+        match="INTERNAL_CAMPAIGN_HISTORICAL_IDENTITY_UNAVAILABLE",
+    ):
         freeze_eligible_reserve(
             inventory,
             cycle_seed="seed",
@@ -521,21 +526,111 @@ def test_require_history_fails_closed_when_sets_missing() -> None:
         )
 
 
-def test_later_cycle_supply_enforces_campaign_historical_disjointness_flag() -> None:
-    import inspect
+def test_require_history_fails_closed_when_sets_structurally_empty() -> None:
+    inventory = [
+        _moe(FRESH_B_MINT, FRESH_B_POOL),
+        _moe(FRESH_C_MINT, FRESH_C_POOL),
+        _moe(FRESH_D_MINT, FRESH_D_POOL),
+        _moe(FRESH_E_MINT, FRESH_E_POOL),
+    ]
+    empty_history = {
+        "token_slot_id": set(),
+        "token_identity": set(),
+        "token_row_id": set(),
+        "mint_identity": set(),
+        "pair_identity": set(),
+        "pair_row_id": set(),
+    }
+    with pytest.raises(
+        MultiCycleCoordinatorError,
+        match="INTERNAL_CAMPAIGN_HISTORICAL_IDENTITY_UNAVAILABLE",
+    ):
+        freeze_eligible_reserve(
+            inventory,
+            cycle_seed=PARENT_DEFECT_SEED,
+            at=NOW,
+            campaign_historical_identity_sets=empty_history,
+            require_campaign_historical_identity_sets=True,
+        )
+    with pytest.raises(
+        MultiCycleCoordinatorError,
+        match="INTERNAL_CAMPAIGN_HISTORICAL_IDENTITY_UNAVAILABLE",
+    ):
+        require_established_campaign_historical_identity_sets(empty_history)
 
-    from printer_v1.operator_cli import later_cycle_graduated_supply as module
 
-    source = inspect.getsource(module.build_later_cycle_graduated_supply)
-    assert "enforce_campaign_historical_disjointness=True" in source
+def test_wrong_campaign_run_empty_history_fails_closed_when_enforced(connection) -> None:
+    inventory = [
+        _moe(GKUNJ_MINT, GKUNJ_POOL),
+        _moe(CSVBN_MINT, CSVBN_POOL),
+        _moe(FRESH_B_MINT, FRESH_B_POOL),
+        _moe(FRESH_C_MINT, FRESH_C_POOL),
+        _moe(FRESH_D_MINT, FRESH_D_POOL),
+        _moe(FRESH_E_MINT, FRESH_E_POOL),
+    ]
+    with pytest.raises(
+        MultiCycleCoordinatorError,
+        match="INTERNAL_CAMPAIGN_HISTORICAL_IDENTITY_UNAVAILABLE",
+    ):
+        freeze_eligible_reserve_for_campaign(
+            connection,
+            inventory,
+            cycle_seed=PARENT_DEFECT_SEED,
+            at=NOW,
+            campaign_id="missing-campaign",
+            campaign_run_id="missing-run",
+            enforce_campaign_historical_disjointness=True,
+        )
+    _assert_db_ok(connection)
 
 
-def test_build_graduated_supply_accepts_enforce_flag() -> None:
-    import inspect
-
-    from printer_v1.operator_cli._graduated_supply_front_door_base import (
-        build_graduated_supply,
+def test_production_freeze_for_campaign_excludes_gkUnj_after_cycle1(
+    connection,
+) -> None:
+    """Behavioral later-cycle freeze wiring through the authoritative helper."""
+    inventory = [
+        _moe(GKUNJ_MINT, GKUNJ_POOL),
+        _moe(CSVBN_MINT, CSVBN_POOL),
+        _moe(FRESH_B_MINT, FRESH_B_POOL),
+        _moe(FRESH_C_MINT, FRESH_C_POOL),
+        _moe(FRESH_D_MINT, FRESH_D_POOL),
+        _moe(FRESH_E_MINT, FRESH_E_POOL),
+    ]
+    # Parent characterization still holds without enforcement.
+    parent = freeze_eligible_reserve_for_campaign(
+        connection,
+        inventory,
+        cycle_seed=PARENT_DEFECT_SEED,
+        at=NOW,
+        campaign_id=BINDING.campaign_id,
+        campaign_run_id=BINDING.campaign_run_id,
+        enforce_campaign_historical_disjointness=False,
     )
+    assert GKUNJ_MINT in {str(item["mint"]) for item in parent.selected}
 
-    signature = inspect.signature(build_graduated_supply)
-    assert "enforce_campaign_historical_disjointness" in signature.parameters
+    # Exact production later-cycle freeze path: enforce loads coordinator history.
+    prior_cycles = int(
+        connection.execute(
+            """SELECT COUNT(*) FROM printer_memory_factory_campaign_cycles
+               WHERE campaign_id=? AND run_id=?""",
+            (BINDING.campaign_id, BINDING.campaign_run_id),
+        ).fetchone()[0]
+    )
+    assert prior_cycles >= 1
+    frozen = freeze_eligible_reserve_for_campaign(
+        connection,
+        inventory,
+        cycle_seed=PARENT_DEFECT_SEED,
+        at=NOW,
+        campaign_id=BINDING.campaign_id,
+        campaign_run_id=BINDING.campaign_run_id,
+        enforce_campaign_historical_disjointness=True,
+    )
+    selected = {str(item["mint"]) for item in frozen.selected}
+    assert GKUNJ_MINT not in selected
+    assert HQKH_MINT not in selected
+    assert len(frozen.selected) == 2
+    assert frozen.selection_authority["campaign_historical_exclusion_count"] >= 1
+    # Historical mint remains visible in the input/diagnostic inventory.
+    assert any(str(item["mint"]) == GKUNJ_MINT for item in inventory)
+    _assert_db_ok(connection)

@@ -1009,6 +1009,7 @@ def build_graduated_supply(
         MultiCycleCoordinatorError,
         filter_candidates_by_campaign_historical_disjointness,
         load_campaign_historical_slot_identity_sets,
+        require_established_campaign_historical_identity_sets,
     )
 
     # Later-cycle fresh slots: FILTER campaign-history collisions FIRST, then
@@ -1025,23 +1026,24 @@ def build_graduated_supply(
         history_connection = _sqlite3.connect(str(db_path))
         try:
             try:
-                historical = load_campaign_historical_slot_identity_sets(
-                    history_connection,
-                    campaign_id=str(campaign_id),
-                    campaign_run_id=str(run_id),
+                historical = require_established_campaign_historical_identity_sets(
+                    load_campaign_historical_slot_identity_sets(
+                        history_connection,
+                        campaign_id=str(campaign_id),
+                        campaign_run_id=str(run_id),
+                    )
                 )
-            except (MultiCycleCoordinatorError, _sqlite3.Error, TypeError, ValueError) as exc:
+            except (
+                MultiCycleCoordinatorError,
+                _sqlite3.Error,
+                TypeError,
+                ValueError,
+            ) as exc:
                 raise GraduatedSupplyError(
                     "INTERNAL_CAMPAIGN_HISTORICAL_IDENTITY_UNAVAILABLE"
                 ) from exc
         finally:
             history_connection.close()
-        # Genuine later cycles must observe earlier admitted slots. Empty history
-        # must not silently become historical_exclusions = empty.
-        if not historical.get("mint_identity"):
-            raise GraduatedSupplyError(
-                "INTERNAL_CAMPAIGN_HISTORICAL_IDENTITY_UNAVAILABLE"
-            )
         selection_reserve, historical_exclusions = (
             filter_candidates_by_campaign_historical_disjointness(
                 selection_reserve,

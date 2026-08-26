@@ -381,6 +381,33 @@ def load_campaign_historical_slot_identity_sets(
     )
 
 
+def require_established_campaign_historical_identity_sets(
+    historical: Mapping[str, set[object]] | None,
+) -> dict[str, set[object]]:
+    """Fail closed when required later-cycle history is missing or empty.
+
+    A genuine later cycle must observe earlier admitted-slot identity evidence.
+    Structurally valid empty sets must not silently become no exclusions.
+    """
+    if historical is None or not isinstance(historical, Mapping):
+        raise MultiCycleCoordinatorError(
+            "INTERNAL_CAMPAIGN_HISTORICAL_IDENTITY_UNAVAILABLE"
+        )
+    established: dict[str, set[object]] = {}
+    for field in _CAMPAIGN_HISTORICAL_SLOT_IDENTITY_FIELDS:
+        values = historical.get(field)
+        if not isinstance(values, set):
+            raise MultiCycleCoordinatorError(
+                "INTERNAL_CAMPAIGN_HISTORICAL_IDENTITY_UNAVAILABLE"
+            )
+        established[field] = values
+    if not established["mint_identity"]:
+        raise MultiCycleCoordinatorError(
+            "INTERNAL_CAMPAIGN_HISTORICAL_IDENTITY_UNAVAILABLE"
+        )
+    return established
+
+
 def _candidate_resolvable_historical_identity(
     candidate: Mapping[str, Any],
     *,

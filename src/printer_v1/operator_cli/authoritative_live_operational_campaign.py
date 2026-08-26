@@ -4278,7 +4278,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     MEMORY_OBSERVATION_ELIGIBLE,
                     NETWORK,
                     assemble_and_reconcile_campaign_source_requests,
-                    freeze_eligible_reserve,
+                    freeze_eligible_reserve_for_campaign,
                     upsert_reserve_layer,
                 )
 
@@ -4477,10 +4477,25 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 )
                 # Post-filter freeze depth is the sole admission authority.
                 # Never use raw observation_rows count for coverage decisions.
-                frozen_eligible_reserve = freeze_eligible_reserve(
+                # Later-cycle fresh slots: when prior admitted cycles exist for
+                # this campaign/run, load coordinator historical identity sets
+                # and filter before the existing seeded freeze/selector.
+                prior_cycle_count = int(
+                    connection.execute(
+                        """SELECT COUNT(*)
+                           FROM printer_memory_factory_campaign_cycles
+                           WHERE campaign_id=? AND run_id=?""",
+                        (str(command.campaign_id), str(command.run_id)),
+                    ).fetchone()[0]
+                )
+                frozen_eligible_reserve = freeze_eligible_reserve_for_campaign(
+                    connection,
                     observation_rows,
                     cycle_seed=selection_seed,
                     at=datetime.now(timezone.utc).isoformat(),
+                    campaign_id=str(command.campaign_id),
+                    campaign_run_id=str(command.run_id),
+                    enforce_campaign_historical_disjointness=prior_cycle_count >= 1,
                 )
                 freeze_authority = dict(
                     frozen_eligible_reserve.selection_authority or {}
