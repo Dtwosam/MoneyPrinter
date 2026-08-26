@@ -2,15 +2,15 @@
 
 ## Current lane
 
-`V2-9.8B SOURCE-STACK GOVERNANCE SYNCHRONIZATION`
+`V2-9.8B CYCLE-1 HISTORICAL-DISJOINTNESS REPAIR`
 
 Status: **CLOSED — PASS**
 
 Closeout verdict:
 
-`V2_9_8B_SOURCE_STACK_GOVERNANCE_SYNCHRONIZATION_CLOSEOUT_PASS`
+`V2_9_8B_CYCLE1_HISTORICAL_DISJOINTNESS_REPAIR_CLOSEOUT_PASS`
 
-## Repository baseline
+## Repository
 
 Repository:
 
@@ -20,75 +20,104 @@ Branch:
 
 `agent/v2-9-8b-aug25-a2z-repair-application`
 
-Final synchronized source-stack content HEAD before closeout:
+Final repair/proof HEAD before closeout:
 
-`6af670a4ad17f669340cd5f8fce3b26e49bad4d5`
+`58f30f92933a8ea9eeb009a36afb3d41a3b12170`
 
-Governance implementation:
+Implementation commit:
 
-`3dfc5a0b3329164fb2682c478c9c5319198066de`
+`433e7da1f6ffeb2252716a43a76ea511a823cdfe`
 
-Pre-synchronization baseline:
+Pre-repair baseline:
 
-`1cbdf80b750d45df163fe2a525f2fdda3334c855`
+`abe4f5ac7f173fd42c312f068b64d7e84ef68bfa`
 
 The closeout commit is the repository HEAD immediately after applying this handoff.
 
 ## Authoritative database
 
+Path:
+
 `/Users/Dtwo1/Developer/MoneyPrinter/data/printer_v1.sqlite3`
 
-Required SHA-256:
+Current required SHA-256:
 
-`7f3e725fb435c24c507f6e12fbee26789472017e6e0c63361404ab6589f7128c`
+`fa2fd9b5469cade5479fd8c5ef1e854d681d1a90b95dc2bc64b66c17019f7ab8`
+
+The failed campaign legitimately mutated the DB before this repair lane. That post-failure SHA is the current authoritative baseline and must not be reverted to the older pre-run hash.
 
 No authoritative WAL/SHM/journal is permitted at the handoff boundary.
 
-## Resolved governance issue
+## Resolved defect
 
-Resolved classification:
+Primary classification:
 
-`CONTRACT_DRIFT`
+`COMMITTED_CODE_DEFECT`
 
-The active source stack previously retained stale next-lane/activation language that conflicted with later V2-9.8B operational adoption.
+Real Cycle 1 was persisted before freeze selection.
 
-The synchronized source stack now consistently records:
+The prior gate counted persisted campaign-cycle rows and treated:
 
-- two cycles;
-- exactly 2 concurrent active token slots;
-- up to 4 distinct token identities across the full two-cycle campaign;
-- “four-token” does not mean concurrent capacity four;
-- campaign-history disjointness for genuine later cycles;
-- `WINDOW_15M -> hard-gated WINDOW_1H -> hard-gated WINDOW_4H -> stop`;
-- `WINDOW_12H` / `WINDOW_24H` remain locked;
-- `WINDOW_5M_MICRO_EVENT` remains support-only;
-- candidate-acquisition N2/N7/global Pump cursor/recovery work is preserved but deferred.
+`COUNT(*) >= 1`
 
-Historical V2-9.8A/restoration launch imperatives are explicitly historical/superseded and are not current execution authority.
+as proof of a prior cycle.
 
-## Recent completed repair chain
+Therefore Cycle 1 itself activated later-cycle historical-disjointness enforcement and failed because no prior admitted history exists on the first cycle.
 
-The Aug-26 observed defects remain repaired, independently proved, and closed:
+The repair now uses the exact currently executing cycle identity and persisted `cycle_ordinal`:
 
-1. 15m -> 1h campaign-window bind ordering.
-2. Cycle-2 liquidity evidence timestamp/provenance.
-3. Cycle-1/Cycle-2 campaign-history disjointness before later-cycle selection.
+- ordinal 1 -> enforcement false
+- ordinal >1 -> enforcement true
+- invalid current-cycle identity -> fail closed
 
-No closeout in this handoff reopens those repairs.
+Cycle-2 missing-history safety remains fail closed.
+
+## Proof status
+
+Bounded proof:
+
+`V2_9_8B_CYCLE1_HISTORICAL_DISJOINTNESS_REPAIR_BOUNDED_PROOF_PASS`
+
+Proven:
+
+- persisted Cycle 1 -> enforcement false
+- persisted Cycle 2 -> enforcement true
+- reused Cycle-1 identity filtered before seeded Cycle-2 selection
+- Cycle-2 missing history -> `INTERNAL_CAMPAIGN_HISTORICAL_IDENTITY_UNAVAILABLE`
+- invalid current-cycle identity -> fail closed before freeze
+- actual production owner/caller exercised
+- 5 targeted tests passed
+- authoritative DB unchanged during proof
+- no runtime/provider/Scheduler/auth activity during proof
+
+## Historical failed campaign
+
+Preserve:
+
+campaign:
+`20260826T190349Z-fd22410474f7-campaign`
+
+run:
+`20260826T190349Z-fd22410474f7-campaign-run`
+
+cycle:
+`20260826T190349Z-fd22410474f7-cycle`
+
+Do not delete, retry, resume, normalize, or rewrite its evidence.
 
 ## Authorization state
 
 Consumed authorization:
 
-`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260826T114542Z_d3bc361a`
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260826T185611Z_b861fd4c`
 
 State:
 
-**consumed / terminal / permanently non-reusable**
+**terminal / permanently non-reusable**
 
-Never retry, reuse, resume, restart, or automatically create a successor from that authorization.
+No retry, rerun, resume, restart, or automatic successor.
 
-There is currently **no fresh authorization** created by the source-stack synchronization or this closeout.
+There is currently no fresh authorization created by this repair or closeout.
 
 ## Permanent V1 locks
 
@@ -99,32 +128,34 @@ Printer V1 remains:
 - paper-trading only;
 - no live wallet/private keys/signing/real funds/live execution;
 - no paid API dependency;
-- no scoring/ranking/confidence percentages/weighted logic;
+- no scoring/ranking/confidence percentages/weighted decision logic;
 - no embeddings/vectors unless explicitly approved later;
 - no Source Governor bypass;
 - no Central Scheduler bypass;
 - no dirty memory for retrieval/decisions;
 - no retrieval or financial capability before its explicit lane;
-- no BUY/SELL/HOLD, positions, trade events, paper audits, or PnL before their explicit lanes.
+- no BUY/SELL/HOLD, positions, trade events, paper audits, or PnL before their explicit lanes;
+- 5m support-only;
+- 12h/24h locked.
 
 ## Exact next permitted action
 
-**`POST-SYNCHRONIZATION FRESH NEXT-BOUNDED-CAMPAIGN AUTHORIZATION READINESS / GOVERNANCE ONLY`**
+**`POST-REPAIR FRESH NEXT-BOUNDED-CAMPAIGN AUTHORIZATION READINESS / GOVERNANCE ONLY`**
 
 This is not authorization issuance and not campaign execution.
 
-The next lane must first bind and verify:
+The next lane must first revalidate:
 
-- exact current repository HEAD;
-- exact authoritative DB path and SHA;
-- adopted V2-9.8B two-cycle / two-concurrent / up-to-four-distinct profile;
-- one-shot authorization semantics;
-- consumed-authorization non-reuse;
+- exact new repository HEAD after this closeout;
+- current authoritative DB path and SHA;
+- clean tracked state;
+- no conflicting active work;
+- adopted V2-9.8B 4/2/2 envelope;
+- one-shot/no-reuse semantics;
 - Source Governor ownership;
 - Central Scheduler ownership;
-- pre-issuance clean-state/readiness requirements;
-- no forbidden capability unlock.
+- all four completed repair invariants, including this Cycle-1 ordinal gate.
 
-Only after that lane passes may a separately approved fresh exact-HEAD authorization issuance be considered.
+Only after readiness passes may a separately approved fresh exact-HEAD authorization issuance be considered.
 
-No Printer command should be supplied merely from this handoff.
+No Printer launch command should be supplied merely from this handoff.
