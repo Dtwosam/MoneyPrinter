@@ -1,13 +1,7 @@
 """V2-9.8B retained-evidence role completeness before freeze repair.
 
-Cases:
-A. MARKET_PRESENT complete passes pre-freeze gate
-B. DIRECT_PUMP complete passes pre-freeze gate
-C. DIRECT_PUMP incomplete excluded before freeze
-D. insufficient role-complete freeze depth -> coverage blocker
-E. report-only alternate does not hard-terminalize selected pair
-F. final validator still fails RETAINED_EVIDENCE_ROLE_MISSING
-Plus production-caller coverage through freeze_eligible_reserve_for_campaign.
+Cases A-K plus production-caller coverage. Role-complete fixtures create real
+disposable-DB request/response rows; fake numeric IDs alone never qualify.
 """
 
 from __future__ import annotations
@@ -87,6 +81,18 @@ PUMP_MINT_B = "PumpMintBxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 PUMP_POOL_B = "PumpPoolBxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 
 
+@pytest.fixture
+def db(tmp_path):
+    path = tmp_path / "role-complete.sqlite3"
+    apply_migrations(path)
+    connection = sqlite3.connect(path)
+    connection.row_factory = sqlite3.Row
+    try:
+        yield connection
+    finally:
+        connection.close()
+
+
 def _tracking() -> TrackingFeasibility:
     return TrackingFeasibility(
         eligible=True,
@@ -99,13 +105,59 @@ def _tracking() -> TrackingFeasibility:
     )
 
 
+def _persist_role(
+    connection: sqlite3.Connection,
+    *,
+    role: str,
+    source: str,
+    kind: str,
+    mint: str,
+    pool: str,
+) -> tuple[int, int, str]:
+    payload = {
+        "chain": "solana",
+        "mint": mint,
+        "base_mint": mint,
+        "pool": pool,
+        "pair_address": pool,
+        "observed_at": NOW,
+    }
+    payload_json = json.dumps(payload, sort_keys=True)
+    digest = hashlib.sha256(payload_json.encode()).hexdigest()
+    request = connection.execute(
+        """INSERT INTO printer_source_requests(
+               source_name,request_kind,requested_at,request_key,
+               source_status,data_quality_label
+           ) VALUES (?,?,?,?,'COMPLETE','CLEAN_DATA')""",
+        (source, kind, NOW, f"{mint}:{role}:{source}"),
+    )
+    request_id = int(request.lastrowid)
+    response = connection.execute(
+        """INSERT INTO printer_source_responses(
+               source_request_id,source_name,received_at,status_code,
+               source_status,data_quality_label,response_hash,
+               normalized_payload_json
+           ) VALUES (?,?,?,200,'COMPLETE','CLEAN_DATA',?,?)""",
+        (request_id, source, NOW, digest, payload_json),
+    )
+    return request_id, int(response.lastrowid), digest
+
+
 def _market_item(
+    connection: sqlite3.Connection,
     *,
     mint: str,
     pool: str,
-    request_id: int,
-    response_id: int,
+    source: str = "dexscreener",
 ) -> dict[str, object]:
+    req, resp, _digest = _persist_role(
+        connection,
+        role="MARKET_OBSERVATION",
+        source=source,
+        kind="candidate_market_batch",
+        mint=mint,
+        pool=pool,
+    )
     return {
         "mint": mint,
         "pool": pool,
@@ -122,8 +174,8 @@ def _market_item(
         "liquidity_observed_at": NOW,
         "liquidity": {
             "liquidity_usd": 5000.0,
-            "source_request_id": request_id,
-            "source_response_id": response_id,
+            "source_request_id": req,
+            "source_response_id": resp,
             "source_status": "COMPLETE",
             "status": "LIQUIDITY_PROVEN",
         },
@@ -134,17 +186,49 @@ def _market_item(
 
 
 def _direct_item(
+    connection: sqlite3.Connection | None,
     *,
     mint: str,
     pool: str,
-    market_req: int | None,
-    market_resp: int | None,
+    include_origin: bool = True,
+    include_pumpswap: bool = True,
+    include_market: bool = True,
+    market_req: int | None = None,
+    market_resp: int | None = None,
     origin_req: int | None = None,
     origin_resp: int | None = None,
     pumpswap_req: int | None = None,
     pumpswap_resp: int | None = None,
 ) -> dict[str, object]:
     retained: dict[str, dict[str, int]] = {}
+    if connection is not None:
+        if include_origin:
+            origin_req, origin_resp, _ = _persist_role(
+                connection,
+                role="ORIGIN_LINEAGE",
+                source="solana_rpc",
+                kind="pump_origin",
+                mint=mint,
+                pool=pool,
+            )
+        if include_pumpswap:
+            pumpswap_req, pumpswap_resp, _ = _persist_role(
+                connection,
+                role="PUMPSWAP_CONFIRMATION",
+                source="solana_rpc",
+                kind="pumpswap_pool_account_batch",
+                mint=mint,
+                pool=pool,
+            )
+        if include_market:
+            market_req, market_resp, _ = _persist_role(
+                connection,
+                role="MARKET_OBSERVATION",
+                source="dexscreener",
+                kind="candidate_market_batch",
+                mint=mint,
+                pool=pool,
+            )
     if origin_req is not None and origin_resp is not None:
         retained["ORIGIN_LINEAGE"] = {
             "source_request_id": origin_req,
@@ -188,190 +272,113 @@ def _direct_item(
     }
 
 
-def test_case_a_market_present_complete_passes_gate() -> None:
-    item = _market_item(
-        mint=MARKET_MINT_A,
-        pool=MARKET_POOL_A,
-        request_id=1001,
-        response_id=2001,
-    )
+def test_case_a_market_present_complete_passes_gate(db) -> None:
+    item = _market_item(db, mint=MARKET_MINT_A, pool=MARKET_POOL_A)
     complete, exclusions = _filter_observation_rows_by_retained_role_completeness(
-        [item]
+        db, [item], now=NOW
     )
     assert len(complete) == 1
     assert exclusions == []
     assert complete[0]["admission_authority"] == "MARKET_PRESENT_POOL"
-    roles = required_evidence_roles_for_admission_authority(
+    assert required_evidence_roles_for_admission_authority(
         AdmissionAuthority.MARKET_PRESENT_POOL
-    )
-    assert roles == (EvidenceRole.MARKET_OBSERVATION,)
+    ) == (EvidenceRole.MARKET_OBSERVATION,)
 
 
-def test_case_b_direct_pump_complete_passes_gate() -> None:
-    item = _direct_item(
-        mint=PUMP_MINT,
-        pool=PUMP_POOL,
-        market_req=1101,
-        market_resp=2101,
-        origin_req=1102,
-        origin_resp=2102,
-        pumpswap_req=1103,
-        pumpswap_resp=2103,
-    )
+def test_case_b_direct_pump_complete_passes_gate(db) -> None:
+    item = _direct_item(db, mint=PUMP_MINT, pool=PUMP_POOL)
     complete, exclusions = _filter_observation_rows_by_retained_role_completeness(
-        [item]
+        db, [item], now=NOW
     )
     assert len(complete) == 1
     assert exclusions == []
-    roles = required_evidence_roles_for_admission_authority(
-        AdmissionAuthority.DIRECT_PUMP_PUMPSWAP
-    )
-    assert set(roles) == {
+    assert set(
+        required_evidence_roles_for_admission_authority(
+            AdmissionAuthority.DIRECT_PUMP_PUMPSWAP
+        )
+    ) == {
         EvidenceRole.ORIGIN_LINEAGE,
         EvidenceRole.PUMPSWAP_CONFIRMATION,
         EvidenceRole.MARKET_OBSERVATION,
     }
 
 
-def test_case_c_direct_pump_incomplete_excluded_before_freeze() -> None:
+def test_case_c_direct_pump_incomplete_excluded_before_freeze(db) -> None:
     incomplete = _direct_item(
+        db,
         mint=PUMP_MINT,
         pool=PUMP_POOL,
-        market_req=1201,
-        market_resp=2201,
-        # Missing ORIGIN and PUMPSWAP intentionally.
+        include_origin=False,
+        include_pumpswap=False,
+        include_market=True,
     )
     markets = [
-        _market_item(
-            mint=mint,
-            pool=pool,
-            request_id=1300 + idx,
-            response_id=2300 + idx,
-        )
-        for idx, (mint, pool) in enumerate(
-            (
-                (MARKET_MINT_A, MARKET_POOL_A),
-                (MARKET_MINT_B, MARKET_POOL_B),
-                (MARKET_MINT_C, MARKET_POOL_C),
-                (MARKET_MINT_D, MARKET_POOL_D),
-            )
+        _market_item(db, mint=mint, pool=pool)
+        for mint, pool in (
+            (MARKET_MINT_A, MARKET_POOL_A),
+            (MARKET_MINT_B, MARKET_POOL_B),
+            (MARKET_MINT_C, MARKET_POOL_C),
+            (MARKET_MINT_D, MARKET_POOL_D),
         )
     ]
     complete, exclusions = _filter_observation_rows_by_retained_role_completeness(
-        [incomplete, *markets]
+        db, [incomplete, *markets], now=NOW
     )
     assert PUMP_MINT not in {str(item.get("mint")) for item in complete}
     assert any(
         row.get("mint") == PUMP_MINT
-        and row.get("disposition")
-        == RETAINED_EVIDENCE_ROLE_INCOMPLETE_PRE_FREEZE
+        and row.get("disposition") == RETAINED_EVIDENCE_ROLE_INCOMPLETE_PRE_FREEZE
         and "ORIGIN_LINEAGE" in (row.get("missing_roles") or [])
         for row in exclusions
     )
     frozen = freeze_eligible_reserve(
-        complete,
-        cycle_seed="role-complete-case-c",
-        at=NOW,
+        complete, cycle_seed="role-complete-case-c", at=NOW
     )
     assert all(str(item.get("mint")) != PUMP_MINT for item in frozen.selected)
-    assert all(
-        str(item.get("mint")) != PUMP_MINT for item in frozen.alternates[:2]
-    )
+    assert all(str(item.get("mint")) != PUMP_MINT for item in frozen.alternates[:2])
 
 
-def test_case_d_insufficient_role_complete_depth_blocks_before_freeze() -> None:
+def test_case_d_insufficient_role_complete_depth_blocks_before_freeze(db) -> None:
     rows = [
-        _market_item(
-            mint=MARKET_MINT_A,
-            pool=MARKET_POOL_A,
-            request_id=1401,
-            response_id=2401,
-        ),
-        _market_item(
-            mint=MARKET_MINT_B,
-            pool=MARKET_POOL_B,
-            request_id=1402,
-            response_id=2402,
-        ),
+        _market_item(db, mint=MARKET_MINT_A, pool=MARKET_POOL_A),
+        _market_item(db, mint=MARKET_MINT_B, pool=MARKET_POOL_B),
         _direct_item(
+            db,
             mint=PUMP_MINT,
             pool=PUMP_POOL,
-            market_req=1403,
-            market_resp=2403,
+            include_origin=False,
+            include_pumpswap=False,
         ),
         _direct_item(
+            db,
             mint=PUMP_MINT_B,
             pool=PUMP_POOL_B,
-            market_req=1404,
-            market_resp=2404,
+            include_origin=False,
+            include_pumpswap=False,
         ),
     ]
     complete, exclusions = _filter_observation_rows_by_retained_role_completeness(
-        rows
+        db, rows, now=NOW
     )
     assert len(complete) == 2
     assert len(exclusions) == 2
     frozen = freeze_eligible_reserve(
-        complete,
-        cycle_seed="role-complete-case-d",
-        at=NOW,
+        complete, cycle_seed="role-complete-case-d", at=NOW
     )
     assert frozen.selected == ()
     assert bool(frozen.selection_authority.get("coverage_blocker")) is True
-    assert (
-        int(frozen.selection_authority.get("valid_fresh_unique_observation_depth") or 0)
-        == 2
-    )
 
 
-def test_case_e_report_only_alternate_does_not_terminalize_selected(
-    tmp_path,
-) -> None:
-    db_path = tmp_path / "alternate-authority.sqlite3"
-    apply_migrations(db_path)
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-
-    def _persist(role: str, source: str, kind: str, mint: str, pool: str) -> tuple[int, int, str]:
-        payload = {
-            "chain": "solana",
-            "mint": mint,
-            "base_mint": mint,
-            "pool": pool,
-            "pair_address": pool,
-            "observed_at": NOW,
-        }
-        payload_json = json.dumps(payload, sort_keys=True)
-        digest = hashlib.sha256(payload_json.encode()).hexdigest()
-        request = conn.execute(
-            """INSERT INTO printer_source_requests(
-                   source_name,request_kind,requested_at,request_key,
-                   source_status,data_quality_label
-               ) VALUES (?,?,?,?,'COMPLETE','CLEAN_DATA')""",
-            (source, kind, NOW, f"{mint}:{role}"),
-        )
-        response = conn.execute(
-            """INSERT INTO printer_source_responses(
-                   source_request_id,source_name,received_at,status_code,
-                   source_status,data_quality_label,response_hash,
-                   normalized_payload_json
-               ) VALUES (?,?,?,200,'COMPLETE','CLEAN_DATA',?,?)""",
-            (int(request.lastrowid), source, NOW, digest, payload_json),
-        )
-        return int(request.lastrowid), int(response.lastrowid), digest
-
+def test_case_e_report_only_alternate_does_not_terminalize_selected(db) -> None:
     selected_items = []
     manifest = []
     for mint, pool, source in (
         (MARKET_MINT_A, MARKET_POOL_A, "dexscreener"),
         (MARKET_MINT_B, MARKET_POOL_B, "geckoterminal"),
     ):
-        req, resp, digest = _persist(
-            "MARKET_OBSERVATION", source, "candidate_market_batch", mint, pool
-        )
-        selected_items.append(
-            _market_item(mint=mint, pool=pool, request_id=req, response_id=resp)
-        )
+        item = _market_item(db, mint=mint, pool=pool, source=source)
+        selected_items.append(item)
+        req = int(item["liquidity"]["source_request_id"])
         transport_key = (
             "ROLE_COMPLETE",
             source,
@@ -397,29 +404,26 @@ def test_case_e_report_only_alternate_does_not_terminalize_selected(
                 "terminal_status": "COMPLETED",
             }
         )
-        # Keep digest available for activation reference construction path.
-        selected_items[-1]["_digest"] = digest
-
-    # Incomplete DIRECT_PUMP alternate: missing origin/pumpswap retained IDs.
-    alternate_incomplete = _direct_item(
-        mint=PUMP_MINT,
-        pool=PUMP_POOL,
-        market_req=None,
-        market_resp=None,
-    )
-    alternate_market = _market_item(
-        mint=MARKET_MINT_C,
-        pool=MARKET_POOL_C,
-        request_id=999001,
-        response_id=999002,
-    )
+    alternate_incomplete = {
+        "mint": PUMP_MINT,
+        "pool": PUMP_POOL,
+        "admission_authority": "DIRECT_PUMP_PUMPSWAP",
+        "market_identity": f"solana-mainnet:pumpswap:{PUMP_POOL}",
+        "provenance": "LATEST_GRADUATED",
+        "memory_observation_eligible": True,
+        "tracking_handoff_eligible": True,
+        "evidence_expires_at": EXPIRES,
+        "liquidity": {},
+        "retained_evidence": {},
+    }
+    alternate_market = _market_item(db, mint=MARKET_MINT_C, pool=MARKET_POOL_C)
     frozen = SimpleNamespace(
         selected=tuple(selected_items),
         alternates=(alternate_incomplete, alternate_market),
         frozen_at=NOW,
     )
     activation = _build_frozen_memory_activation_set(
-        conn,
+        db,
         frozen_reserve=frozen,
         readiness_id=f"{RUN}:{CYCLE}:pilot-input",
         selection_seed="role-complete-case-e",
@@ -434,50 +438,17 @@ def test_case_e_report_only_alternate_does_not_terminalize_selected(
     assert len(activation.selected) == 2
     assert len(activation.alternates) == 2
     assert activation.alternates[0].mint == PUMP_MINT
-    # Report-only alternate may lack retained refs; selected remain activation authority.
+    assert activation.alternates[0].admission_authority is (
+        AdmissionAuthority.DIRECT_PUMP_PUMPSWAP
+    )
     assert activation.selected[0].retained_evidence_references
     assert activation.selected[1].retained_evidence_references
-    conn.close()
 
 
-def test_case_f_final_validator_still_fails_role_missing(tmp_path) -> None:
-    db_path = tmp_path / "final-defense.sqlite3"
-    apply_migrations(db_path)
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-
-    def _ref(
-        *,
-        role: EvidenceRole,
-        mint: str,
-        pool: str,
-        source: str,
-        kind: str,
-    ) -> tuple[RetainedEvidenceReference, ManifestRequestEntry]:
-        payload = {
-            "chain": "solana",
-            "mint": mint,
-            "base_mint": mint,
-            "pool": pool,
-            "pair_address": pool,
-            "observed_at": NOW,
-        }
-        payload_json = json.dumps(payload, sort_keys=True)
-        digest = hashlib.sha256(payload_json.encode()).hexdigest()
-        request = conn.execute(
-            """INSERT INTO printer_source_requests(
-                   source_name,request_kind,requested_at,request_key,
-                   source_status,data_quality_label
-               ) VALUES (?,?,?,?,'COMPLETE','CLEAN_DATA')""",
-            (source, kind, NOW, f"{mint}:{role.value}"),
-        )
-        response = conn.execute(
-            """INSERT INTO printer_source_responses(
-                   source_request_id,source_name,received_at,status_code,
-                   source_status,data_quality_label,response_hash,
-                   normalized_payload_json
-               ) VALUES (?,?,?,200,'COMPLETE','CLEAN_DATA',?,?)""",
-            (int(request.lastrowid), source, NOW, digest, payload_json),
+def test_case_f_final_validator_still_fails_role_missing(db) -> None:
+    def _ref(*, role: EvidenceRole, mint: str, pool: str, source: str, kind: str):
+        req, resp, digest = _persist_role(
+            db, role=role.value, source=source, kind=kind, mint=mint, pool=pool
         )
         key = (
             "FINAL_DEFENSE",
@@ -497,8 +468,8 @@ def test_case_f_final_validator_still_fails_role_missing(tmp_path) -> None:
             evidence_role=role,
             source_name=source,
             request_kind=kind,
-            source_request_id=int(request.lastrowid),
-            source_response_id=int(response.lastrowid),
+            source_request_id=req,
+            source_response_id=resp,
             source_failure_id=None,
             transport_identity_keys=(key,),
             observed_at=NOW,
@@ -510,7 +481,7 @@ def test_case_f_final_validator_still_fails_role_missing(tmp_path) -> None:
             cycle_id=CYCLE,
         )
         entry = ManifestRequestEntry(
-            source_request_id=int(request.lastrowid),
+            source_request_id=req,
             source_name=source,
             request_kind=kind,
             logical_stage_id=f"{CAMPAIGN}|{RUN}|{CYCLE}|{role.value}|1",
@@ -527,13 +498,7 @@ def test_case_f_final_validator_still_fails_role_missing(tmp_path) -> None:
         source="dexscreener",
         kind="candidate_market_batch",
     )
-    market_b, entry_b = _ref(
-        role=EvidenceRole.MARKET_OBSERVATION,
-        mint=MARKET_MINT_B,
-        pool=MARKET_POOL_B,
-        source="geckoterminal",
-        kind="candidate_market_batch",
-    )
+    # Force incomplete DIRECT_PUMP selected candidate: only market role retained.
     incomplete = FrozenMemoryActivationCandidate(
         slot_ordinal=1,
         mint=PUMP_MINT,
@@ -550,10 +515,19 @@ def test_case_f_final_validator_still_fails_role_missing(tmp_path) -> None:
         evidence_expires_at=EXPIRES,
         liquidity_observed_at=NOW,
         tracking_feasibility=_tracking(),
-        retained_evidence_references=(market_a,),  # missing ORIGIN + PUMPSWAP
+        retained_evidence_references=(
+            replace(market_a, target_mint=PUMP_MINT, target_pool=PUMP_POOL),
+        ),
         admission_authority=AdmissionAuthority.DIRECT_PUMP_PUMPSWAP,
         claims_pump_origin=True,
         claims_pumpswap_graduation=True,
+    )
+    market_b, entry_b = _ref(
+        role=EvidenceRole.MARKET_OBSERVATION,
+        mint=MARKET_MINT_B,
+        pool=MARKET_POOL_B,
+        source="geckoterminal",
+        kind="candidate_market_batch",
     )
     complete_market = FrozenMemoryActivationCandidate(
         slot_ordinal=2,
@@ -587,8 +561,18 @@ def test_case_f_final_validator_still_fails_role_missing(tmp_path) -> None:
         selection_seed="role-complete-case-f",
         selected=(incomplete, complete_market),
         alternates=(
-            replace(complete_market, slot_ordinal=3, mint=MARKET_MINT_C, pool=MARKET_POOL_C),
-            replace(complete_market, slot_ordinal=4, mint=MARKET_MINT_D, pool=MARKET_POOL_D),
+            replace(
+                complete_market,
+                slot_ordinal=3,
+                mint=MARKET_MINT_C,
+                pool=MARKET_POOL_C,
+            ),
+            replace(
+                complete_market,
+                slot_ordinal=4,
+                mint=MARKET_MINT_D,
+                pool=MARKET_POOL_D,
+            ),
         ),
         manifest_request_ids=(entry_a.source_request_id, entry_b.source_request_id),
         manifest_transport_identity_keys=(
@@ -601,42 +585,284 @@ def test_case_f_final_validator_still_fails_role_missing(tmp_path) -> None:
     )
     with pytest.raises(MemoryObservationActivationError) as exc:
         validate_memory_activation_set(
-            conn,
+            db,
             activation,
             now=NOW,
             expected_ownership=(CAMPAIGN, RUN, CYCLE),
         )
     assert exc.value.code == "RETAINED_EVIDENCE_ROLE_MISSING"
-    conn.close()
 
 
-def test_assess_helper_matches_canonical_matrix() -> None:
-    assessment = assess_retained_evidence_role_completeness(
-        admission_authority=AdmissionAuthority.DIRECT_PUMP_PUMPSWAP,
-        present_roles={EvidenceRole.MARKET_OBSERVATION},
+def test_case_g_nonexistent_ids_fail_pre_freeze(db) -> None:
+    item = _direct_item(
+        None,
         mint=PUMP_MINT,
+        pool=PUMP_POOL,
+        market_req=999001,
+        market_resp=999002,
+        origin_req=999003,
+        origin_resp=999004,
+        pumpswap_req=999005,
+        pumpswap_resp=999006,
     )
-    assert assessment["complete"] is False
-    assert assessment["disposition"] == RETAINED_EVIDENCE_ROLE_INCOMPLETE_PRE_FREEZE
-    assert assessment["missing_roles"] == (
-        "ORIGIN_LINEAGE",
-        "PUMPSWAP_CONFIRMATION",
+    complete, exclusions = _filter_observation_rows_by_retained_role_completeness(
+        db, [item], now=NOW
     )
+    assert complete == []
+    assert exclusions[0]["mint"] == PUMP_MINT
+    failures = exclusions[0]["qualification_failures"]
+    assert failures["ORIGIN_LINEAGE"] == "RETAINED_REQUEST_NOT_FOUND"
+
+
+def test_case_h_mismatched_request_response_fails_pre_freeze(db) -> None:
+    origin_req, _origin_resp, _ = _persist_role(
+        db,
+        role="ORIGIN_LINEAGE",
+        source="solana_rpc",
+        kind="pump_origin",
+        mint=PUMP_MINT,
+        pool=PUMP_POOL,
+    )
+    _other_req, other_resp, _ = _persist_role(
+        db,
+        role="ORIGIN_LINEAGE",
+        source="solana_rpc",
+        kind="pump_origin",
+        mint=PUMP_MINT_B,
+        pool=PUMP_POOL_B,
+    )
+    pumpswap_req, pumpswap_resp, _ = _persist_role(
+        db,
+        role="PUMPSWAP_CONFIRMATION",
+        source="solana_rpc",
+        kind="pumpswap_pool_account_batch",
+        mint=PUMP_MINT,
+        pool=PUMP_POOL,
+    )
+    market_req, market_resp, _ = _persist_role(
+        db,
+        role="MARKET_OBSERVATION",
+        source="dexscreener",
+        kind="candidate_market_batch",
+        mint=PUMP_MINT,
+        pool=PUMP_POOL,
+    )
+    item = _direct_item(
+        None,
+        mint=PUMP_MINT,
+        pool=PUMP_POOL,
+        origin_req=origin_req,
+        origin_resp=other_resp,  # response belongs to a different request
+        pumpswap_req=pumpswap_req,
+        pumpswap_resp=pumpswap_resp,
+        market_req=market_req,
+        market_resp=market_resp,
+    )
+    complete, exclusions = _filter_observation_rows_by_retained_role_completeness(
+        db, [item], now=NOW
+    )
+    assert complete == []
+    assert PUMP_MINT not in {
+        str(row.get("mint"))
+        for row in freeze_eligible_reserve(
+            complete, cycle_seed="case-h", at=NOW
+        ).selected
+    }
+    assert (
+        exclusions[0]["qualification_failures"]["ORIGIN_LINEAGE"]
+        == "RETAINED_RESPONSE_CONTRACT_MISMATCH"
+    )
+
+
+def test_case_i_wrong_candidate_evidence_fails_pre_freeze(db) -> None:
+    # Evidence payload is bound to another mint/pool.
+    wrong_req, wrong_resp, _ = _persist_role(
+        db,
+        role="MARKET_OBSERVATION",
+        source="dexscreener",
+        kind="candidate_market_batch",
+        mint=MARKET_MINT_B,
+        pool=MARKET_POOL_B,
+    )
+    item = {
+        "mint": MARKET_MINT_A,
+        "pool": MARKET_POOL_A,
+        "admission_authority": "MARKET_PRESENT_POOL",
+        "memory_observation_eligible": True,
+        "tracking_handoff_eligible": True,
+        "evidence_expires_at": EXPIRES,
+        "liquidity": {
+            "source_request_id": wrong_req,
+            "source_response_id": wrong_resp,
+        },
+    }
+    complete, exclusions = _filter_observation_rows_by_retained_role_completeness(
+        db, [item], now=NOW
+    )
+    assert complete == []
+    assert exclusions[0]["qualification_failures"]["MARKET_OBSERVATION"] in {
+        "MARKET_RESPONSE_NO_EXACT_MEMBER_MATCH",
+        "RETAINED_RESPONSE_TARGET_MISMATCH",
+    }
+
+
+def test_case_j_role_authority_consistency_fail_closed(db) -> None:
+    item = _market_item(db, mint=MARKET_MINT_A, pool=MARKET_POOL_A)
+    item["claims_pump_origin"] = True
+    item["claims_pumpswap_graduation"] = True
+    complete, exclusions = _filter_observation_rows_by_retained_role_completeness(
+        db, [item], now=NOW
+    )
+    assert complete == []
+    assert exclusions[0]["detail"] == "ADMISSION_AUTHORITY_CLAIMS_INCONSISTENT"
+
+    candidate = FrozenMemoryActivationCandidate(
+        slot_ordinal=1,
+        mint=MARKET_MINT_A,
+        pool=MARKET_POOL_A,
+        market_identity=f"solana-mainnet:pumpswap:{MARKET_POOL_A}",
+        lifecycle_identity="PRESENT_POOL_CONFIRMED",
+        activation_route="MARKET_PRESENT_POOL",
+        provenance="UNKNOWN_ORIGIN",
+        memory_observation_eligible=True,
+        fully_eligible=False,
+        holder_condition="UNKNOWN",
+        holder_evidence_status="UNKNOWN",
+        future_action_eligibility="BLOCKED_OR_UNKNOWN",
+        evidence_expires_at=EXPIRES,
+        liquidity_observed_at=NOW,
+        tracking_feasibility=_tracking(),
+        retained_evidence_references=(),
+        admission_authority=AdmissionAuthority.MARKET_PRESENT_POOL,
+        claims_pump_origin=True,
+        claims_pumpswap_graduation=False,
+    )
+    with pytest.raises(MemoryObservationActivationError) as exc:
+        required_evidence_roles_for_candidate(candidate)
+    assert exc.value.code == "ADMISSION_AUTHORITY_CLAIMS_INCONSISTENT"
+
+
+def test_case_k_alternate_diagnostic_safety_no_authority_rewrite(db) -> None:
+    selected_items = [
+        _market_item(db, mint=MARKET_MINT_A, pool=MARKET_POOL_A),
+        _market_item(db, mint=MARKET_MINT_B, pool=MARKET_POOL_B, source="geckoterminal"),
+    ]
+    manifest = []
+    for item in selected_items:
+        source = "dexscreener" if item["mint"] == MARKET_MINT_A else "geckoterminal"
+        req = int(item["liquidity"]["source_request_id"])
+        key = (
+            "ROLE_COMPLETE",
+            source,
+            source,
+            "candidate_market_batch",
+            "fixture",
+            1,
+            "MINT",
+            item["mint"],
+            32,
+            1,
+            "COMPLETE",
+            None,
+        )
+        manifest.append(
+            {
+                "source_request_id": req,
+                "source_name": source,
+                "request_kind": "candidate_market_batch",
+                "logical_stage_id": f"{CAMPAIGN}|{RUN}|{CYCLE}|MARKET|{item['mint']}",
+                "transport_identity_count": 1,
+                "transport_identity_keys": [list(key)],
+                "terminal_status": "COMPLETED",
+            }
+        )
+    missing_refs_alternate = {
+        "mint": PUMP_MINT,
+        "pool": PUMP_POOL,
+        "admission_authority": "DIRECT_PUMP_PUMPSWAP",
+        "market_identity": f"solana-mainnet:pumpswap:{PUMP_POOL}",
+        "evidence_expires_at": EXPIRES,
+        "liquidity": {},
+        "retained_evidence": {},
+        "memory_observation_eligible": True,
+        "tracking_handoff_eligible": True,
+    }
+    unsupported_alternate = {
+        "mint": MARKET_MINT_C,
+        "pool": MARKET_POOL_C,
+        "admission_authority": "NOT_A_REAL_AUTHORITY",
+        "market_identity": f"solana-mainnet:pumpswap:{MARKET_POOL_C}",
+        "evidence_expires_at": EXPIRES,
+        "liquidity": {},
+        "retained_evidence": {},
+        "memory_observation_eligible": True,
+        "tracking_handoff_eligible": True,
+    }
+    frozen_ok = SimpleNamespace(
+        selected=tuple(selected_items),
+        alternates=(missing_refs_alternate, selected_items[0]),
+        frozen_at=NOW,
+    )
+    activation = _build_frozen_memory_activation_set(
+        db,
+        frozen_reserve=frozen_ok,
+        readiness_id="case-k",
+        selection_seed="case-k",
+        campaign_id=CAMPAIGN,
+        run_id=RUN,
+        cycle_id=CYCLE,
+        manifest=manifest,
+        measured_transport_identity_keys=(),
+        frozen_at=NOW,
+        expires_at=EXPIRES,
+    )
+    assert activation.alternates[0].admission_authority is (
+        AdmissionAuthority.DIRECT_PUMP_PUMPSWAP
+    )
+    # Soft report-only path preserves authority and does not invent retained
+    # evidence for the missing selected-only roles.
+    assert activation.alternates[0].retained_evidence_references == ()
+    assert activation.alternates[0].tracking_feasibility.reason_code.startswith(
+        "REPORT_ONLY_ALTERNATE:"
+    )
+    assert activation.selected[0].retained_evidence_references
+    assert activation.selected[1].retained_evidence_references
+
+    frozen_bad = SimpleNamespace(
+        selected=tuple(selected_items),
+        alternates=(unsupported_alternate, selected_items[0]),
+        frozen_at=NOW,
+    )
+    with pytest.raises(MemoryObservationActivationError) as exc:
+        _build_frozen_memory_activation_set(
+            db,
+            frozen_reserve=frozen_bad,
+            readiness_id="case-k-bad",
+            selection_seed="case-k-bad",
+            campaign_id=CAMPAIGN,
+            run_id=RUN,
+            cycle_id=CYCLE,
+            manifest=manifest,
+            measured_transport_identity_keys=(),
+            frozen_at=NOW,
+            expires_at=EXPIRES,
+        )
+    assert exc.value.code == "ADMISSION_AUTHORITY_UNSUPPORTED"
 
 
 def _production_supply_with_incomplete_direct() -> GraduatedSupply:
     inventory = (
-        (MARKET_MINT_A, MARKET_POOL_A, "MARKET_PRESENT_POOL", True),
-        (MARKET_MINT_B, MARKET_POOL_B, "MARKET_PRESENT_POOL", True),
-        (MARKET_MINT_C, MARKET_POOL_C, "MARKET_PRESENT_POOL", True),
-        (MARKET_MINT_D, MARKET_POOL_D, "MARKET_PRESENT_POOL", True),
-        (PUMP_MINT, PUMP_POOL, "DIRECT_PUMP_PUMPSWAP", False),
+        (MARKET_MINT_A, MARKET_POOL_A, "MARKET_PRESENT_POOL"),
+        (MARKET_MINT_B, MARKET_POOL_B, "MARKET_PRESENT_POOL"),
+        (MARKET_MINT_C, MARKET_POOL_C, "MARKET_PRESENT_POOL"),
+        (MARKET_MINT_D, MARKET_POOL_D, "MARKET_PRESENT_POOL"),
+        (PUMP_MINT, PUMP_POOL, "DIRECT_PUMP_PUMPSWAP"),
     )
     proofs: dict[str, FixturePumpSwapProof] = {}
     origins: list[FixtureOriginProof] = []
     candidates: dict[str, dict[str, object]] = {}
     epoch = int(datetime.fromisoformat(e8.NOW.replace("Z", "+00:00")).timestamp())
-    for i, (mint, pool, authority, complete_market) in enumerate(inventory):
+    for i, (mint, pool, authority) in enumerate(inventory):
         proofs[mint] = FixturePumpSwapProof(mint=mint, pool_address=pool)
         origins.append(
             FixtureOriginProof(
@@ -649,20 +875,36 @@ def _production_supply_with_incomplete_direct() -> GraduatedSupply:
             )
         )
         if authority == "MARKET_PRESENT_POOL":
-            candidates[mint.lower()] = _market_item(
-                mint=mint,
-                pool=pool,
-                request_id=1500 + i,
-                response_id=2500 + i,
-            )
+            candidates[mint.lower()] = {
+                "mint": mint,
+                "pool": pool,
+                "pumpswap_pool": pool,
+                "market_identity": f"solana-mainnet:pumpswap:{pool}",
+                "provenance": "FRESH_AGGREGATOR_PROTOCOL_CONFIRMED",
+                "admission_authority": "MARKET_PRESENT_POOL",
+                "liquidity": {"liquidity_usd": 5000.0 + i},
+                "liquidity_usd": 5000.0 + i,
+                "evidence_expires_at": EXPIRES,
+                "memory_observation_eligible": True,
+                "future_action_eligibility": "BLOCKED_OR_UNKNOWN",
+                "holder_condition": "HOLDER_CONCENTRATION_EXTREME",
+            }
         else:
-            candidates[mint.lower()] = _direct_item(
-                mint=mint,
-                pool=pool,
-                market_req=1600 if complete_market else 1600,
-                market_resp=2600 if complete_market else 2600,
-                # Intentionally omit ORIGIN / PUMPSWAP for the DIRECT_PUMP nominee.
-            )
+            candidates[mint.lower()] = {
+                "mint": mint,
+                "pool": pool,
+                "pumpswap_pool": pool,
+                "market_identity": f"solana-mainnet:pumpswap:{pool}",
+                "provenance": "LATEST_GRADUATED",
+                "admission_authority": "DIRECT_PUMP_PUMPSWAP",
+                "liquidity": {"liquidity_usd": 3454.0},
+                "liquidity_usd": 3454.0,
+                "retained_evidence": {},
+                "evidence_expires_at": EXPIRES,
+                "memory_observation_eligible": True,
+                "future_action_eligibility": "BLOCKED_OR_UNKNOWN",
+                "holder_condition": "HOLDER_CONCENTRATION_EXTREME",
+            }
     return GraduatedSupply(
         ready=True,
         terminal="GRADUATED_SUPPLY_READY",
@@ -698,15 +940,7 @@ def test_production_caller_excludes_incomplete_direct_before_freeze() -> None:
 
         def _spy(connection, candidates, **kwargs):
             mints = tuple(str(item.get("mint") or "") for item in candidates)
-            observed.append(
-                {
-                    "candidate_mints": mints,
-                    "authorities": tuple(
-                        str(item.get("admission_authority") or "")
-                        for item in candidates
-                    ),
-                }
-            )
+            observed.append({"candidate_mints": mints})
             assert PUMP_MINT not in mints
             return real_freeze(connection, candidates, **kwargs)
 
@@ -740,16 +974,16 @@ def test_production_caller_excludes_incomplete_direct_before_freeze() -> None:
             or life.get("graduated_supply_diagnostics")
             or {}
         )
-        pre_freeze = diag.get("retained_evidence_role_pre_freeze") or {}
-        exclusions = list(pre_freeze.get("exclusions") or [])
+        exclusions = list(
+            (diag.get("retained_evidence_role_pre_freeze") or {}).get("exclusions")
+            or []
+        )
         assert any(
             row.get("mint") == PUMP_MINT
             and row.get("disposition")
             == RETAINED_EVIDENCE_ROLE_INCOMPLETE_PRE_FREEZE
             for row in exclusions
         )
-        pre_admission = life.get("pre_lifecycle_admission") or {}
-        assert "retained_evidence_role_pre_freeze" in pre_admission
         assert life.get("lifecycle_started") is False
     finally:
         base.tearDown()

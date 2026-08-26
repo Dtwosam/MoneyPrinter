@@ -151,31 +151,146 @@ def required_evidence_roles_for_admission_authority(
     )
 
 
+def claims_consistent_with_admission_authority(
+    admission_authority: AdmissionAuthority,
+    *,
+    claims_pump_origin: bool,
+    claims_pumpswap_graduation: bool,
+) -> bool:
+    """Legacy claims may report provenance only when they match authority."""
+    expected = admission_authority is AdmissionAuthority.DIRECT_PUMP_PUMPSWAP
+    return (
+        bool(claims_pump_origin) is expected
+        and bool(claims_pumpswap_graduation) is expected
+    )
+
+
 def required_evidence_roles_for_candidate(
     candidate: FrozenMemoryActivationCandidate,
 ) -> tuple[EvidenceRole, ...]:
-    """Return the retained role matrix asserted by this candidate's authority."""
-    return required_evidence_roles_for_claims(
+    """Return the retained role matrix owned by admission_authority.
+
+    Legacy claims fields must remain consistent with admission_authority. They
+    never independently weaken or expand the required-role set.
+    """
+    if not claims_consistent_with_admission_authority(
+        candidate.admission_authority,
         claims_pump_origin=bool(candidate.claims_pump_origin),
         claims_pumpswap_graduation=bool(candidate.claims_pumpswap_graduation),
-    )
+    ):
+        raise MemoryObservationActivationError(
+            "ADMISSION_AUTHORITY_CLAIMS_INCONSISTENT",
+            f"{candidate.mint}:{candidate.admission_authority.value}",
+        )
+    return required_evidence_roles_for_admission_authority(candidate.admission_authority)
+
+
+def qualify_candidate_local_retained_role(
+    connection: sqlite3.Connection,
+    *,
+    role: EvidenceRole,
+    mint: str,
+    pool: str,
+    request_id_raw: object,
+    response_id_raw: object,
+    failure_id_raw: object = None,
+    admission_authority: AdmissionAuthority,
+    now: str,
+    evidence_expires_at: str | None = None,
+) -> tuple[bool, str | None]:
+    """Establish qualifying governed candidate-local evidence for one role.
+
+    Reuses the existing retained-response truth contract available before freeze.
+    Manifest/transport-set ownership remains final-validator owned when not yet
+    assembled at this production stage.
+    """
+    if request_id_raw is None or response_id_raw is None:
+        return False, "RETAINED_EVIDENCE_ROLE_MISSING"
+    if failure_id_raw is not None:
+        return False, "RETAINED_SUCCESS_HAS_FAILURE"
+    if evidence_expires_at:
+        try:
+            if _parse_instant(
+                str(evidence_expires_at), code="CANDIDATE_EVIDENCE_EXPIRY_INVALID"
+            ) <= _parse_instant(now, code="ACTIVATION_TIME_INVALID"):
+                return False, "CANDIDATE_EVIDENCE_EXPIRED"
+        except MemoryObservationActivationError as exc:
+            return False, exc.code
+    try:
+        request_id = int(request_id_raw)
+        response_id = int(response_id_raw)
+    except (TypeError, ValueError):
+        return False, "RETAINED_EVIDENCE_ROLE_MISSING"
+
+    request = connection.execute(
+        """SELECT id,source_name,request_kind,request_key,source_status,
+                  data_quality_label
+           FROM printer_source_requests WHERE id=?""",
+        (request_id,),
+    ).fetchone()
+    if request is None:
+        return False, "RETAINED_REQUEST_NOT_FOUND"
+    response = connection.execute(
+        """SELECT id,source_request_id,source_name,source_status,
+                  data_quality_label,response_hash,normalized_payload_json
+           FROM printer_source_responses WHERE id=?""",
+        (response_id,),
+    ).fetchone()
+    if response is None:
+        return False, "RETAINED_RESPONSE_NOT_FOUND"
+
+    def value(row: sqlite3.Row | tuple[Any, ...], key: str, index: int) -> Any:
+        return row[key] if isinstance(row, sqlite3.Row) else row[index]
+
+    if int(value(response, "source_request_id", 1)) != request_id:
+        return False, "RETAINED_RESPONSE_CONTRACT_MISMATCH"
+    if (
+        value(request, "source_status", 4) != "COMPLETE"
+        or value(request, "data_quality_label", 5) != "CLEAN_DATA"
+    ):
+        return False, "RETAINED_REQUEST_CONTRACT_MISMATCH"
+    if (
+        value(response, "source_status", 3) != "COMPLETE"
+        or value(response, "data_quality_label", 4) != "CLEAN_DATA"
+    ):
+        return False, "RETAINED_RESPONSE_CONTRACT_MISMATCH"
+    if value(response, "source_name", 2) != value(request, "source_name", 1):
+        return False, "RETAINED_RESPONSE_CONTRACT_MISMATCH"
+
+    source_name = str(value(request, "source_name", 1) or "")
+    payload_json = value(response, "normalized_payload_json", 6)
+    try:
+        if role is EvidenceRole.MARKET_OBSERVATION:
+            if source_name in {"dexscreener", "geckoterminal"}:
+                _require_market_response_member_binding(
+                    payload_json,
+                    mint=mint,
+                    pool=pool,
+                    source_name=source_name,
+                    require_solana=(
+                        admission_authority is AdmissionAuthority.MARKET_PRESENT_POOL
+                    ),
+                )
+            elif not _payload_matches_target(payload_json, mint=mint, pool=pool):
+                return False, "RETAINED_RESPONSE_TARGET_MISMATCH"
+        elif not _payload_matches_target(payload_json, mint=mint, pool=pool):
+            return False, "RETAINED_RESPONSE_TARGET_MISMATCH"
+    except MemoryObservationActivationError as exc:
+        return False, exc.code
+    return True, None
 
 
 def assess_retained_evidence_role_completeness(
     *,
     admission_authority: AdmissionAuthority,
-    present_roles: Sequence[EvidenceRole] | set[EvidenceRole] | frozenset[EvidenceRole],
+    qualifying_roles: Sequence[EvidenceRole] | set[EvidenceRole] | frozenset[EvidenceRole],
     mint: str = "",
+    qualification_failures: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Binary pre-freeze completeness against the canonical role matrix.
-
-    Completeness is role presence only. Final activation validation remains the
-    fail-closed owner of DB rows, manifest binding, transport identity, and
-    payload hash.
-    """
+    """Binary pre-freeze completeness against qualifying governed roles."""
     required = required_evidence_roles_for_admission_authority(admission_authority)
     present_set: set[EvidenceRole] = set()
-    for role in present_roles:
+    for role in qualifying_roles:
         if isinstance(role, EvidenceRole):
             present_set.add(role)
         else:
@@ -190,6 +305,7 @@ def assess_retained_evidence_role_completeness(
             role.value for role in required if role in present_set
         ),
         "missing_roles": tuple(role.value for role in missing),
+        "qualification_failures": dict(qualification_failures or {}),
         "disposition": (
             None
             if not missing
@@ -1294,7 +1410,9 @@ __all__ = [
     "RetainedEvidenceReference",
     "TrackingFeasibility",
     "assess_retained_evidence_role_completeness",
+    "claims_consistent_with_admission_authority",
     "measure_source_row_ids",
+    "qualify_candidate_local_retained_role",
     "reconcile_activation_source_rows",
     "required_evidence_roles_for_admission_authority",
     "required_evidence_roles_for_candidate",

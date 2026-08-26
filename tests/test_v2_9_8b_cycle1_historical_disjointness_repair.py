@@ -188,8 +188,6 @@ def _supply_with_historical_reuse() -> GraduatedSupply:
                 confirmed=True,
             )
         )
-        market_request_id = 9400 + i
-        market_response_id = 8400 + i
         candidates[mint.lower()] = {
             "mint": mint,
             "pool": pool,
@@ -201,8 +199,6 @@ def _supply_with_historical_reuse() -> GraduatedSupply:
             "admission_authority": "MARKET_PRESENT_POOL",
             "liquidity": {
                 "liquidity_usd": 5000.0 + i * 100,
-                "source_request_id": market_request_id,
-                "source_response_id": market_response_id,
             },
             "liquidity_usd": 5000.0 + i * 100,
             "evidence_expires_at": EXPIRES,

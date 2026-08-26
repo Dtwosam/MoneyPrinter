@@ -118,7 +118,14 @@ def _seed_exact_markets_for_supply(db_path: str, supply: GraduatedSupply) -> Non
 
     Campaign observation rows use proof.mint as the mint identity; seed parents
     for every holder-reserve proof so FK upserts succeed.
+
+    Also materializes minimum real disposable request/response rows for any
+    MARKET_PRESENT_POOL nominee so the pre-freeze retained-role gate can qualify
+    governed candidate-local evidence instead of fake numeric IDs.
     """
+    import hashlib
+    import json
+
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA foreign_keys = ON")
     try:
@@ -150,6 +157,47 @@ def _seed_exact_markets_for_supply(db_path: str, supply: GraduatedSupply) -> Non
                 ),
                 now=e8.NOW,
             )
+            if str(item.get("admission_authority") or "") != "MARKET_PRESENT_POOL":
+                continue
+            payload = {
+                "chain": "solana",
+                "mint": mint,
+                "base_mint": mint,
+                "pool": pool,
+                "pair_address": pool,
+                "observed_at": e8.NOW,
+            }
+            payload_json = json.dumps(payload, sort_keys=True)
+            digest = hashlib.sha256(payload_json.encode()).hexdigest()
+            request = conn.execute(
+                """INSERT INTO printer_source_requests(
+                       source_name,request_kind,requested_at,request_key,
+                       source_status,data_quality_label
+                   ) VALUES (?,?,?,?,'COMPLETE','CLEAN_DATA')""",
+                (
+                    "dexscreener",
+                    "candidate_market_batch",
+                    e8.NOW,
+                    f"fixture-market:{mint}",
+                ),
+            )
+            request_id = int(request.lastrowid)
+            response = conn.execute(
+                """INSERT INTO printer_source_responses(
+                       source_request_id,source_name,received_at,status_code,
+                       source_status,data_quality_label,response_hash,
+                       normalized_payload_json
+                   ) VALUES (?,?,?,200,'COMPLETE','CLEAN_DATA',?,?)""",
+                (request_id, "dexscreener", e8.NOW, digest, payload_json),
+            )
+            response_id = int(response.lastrowid)
+            liquidity = dict(item.get("liquidity") or {})
+            liquidity["source_request_id"] = request_id
+            liquidity["source_response_id"] = response_id
+            liquidity["source_status"] = "COMPLETE"
+            liquidity["status"] = liquidity.get("status") or "LIQUIDITY_PROVEN"
+            item["liquidity"] = liquidity
+            supply.holder_reserve_candidates[proof.mint.lower()] = item
         conn.commit()
     finally:
         conn.close()
@@ -286,22 +334,18 @@ def _permanent_supply(
             # Reuse earlier mint/pool identities so freeze drops duplicates.
             mint = origins[i - 4].mint
             pool = _POOLS[i - 4]
-        market_request_id = 9200 + i
-        market_response_id = 8200 + i
         candidates[mint.lower()] = {
             "mint": mint,
             "pool": pool,
             "pumpswap_pool": pool,
             "market_identity": f"solana-mainnet:pumpswap:{pool}",
             "provenance": "LATEST_GRADUATED" if i % 2 == 0 else "PERSISTED_GRADUATED",
-            # Permanent memory-observation fixtures use MARKET_PRESENT so the
-            # pre-freeze retained-role gate can pass without inventing Pump
-            # origin/pumpswap retained rows.
+            # Permanent memory-observation fixtures use MARKET_PRESENT. Real
+            # request/response rows are materialized by
+            # `_seed_exact_markets_for_supply` before the pre-freeze gate.
             "admission_authority": "MARKET_PRESENT_POOL",
             "liquidity": {
                 "liquidity_usd": 5000.0 + i * 100,
-                "source_request_id": market_request_id,
-                "source_response_id": market_response_id,
             },
             "liquidity_usd": 5000.0 + i * 100,
             "evidence_expires_at": expiry,
@@ -321,8 +365,6 @@ def _permanent_supply(
             base_i = i if i < 4 else i - 4
             mint = origins[base_i].mint
             pool = _POOLS[base_i]
-            market_request_id = 9300 + i
-            market_response_id = 8300 + i
             candidates[proof.mint.lower()] = {
                 "mint": mint,  # identity used for freeze after remap? 
                 # Actually freeze uses item mint from candidate dict.
@@ -336,8 +378,6 @@ def _permanent_supply(
                 "admission_authority": "MARKET_PRESENT_POOL",
                 "liquidity": {
                     "liquidity_usd": 5000.0,
-                    "source_request_id": market_request_id,
-                    "source_response_id": market_response_id,
                 },
                 "liquidity_usd": 5000.0,
                 "evidence_expires_at": EXPIRES,

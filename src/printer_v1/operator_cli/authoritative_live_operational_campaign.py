@@ -1443,30 +1443,23 @@ def _admission_authority_from_freeze_item(item: Mapping[str, Any]) -> Any:
     )
 
 
-def _present_retained_evidence_roles_from_freeze_item(
-    item: Mapping[str, Any],
-) -> set[Any]:
-    """Candidate-local roles that already carry request/response IDs."""
-    from printer_v1.discovery.memory_observation_activation import EvidenceRole
-
-    liquidity = dict(item.get("liquidity") or {})
-    present: set[Any] = set()
-    for role in EvidenceRole:
-        request_id, response_id, _failure_id = _role_ids_from_candidate(
-            item, liquidity, role.value
-        )
-        if request_id is not None and response_id is not None:
-            present.add(role)
-    return present
-
-
 def _filter_observation_rows_by_retained_role_completeness(
+    connection: sqlite3.Connection,
     rows: Sequence[Mapping[str, Any]],
+    *,
+    now: str,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Exclude role-incomplete nominees before the neutral seeded freeze."""
+    """Exclude role-incomplete nominees before the neutral seeded freeze.
+
+    Qualification reuses the existing governed retained-evidence truth contract
+    available before freeze. ID presence alone is never sufficient.
+    """
     from printer_v1.discovery.memory_observation_activation import (
         RETAINED_EVIDENCE_ROLE_INCOMPLETE_PRE_FREEZE,
         assess_retained_evidence_role_completeness,
+        claims_consistent_with_admission_authority,
+        qualify_candidate_local_retained_role,
+        required_evidence_roles_for_admission_authority,
     )
 
     complete_rows: list[dict[str, Any]] = []
@@ -1486,21 +1479,106 @@ def _filter_observation_rows_by_retained_role_completeness(
                     "required_roles": (),
                     "present_roles": (),
                     "missing_roles": (),
+                    "qualification_failures": {
+                        "admission_authority": "ADMISSION_AUTHORITY_UNSUPPORTED"
+                    },
                     "disposition": RETAINED_EVIDENCE_ROLE_INCOMPLETE_PRE_FREEZE,
                     "detail": "ADMISSION_AUTHORITY_UNSUPPORTED",
                 }
             )
             continue
-        present_roles = _present_retained_evidence_roles_from_freeze_item(item)
+
+        # Claims are optional provenance. When present they must match authority.
+        if "claims_pump_origin" in item or "claims_pumpswap_graduation" in item:
+            expected_direct = (
+                admission_authority.value == "DIRECT_PUMP_PUMPSWAP"
+            )
+            claims_origin = bool(
+                item.get(
+                    "claims_pump_origin",
+                    expected_direct,
+                )
+            )
+            claims_graduation = bool(
+                item.get(
+                    "claims_pumpswap_graduation",
+                    expected_direct,
+                )
+            )
+            if not claims_consistent_with_admission_authority(
+                admission_authority,
+                claims_pump_origin=claims_origin,
+                claims_pumpswap_graduation=claims_graduation,
+            ):
+                exclusions.append(
+                    {
+                        "mint": mint,
+                        "pool": pool,
+                        "admission_authority": admission_authority.value,
+                        "required_roles": [
+                            role.value
+                            for role in required_evidence_roles_for_admission_authority(
+                                admission_authority
+                            )
+                        ],
+                        "present_roles": [],
+                        "missing_roles": [],
+                        "qualification_failures": {
+                            "admission_authority": (
+                                "ADMISSION_AUTHORITY_CLAIMS_INCONSISTENT"
+                            )
+                        },
+                        "disposition": RETAINED_EVIDENCE_ROLE_INCOMPLETE_PRE_FREEZE,
+                        "detail": "ADMISSION_AUTHORITY_CLAIMS_INCONSISTENT",
+                    }
+                )
+                continue
+
+        liquidity = dict(item.get("liquidity") or {})
+        qualifying_roles = set()
+        qualification_failures: dict[str, str] = {}
+        for role in required_evidence_roles_for_admission_authority(admission_authority):
+            request_id, response_id, failure_id = _role_ids_from_candidate(
+                item, liquidity, role.value
+            )
+            ok, reason = qualify_candidate_local_retained_role(
+                connection,
+                role=role,
+                mint=mint,
+                pool=pool,
+                request_id_raw=request_id,
+                response_id_raw=response_id,
+                failure_id_raw=failure_id,
+                admission_authority=admission_authority,
+                now=now,
+                evidence_expires_at=(
+                    None
+                    if item.get("evidence_expires_at") is None
+                    else str(item.get("evidence_expires_at"))
+                ),
+            )
+            if ok:
+                qualifying_roles.add(role)
+            else:
+                qualification_failures[role.value] = str(
+                    reason or "RETAINED_EVIDENCE_ROLE_MISSING"
+                )
+
         assessment = assess_retained_evidence_role_completeness(
             admission_authority=admission_authority,
-            present_roles=present_roles,
+            qualifying_roles=qualifying_roles,
             mint=mint,
+            qualification_failures=qualification_failures,
         )
         if assessment["complete"]:
             # Preserve the resolved authority on the freeze item so activation
             # construction cannot re-default an explicit MARKET_PRESENT nominee.
             item["admission_authority"] = admission_authority.value
+            expected_direct = (
+                admission_authority.value == "DIRECT_PUMP_PUMPSWAP"
+            )
+            item["claims_pump_origin"] = expected_direct
+            item["claims_pumpswap_graduation"] = expected_direct
             complete_rows.append(item)
             continue
         exclusions.append(
@@ -1511,6 +1589,9 @@ def _filter_observation_rows_by_retained_role_completeness(
                 "required_roles": list(assessment["required_roles"]),
                 "present_roles": list(assessment["present_roles"]),
                 "missing_roles": list(assessment["missing_roles"]),
+                "qualification_failures": dict(
+                    assessment.get("qualification_failures") or {}
+                ),
                 "disposition": assessment["disposition"],
             }
         )
@@ -1740,6 +1821,11 @@ def _build_frozen_memory_activation_set(
                     "RETAINED_OBSERVATION_TIME_MISSING", mint
                 )
         holder_condition = str(item.get("holder_condition") or "UNKNOWN")
+        tracking_reason = str(item.get("tracking_handoff_reason") or "UNKNOWN")
+        if soft and len(role_refs) < len(required_roles):
+            tracking_reason = (
+                "REPORT_ONLY_ALTERNATE:RETAINED_EVIDENCE_ROLE_MISSING"
+            )
         return FrozenMemoryActivationCandidate(
             slot_ordinal=ordinal,
             mint=mint,
@@ -1769,7 +1855,7 @@ def _build_frozen_memory_activation_set(
             liquidity_observed_at=str(retained_time),
             tracking_feasibility=TrackingFeasibility(
                 eligible=bool(item.get("tracking_handoff_eligible")),
-                reason_code=str(item.get("tracking_handoff_reason") or "UNKNOWN"),
+                reason_code=tracking_reason,
                 tracking_queue_id=(
                     None
                     if item.get("tracking_queue_id") is None
@@ -1799,21 +1885,40 @@ def _build_frozen_memory_activation_set(
     def report_only_alternate(raw: Mapping[str, Any], ordinal: int) -> Any:
         """Project report/diagnostic alternates without selected activation authority.
 
-        Alternates must never independently terminalize an otherwise valid
-        selected activation pair via hard selected-role construction.
+        Narrow soft handling only for missing selected-only retained references.
+        Do not swallow arbitrary integrity failures or rewrite admission authority.
         """
+        report_only_missing_codes = {
+            "RETAINED_EVIDENCE_ROLE_MISSING",
+            "RETAINED_EVIDENCE_REFERENCE_INCOMPLETE",
+            "RETAINED_OBSERVATION_TIME_MISSING",
+            "RETAINED_REQUEST_NOT_IN_MANIFEST",
+            "RETAINED_REQUEST_TRANSPORT_IDENTITY_MISSING",
+        }
         try:
             return candidate(raw, ordinal, soft=True)
-        except MemoryObservationActivationError:
+        except MemoryObservationActivationError as exc:
+            if exc.code not in report_only_missing_codes:
+                raise
             item = dict(raw)
-            mint = str(item.get("mint") or f"alternate-{ordinal}")
-            pool = str(item.get("pool") or f"alternate-pool-{ordinal}")
+            mint = str(item.get("mint") or "")
+            pool = str(item.get("pool") or "")
+            if not mint or not pool:
+                raise MemoryObservationActivationError(
+                    "ACTIVATION_MINT_MISSING" if not mint else "ACTIVATION_POOL_MISSING"
+                ) from exc
+            raw_authority = item.get("admission_authority")
+            if raw_authority is None:
+                raise MemoryObservationActivationError(
+                    "ADMISSION_AUTHORITY_UNSUPPORTED", mint
+                ) from exc
             try:
-                admission_authority = AdmissionAuthority(
-                    str(item.get("admission_authority") or "MARKET_PRESENT_POOL")
-                )
-            except ValueError:
-                admission_authority = AdmissionAuthority.MARKET_PRESENT_POOL
+                admission_authority = AdmissionAuthority(str(raw_authority))
+            except ValueError as authority_exc:
+                raise MemoryObservationActivationError(
+                    "ADMISSION_AUTHORITY_UNSUPPORTED",
+                    str(raw_authority),
+                ) from authority_exc
             claims_pump = (
                 admission_authority is AdmissionAuthority.DIRECT_PUMP_PUMPSWAP
             )
@@ -1853,9 +1958,7 @@ def _build_frozen_memory_activation_set(
                 ),
                 tracking_feasibility=TrackingFeasibility(
                     eligible=bool(item.get("tracking_handoff_eligible", True)),
-                    reason_code=str(
-                        item.get("tracking_handoff_reason") or "REPORT_ONLY_ALTERNATE"
-                    ),
+                    reason_code=f"REPORT_ONLY_ALTERNATE:{exc.code}",
                     tracking_queue_id=None,
                     tracking_queue_status=None,
                     requalification_required=False,
@@ -4663,7 +4766,9 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     role_complete_observation_rows,
                     retained_role_pre_freeze_exclusions,
                 ) = _filter_observation_rows_by_retained_role_completeness(
-                    observation_rows
+                    connection,
+                    observation_rows,
+                    now=evaluated.isoformat(),
                 )
                 supply.diagnostics["retained_evidence_role_pre_freeze"] = {
                     "input_count": len(observation_rows),
