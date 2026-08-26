@@ -219,55 +219,162 @@ def _parse_iso(value: str) -> datetime:
     return parsed
 
 
+_MARKET_PROVING_SOURCES = frozenset({"dexscreener", "geckoterminal"})
+
+
+def _require_positive_int_id(value: object, *, label: str) -> int:
+    del label
+    if isinstance(value, bool) or value is None:
+        raise ValueError("LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID")
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID") from exc
+    if parsed <= 0:
+        raise ValueError("LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID")
+    return parsed
+
+
+def require_proving_liquidity_response_received_at(
+    connection: sqlite3.Connection,
+    *,
+    source_response_id: object,
+    source_request_id: object,
+    source_name: object,
+    mint_identity: str | None = None,
+    pair_identity: str | None = None,
+    observed_at: str | None = None,
+) -> str:
+    """Return proving ``received_at`` only after exact provenance binding.
+
+    Requires the claimed ``(source_name, source_request_id, source_response_id)``
+    tuple to match durable request/response rows. For DexScreener/GeckoTerminal
+    exact-pool liquidity with mint/pair supplied, reuses the existing
+    ``normalize_candidates`` helper to prove the COMPLETE payload contains
+    exactly one matching Solana mint+pair. No parallel payload parser is added.
+    """
+    response_id = _require_positive_int_id(
+        source_response_id, label="source_response_id"
+    )
+    request_id = _require_positive_int_id(
+        source_request_id, label="source_request_id"
+    )
+    claimed_source = str(source_name or "").strip()
+    if not claimed_source:
+        raise ValueError("LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID")
+
+    response = connection.execute(
+        """
+        SELECT id, source_request_id, source_name, received_at, source_status,
+               normalized_payload_json
+          FROM printer_source_responses
+         WHERE id=?
+        """,
+        (response_id,),
+    ).fetchone()
+    if response is None:
+        raise ValueError("LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID")
+    if int(response["id"]) != response_id:
+        raise ValueError("LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID")
+    if int(response["source_request_id"]) != request_id:
+        raise ValueError("LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID")
+    if str(response["source_name"] or "").strip() != claimed_source:
+        raise ValueError("LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID")
+    if str(response["source_status"] or "").strip().upper() != "COMPLETE":
+        raise ValueError("LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID")
+
+    request = connection.execute(
+        """
+        SELECT id, source_name
+          FROM printer_source_requests
+         WHERE id=?
+        """,
+        (request_id,),
+    ).fetchone()
+    if request is None:
+        raise ValueError("LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID")
+    if int(request["id"]) != request_id:
+        raise ValueError("LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID")
+    if str(request["source_name"] or "").strip() != claimed_source:
+        raise ValueError("LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID")
+
+    received_raw = str(response["received_at"] or "").strip()
+    if not received_raw:
+        raise ValueError("LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID")
+    try:
+        _parse_iso(received_raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID") from exc
+
+    mint = str(mint_identity or "").strip() or None
+    pair = str(pair_identity or "").strip() or None
+    if claimed_source in _MARKET_PROVING_SOURCES and mint and pair:
+        from printer_v1.contracts.rules import PRINTER_CHAIN
+        from printer_v1.discovery.parser import normalize_candidates
+
+        try:
+            payload = json.loads(str(response["normalized_payload_json"] or ""))
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ValueError("LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID") from exc
+        if not isinstance(payload, Mapping):
+            raise ValueError("LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID")
+        instant = _parse_iso(observed_at) if observed_at else _parse_iso(received_raw)
+        try:
+            normalized = normalize_candidates(
+                claimed_source, payload, now=instant
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError("LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID") from exc
+        exact = [
+            candidate
+            for candidate in normalized
+            if str(candidate.get("chain") or "").casefold() == PRINTER_CHAIN
+            and str(candidate.get("token_mint") or "") == mint
+            and str(candidate.get("pair_address") or "") == pair
+        ]
+        if len(exact) != 1:
+            raise ValueError("LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID")
+
+    return received_raw
+
+
 def resolve_source_derived_liquidity_observed_at(
     connection: sqlite3.Connection,
     *,
     candidate_observed_at: str | None,
     fallback_now: str,
     source_response_id: int | None,
+    source_request_id: int | None = None,
+    source_name: str | None = None,
+    mint_identity: str | None = None,
+    pair_identity: str | None = None,
 ) -> str:
     """Resolve retained liquidity evidence time for a governed source response.
 
     When ``source_response_id`` is None, preserve legacy/non-source-derived
     behavior using the candidate observation or fallback ``now``.
 
-    When a proving ``source_response_id`` is claimed, the referenced response
-    must exist, be COMPLETE, and carry a lawful ``received_at``. The effective
-    evidence time is ``max(candidate, received_at)``. Claiming an unvalidated
-    proving response and falling back to callback/`now` is forbidden.
+    When a proving response is claimed, the exact
+    ``(source_name, source_request_id, source_response_id)`` provenance tuple
+    must bind to durable COMPLETE rows, and Dex/Gecko exact-pool claims with
+    mint/pair must match via ``normalize_candidates``. The effective evidence
+    time is ``max(candidate, received_at)``.
     """
     candidate = str(candidate_observed_at or "").strip() or str(fallback_now)
     if source_response_id is None:
         return candidate
-    if isinstance(source_response_id, bool):
-        raise ValueError("LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID")
-    try:
-        response_id = int(source_response_id)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID") from exc
-    if response_id <= 0:
-        raise ValueError("LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID")
-    row = connection.execute(
-        """
-        SELECT received_at, source_status
-          FROM printer_source_responses
-         WHERE id=?
-        """,
-        (response_id,),
-    ).fetchone()
-    if row is None:
-        raise ValueError("LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID")
-    if str(row["source_status"] or "").strip().upper() != "COMPLETE":
-        raise ValueError("LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID")
-    received_raw = str(row["received_at"] or "").strip()
-    if not received_raw:
-        raise ValueError("LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID")
-    try:
-        received_dt = _parse_iso(received_raw)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID") from exc
+    received_raw = require_proving_liquidity_response_received_at(
+        connection,
+        source_response_id=source_response_id,
+        source_request_id=source_request_id,
+        source_name=source_name,
+        mint_identity=mint_identity,
+        pair_identity=pair_identity,
+        observed_at=candidate,
+    )
     try:
         candidate_dt = _parse_iso(candidate)
+        received_dt = _parse_iso(received_raw)
     except (TypeError, ValueError):
         return received_raw
     if candidate_dt >= received_dt:
@@ -2153,6 +2260,10 @@ def record_fresh_pool_nominations(
             ),
             fallback_now=now,
             source_response_id=response_id,
+            source_request_id=request_id,
+            source_name=source,
+            mint_identity=mint,
+            pair_identity=pool,
         )
         explicit_expiry = raw.get("liquidity_evidence_expires_at") or raw.get(
             "evidence_expires_at"
@@ -2871,6 +2982,17 @@ def promote_confirmed_with_retained_liquidity(
                 if evidence.get("response_id") is None
                 else int(evidence["response_id"])
             ),
+            source_request_id=(
+                None
+                if evidence.get("request_id") is None
+                else int(evidence["request_id"])
+            ),
+            source_name=str(
+                evidence.get("source_name") or evidence.get("source") or ""
+            ).strip()
+            or None,
+            mint_identity=mint,
+            pair_identity=pool,
         ),
     }
     for layer, reason in (
@@ -5892,6 +6014,10 @@ def run_bounded_unknown_liquidity_backup(
                     candidate_observed_at=None,
                     fallback_now=now,
                     source_response_id=backup_response_id,
+                    source_request_id=rid,
+                    source_name=backup_source,
+                    mint_identity=mint,
+                    pair_identity=pool,
                 )
                 item_expires = resolve_liquidity_evidence_expiry(
                     observed_at=observed_at,
@@ -6153,6 +6279,7 @@ __all__ = [
     "reconcile_pool_identity",
     "resolve_dexscreener_mint_batch",
     "resolve_liquidity_evidence_expiry",
+    "require_proving_liquidity_response_received_at",
     "resolve_source_derived_liquidity_observed_at",
     "run_bounded_unknown_liquidity_backup",
     "run_dexscreener_batch_market_resolution",

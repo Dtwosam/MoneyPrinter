@@ -111,14 +111,38 @@ class TestLiquidityPreservation:
             """,
             (NOW,),
         )
+        proving_payload = json.dumps(
+            {
+                "pairs": [
+                    {
+                        "token_mint": _MINT_A,
+                        "candidate_mint": _MINT_A,
+                        "base_mint": _MINT_A,
+                        "quote_mint": WSOL,
+                        "pair_address": _POOL_A,
+                        "chain": "solana",
+                        "dex_id": "pumpswap",
+                        "liquidity_usd": 4500.0,
+                        "price_usd": 0.001,
+                        "volume_5m": 100.0,
+                        "volume_1h": 200.0,
+                        "volume_24h": 300.0,
+                        "txns_5m": 5,
+                        "txns_1h": 10,
+                        "txns_24h": 20,
+                    }
+                ]
+            },
+            sort_keys=True,
+        )
         connection.execute(
             """
             INSERT INTO printer_source_responses(
                 id, source_request_id, source_name, received_at, source_status,
                 data_quality_label, normalized_payload_json
-            ) VALUES (21, 11, 'dexscreener', ?, 'COMPLETE', 'CLEAN_DATA', '{}')
+            ) VALUES (21, 11, 'dexscreener', ?, 'COMPLETE', 'CLEAN_DATA', ?)
             """,
-            (NOW,),
+            (NOW, proving_payload),
         )
         report = record_fresh_pool_nominations(
             connection,

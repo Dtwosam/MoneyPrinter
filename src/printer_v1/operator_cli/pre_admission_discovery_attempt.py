@@ -394,14 +394,19 @@ def _reject_liquidity_evidence_time_before_proving_response(
     *,
     candidate: Mapping[str, Any],
 ) -> None:
-    """Fail closed when retained liquidity claims an unusable proving response.
+    """Fail closed when retained liquidity claims unusable proving provenance.
 
-    A claimed ``source_response_id`` must resolve to a COMPLETE response with a
-    lawful ``received_at``. Invalid provenance fails closed and must not fall
-    through to WATCH_ONLY. When observed time is also present, it must not
-    precede that proving response. This does not weaken the linked-market
-    temporal consumer.
+    A claimed proving response must bind the exact
+    ``(source_name, source_request_id, source_response_id)`` tuple, and Dex/Gecko
+    exact-pool claims must match mint/pair via the existing
+    ``normalize_candidates`` helper. Invalid provenance fails closed and must not
+    fall through to WATCH_ONLY. When observed time is present, it must not
+    precede the proving response. Linked-market temporal eligibility is unchanged.
     """
+    from printer_v1.discovery.permanent_discovery_availability import (
+        require_proving_liquidity_response_received_at,
+    )
+
     liquidity = candidate.get("liquidity")
     blob: Mapping[str, Any]
     if isinstance(liquidity, Mapping):
@@ -411,42 +416,42 @@ def _reject_liquidity_evidence_time_before_proving_response(
     response_id_raw = blob.get("source_response_id")
     if response_id_raw is None:
         return
-    if isinstance(response_id_raw, bool):
-        raise PreAdmissionAttemptError("LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID")
-    try:
-        response_id = int(response_id_raw)
-    except (TypeError, ValueError) as exc:
-        raise PreAdmissionAttemptError(
-            "LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID"
-        ) from exc
-    if response_id <= 0:
-        raise PreAdmissionAttemptError("LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID")
-    row = connection.execute(
-        """
-        SELECT received_at, source_status
-          FROM printer_source_responses
-         WHERE id=?
-        """,
-        (response_id,),
-    ).fetchone()
-    if row is None:
-        raise PreAdmissionAttemptError("LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID")
-    if str(row["source_status"] or "").strip().upper() != "COMPLETE":
-        raise PreAdmissionAttemptError("LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID")
-    received_raw = row["received_at"]
-    if received_raw is None or not str(received_raw).strip():
-        raise PreAdmissionAttemptError("LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID")
-    try:
-        received = _parse_timestamp(received_raw, "source_response_received_at")
-    except PreAdmissionAttemptError as exc:
-        raise PreAdmissionAttemptError(
-            "LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID"
-        ) from exc
     observed_raw = blob.get("liquidity_observed_at")
+    mint = str(
+        blob.get("mint")
+        or blob.get("base_mint")
+        or candidate.get("token_mint")
+        or candidate.get("mint_identity")
+        or ""
+    ).strip() or None
+    pair = str(
+        blob.get("pool")
+        or blob.get("pair_address")
+        or candidate.get("pair_address")
+        or candidate.get("pair_identity")
+        or ""
+    ).strip() or None
+    try:
+        received_raw = require_proving_liquidity_response_received_at(
+            connection,
+            source_response_id=response_id_raw,
+            source_request_id=blob.get("source_request_id"),
+            source_name=blob.get("source_name") or blob.get("source"),
+            mint_identity=mint,
+            pair_identity=pair,
+            observed_at=(
+                None if observed_raw is None else str(observed_raw)
+            ),
+        )
+    except ValueError as exc:
+        raise PreAdmissionAttemptError(
+            "LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID"
+        ) from exc
     if observed_raw is None:
         return
     try:
         observed = _parse_timestamp(observed_raw, "liquidity_observed_at")
+        received = _parse_timestamp(received_raw, "source_response_received_at")
     except PreAdmissionAttemptError as exc:
         raise PreAdmissionAttemptError(
             "LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID"

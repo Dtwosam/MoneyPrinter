@@ -209,6 +209,7 @@ def _linked_attach_connection(
         CREATE TABLE printer_source_responses(
             id INTEGER PRIMARY KEY,
             source_request_id INTEGER NOT NULL,
+            source_name TEXT NOT NULL,
             source_status TEXT NOT NULL,
             normalized_payload_json TEXT NOT NULL,
             received_at TEXT NOT NULL
@@ -228,7 +229,7 @@ def _linked_attach_connection(
     )
     payload = json.dumps({"pairs": pairs}, sort_keys=True)
     conn.execute(
-        "INSERT INTO printer_source_responses VALUES (10,1,'COMPLETE',?,?)",
+        "INSERT INTO printer_source_responses VALUES (10,1,'dexscreener','COMPLETE',?,?)",
         (payload, received_at),
     )
     conn.execute(
@@ -284,16 +285,61 @@ def _item_from_liquidity(
     )
 
 
+def _resolve_claimed(
+    connection: sqlite3.Connection,
+    *,
+    request_id: int,
+    response_id: int,
+    candidate_observed_at: str | None = CLAIM_AT,
+    source_name: str = "dexscreener",
+    mint: str = MINT,
+    pool: str = POOL,
+) -> str:
+    return resolve_source_derived_liquidity_observed_at(
+        connection,
+        candidate_observed_at=candidate_observed_at,
+        fallback_now=CLAIM_AT,
+        source_response_id=response_id,
+        source_request_id=request_id,
+        source_name=source_name,
+        mint_identity=mint,
+        pair_identity=pool,
+    )
+
+
+def _claimed_liquidity(
+    *,
+    source_response_id: int = 10,
+    source_request_id: int = 1,
+    source_name: str = "dexscreener",
+    liquidity_observed_at: str = RECEIVED_AT,
+    mint: str = MINT,
+    pool: str = POOL,
+    liquidity_usd: float = 36910.59,
+) -> dict:
+    return {
+        "status": "LIQUIDITY_PROVEN",
+        "liquidity_usd": liquidity_usd,
+        "mint": mint,
+        "pool": pool,
+        "base_mint": mint,
+        "quote_mint": WSOL,
+        "reason": "AT_OR_ABOVE_3000_FLOOR",
+        "source_status": "COMPLETE",
+        "outcome_category": "LIQUIDITY_EXACT_ABOVE_FLOOR",
+        "detailed_reason": "AT_OR_ABOVE_3000_FLOOR_RETAINED",
+        "source_name": source_name,
+        "source_request_id": source_request_id,
+        "source_response_id": source_response_id,
+        "liquidity_observed_at": liquidity_observed_at,
+    }
+
+
 class TestClaimedProvingResponseFailClosed:
     def test_claimed_response_id_absent_fails_closed(self, database) -> None:
         _, connection = database
         with pytest.raises(ValueError, match="LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID"):
-            resolve_source_derived_liquidity_observed_at(
-                connection,
-                candidate_observed_at=CLAIM_AT,
-                fallback_now=CLAIM_AT,
-                source_response_id=999999,
-            )
+            _resolve_claimed(connection, request_id=11, response_id=999999)
         with pytest.raises(ValueError, match="LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID"):
             record_fresh_pool_nominations(
                 connection,
@@ -326,13 +372,9 @@ class TestClaimedProvingResponseFailClosed:
             (response_id,),
         )
         with pytest.raises(ValueError, match="LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID"):
-            resolve_source_derived_liquidity_observed_at(
-                connection,
-                candidate_observed_at=CLAIM_AT,
-                fallback_now=CLAIM_AT,
-                source_response_id=response_id,
+            _resolve_claimed(
+                connection, request_id=request_id, response_id=response_id
             )
-        del request_id
 
     def test_claimed_response_missing_received_at_fails_closed(self, database) -> None:
         _, connection = database
@@ -346,13 +388,9 @@ class TestClaimedProvingResponseFailClosed:
             (response_id,),
         )
         with pytest.raises(ValueError, match="LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID"):
-            resolve_source_derived_liquidity_observed_at(
-                connection,
-                candidate_observed_at=CLAIM_AT,
-                fallback_now=CLAIM_AT,
-                source_response_id=response_id,
+            _resolve_claimed(
+                connection, request_id=request_id, response_id=response_id
             )
-        del request_id
 
     def test_malformed_claimed_response_timestamp_fails_closed(self, database) -> None:
         _, connection = database
@@ -366,13 +404,9 @@ class TestClaimedProvingResponseFailClosed:
             (response_id,),
         )
         with pytest.raises(ValueError, match="LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID"):
-            resolve_source_derived_liquidity_observed_at(
-                connection,
-                candidate_observed_at=CLAIM_AT,
-                fallback_now=CLAIM_AT,
-                source_response_id=response_id,
+            _resolve_claimed(
+                connection, request_id=request_id, response_id=response_id
             )
-        del request_id
 
     def test_invalid_claimed_response_id_type_fails_closed(self, database) -> None:
         _, connection = database
@@ -382,6 +416,100 @@ class TestClaimedProvingResponseFailClosed:
                 candidate_observed_at=CLAIM_AT,
                 fallback_now=CLAIM_AT,
                 source_response_id=True,  # bool must not coerce to 1
+                source_request_id=1,
+                source_name="dexscreener",
+                mint_identity=MINT,
+                pair_identity=POOL,
+            )
+
+    def test_complete_response_from_wrong_request_fails_closed(self, database) -> None:
+        _, connection = database
+        request_id, response_id = _insert_complete_response(
+            connection,
+            received_at=RECEIVED_AT,
+            pairs=[_qualifying_pair()],
+        )
+        connection.execute(
+            """
+            INSERT INTO printer_source_requests(
+                source_name, request_kind, requested_at, source_status, data_quality_label
+            ) VALUES ('dexscreener', 'dexscreener_fresh_profiles', ?, 'COMPLETE', 'CLEAN_DATA')
+            """,
+            (CLAIM_AT,),
+        )
+        other_request_id = int(connection.execute("SELECT last_insert_rowid()").fetchone()[0])
+        with pytest.raises(ValueError, match="LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID"):
+            _resolve_claimed(
+                connection,
+                request_id=other_request_id,
+                response_id=response_id,
+            )
+        del request_id
+
+    def test_complete_response_from_wrong_source_fails_closed(self, database) -> None:
+        _, connection = database
+        request_id, response_id = _insert_complete_response(
+            connection,
+            received_at=RECEIVED_AT,
+            pairs=[_qualifying_pair()],
+        )
+        with pytest.raises(ValueError, match="LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID"):
+            _resolve_claimed(
+                connection,
+                request_id=request_id,
+                response_id=response_id,
+                source_name="geckoterminal",
+            )
+
+    def test_response_request_name_mismatch_fails_closed(self, database) -> None:
+        _, connection = database
+        request_id, response_id = _insert_complete_response(
+            connection,
+            received_at=RECEIVED_AT,
+            pairs=[_qualifying_pair()],
+        )
+        connection.execute(
+            "UPDATE printer_source_responses SET source_name='geckoterminal' WHERE id=?",
+            (response_id,),
+        )
+        with pytest.raises(ValueError, match="LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID"):
+            _resolve_claimed(
+                connection,
+                request_id=request_id,
+                response_id=response_id,
+                source_name="dexscreener",
+            )
+
+    def test_wrong_exact_mint_pair_fails_closed(self, database) -> None:
+        _, connection = database
+        request_id, response_id = _insert_complete_response(
+            connection,
+            received_at=RECEIVED_AT,
+            pairs=[_qualifying_pair()],
+        )
+        with pytest.raises(ValueError, match="LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID"):
+            _resolve_claimed(
+                connection,
+                request_id=request_id,
+                response_id=response_id,
+                mint=OTHER_MINT,
+                pool=OTHER_POOL,
+            )
+
+    def test_empty_payload_is_not_exact_liquidity_proof(self, database) -> None:
+        _, connection = database
+        request_id, response_id = _insert_complete_response(
+            connection,
+            received_at=RECEIVED_AT,
+            pairs=[_qualifying_pair()],
+        )
+        connection.execute(
+            "UPDATE printer_source_responses SET normalized_payload_json='{}' WHERE id=?",
+            (response_id,),
+        )
+        with pytest.raises(ValueError, match="LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID"):
+            _resolve_claimed(
+                connection, request_id=request_id, response_id=response_id
             )
 
     def test_no_source_response_id_preserves_legacy_callback_time(
@@ -429,16 +557,13 @@ class TestClaimedProvingResponseFailClosed:
         self, database
     ) -> None:
         _, connection = database
-        _, response_id = _insert_complete_response(
+        request_id, response_id = _insert_complete_response(
             connection,
             received_at=RECEIVED_AT,
             pairs=[_qualifying_pair()],
         )
-        resolved = resolve_source_derived_liquidity_observed_at(
-            connection,
-            candidate_observed_at=CLAIM_AT,
-            fallback_now=CLAIM_AT,
-            source_response_id=response_id,
+        resolved = _resolve_claimed(
+            connection, request_id=request_id, response_id=response_id
         )
         assert isinstance(resolved, str)
         assert resolved == RECEIVED_AT
@@ -520,6 +645,7 @@ class TestAug26IncidentFrozenLaneReplay:
         # Isolated attach DB uses fixed response id 10; keep the claimed proving
         # identity coherent with the linked COMPLETE body under validation.
         liquidity = dict(liquidity)
+        liquidity["source_name"] = "dexscreener"
         liquidity["source_response_id"] = 10
         liquidity["source_request_id"] = 1
 
@@ -560,22 +686,7 @@ class TestAug26IncidentFrozenLaneReplay:
 
 class TestLinkedSupplementStrictness:
     def test_exact_linked_response_becomes_supplement_eligible(self) -> None:
-        liquidity = {
-            "status": "LIQUIDITY_PROVEN",
-            "liquidity_usd": 36910.59,
-            "mint": MINT,
-            "pool": POOL,
-            "base_mint": MINT,
-            "quote_mint": WSOL,
-            "reason": "AT_OR_ABOVE_3000_FLOOR",
-            "source_status": "COMPLETE",
-            "outcome_category": "LIQUIDITY_EXACT_ABOVE_FLOOR",
-            "detailed_reason": "AT_OR_ABOVE_3000_FLOOR_RETAINED",
-            "source_name": "dexscreener",
-            "source_request_id": 1,
-            "source_response_id": 10,
-            "liquidity_observed_at": RECEIVED_AT,
-        }
+        liquidity = _claimed_liquidity()
         conn, _, _ = _linked_attach_connection(
             pairs=[_qualifying_pair()],
             received_at=RECEIVED_AT,
@@ -591,18 +702,16 @@ class TestLinkedSupplementStrictness:
         assert frozen.frozen_tracking_lane == "TRACK_FAST"
 
     def test_wrong_pair_remains_excluded(self) -> None:
-        liquidity = {
-            "liquidity_usd": 36910.59,
-            "source_response_id": 10,
-            "liquidity_observed_at": RECEIVED_AT,
-        }
+        # Claimed provenance mint/pair does not appear in the proving payload.
+        liquidity = _claimed_liquidity()
         conn, _, _ = _linked_attach_connection(
             pairs=[_qualifying_pair(pool=OTHER_POOL)],
             received_at=RECEIVED_AT,
         )
         try:
             with pytest.raises(
-                PreAdmissionAttemptError, match="FROZEN_TRACKING_LANE_UNAVAILABLE"
+                PreAdmissionAttemptError,
+                match="LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID",
             ):
                 attach_frozen_tracking_lane(
                     _item_from_liquidity(liquidity, observed_at=RECEIVED_AT),
@@ -613,18 +722,15 @@ class TestLinkedSupplementStrictness:
             conn.close()
 
     def test_wrong_mint_remains_excluded(self) -> None:
-        liquidity = {
-            "liquidity_usd": 36910.59,
-            "source_response_id": 10,
-            "liquidity_observed_at": RECEIVED_AT,
-        }
+        liquidity = _claimed_liquidity()
         conn, _, _ = _linked_attach_connection(
             pairs=[_qualifying_pair(mint=OTHER_MINT)],
             received_at=RECEIVED_AT,
         )
         try:
             with pytest.raises(
-                PreAdmissionAttemptError, match="FROZEN_TRACKING_LANE_UNAVAILABLE"
+                PreAdmissionAttemptError,
+                match="LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID",
             ):
                 attach_frozen_tracking_lane(
                     _item_from_liquidity(liquidity, observed_at=RECEIVED_AT),
@@ -635,18 +741,15 @@ class TestLinkedSupplementStrictness:
             conn.close()
 
     def test_unrelated_response_remains_excluded(self) -> None:
-        liquidity = {
-            "liquidity_usd": 36910.59,
-            "source_response_id": 10,
-            "liquidity_observed_at": RECEIVED_AT,
-        }
+        liquidity = _claimed_liquidity()
         conn, _, _ = _linked_attach_connection(
             pairs=[_qualifying_pair(mint=OTHER_MINT, pool=OTHER_POOL)],
             received_at=RECEIVED_AT,
         )
         try:
             with pytest.raises(
-                PreAdmissionAttemptError, match="FROZEN_TRACKING_LANE_UNAVAILABLE"
+                PreAdmissionAttemptError,
+                match="LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID",
             ):
                 attach_frozen_tracking_lane(
                     _item_from_liquidity(liquidity, observed_at=RECEIVED_AT),
@@ -684,11 +787,7 @@ class TestLinkedSupplementStrictness:
 
 class TestFrozenCarrierChronologyInvariant:
     def test_inverted_retained_liquidity_time_fails_closed_explicitly(self) -> None:
-        liquidity = {
-            "liquidity_usd": 36910.59,
-            "source_response_id": 10,
-            "liquidity_observed_at": CLAIM_AT,
-        }
+        liquidity = _claimed_liquidity(liquidity_observed_at=CLAIM_AT)
         conn, _, _ = _linked_attach_connection(
             pairs=[_qualifying_pair()],
             received_at=RECEIVED_AT,
@@ -707,11 +806,7 @@ class TestFrozenCarrierChronologyInvariant:
             conn.close()
 
     def test_claimed_absent_proving_response_fails_closed_on_carrier(self) -> None:
-        liquidity = {
-            "liquidity_usd": 36910.59,
-            "source_response_id": 404,
-            "liquidity_observed_at": RECEIVED_AT,
-        }
+        liquidity = _claimed_liquidity(source_response_id=404)
         conn, _, _ = _linked_attach_connection(
             pairs=[_qualifying_pair()],
             received_at=RECEIVED_AT,
@@ -730,11 +825,7 @@ class TestFrozenCarrierChronologyInvariant:
             conn.close()
 
     def test_claimed_non_complete_proving_response_fails_closed_on_carrier(self) -> None:
-        liquidity = {
-            "liquidity_usd": 36910.59,
-            "source_response_id": 10,
-            "liquidity_observed_at": RECEIVED_AT,
-        }
+        liquidity = _claimed_liquidity()
         conn, _, _ = _linked_attach_connection(
             pairs=[_qualifying_pair()],
             received_at=RECEIVED_AT,
@@ -743,6 +834,25 @@ class TestFrozenCarrierChronologyInvariant:
             conn.execute(
                 "UPDATE printer_source_responses SET source_status='STALE' WHERE id=10"
             )
+            with pytest.raises(
+                PreAdmissionAttemptError,
+                match="LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID",
+            ):
+                attach_frozen_tracking_lane(
+                    _item_from_liquidity(liquidity, observed_at=RECEIVED_AT),
+                    now=datetime.fromisoformat(LAWFUL_CUTOFF),
+                    connection=conn,
+                )
+        finally:
+            conn.close()
+
+    def test_claimed_wrong_request_provenance_fails_closed_on_carrier(self) -> None:
+        liquidity = _claimed_liquidity(source_request_id=999)
+        conn, _, _ = _linked_attach_connection(
+            pairs=[_qualifying_pair()],
+            received_at=RECEIVED_AT,
+        )
+        try:
             with pytest.raises(
                 PreAdmissionAttemptError,
                 match="LIQUIDITY_PROVING_SOURCE_RESPONSE_INVALID",
@@ -771,11 +881,7 @@ class TestClassifierUnchanged:
             )
 
     def test_genuine_weak_activity_remains_watch_only(self) -> None:
-        liquidity = {
-            "liquidity_usd": 36910.59,
-            "source_response_id": 10,
-            "liquidity_observed_at": RECEIVED_AT,
-        }
+        liquidity = _claimed_liquidity()
         weak = _qualifying_pair(
             volume_5m=0.0,
             volume_1h=0.0,
@@ -800,11 +906,7 @@ class TestClassifierUnchanged:
             conn.close()
 
     def test_qualifying_complete_evidence_can_produce_existing_track_lane(self) -> None:
-        liquidity = {
-            "liquidity_usd": 6000.0,
-            "source_response_id": 10,
-            "liquidity_observed_at": RECEIVED_AT,
-        }
+        liquidity = _claimed_liquidity(liquidity_usd=6000.0)
         conn, _, _ = _linked_attach_connection(
             pairs=[
                 _qualifying_pair(
