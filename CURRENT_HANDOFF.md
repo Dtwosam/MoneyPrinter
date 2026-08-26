@@ -4,54 +4,128 @@ Updated: 2026-08-26
 
 ## Current lane
 
-V2-9.8B — Cycle-2 frozen-lane timestamp/provenance repair is CLOSED PASS.
+V2-9.8B — Cycle-1/Cycle-2 campaign disjointness repair is CLOSED PASS.
 
 ## Current repository identity
 
 - branch: `agent/v2-9-8b-aug25-a2z-repair-application`
-- final implementation HEAD before this closeout: `88a0c7d15657f5594a4ad893fbb0617501e7a8c1`
-- pre-repair baseline: `bf22b68c90686c2bb7e8e56599d1851e1b06e747`
+- final implementation HEAD before this closeout: `1ac9cc3bd0adf5c5a789091270537c2b62ca047b`
+- pre-repair closeout baseline: `c89849425899a2b4cecea395d155d7e2e5c3cfa5`
 
 Implementation chain:
 
-1. `e611692496651c8ecd231a8d09d662ffcd27f50a` — Repair Cycle-2 frozen-lane evidence timing
-2. `a9061d16451357f7f59c81a11bf5020b341b0ec3` — Fail closed on invalid liquidity proving responses
-3. `88a0c7d15657f5594a4ad893fbb0617501e7a8c1` — Bind liquidity evidence time to exact proving provenance
+1. `2def9362b445e048a993d99f2557ec949cb5083a` — Repair later-cycle campaign disjointness gate
+2. `1ac9cc3bd0adf5c5a789091270537c2b62ca047b` — Wire campaign disjointness into authoritative freeze path and fail closed on unavailable history
 
 ## Latest completed work
 
-The Aug-26 Cycle-2 frozen-lane readiness audit proved that valid exact-pair market activity evidence existed, but retained liquidity was stamped earlier than the governed response that proved it. The strict linked-market temporal gate therefore excluded that response and the frozen classifier received thin evidence, producing `WATCH_ONLY` / `FROZEN_TRACKING_LANE_UNAVAILABLE`.
+The Aug-26 readiness audit proved a separate campaign-disjointness defect: a token already admitted in Cycle 1 could remain eligible through later-cycle freeze/selection and be selected again before the existing admission-time historical identity guard ran.
+
+Known Cycle-1 mints included:
+
+- `HQKhWkrPtdLyRxWGVZAajfxoja2y8FMJeckKqZEFpump`
+- `GkUnjBvGx9sXf5jEpXWSucgNoT8G1xUo2Dq9vryApump`
+
+The issue was classified:
+
+`MISSING_APPROVED_IMPLEMENTATION_BOUNDARY`
 
 Completed sequence:
 
-1. Cycle-2 frozen-lane readiness audit: PASS
-2. design: `V2_9_8B_CYCLE2_FROZEN_LANE_REPAIR_DESIGN_PASS`
-3. implementation through final commit `88a0c7d15657f5594a4ad893fbb0617501e7a8c1`
-4. independent implementation review: `V2_9_8B_CYCLE2_FROZEN_LANE_TIMESTAMP_REPAIR_IMPLEMENTATION_REVIEW_PASS`
-5. independent proof: `V2_9_8B_CYCLE2_FROZEN_LANE_TIMESTAMP_PROVENANCE_BOUNDED_PROOF_PASS`
-6. closeout: `V2_9_8B_CYCLE2_FROZEN_LANE_TIMESTAMP_PROVENANCE_REPAIR_CLOSEOUT_PASS`
+1. disjointness readiness audit: PASS
+2. design/specification: `V2_9_8B_CYCLE_DISJOINTNESS_REPAIR_DESIGN_PASS`
+3. implementation through `2def9362...`
+4. freeze-wiring/fail-closed amendment through `1ac9cc3...`
+5. independent implementation review: `V2_9_8B_CYCLE_DISJOINTNESS_REPAIR_IMPLEMENTATION_REVIEW_PASS`
+6. independent bounded proof: `V2_9_8B_CYCLE_DISJOINTNESS_BOUNDED_PROOF_PASS`
+7. actual production-caller supplement: `V2_9_8B_CYCLE_DISJOINTNESS_PRODUCTION_CALLER_PROOF_PASS`
+8. closeout: `V2_9_8B_CYCLE_DISJOINTNESS_REPAIR_CLOSEOUT_PASS`
 
 Closeout document:
 
-`docs/printer-v1-v2-9-8b-cycle2-frozen-lane-timestamp-provenance-repair-closeout.md`
+`docs/printer-v1-v2-9-8b-cycle-disjointness-repair-closeout.md`
 
-Canonical repaired rule:
+## Canonical repaired rule
+
+Discovery remains diagnostic and may observe a historical token.
+
+For genuine later cycles:
 
 ```text
-source-derived liquidity claims exact proving response
-→ prove exact source/request/response provenance
-→ for Dex/Gecko require one exact normalized Solana mint/pair
-→ require COMPLETE response + valid received_at
-→ effective evidence time = max(observation time, received_at)
-→ existing strict linked-market temporal gate
-→ unchanged categorical frozen classifier
+eligible inventory
+-> exact campaign/run historical admitted-slot identity sets
+-> campaign historical disjointness filter
+-> freeze reserve
+-> existing deterministic seeded selector
+-> fresh selected pair only
 ```
 
-Invalid claimed provenance fails closed. No response/timestamp bypass was introduced.
+Canonical history owner:
 
-## Previously completed repair
+`printer_memory_factory_campaign_token_slots`
+through `multi_cycle_campaign_coordinator`.
 
-The separate 15m→1h campaign-window bind-order defect remains CLOSED PASS.
+Candidate-resolvable historical collision fields:
+
+- `mint_identity`
+- `pair_identity`
+- `token_row_id`
+- `pair_row_id`
+- `token_identity`
+
+Admission-time `_validate_fresh_slots` remains unchanged as defense-in-depth.
+
+## Production wiring proof
+
+The actual production owner path was behaviorally proved:
+
+```text
+AuthoritativeLiveOperationalCampaignOwner.run
+-> run_operational
+-> prior_cycle_count
+-> freeze_eligible_reserve_for_campaign
+```
+
+- `prior_cycle_count == 0` → enforcement OFF; first-cycle behavior unchanged.
+- `prior_cycle_count >= 1` → enforcement ON; exact campaign/run history required and loaded; historical candidates excluded before the existing selector.
+
+`GkUnj...` remained visible in input/diagnostics but was not in the later-cycle selected pair after enforcement.
+
+## Proof summary
+
+Pre-repair baseline `c898494...` meaningfully demonstrated that the old seeded freeze could select historical `GkUnj...`.
+
+Final proof:
+
+- primary disjointness suite: `18 passed`
+- focused neighboring suites: `120 passed`
+- all five historical identity collision fields: PASS
+- required-history fail-closed matrix: PASS
+- enough-fresh and insufficient-fresh behavior: PASS
+- historical diagnostic visibility: PASS
+- first-cycle preservation: PASS
+- admission defense-in-depth: PASS
+- selector/tracking/cooldown preservation: PASS
+- actual production caller conditional: PASS
+- `py_compile`: PASS
+- `git diff --check`: PASS
+
+No live/runtime/provider activity occurred.
+
+## Deferred test-harness observations
+
+Two unrelated baseline/harness observations remain outside this repair:
+
+- an old Migration051 expectation still names migration 052 while repository migration head is later;
+- a memory-readiness callback fixture represents `prior_cycle_count=1` with zero historical slots. The parent already failed on that fixture; repaired production now correctly fails closed on unavailable later-cycle history.
+
+Do not weaken product disjointness to satisfy those stale/inconsistent fixtures.
+
+## Previously closed Aug-26 repairs
+
+### 15m→1h campaign-window bind-order
+
+CLOSED PASS.
 
 Implementation:
 
@@ -61,29 +135,19 @@ Closeout commit:
 
 `bf22b68c90686c2bb7e8e56599d1851e1b06e747`
 
-That repair remains separate from the Cycle-2 timestamp/provenance repair.
+### Cycle-2 frozen-lane timestamp/provenance
 
-## Proof summary
+CLOSED PASS.
 
-Pre-repair parent `bf22b68...` meaningful RED reproduced:
+Final implementation:
 
-```text
-observed_at = 2026-08-26T12:11:06.507126+00:00
-received_at = 2026-08-26T12:11:12.125895+00:00
-```
+`88a0c7d15657f5594a4ad893fbb0617501e7a8c1`
 
-The old producer stamped liquidity before the proving response existed.
+Closeout commit:
 
-Final `88a0c7d...` GREEN:
+`c89849425899a2b4cecea395d155d7e2e5c3cfa5`
 
-- primary repair suite: `29 passed`
-- neighboring focused suites: `78 passed`
-- exact provenance and fail-closed matrix: PASS
-- classifier/WATCH_ONLY preservation: PASS
-- `py_compile`: PASS
-- `git diff --check`: PASS
-
-No live/runtime/provider activity occurred.
+The timestamp/provenance defect and the campaign-disjointness defect were causally separate.
 
 ## Authoritative DB
 
@@ -91,7 +155,7 @@ Path:
 
 `/Users/Dtwo1/Developer/MoneyPrinter/data/printer_v1.sqlite3`
 
-Current SHA-256:
+Current required SHA-256:
 
 `7f3e725fb435c24c507f6e12fbee26789472017e6e0c63361404ab6589f7128c`
 
@@ -99,9 +163,9 @@ Latest proof:
 
 - integrity check: `ok`
 - foreign key check: `0 rows`
-- no authoritative sidecars
+- no authoritative WAL/SHM/journal
 - DB byte identity unchanged
-- no migration added
+- no migration added by the repair
 
 ## Authorization state
 
@@ -109,41 +173,40 @@ Consumed authorization:
 
 `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260826T114542Z_d3bc361a`
 
-It is permanently non-reusable. No retry, rerun, resume, restart, or successor is permitted from it.
+It is permanently non-reusable.
 
-No new authorization was created by the closed repair lanes.
+No retry, rerun, resume, restart, or successor may reuse it.
 
-## Remaining open issue
+No new authorization was created by the repair.
 
-Cycle-1/Cycle-2 disjointness remains separate and unresolved.
+## Remaining operational status
 
-The Cycle-2 readiness audit found evidence that a Cycle-1 mint may have appeared in the Cycle-2 selected set. This did not cause the frozen-lane timestamp/provenance failure and was deliberately not repaired in that lane.
+The three concrete Aug-26 code defects now closed are:
 
-Do not assume whether this is:
+1. 15m→1h campaign-window bind ordering
+2. Cycle-2 market-evidence timestamp/provenance chronology
+3. Cycle-1/Cycle-2 historical fresh-slot disjointness
 
-- an existing freshness/disjointness gate bypass or miswire;
-- a missing approved implementation boundary;
-- contract drift/design gap;
-- or another source-grounded condition.
+This does **not** prove the next live bounded campaign will succeed end-to-end.
 
-It requires its own read-only readiness audit first.
+Four-token 4/2/2 success remains unproven.
 
-Live Cycle-2 admission, live 1h/4h progression, and four-token 4/2/2 success remain unproven.
+No live run is currently authorized.
 
 ## Next permitted action
 
-`V2-9.8B CYCLE-1/CYCLE-2 DISJOINTNESS READINESS AUDIT ONLY`
+`V2-9.8B POST-REPAIR NEXT-BOUNDED-CAMPAIGN READINESS AUDIT ONLY`
 
-The audit must identify the canonical freshness/disjointness owner and determine why a prior-cycle mint could enter or appear to enter the later-cycle selected set.
+The audit must be read-only and source-grounded. It must reconcile all closed Aug-26 repairs, current code, current DB state, existing operational/harness blockers, and the active V2-9.8B build order before recommending any fresh authorization.
 
-No implementation before audit → design/specification if justified → implementation if approved → bounded proof → closeout.
+A fresh authorization or campaign is **not** implicit. It requires later explicit approval after readiness.
 
 ## Still not permitted
 
 - live Printer run
-- fresh authorization or successor campaign
-- reuse of consumed authorization
-- disjointness implementation before its audit/design gate
+- fresh authorization before the new readiness gate
+- reuse of the consumed authorization
+- automatic retry/resume/restart/successor
 - Source Governor bypass
 - Central Scheduler bypass
 - 12h/24h activation
