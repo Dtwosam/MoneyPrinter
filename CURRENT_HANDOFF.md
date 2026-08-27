@@ -8,7 +8,7 @@ Infrastructure support only. The active Printer memory-growth capability orderin
 
 ## Latest completed work
 
-The approved native Linux/systemd portability implementation is complete through bounded offline implementation proof.
+The approved native Linux/systemd portability implementation is closed through bounded offline implementation proof.
 
 Implementation verdict:
 
@@ -22,9 +22,35 @@ Closeout commit:
 
 `a728ba3d034ab7e883f67f4ef3a253dddf4c96c8`
 
-Implementation code/test baseline before closeout documentation:
+A read-only native-host/runtime proof preflight is now implemented:
 
-`a6705249699f39357a6c2f2f21d3d23de30826f0`
+`src/printer_v1/operator_cli/linux_remote_host_native_preflight.py`
+
+Proof-support commit before this handoff update:
+
+`3ddba7c52140929d661113106f38c7724827f876`
+
+The preflight requires and records:
+
+- native Linux;
+- exact Python 3.11 patch from `<repo>/.venv/bin/python`;
+- SQLite and OpenSSL runtime versions;
+- exact installed `websockets` and `certifi` versions;
+- Git version, exact branch and HEAD;
+- procps version plus successful parsing through the existing one-pass `ps -axo pid=,command=` owner;
+- dedicated unprivileged `printer-v1` account/group, durable private HOME, and non-broadly-writable repository root;
+- positive local-ext4 evidence for candidate sizing/application/artifact roots;
+- fail-closed free-space readiness using the existing operational storage ceiling;
+- synchronized-clock evidence through bounded `timedatectl` inspection;
+- `systemd-analyze` version and static unit verification.
+
+It creates no authorization, starts no Printer child, contacts no provider/RPC/WebSocket, runs no Central Scheduler work, and performs no database write.
+
+Fresh bounded reconstructed remote-host test evidence after adding this proof-support surface:
+
+`33 passed / 0 failed`
+
+This remains bounded offline evidence assembled from the exact changed implementation bodies and committed remote-host tests. It is not a full repository regression suite and is not native Linux/systemd lifecycle proof.
 
 Governing design remains:
 
@@ -46,7 +72,7 @@ Approved implementation starting commit:
 
 `fd558c9e8a691ee1963509d7488aef05908f93c7`
 
-The current repository HEAD is the documentation commit containing this handoff. Resolve it with `git rev-parse HEAD`; do not create a self-referential follow-up commit merely to embed its own SHA.
+Resolve the current documentation HEAD with `git rev-parse HEAD`; do not create a self-referential follow-up commit merely to embed its own SHA.
 
 Authoritative DB:
 
@@ -56,7 +82,7 @@ Carried authoritative DB SHA-256:
 
 `f4e54b3a2dc9f4dbd41b6f05bb5288f25ca15dc71b7e66de1e05ef7c213e34b1`
 
-No authoritative DB mutation or transfer occurred in the portability implementation lane.
+No authoritative DB mutation or transfer occurred in the portability implementation or host-proof-support work.
 
 ## Consumed authorization
 
@@ -70,46 +96,60 @@ Permanently consumed. No retry, rerun, resume, restart, reuse, inheritance, succ
 
 ## Implemented remote-host contract
 
-The implementation preserves the existing four-token standard-four-hour one-shot wrapper as the sole application boundary.
+The existing four-token standard-four-hour one-shot wrapper remains the sole application boundary.
 
 Implemented and boundedly verified:
 
 - native foreground Linux service entrypoint owned by the wrapper;
-- manual systemd service artifact with `Type=exec`, `Restart=no`, `KillMode=mixed`, no timer/watchdog/boot enable path;
+- manual systemd service with `Type=exec`, `Restart=no`, `KillMode=mixed`, no timer/watchdog/boot-enable path;
 - process-local SIGTERM/SIGINT stop intent with no signal-handler I/O;
 - exact ACTIVE/STOPPING supervision resolution before one existing cooperative cancellation request;
 - no direct child `terminate()`, `kill()`, or `send_signal()` path;
 - positive local-ext4 preflight from `/proc/self/mountinfo`;
-- strict Linux `ps -axo pid=,command=` validation around the existing one-pass inventory owner;
+- strict Linux process-output validation around the existing one-pass inventory owner;
 - fail-closed Linux parent-directory durability for shared create-once artifacts, child terminal, wrapper terminal through the shared owner, and verified backup publication;
-- fail-closed pre-authorization free-space readiness derived from current DB size plus the existing storage-growth ceiling;
-- fail-closed `timedatectl` synchronization evidence before authorization application;
-- exact service success only for validated `CHILD_EXITED_ZERO` terminal truth.
+- fail-closed pre-authorization free-space readiness derived from current DB size plus the existing `STORAGE_BYTE_CEILING`;
+- fail-closed synchronized-clock evidence before authorization application;
+- exact service success only for validated `CHILD_EXITED_ZERO` terminal truth;
+- read-only native runtime/service-account/Git/procps/systemd proof evidence collection.
 
-Bounded offline evidence recorded in the implementation closeout:
-
-`30 passed / 0 failed`
-
-This is bounded offline portability evidence, not a full repository regression suite and not native systemd lifecycle proof.
-
-Static unit verification with `systemd-analyze 257` exits `0` when the required service paths are supplied in a disposable host layout.
+Static unit verification with `systemd-analyze 257` exits `0` when the required service layout is supplied in a disposable host stub. `TimeoutStopSec=300s` remains a candidate until real cooperative-stop timing proof.
 
 ## Exact next permitted action
 
 `REMOTE HOST NATIVE LINUX/SYSTEMD PROOF — HOST/RUNTIME ESTABLISHMENT`
 
-Allowed now:
+On the selected native Linux/systemd proof host, establish only the non-operational proof prerequisites:
 
-1. select/prepare the native Linux proof host with systemd;
-2. positively prove local ext4 for candidate DB/application/artifact roots;
-3. create the dedicated unprivileged `printer-v1` account/group and durable HOME;
-4. establish the candidate remote repository checkout;
-5. create a fresh repo-local Python 3.11 venv — never copy the Mac venv;
-6. record the exact Python patch, SQLite, OpenSSL, `websockets`, `certifi`, Git, and procps versions;
-7. establish service path ownership/permissions and `UMask=0077` compatibility;
-8. prove host disk-space and time-sync readiness;
-9. run static systemd unit verification against the actual host layout;
-10. prepare the bounded native proof evidence plan on disposable/frozen targets.
+1. final candidate checkout at `/opt/printer-v1` on local ext4;
+2. dedicated unprivileged `printer-v1` user/group with durable private HOME `/var/lib/printer-v1`;
+3. fresh repo-local Python 3.11 venv at `/opt/printer-v1/.venv` — never copy the Mac venv;
+4. install the repository's required runtime dependencies into that venv;
+5. provide one disposable local sizing file on the candidate ext4 root whose byte size equals the current authoritative DB byte size; the sizing file must not contain authoritative DB contents and is not a DB transfer;
+6. establish candidate application/artifact roots under the service HOME;
+7. run the read-only native-host preflight below and preserve its JSON output as proof evidence.
+
+Canonical service-HOME-derived roots are:
+
+- application root: `/var/lib/printer-v1/PrinterOperations/v2-9-8/four-token-standard-four-hour-one-shot-applications`
+- operational artifact root: `/var/lib/printer-v1/PrinterOperations/v2-9-8`
+
+Example proof command:
+
+```bash
+/opt/printer-v1/.venv/bin/python -m printer_v1.operator_cli.linux_remote_host_native_preflight \
+  --repository-root /opt/printer-v1 \
+  --sizing-db-path /var/lib/printer-v1/proof/printer-v1-sizing.sqlite3 \
+  --application-root /var/lib/printer-v1/PrinterOperations/v2-9-8/four-token-standard-four-hour-one-shot-applications \
+  --artifact-root /var/lib/printer-v1/PrinterOperations/v2-9-8 \
+  --systemd-unit /opt/printer-v1/deploy/systemd/printer-v1-four-token-standard-four-hour.service
+```
+
+Expected success status:
+
+`REMOTE_HOST_NATIVE_RUNTIME_PREFLIGHT_READY`
+
+If the tool returns `REMOTE_HOST_NATIVE_RUNTIME_PREFLIGHT_BLOCKED`, treat the reported host/runtime condition as the blocker. Do not bypass it and do not create authorization authority from a blocked host.
 
 Do not yet:
 
@@ -128,11 +168,9 @@ If a later native proof case would run the operational Printer child, contact pr
 
 Before remote portability can close completely, prove on the actual selected Linux/systemd host:
 
-- exact fresh Python 3.11 runtime/dependency set from the final candidate checkout;
-- real ext4 mount identity and fail-closed non-ext4 behavior;
+- the read-only runtime preflight above returns READY on the real host;
 - real service-user ownership and permissions;
-- real disk-space and synchronized-clock readiness;
-- `ps` behavior with the selected procps version;
+- real ext4, disk-space, synchronized-clock, Git and procps evidence;
 - manual systemd start with exactly one wrapper boundary;
 - pre-marker SIGTERM with no campaign/retry;
 - post-marker/pre-supervision consumed-authority handling;
@@ -142,7 +180,7 @@ Before remote portability can close completely, prove on the actual selected Lin
 - service failure/reboot with no boot relaunch;
 - SQLite `DELETE/FULL/normal` preservation and no unintended WAL;
 - owner boundaries and all capability locks;
-- cooperative cleanup timing sufficient to accept or revise the candidate `TimeoutStopSec=300s`.
+- cooperative cleanup timing sufficient to accept or revise candidate `TimeoutStopSec=300s`.
 
 ## Migration/cutover remains later
 
