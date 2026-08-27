@@ -29,6 +29,12 @@ class ServiceEntrypointTests(unittest.TestCase):
                 order.append(("preflight", dict(paths)))
                 return {key: {"approved": True} for key in paths}
 
+            def disk_space_preflight(**kwargs):
+                return {"required_free_bytes": 1, "paths": {}}
+
+            def time_sync_preflight(**kwargs):
+                return {"ntp_synchronized": True, "approved": True}
+
             def apply_authorization(**kwargs):
                 order.append(("apply", kwargs))
                 return {"status": "fixture"}
@@ -42,6 +48,9 @@ class ServiceEntrypointTests(unittest.TestCase):
                 authoritative_db_path=db,
                 artifact_root=artifacts,
                 filesystem_preflight=preflight,
+                disk_space_preflight=disk_space_preflight,
+                time_sync_preflight=time_sync_preflight,
+                storage_growth_ceiling_bytes=100,
                 apply_authorization=apply_authorization,
             )
             self.assertEqual(
@@ -93,6 +102,7 @@ class ServiceEntrypointTests(unittest.TestCase):
                     authoritative_db_path=db,
                     artifact_root=root / "artifacts",
                     filesystem_preflight=preflight,
+                    storage_growth_ceiling_bytes=100,
                     apply_authorization=apply_authorization,
                     stop_state=state,
                 )
