@@ -1,0 +1,20 @@
+[Unit]
+Description=Printer V1 four-token standard-four-hour one-shot wrapper
+After=local-fs.target
+
+[Service]
+Type=exec
+User=printer-v1
+Group=printer-v1
+WorkingDirectory=/opt/printer-v1
+Environment=HOME=/var/lib/printer-v1
+EnvironmentFile=/etc/printer-v1/four-token-standard-four-hour.env
+UMask=0077
+ExecStart=/opt/printer-v1/.venv/bin/python -m printer_v1.operator_cli.four_token_standard_four_hour_linux_service --authorization-file ${PRINTER_V1_AUTHORIZATION_FILE} --authorization-sha256 ${PRINTER_V1_AUTHORIZATION_SHA256} --operator-approved
+Restart=no
+RemainAfterExit=no
+KillMode=mixed
+KillSignal=SIGTERM
+FinalKillSignal=SIGKILL
+SendSIGKILL=yes
+TimeoutStopSec=300s
