@@ -81,18 +81,17 @@ def run_linux_service(
     database = Path(authoritative_db_path).resolve()
     app_root = Path(application_root).expanduser().resolve()
     artifacts = Path(artifact_root).expanduser().resolve()
-    preflight_paths = build_filesystem_preflight_paths(
-        authoritative_db_path=database,
-        application_root=app_root,
-        artifact_root=artifacts,
-    )
-    filesystem_evidence = dict(filesystem_preflight(preflight_paths))
-
     state = stop_state or StopSignalState()
     previous_handlers: dict[int, Any] = {}
     for signum in (signal.SIGTERM, signal.SIGINT):
         previous_handlers[signum] = signal.getsignal(signum)
         signal.signal(signum, state.handle_signal)
+
+    preflight_paths = build_filesystem_preflight_paths(
+        authoritative_db_path=database,
+        application_root=app_root,
+        artifact_root=artifacts,
+    )
 
     def process_launcher(**kwargs: Any) -> Mapping[str, Any]:
         return launch_child_foreground(
@@ -102,6 +101,11 @@ def run_linux_service(
         )
 
     try:
+        filesystem_evidence = dict(filesystem_preflight(preflight_paths))
+        if state.requested:
+            raise LinuxPortabilityError(
+                "stop requested before authorization consumption"
+            )
         result = dict(
             apply_authorization(
                 authorization_file=authorization_file,
