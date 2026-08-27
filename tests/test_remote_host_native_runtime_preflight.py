@@ -40,6 +40,9 @@ class NativeHostRuntimePreflightTests(unittest.TestCase):
                     "HEAD",
                 ): "agent/remote-host-linux-portability-implementation\n",
                 ("ps", "--version"): "ps from procps-ng 4.0.4\n",
+                ("ps", "-axo", "pid=,command="): (
+                    "  101 /usr/bin/python fixture\n"
+                ),
                 ("systemd-analyze", "--version"): "systemd 257\n",
             }
 
@@ -87,6 +90,8 @@ class NativeHostRuntimePreflightTests(unittest.TestCase):
             self.assertEqual(evidence["runtime"]["websockets_version"], "16.0")
             self.assertEqual(evidence["git"]["head"], "a" * 40)
             self.assertEqual(evidence["procps"]["version"], "ps from procps-ng 4.0.4")
+            self.assertTrue(evidence["procps"]["inventory_verified"])
+            self.assertEqual(evidence["procps"]["inventory_rows"], 1)
             self.assertTrue(evidence["systemd"]["unit_verified"])
             self.assertTrue(evidence["time_sync"]["ntp_synchronized"])
             self.assertTrue(all(not kwargs["shell"] for _, kwargs in calls))
@@ -133,6 +138,8 @@ class NativeHostRuntimePreflightTests(unittest.TestCase):
                     return _Result(stdout="branch\n")
                 if command == ("ps", "--version"):
                     return _Result(stdout="ps from procps-ng 4.0.4\n")
+                if command == ("ps", "-axo", "pid=,command="):
+                    return _Result(stdout="  101 /usr/bin/python fixture\n")
                 if command == ("systemd-analyze", "--version"):
                     return _Result(stdout="systemd 257\n")
                 raise AssertionError(command)
