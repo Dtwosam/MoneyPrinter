@@ -13,7 +13,8 @@ import os
 from pathlib import Path
 import shutil
 import sqlite3
-from typing import Any
+import sys
+from typing import Any, Callable
 from uuid import uuid4
 
 from printer_v1.db import migrate as migration_runner
@@ -200,11 +201,14 @@ def operational_backup_restore_preflight(
     backup_path: str | Path,
     disposable_restore_root: str | Path,
     restore_path: str | Path,
+    directory_sync: Callable[[Path], None] | None = None,
 ) -> dict[str, Any]:
     """Verify, back up, and migrate-rehearse one explicit source database.
 
     The source is never migrated. Publication uses ``os.link`` so an existing
     destination cannot be replaced, including a destination created by a race.
+    On Linux, verified backup publication is not returned as ready until the
+    backup parent directory has been durably synced.
     """
     source = Path(source_db_path).resolve()
     expected_source = Path(expected_source_path).resolve()
@@ -316,6 +320,21 @@ def operational_backup_restore_preflight(
             raise OperationalBackupPreflightError(
                 "published backup differs from verified temporary backup"
             )
+
+        sync = directory_sync
+        if sync is None and sys.platform.startswith("linux"):
+            from printer_v1.operator_cli.linux_remote_host_portability import (
+                fsync_directory_required,
+            )
+
+            sync = fsync_directory_required
+        if sync is not None:
+            try:
+                sync(backup.parent)
+            except Exception as exc:
+                raise OperationalBackupPreflightError(
+                    "verified backup parent directory durability failed"
+                ) from exc
 
         return {
             "status": "OPERATIONAL_BACKUP_RESTORE_PREFLIGHT_READY",
