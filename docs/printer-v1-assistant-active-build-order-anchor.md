@@ -143,7 +143,7 @@ Preserve the V2 sequence and use minimum sufficient risk-based verification.
 Do not create authorization, reuse a consumed authorization, start Printer, contact providers/RPC, or run Central Scheduler merely because this anchor or the source-stack adoption exists. The exact current next permitted lane is remote-host readiness / portability audit only; this is infrastructure support and does not advance capability order.
 
 <!-- V2_9_8B_RETAINED_EVIDENCE_REPAIR_CLOSEOUT_CURRENT_STATE_START -->
-## V2-9.8B Retained-Evidence Repair Closeout — Current Authority
+## V2-9.8B Retained-Evidence Repair Closeout — Historical Authority
 
 This current-state synchronization block supersedes earlier current-looking
 V2-9.8B repair/readiness/next-sub-lane pointers in this document for the
@@ -169,6 +169,8 @@ This pointer is historical after the later authorization-readiness PASS below.
 
 That lane is readiness/governance only. It does not itself authorize issuance,
 execution, providers, RPC/WebSocket, Scheduler ticks, or authoritative DB writes.
+
+This retained-evidence repair pointer is historical after later readiness and campaign closeout.
 <!-- V2_9_8B_RETAINED_EVIDENCE_REPAIR_CLOSEOUT_CURRENT_STATE_END -->
 
 <!-- V2_9_8B_POST_CLOSEOUT_AUTH_READINESS_CURRENT_STATE_START -->

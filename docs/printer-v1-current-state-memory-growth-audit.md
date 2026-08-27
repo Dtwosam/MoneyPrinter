@@ -1320,7 +1320,7 @@ The historical `NEXT_RECOMMENDED_LANE: V2-1 Adopt/Reset Build Order` verdict
 above is retained as V2-0 provenance only.
 
 <!-- V2_9_8B_RETAINED_EVIDENCE_REPAIR_CLOSEOUT_CURRENT_STATE_START -->
-## V2-9.8B Retained-Evidence Repair Closeout — Current Authority
+## V2-9.8B Retained-Evidence Repair Closeout — Historical Authority
 
 This current-state synchronization block supersedes earlier current-looking
 V2-9.8B repair/readiness/next-sub-lane pointers in this document for the
@@ -1338,12 +1338,14 @@ retained-evidence repair chain. Historical lane text remains evidence only.
 - 5m remains support-only; 12h/24h remain locked
 - retrieval and all financial capability remain locked
 
-The only next permitted lane is:
+At retained-evidence repair closeout time, the next permitted lane was:
 
 `POST-CLOSEOUT FRESH NEXT-BOUNDED-CAMPAIGN AUTHORIZATION READINESS / GOVERNANCE ONLY`
 
 That lane is readiness/governance only. It does not itself authorize issuance,
 execution, providers, RPC/WebSocket, Scheduler ticks, or authoritative DB writes.
+
+This retained-evidence repair pointer is historical after later readiness and campaign closeout.
 <!-- V2_9_8B_RETAINED_EVIDENCE_REPAIR_CLOSEOUT_CURRENT_STATE_END -->
 
 <!-- V2_9_8B_POST_CLOSEOUT_AUTH_READINESS_CURRENT_STATE_START -->
