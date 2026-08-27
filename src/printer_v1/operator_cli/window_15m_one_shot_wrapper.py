@@ -396,6 +396,8 @@ def _write_exclusive(path: Path, value: bytes) -> None:
             os.fsync(handle.fileno())
     except FileExistsError as exc:
         raise OneShotWrapperError(f"create-once artifact already exists: {path}") from exc
+    if sys.platform.startswith("linux"):
+        _fsync_directory(path.parent)
 
 
 def _make_read_only(path: Path) -> None:
@@ -406,6 +408,21 @@ def _make_read_only(path: Path) -> None:
 
 
 def _fsync_directory(path: Path) -> None:
+    if sys.platform.startswith("linux"):
+        try:
+            from printer_v1.operator_cli.linux_remote_host_portability import (
+                fsync_directory_required,
+            )
+
+            fsync_directory_required(path)
+            parent = path.parent
+            if parent != path:
+                fsync_directory_required(parent)
+        except Exception as exc:
+            raise OneShotWrapperError(
+                f"directory durability failed: {path}"
+            ) from exc
+        return
     try:
         descriptor = os.open(path, os.O_RDONLY)
     except OSError:
