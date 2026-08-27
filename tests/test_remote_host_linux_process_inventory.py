@@ -1,7 +1,6 @@
-import subprocess
 import unittest
 
-from printer_v1.operator_cli import operational_campaign_recovery as recovery
+from printer_v1.operator_cli import linux_remote_host_portability as portability
 
 
 class _Result:
@@ -12,7 +11,7 @@ class _Result:
 
 
 class LinuxProcessInventoryTests(unittest.TestCase):
-    def test_posix_inventory_uses_one_bounded_ps_pass_and_parses(self):
+    def test_remote_inventory_reuses_one_bounded_ps_pass_and_parses(self):
         calls = []
 
         def runner(command, **kwargs):
@@ -26,7 +25,7 @@ class LinuxProcessInventoryTests(unittest.TestCase):
                 )
             )
 
-        inventory = recovery.host_process_inventory(runner=runner)
+        inventory = portability.linux_verified_host_process_inventory(runner=runner)
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0][0], ["ps", "-axo", "pid=,command="])
         self.assertEqual(calls[0][1]["shell"], False)
@@ -39,15 +38,15 @@ class LinuxProcessInventoryTests(unittest.TestCase):
         def runner(command, **kwargs):
             return _Result(stdout="not-a-pid ambiguous-command\n")
 
-        with self.assertRaises(recovery.OperationalCampaignRecoveryError):
-            recovery.host_process_inventory(runner=runner)
+        with self.assertRaises(portability.LinuxPortabilityError):
+            portability.linux_verified_host_process_inventory(runner=runner)
 
     def test_ps_failure_fails_closed(self):
         def runner(command, **kwargs):
             return _Result(stdout="", returncode=1)
 
-        with self.assertRaises(recovery.OperationalCampaignRecoveryError):
-            recovery.host_process_inventory(runner=runner)
+        with self.assertRaises(portability.LinuxPortabilityError):
+            portability.linux_verified_host_process_inventory(runner=runner)
 
 
 if __name__ == "__main__":
