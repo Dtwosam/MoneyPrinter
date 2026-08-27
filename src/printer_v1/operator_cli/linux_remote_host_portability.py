@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import os
 from pathlib import Path
+import shutil
 import sqlite3
 import stat
 import subprocess
@@ -170,6 +171,126 @@ def assert_local_ext4_paths(
             "approved": True,
         }
     return evidence
+
+
+def assert_remote_disk_space(
+    *,
+    authoritative_db_path: str | Path,
+    write_paths: Mapping[str, str | Path],
+    storage_growth_ceiling_bytes: int,
+    disk_usage: Callable[[str | Path], Any] = shutil.disk_usage,
+) -> dict[str, Any]:
+    """Fail closed unless every remote write root has a derived free-space reserve."""
+    database = Path(authoritative_db_path).expanduser()
+    if not database.is_absolute():
+        database = Path(os.path.abspath(database))
+    if not database.is_file():
+        raise LinuxPortabilityError(
+            "authoritative database is unavailable for disk preflight"
+        )
+    database_size = int(database.stat().st_size)
+    if database_size <= 0:
+        raise LinuxPortabilityError("authoritative database size is invalid")
+    if (
+        type(storage_growth_ceiling_bytes) is not int
+        or storage_growth_ceiling_bytes <= 0
+    ):
+        raise LinuxPortabilityError(
+            "storage growth ceiling must be a positive integer"
+        )
+    if not write_paths:
+        raise LinuxPortabilityError("disk preflight paths are empty")
+
+    terminal_report_log_margin = max(database_size, storage_growth_ceiling_bytes)
+    required_free_bytes = (
+        (3 * database_size)
+        + storage_growth_ceiling_bytes
+        + terminal_report_log_margin
+    )
+    evidence: dict[str, dict[str, Any]] = {}
+    for label, raw_path in write_paths.items():
+        if not isinstance(label, str) or not label:
+            raise LinuxPortabilityError("disk preflight label is malformed")
+        path = Path(raw_path).expanduser()
+        if not path.is_absolute():
+            path = Path(os.path.abspath(path))
+        existing = _existing_path_for_stat(path)
+        try:
+            usage = disk_usage(existing)
+            total = int(usage.total)
+            free = int(usage.free)
+        except (OSError, TypeError, ValueError, AttributeError) as exc:
+            raise LinuxPortabilityError(
+                f"{label} disk-space evidence is unavailable"
+            ) from exc
+        if total <= 0 or free < 0 or free > total:
+            raise LinuxPortabilityError(
+                f"{label} disk-space evidence is malformed"
+            )
+        if free < required_free_bytes:
+            raise LinuxPortabilityError(
+                f"{label} free space is below the required remote reserve: "
+                f"{free} < {required_free_bytes}"
+            )
+        evidence[label] = {
+            "path": str(path),
+            "existing_identity_path": str(Path(os.path.realpath(existing))),
+            "total_bytes": total,
+            "free_bytes": free,
+            "required_free_bytes": required_free_bytes,
+            "approved": True,
+        }
+    return {
+        "database_size_bytes": database_size,
+        "storage_growth_ceiling_bytes": storage_growth_ceiling_bytes,
+        "sqlite_temp_journal_reserve_bytes": database_size,
+        "verified_backup_reserve_bytes": database_size,
+        "disposable_restore_reserve_bytes": database_size,
+        "terminal_report_log_margin_bytes": terminal_report_log_margin,
+        "required_free_bytes": required_free_bytes,
+        "paths": evidence,
+    }
+
+
+def assert_system_time_synchronized(
+    *,
+    timeout_seconds: float = 5.0,
+    runner: Callable[..., Any] = subprocess.run,
+) -> dict[str, Any]:
+    """Require systemd time synchronization evidence before authorization use."""
+    if timeout_seconds <= 0:
+        raise LinuxPortabilityError(
+            "time synchronization probe timeout must be positive"
+        )
+    command = [
+        "timedatectl",
+        "show",
+        "--property=NTPSynchronized",
+        "--value",
+    ]
+    try:
+        result = runner(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            shell=False,
+            timeout=timeout_seconds,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise LinuxPortabilityError(
+            "system time synchronization is uninspectable"
+        ) from exc
+    if getattr(result, "returncode", None) != 0:
+        raise LinuxPortabilityError("system time synchronization probe failed")
+    synchronized = str(getattr(result, "stdout", "") or "").strip().lower()
+    if synchronized != "yes":
+        raise LinuxPortabilityError("system time is not synchronized")
+    return {
+        "probe": "timedatectl",
+        "ntp_synchronized": True,
+        "approved": True,
+    }
 
 
 def fsync_directory_required(path: str | Path) -> None:
@@ -417,6 +538,8 @@ __all__ = [
     "MountInfoEntry",
     "StopSignalState",
     "assert_local_ext4_paths",
+    "assert_remote_disk_space",
+    "assert_system_time_synchronized",
     "attempt_exact_active_cancellation",
     "fsync_directory_required",
     "launch_child_foreground",
