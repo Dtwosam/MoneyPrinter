@@ -140,7 +140,7 @@ Printer V1 remains:
 
 Preserve the V2 sequence and use minimum sufficient risk-based verification.
 
-Do not create authorization, reuse a consumed authorization, start Printer, contact providers/RPC, or run Central Scheduler merely because this anchor or the source-stack adoption exists. The exact current next permitted lane is post-closeout fresh next-bounded-campaign authorization readiness/governance only.
+Do not create authorization, reuse a consumed authorization, start Printer, contact providers/RPC, or run Central Scheduler merely because this anchor or the source-stack adoption exists. The exact current next permitted lane is fresh exact-HEAD / exact-DB one-shot authorization preparation / independent review only.
 
 <!-- V2_9_8B_RETAINED_EVIDENCE_REPAIR_CLOSEOUT_CURRENT_STATE_START -->
 ## V2-9.8B Retained-Evidence Repair Closeout — Current Authority
@@ -161,9 +161,11 @@ retained-evidence repair chain. Historical lane text remains evidence only.
 - 5m remains support-only; 12h/24h remain locked
 - retrieval and all financial capability remain locked
 
-The only next permitted lane is:
+At closeout time, the next permitted lane was:
 
 `POST-CLOSEOUT FRESH NEXT-BOUNDED-CAMPAIGN AUTHORIZATION READINESS / GOVERNANCE ONLY`
+
+This pointer is historical after the later authorization-readiness PASS below.
 
 That lane is readiness/governance only. It does not itself authorize issuance,
 execution, providers, RPC/WebSocket, Scheduler ticks, or authoritative DB writes.
