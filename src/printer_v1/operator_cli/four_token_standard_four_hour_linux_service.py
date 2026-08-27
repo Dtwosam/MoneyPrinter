@@ -18,6 +18,8 @@ from printer_v1.operator_cli.linux_remote_host_portability import (
     LinuxPortabilityError,
     StopSignalState,
     assert_local_ext4_paths,
+    assert_remote_disk_space,
+    assert_system_time_synchronized,
     launch_child_foreground,
     linux_verified_host_process_inventory,
 )
@@ -52,10 +54,13 @@ def run_linux_service(
     authoritative_db_path: str | Path | None = None,
     artifact_root: str | Path | None = None,
     filesystem_preflight: Callable[..., Mapping[str, Any]] = assert_local_ext4_paths,
+    disk_space_preflight: Callable[..., Mapping[str, Any]] = assert_remote_disk_space,
+    time_sync_preflight: Callable[..., Mapping[str, Any]] = assert_system_time_synchronized,
+    storage_growth_ceiling_bytes: int | None = None,
     apply_authorization: Callable[..., Mapping[str, Any]] | None = None,
     stop_state: StopSignalState | None = None,
 ) -> dict[str, Any]:
-    """Preflight Linux storage, then enter the existing one-shot wrapper once."""
+    """Preflight Linux host readiness, then enter the one-shot wrapper once."""
     if not sys.platform.startswith("linux"):
         raise LinuxPortabilityError("native remote-host service requires Linux")
     if operator_approved is not True:
@@ -71,13 +76,19 @@ def run_linux_service(
             application_root = wrapper.APPLICATION_ROOT
         if apply_authorization is None:
             apply_authorization = wrapper.apply_authorization_once
-    if authoritative_db_path is None or artifact_root is None:
+    if (
+        authoritative_db_path is None
+        or artifact_root is None
+        or storage_growth_ceiling_bytes is None
+    ):
         from printer_v1.operator_cli import operational_memory_factory_command as command
 
         if authoritative_db_path is None:
             authoritative_db_path = command.AUTHORITATIVE_DB
         if artifact_root is None:
             artifact_root = command.ARTIFACT_ROOT
+        if storage_growth_ceiling_bytes is None:
+            storage_growth_ceiling_bytes = command.STORAGE_BYTE_CEILING
 
     database = Path(authoritative_db_path).resolve()
     app_root = Path(application_root).expanduser().resolve()
@@ -107,6 +118,26 @@ def run_linux_service(
             raise LinuxPortabilityError(
                 "stop requested before authorization consumption"
             )
+        disk_space_evidence = dict(
+            disk_space_preflight(
+                authoritative_db_path=database,
+                write_paths={
+                    "authoritative_db_parent": database.parent,
+                    "application_root": app_root,
+                    "operational_artifact_root": artifacts,
+                },
+                storage_growth_ceiling_bytes=int(storage_growth_ceiling_bytes),
+            )
+        )
+        if state.requested:
+            raise LinuxPortabilityError(
+                "stop requested before authorization consumption"
+            )
+        time_sync_evidence = dict(time_sync_preflight())
+        if state.requested:
+            raise LinuxPortabilityError(
+                "stop requested before authorization consumption"
+            )
         result = dict(
             apply_authorization(
                 authorization_file=authorization_file,
@@ -124,6 +155,10 @@ def run_linux_service(
             signal.signal(signum, handler)
 
     result["filesystem_preflight"] = filesystem_evidence
+    result["host_readiness"] = {
+        "disk_space": disk_space_evidence,
+        "time_sync": time_sync_evidence,
+    }
     result["linux_service"] = {
         "wrapper_owned": True,
         "direct_child_launch": False,
