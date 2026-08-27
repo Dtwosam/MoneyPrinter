@@ -202,6 +202,56 @@ def fsync_directory_required(path: str | Path) -> None:
         os.close(descriptor)
 
 
+def linux_verified_host_process_inventory(
+    *,
+    timeout_seconds: float = 5.0,
+    runner: Callable[..., Any] = subprocess.run,
+) -> tuple[tuple[int, str], ...]:
+    """Reuse the existing POSIX inventory owner with strict Linux parse evidence.
+
+    The underlying owner still performs exactly one bounded ``ps`` call. This
+    adapter only validates that every non-empty successful output line starts
+    with a numeric PID before allowing the existing parser to consume it. It
+    creates no second inventory pass, polling loop, signal, kill, or recovery.
+    """
+    from printer_v1.operator_cli.operational_campaign_recovery import (
+        OperationalCampaignRecoveryError,
+        host_process_inventory,
+    )
+
+    if timeout_seconds <= 0:
+        raise LinuxPortabilityError("Linux process inventory timeout must be positive")
+
+    def validating_runner(command: list[str], **kwargs: Any) -> Any:
+        result = runner(command, **kwargs)
+        if getattr(result, "returncode", None) == 0:
+            stdout = str(getattr(result, "stdout", "") or "")
+            for line_number, raw in enumerate(stdout.splitlines(), start=1):
+                stripped = raw.strip()
+                if not stripped:
+                    continue
+                fields = stripped.split(maxsplit=1)
+                try:
+                    int(fields[0])
+                except (IndexError, ValueError) as exc:
+                    raise LinuxPortabilityError(
+                        f"Linux process inventory line {line_number} is malformed"
+                    ) from exc
+        return result
+
+    try:
+        return host_process_inventory(
+            timeout_seconds=timeout_seconds,
+            runner=validating_runner,
+        )
+    except LinuxPortabilityError:
+        raise
+    except OperationalCampaignRecoveryError as exc:
+        raise LinuxPortabilityError(
+            "Linux process inventory could not be verified"
+        ) from exc
+
+
 @dataclass
 class StopSignalState:
     """Process-local, signal-safe stop intent; handlers perform no I/O."""
@@ -370,6 +420,7 @@ __all__ = [
     "attempt_exact_active_cancellation",
     "fsync_directory_required",
     "launch_child_foreground",
+    "linux_verified_host_process_inventory",
     "parse_mountinfo",
     "resolve_exact_active_supervision",
 ]
