@@ -2,69 +2,71 @@
 
 ## Current lane
 
-`POST-CLOSEOUT FRESH NEXT-BOUNDED-CAMPAIGN AUTHORIZATION READINESS / GOVERNANCE ONLY`
+`FRESH EXACT-HEAD / EXACT-DB ONE-SHOT AUTHORIZATION PREPARATION / INDEPENDENT REVIEW`
 
-Readiness/governance only. No authorization issuance or operational campaign is
+Authorization preparation / independent review only. No Printer execution is
 authorized by this handoff.
 
 ## Latest completed work
 
-V2-9.8B retained-evidence role completeness, current-run provenance, and
-timing/freshness repair is closed PASS.
+Post-closeout fresh next-bounded-campaign authorization readiness/governance
+passed.
 
-Implementation / bounded-proof baseline:
+Readiness verdict:
 
-`851d92627c3f5b05b1366af0d0dfef2712a330d8`
+`V2_9_8B_POST_CLOSEOUT_FRESH_NEXT_BOUNDED_CAMPAIGN_AUTHORIZATION_READINESS_GOVERNANCE_PASS`
+
+Readiness report:
+
+`docs/printer-v1-v2-9-8b-post-closeout-fresh-next-bounded-campaign-authorization-readiness-governance.md`
+
+Repair closeout verdict:
+
+`V2_9_8B_RETAINED_EVIDENCE_PREFREEZE_ROLE_PROVENANCE_TIMING_REPAIR_CLOSEOUT_PASS`
 
 Bounded-proof verdict:
 
 `V2_9_8B_RETAINED_EVIDENCE_PREFREEZE_ROLE_PROVENANCE_TIMING_BOUNDED_PROOF_PASS`
 
-Closeout verdict:
+## Baselines
 
-`V2_9_8B_RETAINED_EVIDENCE_PREFREEZE_ROLE_PROVENANCE_TIMING_REPAIR_CLOSEOUT_PASS`
+Readiness audit started from closeout HEAD:
 
-Durable closeout:
+`941ddd727b0e8b6aabf7eacbf9513f47979adb46`
 
-`docs/printer-v1-v2-9-8b-retained-evidence-prefreeze-role-provenance-timing-repair-closeout.md`
+Bounded-proof implementation HEAD:
 
-## Authoritative DB
+`851d92627c3f5b05b1366af0d0dfef2712a330d8`
+
+Authoritative DB SHA:
 
 `b273b47973b0b76edd6c131afd410764cf5c6d09e35c81ab565480c3bb587e07`
 
-Do not restore the pre-campaign DB merely because the historical failed campaign
-mutated it.
+The repository HEAD after this synchronization is the readiness commit containing
+this handoff. Any future authorization must bind to that exact new HEAD and to the
+exact DB SHA above.
 
 ## Consumed authorization
 
 `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260826T203834Z_c3063b7c`
 
-Permanently non-reusable. No retry, rerun, resume, restart, or successor.
-
-## Latest historical terminal campaign repaired
-
-- execution: `20260826T204317Z-e42d1dc2cb14`
-- campaign: `20260826T204317Z-e42d1dc2cb14-campaign`
-- run: `20260826T204317Z-e42d1dc2cb14-campaign-run`
-- first terminal cause: `RETAINED_EVIDENCE_ROLE_MISSING`
-
-Historical evidence remains immutable.
+Permanently non-reusable. No retry, rerun, resume, restart, successor, or
+authority inheritance.
 
 ## Blockers
 
-No open committed-code blocker remains from this repair chain after bounded proof.
+No open committed-code blocker remains from the retained-evidence repair chain.
 
-A fresh campaign remains blocked by governance until a new readiness lane passes
-and a later separately approved exact-HEAD / exact-DB one-shot authorization is
-issued.
+Execution remains governance-blocked until a fresh exact-HEAD/exact-DB one-shot
+authorization is separately prepared, independently reviewed, and later
+explicitly operator-approved.
 
 ## Next permitted action
 
-`POST-CLOSEOUT FRESH NEXT-BOUNDED-CAMPAIGN AUTHORIZATION READINESS / GOVERNANCE ONLY`
+`FRESH EXACT-HEAD / EXACT-DB ONE-SHOT AUTHORIZATION PREPARATION / INDEPENDENT REVIEW`
 
-Do not skip directly to authorization issuance or operational execution.
-
-## Repository commit note
-
-The repository HEAD after this synchronization is the commit containing this
-handoff. The implementation/proof parent baseline is `851d92627c3f5b05b1366af0d0dfef2712a330d8`.
+Do not run Printer.
+Do not contact providers/RPC/WebSocket.
+Do not run Central Scheduler.
+Do not mutate the authoritative DB.
+Do not unlock retrieval or financial capability.

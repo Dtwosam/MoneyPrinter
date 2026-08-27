@@ -1960,3 +1960,29 @@ The only next permitted lane is:
 That lane is readiness/governance only. It does not itself authorize issuance,
 execution, providers, RPC/WebSocket, Scheduler ticks, or authoritative DB writes.
 <!-- V2_9_8B_RETAINED_EVIDENCE_REPAIR_CLOSEOUT_CURRENT_STATE_END -->
+
+<!-- V2_9_8B_POST_CLOSEOUT_AUTH_READINESS_CURRENT_STATE_START -->
+## V2-9.8B Post-Closeout Authorization Readiness — Current Authority
+
+Readiness verdict:
+
+`V2_9_8B_POST_CLOSEOUT_FRESH_NEXT_BOUNDED_CAMPAIGN_AUTHORIZATION_READINESS_GOVERNANCE_PASS`
+
+Audited closeout HEAD: `941ddd727b0e8b6aabf7eacbf9513f47979adb46`
+Authoritative DB SHA: `b273b47973b0b76edd6c131afd410764cf5c6d09e35c81ab565480c3bb587e07`
+
+The retained-evidence repair chain is closed. The historical authorization
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260826T203834Z_c3063b7c` remains permanently non-reusable.
+
+The only next permitted lane is:
+
+`FRESH EXACT-HEAD / EXACT-DB ONE-SHOT AUTHORIZATION PREPARATION / INDEPENDENT REVIEW`
+
+That lane may prepare and independently review a fresh exact-HEAD/exact-DB
+one-shot authorization artifact. It does not authorize Printer execution.
+Any fresh authorization must bind to the new readiness commit HEAD produced by
+this synchronization and to the exact DB SHA above. Separate operator approval
+is still required before execution.
+
+All permanent V1 locks remain unchanged.
+<!-- V2_9_8B_POST_CLOSEOUT_AUTH_READINESS_CURRENT_STATE_END -->
