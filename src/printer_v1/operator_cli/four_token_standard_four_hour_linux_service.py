@@ -150,7 +150,7 @@ def main(argv: list[str] | None = None) -> int:
         operator_approved=bool(args.operator_approved),
     )
     classification = str(result.get("terminal_classification") or "")
-    return 0 if classification.startswith("CHILD_EXITED_ZERO") else 1
+    return 0 if classification == "CHILD_EXITED_ZERO" else 1
 
 
 if __name__ == "__main__":
