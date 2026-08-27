@@ -3,6 +3,7 @@ import importlib.util
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 MODULE = "printer_v1.operator_cli.four_token_standard_four_hour_linux_service"
@@ -92,6 +93,26 @@ class ServiceEntrypointTests(unittest.TestCase):
                     stop_state=state,
                 )
         self.assertEqual(calls, ["preflight"])
+
+    def test_main_rejects_zero_exit_with_invalid_terminal_truth(self):
+        service = importlib.import_module(MODULE)
+        with patch.object(
+            service,
+            "run_linux_service",
+            return_value={
+                "terminal_classification": "CHILD_EXITED_ZERO_TERMINAL_INVALID"
+            },
+        ):
+            code = service.main(
+                [
+                    "--authorization-file",
+                    "/tmp/auth.json",
+                    "--authorization-sha256",
+                    "a" * 64,
+                    "--operator-approved",
+                ]
+            )
+        self.assertEqual(code, 1)
 
 
 if __name__ == "__main__":
