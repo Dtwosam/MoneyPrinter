@@ -51,6 +51,10 @@ class ServiceEntrypointTests(unittest.TestCase):
             self.assertEqual(
                 Path(order[1][1]["authoritative_db_path"]), db.resolve()
             )
+            self.assertIs(
+                order[1][1]["printer_host_process_inventory"],
+                service.linux_verified_host_process_inventory,
+            )
             self.assertEqual(
                 result["filesystem_preflight"]["authoritative_db"]["approved"],
                 True,
