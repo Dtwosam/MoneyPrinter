@@ -317,6 +317,9 @@ def test_case_a_real_cycle1_enforcement_off_with_empty_history() -> None:
             campaign_id=str(base.command.campaign_id),
             run_id=str(base.command.run_id),
             cycle_id="cyc",
+            execution_id="cycle1-hist-a",
+            inject_pre_holder_authority=True,
+            inject_campaign_scope=True,
         )
         observed: list[dict[str, object]] = []
         result = _run_production_pre_lifecycle(
@@ -358,6 +361,9 @@ def test_case_b_real_cycle2_enforcement_on_filters_before_selection() -> None:
             campaign_id=str(base.command.campaign_id),
             run_id=str(base.command.run_id),
             cycle_id="cyc-2",
+            execution_id="cycle2-hist-b",
+            inject_pre_holder_authority=True,
+            inject_campaign_scope=True,
         )
         observed: list[dict[str, object]] = []
         result = _run_production_pre_lifecycle(

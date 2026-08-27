@@ -60,8 +60,11 @@ from test_v2_9_8b_remaining_runtime_blocker_repair import (
     GOV,
     SCH,
     _CampaignBase,
+    _campaign_supply_diagnostics,
     _clean_goplus_extreme,
     _force_holder_extreme_ineligible,
+    _permanent_supply,
+    _seed_exact_markets_for_campaign,
     _seed_exact_markets_for_supply,
 )
 
@@ -1440,6 +1443,9 @@ def test_production_caller_excludes_incomplete_direct_before_freeze() -> None:
             campaign_id=str(base.command.campaign_id),
             run_id=str(base.command.run_id),
             cycle_id="cyc",
+            execution_id="role-complete-production",
+            inject_pre_holder_authority=True,
+            inject_campaign_scope=True,
         )
         owner = AuthoritativeLiveOperationalCampaignOwner()
         _force_holder_extreme_ineligible(owner, supply.holder_reserve_supply)
@@ -1498,6 +1504,335 @@ def test_production_caller_excludes_incomplete_direct_before_freeze() -> None:
             row.get("detail") == "RETAINED_CURRENT_RUN_PROVENANCE_UNAVAILABLE"
             for row in exclusions
         )
+        assert life.get("lifecycle_started") is False
+    finally:
+        base.tearDown()
+
+
+def _assert_provenance_unavailable_before_freeze(life: dict) -> None:
+    diag = _campaign_supply_diagnostics(life)
+    prefreeze = diag.get("retained_evidence_role_pre_freeze") or {}
+    assert prefreeze.get("complete_count") == 0
+    assert prefreeze.get("current_run_provenance_available") is False
+    exclusions = list(prefreeze.get("exclusions") or [])
+    assert any(
+        row.get("detail") == "RETAINED_CURRENT_RUN_PROVENANCE_UNAVAILABLE"
+        for row in exclusions
+    )
+    freeze = diag.get("freeze_depth_enforcement") or {}
+    assert int(freeze.get("selected_count") or 0) == 0
+    assert life.get("lifecycle_started") is False
+
+
+def test_case_y_pre_holder_recon_missing() -> None:
+    """CASE Y — missing pre-holder recon must not be reconstructed before freeze."""
+    base = _CampaignBase()
+    base.setUp()
+    try:
+        supply = _permanent_supply(4)
+        _seed_exact_markets_for_campaign(
+            base.db,
+            supply,
+            command=base.command,
+            selection_seed="case-y-missing-recon",
+            omit_pre_holder_recon=True,
+        )
+        assert "pre_holder_source_request_reconciliation" not in supply.diagnostics
+        assert supply.diagnostics.get("campaign_source_request_scope") is not None
+        owner = AuthoritativeLiveOperationalCampaignOwner()
+        _force_holder_extreme_ineligible(owner, supply.holder_reserve_supply)
+        assemble_calls: list[str] = []
+        freeze_inputs: list[int] = []
+        real_assemble = None
+        from printer_v1.discovery import permanent_discovery_availability as pda
+
+        real_assemble = pda.assemble_and_reconcile_campaign_source_requests
+        real_freeze = freeze_eligible_reserve_for_campaign
+
+        def _assemble_spy(*args, **kwargs):
+            assemble_calls.append("assemble")
+            return real_assemble(*args, **kwargs)
+
+        def _freeze_spy(connection, candidates, **kwargs):
+            freeze_inputs.append(len(list(candidates)))
+            return real_freeze(connection, candidates, **kwargs)
+
+        with patch(
+            "printer_v1.discovery.permanent_discovery_availability."
+            "assemble_and_reconcile_campaign_source_requests",
+            side_effect=_assemble_spy,
+        ), patch(
+            "printer_v1.discovery.permanent_discovery_availability."
+            "freeze_eligible_reserve_for_campaign",
+            side_effect=_freeze_spy,
+        ):
+            result = owner.run(
+                mode=PILOT_INPUT_READINESS,
+                command=base.command,
+                pump_transport=_FakePumpTransport([], {}),
+                secondary_transport=None,
+                source_governor=GOV,
+                central_scheduler=SCH,
+                selection_seed="case-y-missing-recon",
+                cycle_id="cyc",
+                cycle_cutoff=e8.CUTOFF,
+                evaluated_at=e8.NOW,
+                backup_path=base.backup,
+                lifecycle_kwargs={
+                    "context_adapter_factories": _clean_goplus_extreme()
+                },
+                graduated_supply=supply,
+            )
+        # No pre-freeze reconstruction. Post-freeze recon remains allowed once.
+        assert freeze_inputs == [0]
+        assert len(assemble_calls) == 1
+        _assert_provenance_unavailable_before_freeze(result.lifecycle)
+        # Injected missing recon must remain absent / not replaced with OK.
+        diag = _campaign_supply_diagnostics(result.lifecycle)
+        pre = diag.get("pre_holder_source_request_reconciliation")
+        assert not pre or str(pre.get("status") or "") != "OK"
+    finally:
+        base.tearDown()
+
+
+def test_case_z_pre_holder_recon_not_ok() -> None:
+    """CASE Z — not-OK pre-holder recon must not be recomputed before freeze."""
+    base = _CampaignBase()
+    base.setUp()
+    try:
+        supply = _permanent_supply(4)
+        _seed_exact_markets_for_campaign(
+            base.db,
+            supply,
+            command=base.command,
+            selection_seed="case-z-recon-blocked",
+            pre_holder_recon_status="BLOCKED",
+        )
+        assert (
+            supply.diagnostics["pre_holder_source_request_reconciliation"]["status"]
+            == "BLOCKED"
+        )
+        owner = AuthoritativeLiveOperationalCampaignOwner()
+        _force_holder_extreme_ineligible(owner, supply.holder_reserve_supply)
+        assemble_before_freeze = {"count": 0}
+        from printer_v1.discovery import permanent_discovery_availability as pda
+
+        real_assemble = pda.assemble_and_reconcile_campaign_source_requests
+        real_freeze = freeze_eligible_reserve_for_campaign
+        freeze_seen = {"n": 0}
+
+        def _assemble_spy(*args, **kwargs):
+            if freeze_seen["n"] == 0:
+                assemble_before_freeze["count"] += 1
+            return real_assemble(*args, **kwargs)
+
+        def _freeze_spy(connection, candidates, **kwargs):
+            freeze_seen["n"] += 1
+            assert len(list(candidates)) == 0
+            return real_freeze(connection, candidates, **kwargs)
+
+        with patch(
+            "printer_v1.discovery.permanent_discovery_availability."
+            "assemble_and_reconcile_campaign_source_requests",
+            side_effect=_assemble_spy,
+        ), patch(
+            "printer_v1.discovery.permanent_discovery_availability."
+            "freeze_eligible_reserve_for_campaign",
+            side_effect=_freeze_spy,
+        ):
+            result = owner.run(
+                mode=PILOT_INPUT_READINESS,
+                command=base.command,
+                pump_transport=_FakePumpTransport([], {}),
+                secondary_transport=None,
+                source_governor=GOV,
+                central_scheduler=SCH,
+                selection_seed="case-z-recon-blocked",
+                cycle_id="cyc",
+                cycle_cutoff=e8.CUTOFF,
+                evaluated_at=e8.NOW,
+                backup_path=base.backup,
+                lifecycle_kwargs={
+                    "context_adapter_factories": _clean_goplus_extreme()
+                },
+                graduated_supply=supply,
+            )
+        assert assemble_before_freeze["count"] == 0
+        _assert_provenance_unavailable_before_freeze(result.lifecycle)
+        diag = _campaign_supply_diagnostics(result.lifecycle)
+        assert (
+            diag.get("pre_holder_source_request_reconciliation") or {}
+        ).get("status") == "BLOCKED"
+    finally:
+        base.tearDown()
+
+
+def test_case_aa_canonical_scope_missing() -> None:
+    """CASE AA — missing CampaignSourceRequestScope cannot fall back to command fields."""
+    base = _CampaignBase()
+    base.setUp()
+    try:
+        supply = _permanent_supply(4)
+        _seed_exact_markets_for_campaign(
+            base.db,
+            supply,
+            command=base.command,
+            selection_seed="case-aa-missing-scope",
+            omit_campaign_scope=True,
+        )
+        assert "campaign_source_request_scope" not in supply.diagnostics
+        owner = AuthoritativeLiveOperationalCampaignOwner()
+        _force_holder_extreme_ineligible(owner, supply.holder_reserve_supply)
+        result = owner.run(
+            mode=PILOT_INPUT_READINESS,
+            command=base.command,
+            pump_transport=_FakePumpTransport([], {}),
+            secondary_transport=None,
+            source_governor=GOV,
+            central_scheduler=SCH,
+            selection_seed="case-aa-missing-scope",
+            cycle_id="cyc",
+            cycle_cutoff=e8.CUTOFF,
+            evaluated_at=e8.NOW,
+            backup_path=base.backup,
+            lifecycle_kwargs={
+                "context_adapter_factories": _clean_goplus_extreme()
+            },
+            graduated_supply=supply,
+        )
+        _assert_provenance_unavailable_before_freeze(result.lifecycle)
+    finally:
+        base.tearDown()
+
+
+def test_case_ab_scope_contradiction() -> None:
+    """CASE AB — scope campaign/run/cycle contradiction fail-closes before freeze."""
+    base = _CampaignBase()
+    base.setUp()
+    try:
+        from printer_v1.discovery.permanent_discovery_availability import (
+            build_campaign_source_request_scope,
+        )
+
+        supply = _permanent_supply(4)
+        _seed_exact_markets_for_campaign(
+            base.db,
+            supply,
+            command=base.command,
+            selection_seed="case-ab-scope-mismatch",
+        )
+        # Replace with a coherent but wrong-identity scope under the same root.
+        foreign = build_campaign_source_request_scope(
+            execution_id="case-ab-scope-mismatch",
+            campaign_id="foreign-campaign",
+            run_id="foreign-run",
+            cycle_id="foreign-cycle",
+        )
+        diagnostics = dict(supply.diagnostics)
+        diagnostics["campaign_source_request_scope"] = foreign
+        object.__setattr__(supply, "diagnostics", diagnostics)
+        owner = AuthoritativeLiveOperationalCampaignOwner()
+        _force_holder_extreme_ineligible(owner, supply.holder_reserve_supply)
+        result = owner.run(
+            mode=PILOT_INPUT_READINESS,
+            command=base.command,
+            pump_transport=_FakePumpTransport([], {}),
+            secondary_transport=None,
+            source_governor=GOV,
+            central_scheduler=SCH,
+            selection_seed="case-ab-scope-mismatch",
+            cycle_id="cyc",
+            cycle_cutoff=e8.CUTOFF,
+            evaluated_at=e8.NOW,
+            backup_path=base.backup,
+            lifecycle_kwargs={
+                "context_adapter_factories": _clean_goplus_extreme()
+            },
+            graduated_supply=supply,
+        )
+        _assert_provenance_unavailable_before_freeze(result.lifecycle)
+    finally:
+        base.tearDown()
+
+
+def test_case_ac_production_owner_uses_existing_pre_holder_recon() -> None:
+    """CASE AC — owner consumes injected pre-holder recon; no pre-freeze reassemble."""
+    base = _CampaignBase()
+    base.setUp()
+    try:
+        supply = _production_supply_with_incomplete_direct()
+        _seed_exact_markets_for_campaign(
+            base.db,
+            supply,
+            command=base.command,
+            selection_seed="case-ac-preholder",
+        )
+        injected = dict(
+            supply.diagnostics["pre_holder_source_request_reconciliation"]
+        )
+        assert injected.get("status") == "OK"
+        assert injected.get("campaign_source_request_manifest")
+        owner = AuthoritativeLiveOperationalCampaignOwner()
+        _force_holder_extreme_ineligible(owner, supply.holder_reserve_supply)
+        from printer_v1.discovery import permanent_discovery_availability as pda
+
+        real_assemble = pda.assemble_and_reconcile_campaign_source_requests
+        real_freeze = freeze_eligible_reserve_for_campaign
+        assemble_before_freeze = {"count": 0}
+        freeze_seen = {"n": 0, "mints": ()}
+
+        def _assemble_spy(*args, **kwargs):
+            if freeze_seen["n"] == 0:
+                assemble_before_freeze["count"] += 1
+            return real_assemble(*args, **kwargs)
+
+        def _freeze_spy(connection, candidates, **kwargs):
+            mints = tuple(str(item.get("mint") or "") for item in candidates)
+            freeze_seen["n"] += 1
+            freeze_seen["mints"] = mints
+            assert PUMP_MINT not in mints
+            assert len(mints) >= 4
+            return real_freeze(connection, candidates, **kwargs)
+
+        with patch(
+            "printer_v1.discovery.permanent_discovery_availability."
+            "assemble_and_reconcile_campaign_source_requests",
+            side_effect=_assemble_spy,
+        ), patch(
+            "printer_v1.discovery.permanent_discovery_availability."
+            "freeze_eligible_reserve_for_campaign",
+            side_effect=_freeze_spy,
+        ):
+            result = owner.run(
+                mode=PILOT_INPUT_READINESS,
+                command=base.command,
+                pump_transport=_FakePumpTransport([], {}),
+                secondary_transport=None,
+                source_governor=GOV,
+                central_scheduler=SCH,
+                selection_seed="case-ac-preholder",
+                cycle_id="cyc",
+                cycle_cutoff=e8.CUTOFF,
+                evaluated_at=e8.NOW,
+                backup_path=base.backup,
+                lifecycle_kwargs={
+                    "context_adapter_factories": _clean_goplus_extreme()
+                },
+                graduated_supply=supply,
+            )
+        assert assemble_before_freeze["count"] == 0
+        assert freeze_seen["n"] == 1
+        assert PUMP_MINT not in freeze_seen["mints"]
+        life = result.lifecycle
+        diag = _campaign_supply_diagnostics(life)
+        prefreeze = diag.get("retained_evidence_role_pre_freeze") or {}
+        assert prefreeze.get("current_run_provenance_available") is True
+        assert prefreeze.get("complete_count") >= 4
+        # Post-freeze recon remains present and is distinct from pre-holder.
+        assert "campaign_source_request_reconciliation" in diag
+        assert (
+            diag.get("pre_holder_source_request_reconciliation") or {}
+        ).get("status") == "OK"
         assert life.get("lifecycle_started") is False
     finally:
         base.tearDown()

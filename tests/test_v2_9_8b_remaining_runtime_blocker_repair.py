@@ -121,6 +121,12 @@ def _seed_exact_markets_for_supply(
     campaign_id: str = "camp",
     run_id: str = "run",
     cycle_id: str = "cyc",
+    execution_id: str | None = None,
+    inject_pre_holder_authority: bool = False,
+    inject_campaign_scope: bool = False,
+    pre_holder_recon_status: str = "OK",
+    omit_pre_holder_recon: bool = False,
+    omit_campaign_scope: bool = False,
 ) -> None:
     """Parent exact-market rows required by MEMORY_OBSERVATION reserve FK.
 
@@ -129,20 +135,26 @@ def _seed_exact_markets_for_supply(
 
     Also materializes minimum real disposable request/response rows for any
     MARKET_PRESENT_POOL nominee, under the current request_key_root when
-    provided, and publishes stage coverage into supply.diagnostics so pre-holder
-    recon can prove current-run provenance before freeze.
+    provided, and optionally injects the already-produced pre-holder
+    reconciliation + validated CampaignSourceRequestScope required by the
+    pre-freeze provenance gate.
     """
     import hashlib
     import json
 
     from printer_v1.discovery.permanent_discovery_availability import (
+        build_campaign_source_request_scope,
         derive_campaign_source_request_key_root,
+        validate_campaign_source_request_scope,
     )
 
     root = str(request_key_root or "").strip()
     if not root:
         # Compatibility default for older fixture callers.
         root = derive_campaign_source_request_key_root("fixture-execution")
+    exec_id = str(execution_id or "").strip()
+    if not exec_id and root.startswith("v2-9-8b-window15m-"):
+        exec_id = root[len("v2-9-8b-window15m-") :]
 
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA foreign_keys = ON")
@@ -268,6 +280,50 @@ def _seed_exact_markets_for_supply(
         diagnostics["stage_reported_request_ids"] = list(
             diagnostics["source_request_ids"]
         )
+        if inject_campaign_scope and not omit_campaign_scope and exec_id:
+            scope = validate_campaign_source_request_scope(
+                build_campaign_source_request_scope(
+                    execution_id=exec_id,
+                    campaign_id=str(campaign_id),
+                    run_id=str(run_id),
+                    cycle_id=str(cycle_id),
+                ),
+                execution_id=exec_id,
+                campaign_id=str(campaign_id),
+                run_id=str(run_id),
+                cycle_id=str(cycle_id),
+            )
+            diagnostics["campaign_source_request_scope"] = scope
+            diagnostics["request_key_root"] = scope.request_key_root
+            diagnostics["discovery_request_key_prefix"] = scope.request_key_root
+            diagnostics["front_door_request_key_prefix"] = scope.request_key_root
+        if inject_pre_holder_authority and not omit_pre_holder_recon:
+            manifest = list(diagnostics["source_request_coverage"])
+            durable_ids = [
+                int(entry["source_request_id"])
+                for entry in manifest
+                if entry.get("source_request_id") is not None
+            ]
+            measured_keys = [
+                list(key)
+                for entry in manifest
+                for key in (entry.get("transport_identity_keys") or ())
+            ]
+            diagnostics["pre_holder_source_request_reconciliation"] = {
+                "status": str(pre_holder_recon_status),
+                "campaign_source_request_manifest": list(manifest),
+                "durable_campaign_request_ids": list(durable_ids),
+                "stage_reported_request_ids": list(durable_ids),
+                "coverage_request_ids": list(durable_ids),
+                "campaign_source_request_count": len(durable_ids),
+                "campaign_transport_operation_count": len(measured_keys),
+            }
+            diagnostics["pre_holder_budget_snapshot"] = {
+                "governed_request_ids": list(durable_ids),
+                "measured_transport_identity_keys": measured_keys,
+                "governed_request_count": len(durable_ids),
+                "measured_transport_count": len(measured_keys),
+            }
         # GraduatedSupply is frozen; replace the diagnostics mapping in place.
         object.__setattr__(supply, "diagnostics", diagnostics)
         conn.commit()
@@ -282,6 +338,11 @@ def _seed_exact_markets_for_campaign(
     command: object,
     selection_seed: str,
     cycle_id: str = "cyc",
+    inject_pre_holder_authority: bool = True,
+    inject_campaign_scope: bool = True,
+    pre_holder_recon_status: str = "OK",
+    omit_pre_holder_recon: bool = False,
+    omit_campaign_scope: bool = False,
 ) -> None:
     """Seed MARKET_PRESENT retained evidence under the exact campaign scope."""
     from printer_v1.discovery.permanent_discovery_availability import (
@@ -295,6 +356,12 @@ def _seed_exact_markets_for_campaign(
         campaign_id=str(getattr(command, "campaign_id")),
         run_id=str(getattr(command, "run_id")),
         cycle_id=cycle_id,
+        execution_id=selection_seed,
+        inject_pre_holder_authority=inject_pre_holder_authority,
+        inject_campaign_scope=inject_campaign_scope,
+        pre_holder_recon_status=pre_holder_recon_status,
+        omit_pre_holder_recon=omit_pre_holder_recon,
+        omit_campaign_scope=omit_campaign_scope,
     )
 
 

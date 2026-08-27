@@ -4134,42 +4134,9 @@ class AuthoritativeLiveOperationalCampaignOwner:
         # graduation proofs and admission-universe carriers. Reuses the adopted
         # owners verbatim (no new gate, score, ranking, selector or provider).
         supply = graduated_supply
-        # Prebuilt permanent supplies must still carry the exact current-run
-        # CampaignSourceRequestScope so pre-freeze provenance can reuse the
-        # already-assembled measured ownership contract.
-        if (
-            supply is not None
-            and bool(dict(getattr(supply, "diagnostics", None) or {}).get(
-                "permanent_availability"
-            ))
-            and not dict(getattr(supply, "diagnostics", None) or {}).get(
-                "campaign_source_request_scope"
-            )
-        ):
-            from printer_v1.discovery.permanent_discovery_availability import (
-                build_campaign_source_request_scope,
-                validate_campaign_source_request_scope,
-            )
-
-            scope = build_campaign_source_request_scope(
-                execution_id=selection_seed,
-                campaign_id=command.campaign_id,
-                run_id=command.run_id,
-                cycle_id=cycle_id,
-            )
-            scope = validate_campaign_source_request_scope(
-                scope,
-                execution_id=selection_seed,
-                campaign_id=command.campaign_id,
-                run_id=command.run_id,
-                cycle_id=cycle_id,
-            )
-            diagnostics = dict(supply.diagnostics)
-            diagnostics["campaign_source_request_scope"] = scope
-            diagnostics["request_key_root"] = scope.request_key_root
-            diagnostics["discovery_request_key_prefix"] = scope.request_key_root
-            diagnostics["front_door_request_key_prefix"] = scope.request_key_root
-            object.__setattr__(supply, "diagnostics", diagnostics)
+        # Prebuilt permanent supplies must already carry validated current-run
+        # CampaignSourceRequestScope and pre-holder reconciliation. Do not
+        # reconstruct either authority here — the pre-freeze gate fail-closes.
         if supply is None and migration_transport is not None:
             from printer_v1.discovery.permanent_discovery_availability import (
                 build_campaign_source_request_scope,
@@ -4895,6 +4862,18 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 # Retained-evidence role completeness is binary eligibility before
                 # the neutral seeded freeze. Incomplete DIRECT_PUMP / MARKET
                 # nominees must never reach select-then-reject activation build.
+                #
+                # Current-run provenance authority is ONLY the already-produced
+                # pre-holder reconciliation plus the validated
+                # CampaignSourceRequestScope. Never reassemble / reconstruct
+                # either after holder evaluation.
+                from printer_v1.discovery.memory_observation_activation import (
+                    RETAINED_EVIDENCE_ROLE_INCOMPLETE_PRE_FREEZE,
+                )
+                from printer_v1.discovery.permanent_discovery_availability import (
+                    validate_campaign_source_request_scope,
+                )
+
                 pre_holder_recon = dict(
                     supply.diagnostics.get(
                         "pre_holder_source_request_reconciliation"
@@ -4904,92 +4883,108 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 pre_holder_snapshot = dict(
                     supply.diagnostics.get("pre_holder_budget_snapshot") or {}
                 )
-                scope = supply.diagnostics.get("campaign_source_request_scope")
-                scope_map = (
-                    scope.as_dict()
-                    if hasattr(scope, "as_dict")
-                    else dict(scope or {})
-                )
-                # Preferred path already stores pre-holder recon. When the
-                # operational projection was not injected (fixture/pilot paths),
-                # assemble measured ownership from already-emitted stage coverage
-                # with zero new source activity.
-                if (
-                    not pre_holder_recon
-                    or str(pre_holder_recon.get("status") or "") != "OK"
-                    or not pre_holder_recon.get("campaign_source_request_manifest")
-                ):
-                    prefixes = []
-                    scope_root = (
-                        scope_map.get("request_key_root")
-                        or supply.diagnostics.get("request_key_root")
+                provenance_unavailable_detail = None
+                validated_scope = None
+                try:
+                    validated_scope = validate_campaign_source_request_scope(
+                        supply.diagnostics.get("campaign_source_request_scope"),
+                        execution_id=selection_seed,
+                        campaign_id=command.campaign_id,
+                        run_id=command.run_id,
+                        cycle_id=cycle_id,
                     )
-                    if scope_root:
-                        prefixes.append(str(scope_root))
-                    for key in (
-                        "discovery_request_key_prefix",
-                        "front_door_request_key_prefix",
-                        "request_key_prefix",
-                    ):
-                        value = supply.diagnostics.get(key)
-                        if value and str(value) not in prefixes:
-                            prefixes.append(str(value))
-                    pre_holder_recon = assemble_and_reconcile_campaign_source_requests(
-                        connection,
-                        diagnostics=supply.diagnostics,
-                        request_key_prefixes=prefixes,
-                        request_key_root=(
-                            str(scope_root) if scope_root else None
-                        ),
-                        campaign_source_request_scope=supply.diagnostics.get(
-                            "campaign_source_request_scope"
-                        ),
+                except ValueError as exc:
+                    provenance_unavailable_detail = (
+                        str(exc).strip()
+                        or "RETAINED_CURRENT_RUN_PROVENANCE_UNAVAILABLE"
                     )
-                    supply.diagnostics[
-                        "pre_holder_source_request_reconciliation"
-                    ] = pre_holder_recon
-                measured_keys = list(
-                    pre_holder_snapshot.get("measured_transport_identity_keys")
-                    or ()
-                )
-                if not measured_keys:
-                    measured_keys = [
-                        list(key)
-                        for entry in (
-                            pre_holder_recon.get("campaign_source_request_manifest")
-                            or ()
+                if provenance_unavailable_detail is None:
+                    if (
+                        not pre_holder_recon
+                        or str(pre_holder_recon.get("status") or "") != "OK"
+                        or not pre_holder_recon.get(
+                            "campaign_source_request_manifest"
                         )
-                        for key in (entry.get("transport_identity_keys") or ())
+                    ):
+                        provenance_unavailable_detail = (
+                            "RETAINED_CURRENT_RUN_PROVENANCE_UNAVAILABLE"
+                        )
+                if provenance_unavailable_detail is not None:
+                    role_complete_observation_rows = []
+                    retained_role_pre_freeze_exclusions = [
+                        {
+                            "mint": None,
+                            "pool": None,
+                            "admission_authority": None,
+                            "required_roles": (),
+                            "present_roles": (),
+                            "missing_roles": (),
+                            "qualification_failures": {
+                                "current_run_provenance": (
+                                    "RETAINED_CURRENT_RUN_PROVENANCE_UNAVAILABLE"
+                                )
+                            },
+                            "disposition": (
+                                RETAINED_EVIDENCE_ROLE_INCOMPLETE_PRE_FREEZE
+                            ),
+                            "detail": "RETAINED_CURRENT_RUN_PROVENANCE_UNAVAILABLE",
+                            "scope_validation_detail": (
+                                None
+                                if provenance_unavailable_detail
+                                == "RETAINED_CURRENT_RUN_PROVENANCE_UNAVAILABLE"
+                                else provenance_unavailable_detail
+                            ),
+                        }
                     ]
-                (
-                    role_complete_observation_rows,
-                    retained_role_pre_freeze_exclusions,
-                ) = _filter_observation_rows_by_retained_role_completeness(
-                    connection,
-                    observation_rows,
-                    now=evaluated.isoformat(),
-                    request_key_root=str(
-                        scope_map.get("request_key_root")
-                        or supply.diagnostics.get("request_key_root")
-                        or ""
-                    ),
-                    campaign_id=str(
-                        scope_map.get("campaign_id") or command.campaign_id or ""
-                    ),
-                    run_id=str(scope_map.get("run_id") or command.run_id or ""),
-                    cycle_id=str(scope_map.get("cycle_id") or cycle_id or ""),
-                    campaign_source_request_manifest=list(
-                        pre_holder_recon.get("campaign_source_request_manifest")
+                else:
+                    assert validated_scope is not None
+                    measured_keys = list(
+                        pre_holder_snapshot.get(
+                            "measured_transport_identity_keys"
+                        )
                         or ()
-                    ),
-                    measured_transport_identity_keys=measured_keys,
-                    require_current_run_provenance=True,
-                )
+                    )
+                    if not measured_keys:
+                        measured_keys = [
+                            list(key)
+                            for entry in (
+                                pre_holder_recon.get(
+                                    "campaign_source_request_manifest"
+                                )
+                                or ()
+                            )
+                            for key in (
+                                entry.get("transport_identity_keys") or ()
+                            )
+                        ]
+                    (
+                        role_complete_observation_rows,
+                        retained_role_pre_freeze_exclusions,
+                    ) = _filter_observation_rows_by_retained_role_completeness(
+                        connection,
+                        observation_rows,
+                        now=evaluated.isoformat(),
+                        request_key_root=str(validated_scope.request_key_root),
+                        campaign_id=str(validated_scope.campaign_id),
+                        run_id=str(validated_scope.run_id),
+                        cycle_id=str(validated_scope.cycle_id),
+                        campaign_source_request_manifest=list(
+                            pre_holder_recon.get(
+                                "campaign_source_request_manifest"
+                            )
+                            or ()
+                        ),
+                        measured_transport_identity_keys=measured_keys,
+                        require_current_run_provenance=True,
+                    )
                 supply.diagnostics["retained_evidence_role_pre_freeze"] = {
                     "input_count": len(observation_rows),
                     "complete_count": len(role_complete_observation_rows),
                     "excluded_count": len(retained_role_pre_freeze_exclusions),
                     "exclusions": retained_role_pre_freeze_exclusions,
+                    "current_run_provenance_available": (
+                        provenance_unavailable_detail is None
+                    ),
                 }
                 # Post-filter freeze depth is the sole admission authority.
                 # Never use raw observation_rows count for coverage decisions.
