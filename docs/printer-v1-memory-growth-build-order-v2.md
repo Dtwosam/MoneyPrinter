@@ -293,7 +293,7 @@ Sub-lanes:
 |---|---|---|---|---|---|---|---|---|---|---|
 | V2-2A | Audit current discovery/selection pipeline | Static and DB read-only review | Source fetch/DB write | Discovery docs/code/tests | Read-only source/discovery tables | Read-only counts and code scan | Audit report | Current gaps known | Needs implementation to answer | Avoids building on bad token intake |
 | V2-2B | Design memory-diet buckets/quotas/reasons | Design doc/tests plan | Scoring/ranking | Design doc | None | Risk scan | Spec | Buckets are auditable | Score-like language appears | Creates balanced learning diet |
-| V2-2C | Implement discovery/selection repairs | Minimal code/tests if approved | BUY/paper/retrieval | Discovery/selection modules | Proof/temp DB only | Unit tests | Test report | Reasons persist to reports | Hidden selection logic | Makes intake usable |
+| V2-2C | Implement discovery/selection repairs | Minimal code/tests if approved | BUY/paper/retrieval | Discovery/selection modules | Proof/temp DB only if tests need it | Unit tests | Test report | Reasons persist to reports | Hidden selection logic | Makes intake usable |
 | V2-2D | Bounded discovery/selection proof | Operator-approved bounded proof | Memory generation | Proof scripts/reports | Proof DB source/discovery/tracking rows | Proof checks | Selection proof report | Useful tokens selected safely | Source bypass or bad rows | Proves safe front door |
 | V2-2E | Closeout report | Documentation | New implementation | Closeout doc | None | Diff checks | Closeout | Next lane ready | Gaps unresolved | Prevents ambiguous handoff |
 
@@ -1121,6 +1121,8 @@ clarified by the 2026-08-26 four-token standard-4h source-stack adoption):
   concurrent tokens is authorized;
 - later adopted 4/2/2 means two cycles × two concurrent slots and up to four
   distinct token identities across the campaign, not concurrent capacity four;
+- concurrent capacity remains exactly `2`;
+- no capacity increase to 3 or 4 concurrent tokens is authorized.
 - use the proven governed discovery/selection/tracking handoff;
 - do not require or consume candidate-acquisition N2, N7, cursor or recovery state;
 - retain trustworthy positive and negative outcomes as clean when evidence is
@@ -1475,7 +1477,7 @@ Sub-lanes:
 | V2-12B | Design report | Design | Runtime | Report spec | None | Review | Spec | Required fields set | Missing dirty/source fields | Makes corpus inspectable |
 | V2-12C | Implement read-only report | Code/tests | DB writes | Report command | Read-only DB in tests | Unit tests | Test output | Read-only enforced | Writes rows | Gives operator tool |
 | V2-12D | Run report | Read-only command | Mutation | Report output | Read-only DB | Report checks | Corpus report | Corpus quality visible | Report hides risks | Shows readiness |
-| V2-12E | Closeout | Docs | Activation | Closeout | None | Diff checks | Closeout | V2-13 ready/block | Corpus insufficient unclear | Clean handoff |
+| V2-12E | Closeout | Docs | Activation | Closeout | None | Diff checks | Report | V2-13 ready/block | Corpus insufficient unclear | Clean handoff |
 
 #### Functionality Risks / Setbacks / Efficiency Blockers
 
@@ -1992,7 +1994,7 @@ This readiness pointer is historical after the later authorized campaign closeou
 <!-- V2_9_8B_POST_CLOSEOUT_AUTH_READINESS_CURRENT_STATE_END -->
 
 <!-- V2_9_8B_AUTH_8E43EAE7_CAMPAIGN_CLOSEOUT_CURRENT_STATE_START -->
-## V2-9.8B Authorization 8e43eae7 Campaign Closeout — Current Authority
+## V2-9.8B Authorization 8e43eae7 Campaign Closeout / Remote-Host Infrastructure Current State
 
 - campaign closeout: `V2_9_8B_AUTH_8E43EAE7_CAMPAIGN_CLOSEOUT_PASS`
 - authoritative post-campaign DB: `f4e54b3a2dc9f4dbd41b6f05bb5288f25ca15dc71b7e66de1e05ef7c213e34b1`
@@ -2003,13 +2005,28 @@ This readiness pointer is historical after the later authorized campaign closeou
 - no current-campaign active work
 - retrieval/financial/12h/24h locks remain closed
 
-The exact current next permitted lane is:
+Remote-host readiness / portability audit is closed:
 
-`REMOTE HOST READINESS / PORTABILITY AUDIT ONLY — INFRASTRUCTURE SUPPORT; NO CAPABILITY ADVANCEMENT`
+`REMOTE_HOST_READINESS_CLOSEOUT_PASS__REMOTE_HOST_DESIGN_SPECIFICATION_NEXT`
 
-This is infrastructure audit support only. It does not advance the active
-memory-growth capability build order and does not authorize deployment,
-migration, authorization issuance, provider/RPC/WebSocket calls, Scheduler
-execution, another campaign, retrieval, financial capabilities, or longer
-windows.
+Closeout:
+
+`docs/printer-v1-remote-host-readiness-audit-closeout.md`
+
+The exact current next permitted infrastructure sub-lane is:
+
+`REMOTE HOST DESIGN / SPECIFICATION — NATIVE LINUX / SYSTEMD ONE-SHOT PORTABILITY`
+
+This remains infrastructure support only. It does not reorder or advance the
+active memory-growth capability sequence and does not authorize deployment,
+migration/cutover, authorization issuance/application, provider/RPC/WebSocket
+calls, Scheduler execution, another campaign, retrieval, financial capabilities,
+or 12h/24h windows.
+
+The required infrastructure sequence remains:
+
+`readiness/audit -> design/specification -> implementation if approved -> bounded proof/test -> migration/cutover closeout`
+
+All permanent V1 locks remain unchanged. `WINDOW_5M_MICRO_EVENT` remains
+support-only. The consumed authorization remains permanently non-reusable.
 <!-- V2_9_8B_AUTH_8E43EAE7_CAMPAIGN_CLOSEOUT_CURRENT_STATE_END -->
