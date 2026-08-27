@@ -310,7 +310,14 @@ def test_case_a_real_cycle1_enforcement_off_with_empty_history() -> None:
     try:
         _assert_cycle1_persisted_before_freeze(base.db)
         supply = _permanent_supply(4)
-        _seed_exact_markets_for_supply(base.db, supply)
+        _seed_exact_markets_for_supply(
+            base.db,
+            supply,
+            request_key_root="v2-9-8b-window15m-cycle1-hist-a",
+            campaign_id=str(base.command.campaign_id),
+            run_id=str(base.command.run_id),
+            cycle_id="cyc",
+        )
         observed: list[dict[str, object]] = []
         result = _run_production_pre_lifecycle(
             command=base.command,
@@ -344,7 +351,14 @@ def test_case_b_real_cycle2_enforcement_on_filters_before_selection() -> None:
         _seed_cycle1_admitted_slots(base.db)
         _insert_cycle2_row(base.db, cycle_id="cyc-2")
         supply = _supply_with_historical_reuse()
-        _seed_exact_markets_for_supply(base.db, supply)
+        _seed_exact_markets_for_supply(
+            base.db,
+            supply,
+            request_key_root="v2-9-8b-window15m-cycle2-hist-b",
+            campaign_id=str(base.command.campaign_id),
+            run_id=str(base.command.run_id),
+            cycle_id="cyc-2",
+        )
         observed: list[dict[str, object]] = []
         result = _run_production_pre_lifecycle(
             command=base.command,

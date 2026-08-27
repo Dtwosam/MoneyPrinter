@@ -185,6 +185,16 @@ def required_evidence_roles_for_candidate(
     return required_evidence_roles_for_admission_authority(candidate.admission_authority)
 
 
+def _verify_source_kind_pair() -> tuple[str, str]:
+    """PumpSwap verify producer constants from the discovery owner."""
+    from printer_v1.discovery.direct_migration_discovery import (
+        VERIFY_REQUEST_KIND,
+        VERIFY_SOURCE,
+    )
+
+    return (str(VERIFY_SOURCE), str(VERIFY_REQUEST_KIND))
+
+
 def retained_evidence_role_source_kind_bindings() -> (
     dict[EvidenceRole, frozenset[tuple[str, str]]]
 ):
@@ -226,8 +236,7 @@ def retained_evidence_role_source_kind_bindings() -> (
         EvidenceRole.PUMPSWAP_CONFIRMATION: frozenset(
             {
                 (PUMPSWAP_ACCOUNT_BATCH_SOURCE, PUMPSWAP_ACCOUNT_BATCH_KIND),
-                # direct_migration_discovery VERIFY_SOURCE / VERIFY_REQUEST_KIND
-                ("pumpswap", "pumpswap_signature_pool_resolution"),
+                _verify_source_kind_pair(),
             }
         ),
         EvidenceRole.MARKET_OBSERVATION: frozenset(
@@ -258,6 +267,92 @@ def retained_evidence_role_source_kind_allowed(
     return (str(source_name or ""), str(request_kind or "")) in allowed
 
 
+def build_prefreeze_manifest_transport_index(
+    campaign_source_request_manifest: Sequence[Mapping[str, Any]] | None,
+) -> tuple[dict[int, dict[str, Any]], dict[tuple[object, ...], set[int]]]:
+    """Index measured manifest entries and exclusive transport-key ownership."""
+    manifest_by_id: dict[int, dict[str, Any]] = {}
+    owners_by_key: dict[tuple[object, ...], set[int]] = {}
+    for raw in campaign_source_request_manifest or ():
+        if not isinstance(raw, Mapping) or raw.get("source_request_id") is None:
+            continue
+        request_id = int(raw["source_request_id"])
+        owned_keys: list[tuple[object, ...]] = []
+        for item in raw.get("transport_identity_keys") or ():
+            if isinstance(item, Mapping):
+                owned_keys.append(transport_identity_key_from_mapping(item))
+            else:
+                owned_keys.append(tuple(item))
+        entry = dict(raw)
+        entry["_owned_transport_identity_keys"] = tuple(owned_keys)
+        manifest_by_id[request_id] = entry
+        for key in owned_keys:
+            owners_by_key.setdefault(key, set()).add(request_id)
+    return manifest_by_id, owners_by_key
+
+
+def qualify_current_run_retained_request_provenance(
+    *,
+    request_id: int,
+    request_key: str,
+    response_hash: object,
+    request_key_root: str,
+    campaign_id: str,
+    run_id: str,
+    cycle_id: str,
+    manifest_by_id: Mapping[int, Mapping[str, Any]],
+    owners_by_key: Mapping[tuple[object, ...], set[int]],
+    measured_transport_identity_keys: Sequence[Sequence[object]] | None = None,
+) -> tuple[bool, str | None]:
+    """Prove current-run measured provenance for one retained request/response."""
+    from printer_v1.discovery.permanent_discovery_availability import (
+        request_key_belongs_to_root,
+    )
+
+    if not str(request_key_root or "").strip():
+        return False, "RETAINED_CURRENT_RUN_PROVENANCE_UNAVAILABLE"
+    if not request_key_belongs_to_root(str(request_key or ""), request_key_root):
+        return False, "RETAINED_REQUEST_ROOT_MISMATCH"
+    if not str(response_hash or "").strip():
+        return False, "RETAINED_RESPONSE_HASH_MISSING"
+
+    entry = manifest_by_id.get(int(request_id))
+    if entry is None:
+        return False, "RETAINED_REQUEST_NOT_IN_MANIFEST"
+
+    stage = str(entry.get("logical_stage_id") or "").strip()
+    if not stage:
+        return False, "RETAINED_LOGICAL_STAGE_MISSING"
+    expected_prefix = f"{campaign_id}|{run_id}|{cycle_id}|"
+    if not stage.startswith(expected_prefix):
+        return False, "RETAINED_LOGICAL_STAGE_OWNERSHIP_MISMATCH"
+
+    try:
+        declared = int(entry.get("transport_identity_count") or 0)
+    except (TypeError, ValueError):
+        return False, "RETAINED_TRANSPORT_IDENTITY_COUNT_MISMATCH"
+    owned_keys = tuple(entry.get("_owned_transport_identity_keys") or ())
+    terminal = str(entry.get("terminal_status") or "").strip()
+    if terminal == "COMPLETED":
+        if declared <= 0 or not owned_keys:
+            return False, "RETAINED_REQUEST_TRANSPORT_IDENTITY_MISSING"
+        if declared != len(owned_keys):
+            return False, "RETAINED_TRANSPORT_IDENTITY_COUNT_MISMATCH"
+        flat_keys = {
+            tuple(item)
+            for item in (measured_transport_identity_keys or ())
+        }
+        for key in owned_keys:
+            owners = owners_by_key.get(key) or set()
+            if int(request_id) not in owners:
+                return False, "RETAINED_TRANSPORT_IDENTITY_MISSING"
+            if len(owners) > 1:
+                return False, "RETAINED_TRANSPORT_IDENTITY_FOREIGN_REQUEST"
+            if flat_keys and key not in flat_keys:
+                return False, "RETAINED_TRANSPORT_IDENTITY_MISSING"
+    return True, None
+
+
 def qualify_candidate_local_retained_role(
     connection: sqlite3.Connection,
     *,
@@ -270,12 +365,19 @@ def qualify_candidate_local_retained_role(
     admission_authority: AdmissionAuthority,
     now: str,
     evidence_expires_at: str | None = None,
+    request_key_root: str | None = None,
+    campaign_id: str | None = None,
+    run_id: str | None = None,
+    cycle_id: str | None = None,
+    campaign_source_request_manifest: Sequence[Mapping[str, Any]] | None = None,
+    measured_transport_identity_keys: Sequence[Sequence[object]] | None = None,
+    require_current_run_provenance: bool = True,
 ) -> tuple[bool, str | None]:
-    """Establish qualifying governed candidate-local evidence for one role.
+    """Establish qualifying governed candidate-local + current-run evidence.
 
-    Reuses the existing retained-response truth contract available before freeze.
-    Manifest/transport-set ownership remains final-validator owned when not yet
-    assembled at this production stage.
+    Candidate-local truth and current-run measured provenance are both required
+    for pre-freeze completeness unless an explicit offline helper disables
+    provenance (tests of isolated candidate-local predicates only).
     """
     if request_id_raw is None or response_id_raw is None:
         return False, "RETAINED_EVIDENCE_ROLE_MISSING"
@@ -336,6 +438,38 @@ def qualify_candidate_local_retained_role(
         role, source_name=source_name, request_kind=request_kind
     ):
         return False, "RETAINED_ROLE_SOURCE_KIND_MISMATCH"
+
+    response_hash = value(response, "response_hash", 5)
+    if require_current_run_provenance:
+        if (
+            not str(request_key_root or "").strip()
+            or not str(campaign_id or "").strip()
+            or not str(run_id or "").strip()
+            or not str(cycle_id or "").strip()
+            or campaign_source_request_manifest is None
+        ):
+            return False, "RETAINED_CURRENT_RUN_PROVENANCE_UNAVAILABLE"
+        manifest_by_id, owners_by_key = build_prefreeze_manifest_transport_index(
+            campaign_source_request_manifest
+        )
+        ok, reason = qualify_current_run_retained_request_provenance(
+            request_id=request_id,
+            request_key=str(value(request, "request_key", 3) or ""),
+            response_hash=response_hash,
+            request_key_root=str(request_key_root),
+            campaign_id=str(campaign_id),
+            run_id=str(run_id),
+            cycle_id=str(cycle_id),
+            manifest_by_id=manifest_by_id,
+            owners_by_key=owners_by_key,
+            measured_transport_identity_keys=measured_transport_identity_keys,
+        )
+        if not ok:
+            return False, reason
+    elif not str(response_hash or "").strip():
+        # Even offline candidate-local helpers must not ignore an empty hash when
+        # the durable response row is already loaded.
+        return False, "RETAINED_RESPONSE_HASH_MISSING"
 
     payload_json = value(response, "normalized_payload_json", 6)
     try:
@@ -1489,7 +1623,9 @@ __all__ = [
     "assess_retained_evidence_role_completeness",
     "claims_consistent_with_admission_authority",
     "measure_source_row_ids",
+    "build_prefreeze_manifest_transport_index",
     "qualify_candidate_local_retained_role",
+    "qualify_current_run_retained_request_provenance",
     "reconcile_activation_source_rows",
     "required_evidence_roles_for_admission_authority",
     "required_evidence_roles_for_candidate",

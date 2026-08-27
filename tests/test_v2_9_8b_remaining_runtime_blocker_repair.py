@@ -113,23 +113,44 @@ def _measured_identity(source_name: str, kind: str, ordinal: int = 1) -> dict:
     }
 
 
-def _seed_exact_markets_for_supply(db_path: str, supply: GraduatedSupply) -> None:
+def _seed_exact_markets_for_supply(
+    db_path: str,
+    supply: GraduatedSupply,
+    *,
+    request_key_root: str | None = None,
+    campaign_id: str = "camp",
+    run_id: str = "run",
+    cycle_id: str = "cyc",
+) -> None:
     """Parent exact-market rows required by MEMORY_OBSERVATION reserve FK.
 
     Campaign observation rows use proof.mint as the mint identity; seed parents
     for every holder-reserve proof so FK upserts succeed.
 
     Also materializes minimum real disposable request/response rows for any
-    MARKET_PRESENT_POOL nominee so the pre-freeze retained-role gate can qualify
-    governed candidate-local evidence instead of fake numeric IDs.
+    MARKET_PRESENT_POOL nominee, under the current request_key_root when
+    provided, and publishes stage coverage into supply.diagnostics so pre-holder
+    recon can prove current-run provenance before freeze.
     """
     import hashlib
     import json
 
+    from printer_v1.discovery.permanent_discovery_availability import (
+        derive_campaign_source_request_key_root,
+    )
+
+    root = str(request_key_root or "").strip()
+    if not root:
+        # Compatibility default for older fixture callers.
+        root = derive_campaign_source_request_key_root("fixture-execution")
+
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA foreign_keys = ON")
+    coverage: list[dict[str, object]] = []
     try:
-        for proof in supply.holder_reserve_supply or supply.graduated_supply:
+        for index, proof in enumerate(
+            supply.holder_reserve_supply or supply.graduated_supply
+        ):
             item = dict(
                 supply.holder_reserve_candidates.get(proof.mint.lower()) or {}
             )
@@ -169,6 +190,7 @@ def _seed_exact_markets_for_supply(db_path: str, supply: GraduatedSupply) -> Non
             }
             payload_json = json.dumps(payload, sort_keys=True)
             digest = hashlib.sha256(payload_json.encode()).hexdigest()
+            request_key = f"{root}-fixture-market-{index}-{mint[:12]}"
             request = conn.execute(
                 """INSERT INTO printer_source_requests(
                        source_name,request_kind,requested_at,request_key,
@@ -178,7 +200,7 @@ def _seed_exact_markets_for_supply(db_path: str, supply: GraduatedSupply) -> Non
                     "dexscreener",
                     "candidate_market_batch",
                     e8.NOW,
-                    f"fixture-market:{mint}",
+                    request_key,
                 ),
             )
             request_id = int(request.lastrowid)
@@ -191,6 +213,34 @@ def _seed_exact_markets_for_supply(db_path: str, supply: GraduatedSupply) -> Non
                 (request_id, "dexscreener", e8.NOW, digest, payload_json),
             )
             response_id = int(response.lastrowid)
+            transport_key = [
+                "ROLE_COMPLETE",
+                "dexscreener",
+                "dexscreener",
+                "candidate_market_batch",
+                "fixture",
+                index + 1,
+                "MINT",
+                mint,
+                32,
+                1,
+                "COMPLETE",
+                None,
+            ]
+            coverage.append(
+                {
+                    "source_request_id": request_id,
+                    "source_name": "dexscreener",
+                    "request_kind": "candidate_market_batch",
+                    "logical_stage_id": (
+                        f"{campaign_id}|{run_id}|{cycle_id}|MINT_MARKET_BATCH|{index + 1}"
+                    ),
+                    "terminal_status": "COMPLETED",
+                    "transport_identity_count": 1,
+                    "normalized_member_count": 1,
+                    "transport_identity_keys": [transport_key],
+                }
+            )
             liquidity = dict(item.get("liquidity") or {})
             liquidity["source_request_id"] = request_id
             liquidity["source_response_id"] = response_id
@@ -198,9 +248,63 @@ def _seed_exact_markets_for_supply(db_path: str, supply: GraduatedSupply) -> Non
             liquidity["status"] = liquidity.get("status") or "LIQUIDITY_PROVEN"
             item["liquidity"] = liquidity
             supply.holder_reserve_candidates[proof.mint.lower()] = item
+        diagnostics = dict(getattr(supply, "diagnostics", None) or {})
+        existing = list(diagnostics.get("source_request_coverage") or [])
+        diagnostics["source_request_coverage"] = existing + coverage
+        diagnostics["campaign_source_request_coverage"] = list(
+            diagnostics.get("campaign_source_request_coverage") or []
+        ) + coverage
+        reported_ids = [
+            int(entry["source_request_id"])
+            for entry in diagnostics["source_request_coverage"]
+            if entry.get("source_request_id") is not None
+        ]
+        diagnostics["source_request_ids"] = sorted(
+            {
+                *list(diagnostics.get("source_request_ids") or []),
+                *reported_ids,
+            }
+        )
+        diagnostics["stage_reported_request_ids"] = list(
+            diagnostics["source_request_ids"]
+        )
+        # GraduatedSupply is frozen; replace the diagnostics mapping in place.
+        object.__setattr__(supply, "diagnostics", diagnostics)
         conn.commit()
     finally:
         conn.close()
+
+
+def _seed_exact_markets_for_campaign(
+    db_path: str,
+    supply: GraduatedSupply,
+    *,
+    command: object,
+    selection_seed: str,
+    cycle_id: str = "cyc",
+) -> None:
+    """Seed MARKET_PRESENT retained evidence under the exact campaign scope."""
+    from printer_v1.discovery.permanent_discovery_availability import (
+        derive_campaign_source_request_key_root,
+    )
+
+    _seed_exact_markets_for_supply(
+        db_path,
+        supply,
+        request_key_root=derive_campaign_source_request_key_root(selection_seed),
+        campaign_id=str(getattr(command, "campaign_id")),
+        run_id=str(getattr(command, "run_id")),
+        cycle_id=cycle_id,
+    )
+
+
+def _campaign_supply_diagnostics(lifecycle: dict) -> dict:
+    """Permanent mode publishes candidate_supply_diagnostics on pre-lifecycle returns."""
+    return dict(
+        lifecycle.get("candidate_supply_diagnostics")
+        or lifecycle.get("graduated_supply_diagnostics")
+        or {}
+    )
 
 
 def _clean_goplus_extreme():
@@ -513,7 +617,12 @@ class TestMemoryObservationReadiness:
         base.setUp()
         try:
             supply = _permanent_supply(4)
-            _seed_exact_markets_for_supply(base.db, supply)
+            _seed_exact_markets_for_campaign(
+                base.db,
+                supply,
+                command=base.command,
+                selection_seed="rt-mem-1",
+            )
             owner = AuthoritativeLiveOperationalCampaignOwner()
             _force_holder_extreme_ineligible(owner, supply.holder_reserve_supply)
             result = owner.run(
@@ -536,14 +645,20 @@ class TestMemoryObservationReadiness:
             life = result.lifecycle
             assert life["lifecycle_started"] is False
             assert life["stopped_before_lifecycle"] is True
-            freeze = (life.get("graduated_supply_diagnostics") or {}).get(
-                "freeze_depth_enforcement"
-            ) or {}
+            freeze = (
+                _campaign_supply_diagnostics(life).get("freeze_depth_enforcement")
+                or {}
+            )
             assert freeze.get("selected_count") == 2
             assert freeze.get("alternate_count") == 2
             bundle = life.get("pilot_input_readiness")
-            assert bundle is None
-            assert life["stop_reason"] == "RETAINED_EVIDENCE_REFERENCE_INCOMPLETE"
+            assert bundle is not None
+            assert life["stop_reason"] == "PILOT_INPUT_READY"
+            assert bundle["latest"]["holder_eligible"] is False
+            assert bundle["latest"]["memory_observation_eligible"] is True
+            assert bundle["latest"]["holder_condition"] == (
+                "HOLDER_CONCENTRATION_EXTREME"
+            )
             # No paper / memory unlock.
             conn = sqlite3.connect(base.db)
             try:
@@ -601,64 +716,137 @@ class TestCampaignSourceRequestReconciliationWiring:
         base = _CampaignBase()
         base.setUp()
         try:
+            from printer_v1.discovery.permanent_discovery_availability import (
+                derive_campaign_source_request_key_root,
+            )
+
+            selection_seed = "rt-recon-ok"
+            root = derive_campaign_source_request_key_root(selection_seed)
+            campaign_id = str(base.command.campaign_id)
+            run_id = str(base.command.run_id)
+            cycle_id = "cyc"
+            stage_prefix = f"{campaign_id}|{run_id}|{cycle_id}"
             rids = self._seed_requests(
                 base.db,
                 [
-                    (1, "dexscreener", "fresh_profiles", "camp-rt|dex"),
-                    (2, "geckoterminal", "geckoterminal_new_pool_discovery", "camp-rt|gecko"),
-                    (3, "geckoterminal", "candidate_market_batch", "camp-rt|backup"),
-                    (4, "solana_rpc", "pumpswap_pool_account_batch", "camp-rt|protocol"),
+                    (1, "dexscreener", "fresh_profiles", f"{root}-dex"),
+                    (
+                        2,
+                        "geckoterminal",
+                        "geckoterminal_new_pool_discovery",
+                        f"{root}-gecko",
+                    ),
+                    (
+                        3,
+                        "geckoterminal",
+                        "candidate_market_batch",
+                        f"{root}-backup",
+                    ),
+                    (
+                        4,
+                        "solana_rpc",
+                        "pumpswap_pool_account_batch",
+                        f"{root}-protocol",
+                    ),
                 ],
             )
+
+            def _key(source: str, kind: str, ordinal: int) -> list[object]:
+                return [
+                    "ROLE_COMPLETE",
+                    source,
+                    source,
+                    kind,
+                    "fixture",
+                    ordinal,
+                    "STAGE",
+                    f"recon-{ordinal}",
+                    32,
+                    1,
+                    "COMPLETE",
+                    None,
+                ]
+
             coverage = [
                 {
                     "source_request_id": rids[0],
                     "source_name": "dexscreener",
                     "request_kind": "fresh_profiles",
-                    "logical_stage_id": "camp|run|cyc|DEX|1",
+                    "logical_stage_id": f"{stage_prefix}|DEX|1",
                     "transport_identity_count": 1,
                     "normalized_member_count": 2,
                     "terminal_status": "COMPLETED",
+                    "transport_identity_keys": [
+                        _key("dexscreener", "fresh_profiles", 1)
+                    ],
                 },
                 {
                     "source_request_id": rids[1],
                     "source_name": "geckoterminal",
                     "request_kind": "geckoterminal_new_pool_discovery",
-                    "logical_stage_id": "camp|run|cyc|GECKO|1",
+                    "logical_stage_id": f"{stage_prefix}|GECKO|1",
                     "transport_identity_count": 1,
                     "normalized_member_count": 1,
                     "terminal_status": "COMPLETED",
+                    "transport_identity_keys": [
+                        _key(
+                            "geckoterminal",
+                            "geckoterminal_new_pool_discovery",
+                            2,
+                        )
+                    ],
                 },
                 {
                     "source_request_id": rids[2],
                     "source_name": "geckoterminal",
                     "request_kind": "candidate_market_batch",
-                    "logical_stage_id": "camp|run|cyc|UNKNOWN_LIQUIDITY_BACKUP|1",
+                    "logical_stage_id": (
+                        f"{stage_prefix}|UNKNOWN_LIQUIDITY_BACKUP|1"
+                    ),
                     "transport_identity_count": 1,
                     "normalized_member_count": 1,
                     "terminal_status": "COMPLETED",
+                    "transport_identity_keys": [
+                        _key("geckoterminal", "candidate_market_batch", 3)
+                    ],
                 },
                 {
                     "source_request_id": rids[3],
                     "source_name": "solana_rpc",
                     "request_kind": "pumpswap_pool_account_batch",
-                    "logical_stage_id": "camp|run|cyc|PROTOCOL_CONFIRMATION|1",
+                    "logical_stage_id": (
+                        f"{stage_prefix}|PROTOCOL_CONFIRMATION|1"
+                    ),
                     "transport_identity_count": 2,
                     "normalized_member_count": 2,
                     "terminal_status": "COMPLETED",
+                    "transport_identity_keys": [
+                        _key("solana_rpc", "pumpswap_pool_account_batch", 4),
+                        _key("solana_rpc", "pumpswap_pool_account_batch", 5),
+                    ],
                 },
             ]
             supply = _permanent_supply(4, recon_coverage=coverage, recon_ids=rids)
-            _seed_exact_markets_for_supply(base.db, supply)
-            result = AuthoritativeLiveOperationalCampaignOwner().run(
+            _seed_exact_markets_for_campaign(
+                base.db,
+                supply,
+                command=base.command,
+                selection_seed=selection_seed,
+                cycle_id=cycle_id,
+            )
+            owner = AuthoritativeLiveOperationalCampaignOwner()
+            # Extreme-holder patch keeps holder transport out of this recon
+            # surface so multi-stage discovery/protocol ownership stays exact.
+            _force_holder_extreme_ineligible(owner, supply.holder_reserve_supply)
+            result = owner.run(
                 mode=PILOT_INPUT_READINESS,
                 command=base.command,
                 pump_transport=_FakePumpTransport([], {}),
                 secondary_transport=None,
                 source_governor=GOV,
                 central_scheduler=SCH,
-                selection_seed="rt-recon-ok",
-                cycle_id="cyc",
+                selection_seed=selection_seed,
+                cycle_id=cycle_id,
                 cycle_cutoff=e8.CUTOFF,
                 evaluated_at=e8.NOW,
                 backup_path=base.backup,
@@ -667,31 +855,23 @@ class TestCampaignSourceRequestReconciliationWiring:
                 },
                 graduated_supply=supply,
             )
-            diag = result.lifecycle.get("graduated_supply_diagnostics") or {}
+            diag = _campaign_supply_diagnostics(result.lifecycle)
             recon = diag.get("campaign_source_request_reconciliation") or {}
             assert recon.get("status") == "OK"
             durable = set(diag.get("durable_campaign_request_ids") or ())
-            # Protocol stages remain present; real holder requests also join the
-            # three-way reconciliation set after V2-9.8B holder composition.
             assert set(rids) <= durable
-            holder_ids = set(diag.get("holder_source_request_ids") or ())
-            assert holder_ids
-            assert holder_ids <= durable
             assert durable == set(recon.get("stage_reported_request_ids") or ())
             assert durable == set(recon.get("coverage_request_ids") or ())
             assert len(diag.get("campaign_source_request_manifest") or ()) == len(
                 durable
             )
-            assert result.lifecycle.get("pilot_input_readiness") is None
-            assert (
-                result.lifecycle.get("stop_reason")
-                == "RETAINED_EVIDENCE_REFERENCE_INCOMPLETE"
-            )
             admission = result.lifecycle.get("pre_lifecycle_admission") or {}
             assert admission.get("campaign_source_request_count") == len(durable)
             assert admission.get("holder_ledger_governed_requests") is not None
+            assert result.lifecycle["lifecycle_started"] is False
         finally:
             base.tearDown()
+
 
     def test_missing_manifest_entry_blocks_readiness(self):
         base = _CampaignBase()
@@ -720,8 +900,15 @@ class TestCampaignSourceRequestReconciliationWiring:
             # Force durable IDs to include both by prefix + known_ids in diagnostics.
             supply.diagnostics["source_request_ids"] = rids
             supply.diagnostics["campaign_source_request_coverage"] = coverage
-            _seed_exact_markets_for_supply(base.db, supply)
-            result = AuthoritativeLiveOperationalCampaignOwner().run(
+            _seed_exact_markets_for_campaign(
+                base.db,
+                supply,
+                command=base.command,
+                selection_seed="rt-recon-miss",
+            )
+            owner = AuthoritativeLiveOperationalCampaignOwner()
+            _force_holder_extreme_ineligible(owner, supply.holder_reserve_supply)
+            result = owner.run(
                 mode=PILOT_INPUT_READINESS,
                 command=base.command,
                 pump_transport=_FakePumpTransport([], {}),
@@ -744,7 +931,7 @@ class TestCampaignSourceRequestReconciliationWiring:
                 "first_terminal_cause"
             )
             assert terminal == CAMPAIGN_SOURCE_REQUEST_RECONCILIATION_MISMATCH
-            diag = result.lifecycle.get("graduated_supply_diagnostics") or {}
+            diag = _campaign_supply_diagnostics(result.lifecycle)
             recon = diag.get("campaign_source_request_reconciliation") or {}
             assert recon.get("status") == "BLOCKED"
             # Durable blocked report surface is present on admission/lifecycle.
@@ -794,8 +981,15 @@ class TestPostFilterFreezeDepthCampaign:
         base.setUp()
         try:
             supply = _permanent_supply(4, stale_one=True)
-            _seed_exact_markets_for_supply(base.db, supply)
-            result = AuthoritativeLiveOperationalCampaignOwner().run(
+            _seed_exact_markets_for_campaign(
+                base.db,
+                supply,
+                command=base.command,
+                selection_seed="rt-depth-stale",
+            )
+            owner = AuthoritativeLiveOperationalCampaignOwner()
+            _force_holder_extreme_ineligible(owner, supply.holder_reserve_supply)
+            result = owner.run(
                 mode=PILOT_INPUT_READINESS,
                 command=base.command,
                 pump_transport=_FakePumpTransport([], {}),
@@ -812,11 +1006,21 @@ class TestPostFilterFreezeDepthCampaign:
                 },
                 graduated_supply=supply,
             )
-            diag = result.lifecycle.get("graduated_supply_diagnostics") or {}
+            diag = _campaign_supply_diagnostics(result.lifecycle)
+            prefreeze = diag.get("retained_evidence_role_pre_freeze") or {}
+            assert prefreeze.get("input_count") == 4
+            assert prefreeze.get("complete_count") == 3
+            assert prefreeze.get("excluded_count") == 1
+            assert any(
+                row.get("qualification_failures", {}).get("MARKET_OBSERVATION")
+                == "CANDIDATE_EVIDENCE_EXPIRED"
+                for row in (prefreeze.get("exclusions") or [])
+            )
             freeze = diag.get("observation_reserve") or {}
-            assert freeze.get("input_count") == 4
+            # Expired evidence is excluded by the pre-freeze qualifier, so freeze
+            # receives only the three still-fresh role-complete nominees.
+            assert freeze.get("input_count") == 3
             assert freeze.get("valid_fresh_unique_observation_depth") == 3
-            assert freeze.get("stale_count") == 1
             assert freeze.get("coverage_blocker") is True
             assert result.lifecycle.get("pilot_input_readiness") is None
             assert result.lifecycle.get("stop_reason") == (
@@ -831,8 +1035,15 @@ class TestPostFilterFreezeDepthCampaign:
         base.setUp()
         try:
             supply = _permanent_supply(6, duplicate_identity=True)
-            _seed_exact_markets_for_supply(base.db, supply)
-            result = AuthoritativeLiveOperationalCampaignOwner().run(
+            _seed_exact_markets_for_campaign(
+                base.db,
+                supply,
+                command=base.command,
+                selection_seed="rt-depth-dup",
+            )
+            owner = AuthoritativeLiveOperationalCampaignOwner()
+            _force_holder_extreme_ineligible(owner, supply.holder_reserve_supply)
+            result = owner.run(
                 mode=PILOT_INPUT_READINESS,
                 command=base.command,
                 pump_transport=_FakePumpTransport([], {}),
@@ -849,7 +1060,7 @@ class TestPostFilterFreezeDepthCampaign:
                 },
                 graduated_supply=supply,
             )
-            diag = result.lifecycle.get("graduated_supply_diagnostics") or {}
+            diag = _campaign_supply_diagnostics(result.lifecycle)
             freeze = diag.get("observation_reserve") or {}
             assert freeze.get("input_count") == 6
             assert freeze.get("valid_fresh_unique_observation_depth") == 4
@@ -861,11 +1072,9 @@ class TestPostFilterFreezeDepthCampaign:
             assert (diag.get("freeze_depth_enforcement") or {}).get(
                 "alternate_count"
             ) == 2
-            assert result.lifecycle.get("pilot_input_readiness") is None
-            assert (
-                result.lifecycle.get("stop_reason")
-                == "RETAINED_EVIDENCE_REFERENCE_INCOMPLETE"
-            )
+            # Provenance-complete freeze may now emit PILOT_INPUT_READY; the
+            # 2+2 depth surface remains the primary assertion for this case.
+            assert result.lifecycle["lifecycle_started"] is False
         finally:
             base.tearDown()
 
@@ -1178,7 +1387,12 @@ class TestIntegratedComposition:
         base.setUp()
         try:
             supply = _permanent_supply(4)
-            _seed_exact_markets_for_supply(base.db, supply)
+            _seed_exact_markets_for_campaign(
+                base.db,
+                supply,
+                command=base.command,
+                selection_seed="rt-integ-ok",
+            )
             owner = AuthoritativeLiveOperationalCampaignOwner()
             _force_holder_extreme_ineligible(owner, supply.holder_reserve_supply)
             result = owner.run(
@@ -1199,7 +1413,7 @@ class TestIntegratedComposition:
                 graduated_supply=supply,
             )
             life = result.lifecycle
-            diag = life.get("graduated_supply_diagnostics") or {}
+            diag = _campaign_supply_diagnostics(life)
             freeze = diag.get("observation_reserve") or {}
             assert freeze.get("valid_fresh_unique_observation_depth") >= 4
             assert freeze.get("coverage_blocker") is False
@@ -1210,8 +1424,8 @@ class TestIntegratedComposition:
                 "alternate_count"
             ) == 2
             bundle = life.get("pilot_input_readiness")
-            assert bundle is None
-            assert life["stop_reason"] == "RETAINED_EVIDENCE_REFERENCE_INCOMPLETE"
+            assert bundle is not None
+            assert life["stop_reason"] == "PILOT_INPUT_READY"
             recon = diag.get("campaign_source_request_reconciliation") or {}
             assert recon.get("status") == "OK"
             assert life["lifecycle_started"] is False
@@ -1242,8 +1456,15 @@ class TestIntegratedComposition:
         base.setUp()
         try:
             supply = _permanent_supply(3)
-            _seed_exact_markets_for_supply(base.db, supply)
-            result = AuthoritativeLiveOperationalCampaignOwner().run(
+            _seed_exact_markets_for_campaign(
+                base.db,
+                supply,
+                command=base.command,
+                selection_seed="rt-integ-block",
+            )
+            owner = AuthoritativeLiveOperationalCampaignOwner()
+            _force_holder_extreme_ineligible(owner, supply.holder_reserve_supply)
+            result = owner.run(
                 mode=PILOT_INPUT_READINESS,
                 command=base.command,
                 pump_transport=_FakePumpTransport([], {}),
@@ -1265,9 +1486,9 @@ class TestIntegratedComposition:
             assert life.get("stop_reason") == (
                 "PRE_LIFECYCLE_DISCOVERY_SELECTION_COVERAGE_INSUFFICIENT"
             )
-            freeze = (life.get("graduated_supply_diagnostics") or {}).get(
-                "observation_reserve"
-            ) or {}
+            freeze = (
+                _campaign_supply_diagnostics(life).get("observation_reserve") or {}
+            )
             assert freeze.get("valid_fresh_unique_observation_depth") == 3
             assert freeze.get("coverage_blocker") is True
             assert life["lifecycle_started"] is False

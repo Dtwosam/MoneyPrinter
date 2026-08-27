@@ -1452,16 +1452,53 @@ def _admission_authority_from_freeze_item(item: Mapping[str, Any]) -> Any:
     return AdmissionAuthority(text)
 
 
+def _memory_observation_activation_route(
+    *,
+    admission_authority: Any | None,
+    carried_route: object = None,
+) -> str:
+    """Resolve MEMORY_OBSERVATION activation_route to match readiness law.
+
+    MARKET_PRESENT_POOL must carry its exact authority route. Direct Pump keeps
+    a lawful legacy carrier (GRADUATION_NATIVE / PUMP_CREATE) when present.
+    """
+    from printer_v1.discovery.memory_observation_activation import AdmissionAuthority
+
+    carried = str(carried_route or "").strip()
+    if admission_authority is None or not str(admission_authority).strip():
+        return carried
+    try:
+        authority = (
+            admission_authority
+            if isinstance(admission_authority, AdmissionAuthority)
+            else AdmissionAuthority(str(admission_authority).strip())
+        )
+    except ValueError:
+        return carried
+    if authority is AdmissionAuthority.MARKET_PRESENT_POOL:
+        return authority.value
+    if carried:
+        return carried
+    return "PUMP_CREATE"
+
+
 def _filter_observation_rows_by_retained_role_completeness(
     connection: sqlite3.Connection,
     rows: Sequence[Mapping[str, Any]],
     *,
     now: str,
+    request_key_root: str | None = None,
+    campaign_id: str | None = None,
+    run_id: str | None = None,
+    cycle_id: str | None = None,
+    campaign_source_request_manifest: Sequence[Mapping[str, Any]] | None = None,
+    measured_transport_identity_keys: Sequence[Sequence[object]] | None = None,
+    require_current_run_provenance: bool = True,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Exclude role-incomplete nominees before the neutral seeded freeze.
+    """Exclude role/provenance-incomplete nominees before the neutral freeze.
 
-    Qualification reuses the existing governed retained-evidence truth contract
-    available before freeze. ID presence alone is never sufficient.
+    Candidate-local role truth and current-run measured provenance are both
+    required for freeze eligibility.
     """
     from printer_v1.discovery.memory_observation_activation import (
         RETAINED_EVIDENCE_ROLE_INCOMPLETE_PRE_FREEZE,
@@ -1470,6 +1507,32 @@ def _filter_observation_rows_by_retained_role_completeness(
         qualify_candidate_local_retained_role,
         required_evidence_roles_for_admission_authority,
     )
+
+    if require_current_run_provenance and (
+        not str(request_key_root or "").strip()
+        or not str(campaign_id or "").strip()
+        or not str(run_id or "").strip()
+        or not str(cycle_id or "").strip()
+        or campaign_source_request_manifest is None
+    ):
+        # Fail closed before freeze when pre-holder measured ownership is absent.
+        return [], [
+            {
+                "mint": None,
+                "pool": None,
+                "admission_authority": None,
+                "required_roles": (),
+                "present_roles": (),
+                "missing_roles": (),
+                "qualification_failures": {
+                    "current_run_provenance": (
+                        "RETAINED_CURRENT_RUN_PROVENANCE_UNAVAILABLE"
+                    )
+                },
+                "disposition": RETAINED_EVIDENCE_ROLE_INCOMPLETE_PRE_FREEZE,
+                "detail": "RETAINED_CURRENT_RUN_PROVENANCE_UNAVAILABLE",
+            }
+        ]
 
     complete_rows: list[dict[str, Any]] = []
     exclusions: list[dict[str, Any]] = []
@@ -1573,6 +1636,13 @@ def _filter_observation_rows_by_retained_role_completeness(
                     if item.get("evidence_expires_at") is None
                     else str(item.get("evidence_expires_at"))
                 ),
+                request_key_root=request_key_root,
+                campaign_id=campaign_id,
+                run_id=run_id,
+                cycle_id=cycle_id,
+                campaign_source_request_manifest=campaign_source_request_manifest,
+                measured_transport_identity_keys=measured_transport_identity_keys,
+                require_current_run_provenance=require_current_run_provenance,
             )
             if ok:
                 qualifying_roles.add(role)
@@ -1855,8 +1925,9 @@ def _build_frozen_memory_activation_set(
                 if claims_pump
                 else "PRESENT_POOL_CONFIRMED"
             ),
-            activation_route=str(
-                item.get("activation_route") or admission_authority.value
+            activation_route=_memory_observation_activation_route(
+                admission_authority=admission_authority,
+                carried_route=item.get("activation_route"),
             ),
             provenance=str(item.get("provenance") or ""),
             memory_observation_eligible=(
@@ -1954,8 +2025,9 @@ def _build_frozen_memory_activation_set(
                     if claims_pump
                     else "PRESENT_POOL_CONFIRMED"
                 ),
-                activation_route=str(
-                    item.get("activation_route") or admission_authority.value
+                activation_route=_memory_observation_activation_route(
+                    admission_authority=admission_authority,
+                    carried_route=item.get("activation_route"),
                 ),
                 provenance=str(item.get("provenance") or ""),
                 memory_observation_eligible=True,
@@ -4062,6 +4134,42 @@ class AuthoritativeLiveOperationalCampaignOwner:
         # graduation proofs and admission-universe carriers. Reuses the adopted
         # owners verbatim (no new gate, score, ranking, selector or provider).
         supply = graduated_supply
+        # Prebuilt permanent supplies must still carry the exact current-run
+        # CampaignSourceRequestScope so pre-freeze provenance can reuse the
+        # already-assembled measured ownership contract.
+        if (
+            supply is not None
+            and bool(dict(getattr(supply, "diagnostics", None) or {}).get(
+                "permanent_availability"
+            ))
+            and not dict(getattr(supply, "diagnostics", None) or {}).get(
+                "campaign_source_request_scope"
+            )
+        ):
+            from printer_v1.discovery.permanent_discovery_availability import (
+                build_campaign_source_request_scope,
+                validate_campaign_source_request_scope,
+            )
+
+            scope = build_campaign_source_request_scope(
+                execution_id=selection_seed,
+                campaign_id=command.campaign_id,
+                run_id=command.run_id,
+                cycle_id=cycle_id,
+            )
+            scope = validate_campaign_source_request_scope(
+                scope,
+                execution_id=selection_seed,
+                campaign_id=command.campaign_id,
+                run_id=command.run_id,
+                cycle_id=cycle_id,
+            )
+            diagnostics = dict(supply.diagnostics)
+            diagnostics["campaign_source_request_scope"] = scope
+            diagnostics["request_key_root"] = scope.request_key_root
+            diagnostics["discovery_request_key_prefix"] = scope.request_key_root
+            diagnostics["front_door_request_key_prefix"] = scope.request_key_root
+            object.__setattr__(supply, "diagnostics", diagnostics)
         if supply is None and migration_transport is not None:
             from printer_v1.discovery.permanent_discovery_availability import (
                 build_campaign_source_request_scope,
@@ -4712,7 +4820,13 @@ class AuthoritativeLiveOperationalCampaignOwner:
                             )
                             or ""
                         ),
-                        "activation_route": str(proof.origin_route),
+                        "activation_route": _memory_observation_activation_route(
+                            admission_authority=item.get("admission_authority"),
+                            carried_route=(
+                                item.get("activation_route")
+                                or getattr(proof, "origin_route", None)
+                            ),
+                        ),
                         "tracking_handoff_eligible": tracking_eligible,
                         "tracking_handoff_reason": str(
                             tracking_assessment.reason_code or "ELIGIBLE"
@@ -4781,6 +4895,72 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 # Retained-evidence role completeness is binary eligibility before
                 # the neutral seeded freeze. Incomplete DIRECT_PUMP / MARKET
                 # nominees must never reach select-then-reject activation build.
+                pre_holder_recon = dict(
+                    supply.diagnostics.get(
+                        "pre_holder_source_request_reconciliation"
+                    )
+                    or {}
+                )
+                pre_holder_snapshot = dict(
+                    supply.diagnostics.get("pre_holder_budget_snapshot") or {}
+                )
+                scope = supply.diagnostics.get("campaign_source_request_scope")
+                scope_map = (
+                    scope.as_dict()
+                    if hasattr(scope, "as_dict")
+                    else dict(scope or {})
+                )
+                # Preferred path already stores pre-holder recon. When the
+                # operational projection was not injected (fixture/pilot paths),
+                # assemble measured ownership from already-emitted stage coverage
+                # with zero new source activity.
+                if (
+                    not pre_holder_recon
+                    or str(pre_holder_recon.get("status") or "") != "OK"
+                    or not pre_holder_recon.get("campaign_source_request_manifest")
+                ):
+                    prefixes = []
+                    scope_root = (
+                        scope_map.get("request_key_root")
+                        or supply.diagnostics.get("request_key_root")
+                    )
+                    if scope_root:
+                        prefixes.append(str(scope_root))
+                    for key in (
+                        "discovery_request_key_prefix",
+                        "front_door_request_key_prefix",
+                        "request_key_prefix",
+                    ):
+                        value = supply.diagnostics.get(key)
+                        if value and str(value) not in prefixes:
+                            prefixes.append(str(value))
+                    pre_holder_recon = assemble_and_reconcile_campaign_source_requests(
+                        connection,
+                        diagnostics=supply.diagnostics,
+                        request_key_prefixes=prefixes,
+                        request_key_root=(
+                            str(scope_root) if scope_root else None
+                        ),
+                        campaign_source_request_scope=supply.diagnostics.get(
+                            "campaign_source_request_scope"
+                        ),
+                    )
+                    supply.diagnostics[
+                        "pre_holder_source_request_reconciliation"
+                    ] = pre_holder_recon
+                measured_keys = list(
+                    pre_holder_snapshot.get("measured_transport_identity_keys")
+                    or ()
+                )
+                if not measured_keys:
+                    measured_keys = [
+                        list(key)
+                        for entry in (
+                            pre_holder_recon.get("campaign_source_request_manifest")
+                            or ()
+                        )
+                        for key in (entry.get("transport_identity_keys") or ())
+                    ]
                 (
                     role_complete_observation_rows,
                     retained_role_pre_freeze_exclusions,
@@ -4788,6 +4968,22 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     connection,
                     observation_rows,
                     now=evaluated.isoformat(),
+                    request_key_root=str(
+                        scope_map.get("request_key_root")
+                        or supply.diagnostics.get("request_key_root")
+                        or ""
+                    ),
+                    campaign_id=str(
+                        scope_map.get("campaign_id") or command.campaign_id or ""
+                    ),
+                    run_id=str(scope_map.get("run_id") or command.run_id or ""),
+                    cycle_id=str(scope_map.get("cycle_id") or cycle_id or ""),
+                    campaign_source_request_manifest=list(
+                        pre_holder_recon.get("campaign_source_request_manifest")
+                        or ()
+                    ),
+                    measured_transport_identity_keys=measured_keys,
+                    require_current_run_provenance=True,
                 )
                 supply.diagnostics["retained_evidence_role_pre_freeze"] = {
                     "input_count": len(observation_rows),
@@ -5111,6 +5307,9 @@ class AuthoritativeLiveOperationalCampaignOwner:
                         or item.get("holder_condition")
                         or "HOLDER_CONCENTRATION_UNKNOWN"
                     )
+                    resolved_admission_authority = (
+                        _readiness_admission_authority(activation_candidate)
+                    )
                     return ReadinessCandidate(
                         mint=proof.mint,
                         pool=str(item["pool"]),
@@ -5125,7 +5324,20 @@ class AuthoritativeLiveOperationalCampaignOwner:
                                 or evaluated_at
                             )
                         ),
-                        activation_route=str(proof.origin_route),
+                        activation_route=_memory_observation_activation_route(
+                            admission_authority=resolved_admission_authority,
+                            carried_route=(
+                                getattr(
+                                    activation_candidate,
+                                    "activation_route",
+                                    None,
+                                )
+                                if activation_candidate is not None
+                                else None
+                            )
+                            or item.get("activation_route")
+                            or getattr(proof, "origin_route", None),
+                        ),
                         holder_eligible=actual_holder,
                         # True provenance per token; a LATEST token is never
                         # relabelled PERSISTED (or vice versa).
@@ -5136,9 +5348,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                             item.get("future_action_eligibility")
                             or "BLOCKED_OR_UNKNOWN"
                         ),
-                        admission_authority=_readiness_admission_authority(
-                            activation_candidate
-                        ),
+                        admission_authority=resolved_admission_authority,
                         slot_ordinal=(
                             None
                             if activation_candidate is None
