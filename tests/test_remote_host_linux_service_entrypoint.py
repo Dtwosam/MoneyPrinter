@@ -55,6 +55,44 @@ class ServiceEntrypointTests(unittest.TestCase):
                 True,
             )
 
+    def test_pre_marker_stop_blocks_application(self):
+        spec = importlib.util.find_spec(MODULE)
+        self.assertIsNotNone(spec, "Linux service entrypoint module is missing")
+        if spec is None:
+            return
+        service = importlib.import_module(MODULE)
+        state = service.StopSignalState()
+        state.handle_signal(15, None)
+        calls = []
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            db = root / "data" / "printer.sqlite3"
+            db.parent.mkdir()
+            db.write_bytes(b"db")
+
+            def preflight(paths, **kwargs):
+                calls.append("preflight")
+                return {key: {"approved": True} for key in paths}
+
+            def apply_authorization(**kwargs):
+                calls.append("apply")
+                return {"status": "fixture"}
+
+            with self.assertRaises(service.LinuxPortabilityError):
+                service.run_linux_service(
+                    authorization_file=root / "authorization.json",
+                    authorization_sha256="a" * 64,
+                    operator_approved=True,
+                    repository_root=root,
+                    application_root=root / "applications",
+                    authoritative_db_path=db,
+                    artifact_root=root / "artifacts",
+                    filesystem_preflight=preflight,
+                    apply_authorization=apply_authorization,
+                    stop_state=state,
+                )
+        self.assertEqual(calls, ["preflight"])
+
 
 if __name__ == "__main__":
     unittest.main()
