@@ -1,0 +1,60 @@
+import importlib
+import importlib.util
+from pathlib import Path
+import tempfile
+import unittest
+
+
+MODULE = "printer_v1.operator_cli.four_token_standard_four_hour_linux_service"
+
+
+class ServiceEntrypointTests(unittest.TestCase):
+    def test_service_preflight_precedes_application(self):
+        spec = importlib.util.find_spec(MODULE)
+        self.assertIsNotNone(spec, "Linux service entrypoint module is missing")
+        if spec is None:
+            return
+        service = importlib.import_module(MODULE)
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            db = root / "data" / "printer.sqlite3"
+            db.parent.mkdir()
+            db.write_bytes(b"db")
+            app = root / "applications"
+            artifacts = root / "artifacts"
+            order = []
+
+            def preflight(paths, **kwargs):
+                order.append(("preflight", dict(paths)))
+                return {key: {"approved": True} for key in paths}
+
+            def apply_authorization(**kwargs):
+                order.append(("apply", kwargs))
+                return {"status": "fixture"}
+
+            result = service.run_linux_service(
+                authorization_file=root / "authorization.json",
+                authorization_sha256="a" * 64,
+                operator_approved=True,
+                repository_root=root,
+                application_root=app,
+                authoritative_db_path=db,
+                artifact_root=artifacts,
+                filesystem_preflight=preflight,
+                apply_authorization=apply_authorization,
+            )
+            self.assertEqual(
+                [item[0] for item in order], ["preflight", "apply"]
+            )
+            self.assertTrue(callable(order[1][1]["process_launcher"]))
+            self.assertEqual(
+                Path(order[1][1]["authoritative_db_path"]), db.resolve()
+            )
+            self.assertEqual(
+                result["filesystem_preflight"]["authoritative_db"]["approved"],
+                True,
+            )
+
+
+if __name__ == "__main__":
+    unittest.main()
