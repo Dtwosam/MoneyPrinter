@@ -1435,12 +1435,21 @@ def _role_ids_from_candidate(
 
 
 def _admission_authority_from_freeze_item(item: Mapping[str, Any]) -> Any:
-    """Resolve freeze-item admission authority; missing defaults fail closed."""
+    """Resolve freeze-item admission authority with fail-closed missing handling.
+
+    Missing, None, empty, or unknown values never infer DIRECT_PUMP_PUMPSWAP.
+    """
     from printer_v1.discovery.memory_observation_activation import AdmissionAuthority
 
-    return AdmissionAuthority(
-        str(item.get("admission_authority") or "DIRECT_PUMP_PUMPSWAP")
-    )
+    if "admission_authority" not in item:
+        raise ValueError("ADMISSION_AUTHORITY_MISSING")
+    raw = item.get("admission_authority")
+    if raw is None:
+        raise ValueError("ADMISSION_AUTHORITY_MISSING")
+    text = str(raw).strip()
+    if not text:
+        raise ValueError("ADMISSION_AUTHORITY_MISSING")
+    return AdmissionAuthority(text)
 
 
 def _filter_observation_rows_by_retained_role_completeness(
@@ -1470,20 +1479,28 @@ def _filter_observation_rows_by_retained_role_completeness(
         pool = str(item.get("pool") or item.get("pumpswap_pool") or "")
         try:
             admission_authority = _admission_authority_from_freeze_item(item)
-        except ValueError:
+        except ValueError as exc:
+            detail = str(exc) or "ADMISSION_AUTHORITY_UNSUPPORTED"
+            if detail not in {
+                "ADMISSION_AUTHORITY_MISSING",
+                "ADMISSION_AUTHORITY_UNSUPPORTED",
+            }:
+                detail = "ADMISSION_AUTHORITY_UNSUPPORTED"
             exclusions.append(
                 {
                     "mint": mint,
                     "pool": pool,
-                    "admission_authority": str(item.get("admission_authority") or ""),
+                    "admission_authority": (
+                        None
+                        if "admission_authority" not in item
+                        else item.get("admission_authority")
+                    ),
                     "required_roles": (),
                     "present_roles": (),
                     "missing_roles": (),
-                    "qualification_failures": {
-                        "admission_authority": "ADMISSION_AUTHORITY_UNSUPPORTED"
-                    },
+                    "qualification_failures": {"admission_authority": detail},
                     "disposition": RETAINED_EVIDENCE_ROLE_INCOMPLETE_PRE_FREEZE,
-                    "detail": "ADMISSION_AUTHORITY_UNSUPPORTED",
+                    "detail": detail,
                 }
             )
             continue
@@ -1742,13 +1759,15 @@ def _build_frozen_memory_activation_set(
                 )
 
         try:
-            admission_authority = AdmissionAuthority(
-                str(item.get("admission_authority") or "DIRECT_PUMP_PUMPSWAP")
-            )
+            admission_authority = _admission_authority_from_freeze_item(item)
         except ValueError as exc:
-            raise MemoryObservationActivationError(
-                "ADMISSION_AUTHORITY_UNSUPPORTED", mint
-            ) from exc
+            detail = str(exc) or "ADMISSION_AUTHORITY_UNSUPPORTED"
+            code = (
+                "ADMISSION_AUTHORITY_MISSING"
+                if detail == "ADMISSION_AUTHORITY_MISSING"
+                else "ADMISSION_AUTHORITY_UNSUPPORTED"
+            )
+            raise MemoryObservationActivationError(code, mint) from exc
         claims_pump = admission_authority is AdmissionAuthority.DIRECT_PUMP_PUMPSWAP
         required_roles = required_evidence_roles_for_admission_authority(
             admission_authority

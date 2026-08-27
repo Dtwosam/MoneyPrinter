@@ -185,6 +185,79 @@ def required_evidence_roles_for_candidate(
     return required_evidence_roles_for_admission_authority(candidate.admission_authority)
 
 
+def retained_evidence_role_source_kind_bindings() -> (
+    dict[EvidenceRole, frozenset[tuple[str, str]]]
+):
+    """Compose approved (source_name, request_kind) pairs from production producers.
+
+    This is not an independent invented matrix. It binds each EvidenceRole only
+    to request kinds already emitted by current retained-evidence producers:
+
+    * ORIGIN_LINEAGE — direct Pump migration transaction refs and Pumpfun origin
+      transaction refs on ``solana_rpc``
+    * PUMPSWAP_CONFIRMATION — PumpSwap signature-pool resolution and
+      ``pumpswap_pool_account_batch``
+    * MARKET_OBSERVATION — DexScreener / GeckoTerminal market observation kinds
+      already accepted by market-member binding
+    """
+    from printer_v1.sources.direct_pump_migration import (
+        SOURCE_NAME as DIRECT_PUMP_SOURCE,
+        TRANSACTION_REQUEST_KIND as DIRECT_PUMP_TX_KIND,
+    )
+    from printer_v1.sources.pumpfun_direct import (
+        ORIGIN_TRANSACTION_REQUEST,
+        SOURCE_NAME as PUMPFUN_SOURCE,
+        TRANSACTION_REQUEST as PUMPFUN_CREATE_TX_KIND,
+    )
+    from printer_v1.sources.pumpswap_pool_account_batch import (
+        REQUEST_KIND as PUMPSWAP_ACCOUNT_BATCH_KIND,
+        SOURCE_NAME as PUMPSWAP_ACCOUNT_BATCH_SOURCE,
+    )
+    from printer_v1.sources.secondary_discovery import DEXSCREENER_FRESH_REQUEST
+
+    return {
+        EvidenceRole.ORIGIN_LINEAGE: frozenset(
+            {
+                (DIRECT_PUMP_SOURCE, DIRECT_PUMP_TX_KIND),
+                (PUMPFUN_SOURCE, ORIGIN_TRANSACTION_REQUEST),
+                (PUMPFUN_SOURCE, PUMPFUN_CREATE_TX_KIND),
+            }
+        ),
+        EvidenceRole.PUMPSWAP_CONFIRMATION: frozenset(
+            {
+                (PUMPSWAP_ACCOUNT_BATCH_SOURCE, PUMPSWAP_ACCOUNT_BATCH_KIND),
+                # direct_migration_discovery VERIFY_SOURCE / VERIFY_REQUEST_KIND
+                ("pumpswap", "pumpswap_signature_pool_resolution"),
+            }
+        ),
+        EvidenceRole.MARKET_OBSERVATION: frozenset(
+            {
+                ("dexscreener", DEXSCREENER_FRESH_REQUEST),
+                ("dexscreener", "candidate_market_batch"),
+                ("dexscreener", "pair_market_snapshot"),
+                ("geckoterminal", "candidate_market_batch"),
+                ("geckoterminal", "geckoterminal_new_pool_discovery"),
+                ("geckoterminal", "pair_market_snapshot"),
+                ("geckoterminal", "geckoterminal_readiness_base_snapshot"),
+            }
+        ),
+    }
+
+
+def retained_evidence_role_source_kind_allowed(
+    role: EvidenceRole,
+    *,
+    source_name: str,
+    request_kind: str,
+) -> bool:
+    """Return whether source/request_kind may assert the claimed evidence role."""
+    bindings = retained_evidence_role_source_kind_bindings()
+    allowed = bindings.get(role)
+    if allowed is None:
+        return False
+    return (str(source_name or ""), str(request_kind or "")) in allowed
+
+
 def qualify_candidate_local_retained_role(
     connection: sqlite3.Connection,
     *,
@@ -258,21 +331,25 @@ def qualify_candidate_local_retained_role(
         return False, "RETAINED_RESPONSE_CONTRACT_MISMATCH"
 
     source_name = str(value(request, "source_name", 1) or "")
+    request_kind = str(value(request, "request_kind", 2) or "")
+    if not retained_evidence_role_source_kind_allowed(
+        role, source_name=source_name, request_kind=request_kind
+    ):
+        return False, "RETAINED_ROLE_SOURCE_KIND_MISMATCH"
+
     payload_json = value(response, "normalized_payload_json", 6)
     try:
         if role is EvidenceRole.MARKET_OBSERVATION:
-            if source_name in {"dexscreener", "geckoterminal"}:
-                _require_market_response_member_binding(
-                    payload_json,
-                    mint=mint,
-                    pool=pool,
-                    source_name=source_name,
-                    require_solana=(
-                        admission_authority is AdmissionAuthority.MARKET_PRESENT_POOL
-                    ),
-                )
-            elif not _payload_matches_target(payload_json, mint=mint, pool=pool):
-                return False, "RETAINED_RESPONSE_TARGET_MISMATCH"
+            # Market member binding already fail-closes unsupported market sources.
+            _require_market_response_member_binding(
+                payload_json,
+                mint=mint,
+                pool=pool,
+                source_name=source_name,
+                require_solana=(
+                    admission_authority is AdmissionAuthority.MARKET_PRESENT_POOL
+                ),
+            )
         elif not _payload_matches_target(payload_json, mint=mint, pool=pool):
             return False, "RETAINED_RESPONSE_TARGET_MISMATCH"
     except MemoryObservationActivationError as exc:
@@ -1417,6 +1494,8 @@ __all__ = [
     "required_evidence_roles_for_admission_authority",
     "required_evidence_roles_for_candidate",
     "required_evidence_roles_for_claims",
+    "retained_evidence_role_source_kind_allowed",
+    "retained_evidence_role_source_kind_bindings",
     "role_reference_for_candidate",
     "transport_identity_key_from_mapping",
     "transport_identity_keys_from_payload",

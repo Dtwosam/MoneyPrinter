@@ -207,7 +207,7 @@ def _direct_item(
                 connection,
                 role="ORIGIN_LINEAGE",
                 source="solana_rpc",
-                kind="pump_origin",
+                kind="restored_pump_migration_transaction",
                 mint=mint,
                 pool=pool,
             )
@@ -619,7 +619,7 @@ def test_case_h_mismatched_request_response_fails_pre_freeze(db) -> None:
         db,
         role="ORIGIN_LINEAGE",
         source="solana_rpc",
-        kind="pump_origin",
+        kind="restored_pump_migration_transaction",
         mint=PUMP_MINT,
         pool=PUMP_POOL,
     )
@@ -627,7 +627,7 @@ def test_case_h_mismatched_request_response_fails_pre_freeze(db) -> None:
         db,
         role="ORIGIN_LINEAGE",
         source="solana_rpc",
-        kind="pump_origin",
+        kind="restored_pump_migration_transaction",
         mint=PUMP_MINT_B,
         pool=PUMP_POOL_B,
     )
@@ -740,6 +740,127 @@ def test_case_j_role_authority_consistency_fail_closed(db) -> None:
     with pytest.raises(MemoryObservationActivationError) as exc:
         required_evidence_roles_for_candidate(candidate)
     assert exc.value.code == "ADMISSION_AUTHORITY_CLAIMS_INCONSISTENT"
+
+
+def test_case_l_missing_authority_excluded_before_freeze(db) -> None:
+    item = _direct_item(db, mint=PUMP_MINT, pool=PUMP_POOL)
+    item.pop("admission_authority", None)
+    complete, exclusions = _filter_observation_rows_by_retained_role_completeness(
+        db, [item], now=NOW
+    )
+    assert complete == []
+    assert exclusions[0]["detail"] == "ADMISSION_AUTHORITY_MISSING"
+    assert exclusions[0]["admission_authority"] is None
+    # Must not be rewritten/inferred as DIRECT_PUMP.
+    assert "DIRECT_PUMP_PUMPSWAP" not in str(exclusions[0].get("admission_authority"))
+
+
+def test_case_m_wrong_request_kind_does_not_qualify_origin(db) -> None:
+    # Valid PumpSwap confirmation evidence, but claimed as ORIGIN_LINEAGE.
+    pumpswap_req, pumpswap_resp, _ = _persist_role(
+        db,
+        role="PUMPSWAP_CONFIRMATION",
+        source="solana_rpc",
+        kind="pumpswap_pool_account_batch",
+        mint=PUMP_MINT,
+        pool=PUMP_POOL,
+    )
+    market_req, market_resp, _ = _persist_role(
+        db,
+        role="MARKET_OBSERVATION",
+        source="dexscreener",
+        kind="candidate_market_batch",
+        mint=PUMP_MINT,
+        pool=PUMP_POOL,
+    )
+    item = _direct_item(
+        None,
+        mint=PUMP_MINT,
+        pool=PUMP_POOL,
+        origin_req=pumpswap_req,
+        origin_resp=pumpswap_resp,
+        pumpswap_req=pumpswap_req,
+        pumpswap_resp=pumpswap_resp,
+        market_req=market_req,
+        market_resp=market_resp,
+    )
+    complete, exclusions = _filter_observation_rows_by_retained_role_completeness(
+        db, [item], now=NOW
+    )
+    assert complete == []
+    assert (
+        exclusions[0]["qualification_failures"]["ORIGIN_LINEAGE"]
+        == "RETAINED_ROLE_SOURCE_KIND_MISMATCH"
+    )
+
+
+def test_case_n_cross_role_reuse_only_true_role_qualifies(db) -> None:
+    pumpswap_req, pumpswap_resp, _ = _persist_role(
+        db,
+        role="PUMPSWAP_CONFIRMATION",
+        source="solana_rpc",
+        kind="pumpswap_pool_account_batch",
+        mint=PUMP_MINT,
+        pool=PUMP_POOL,
+    )
+    market_req, market_resp, _ = _persist_role(
+        db,
+        role="MARKET_OBSERVATION",
+        source="dexscreener",
+        kind="candidate_market_batch",
+        mint=PUMP_MINT,
+        pool=PUMP_POOL,
+    )
+    # Reuse the PumpSwap pair under ORIGIN_LINEAGE as well.
+    item = _direct_item(
+        None,
+        mint=PUMP_MINT,
+        pool=PUMP_POOL,
+        origin_req=pumpswap_req,
+        origin_resp=pumpswap_resp,
+        pumpswap_req=pumpswap_req,
+        pumpswap_resp=pumpswap_resp,
+        market_req=market_req,
+        market_resp=market_resp,
+    )
+    complete, exclusions = _filter_observation_rows_by_retained_role_completeness(
+        db, [item], now=NOW
+    )
+    assert complete == []
+    failures = exclusions[0]["qualification_failures"]
+    assert failures["ORIGIN_LINEAGE"] == "RETAINED_ROLE_SOURCE_KIND_MISMATCH"
+    assert "PUMPSWAP_CONFIRMATION" not in failures
+    assert "MARKET_OBSERVATION" not in failures
+    assert "ORIGIN_LINEAGE" in exclusions[0]["missing_roles"]
+    assert "PUMPSWAP_CONFIRMATION" in exclusions[0]["present_roles"]
+    assert "MARKET_OBSERVATION" in exclusions[0]["present_roles"]
+
+
+def test_case_o_valid_production_shaped_role_kinds_qualify(db) -> None:
+    from printer_v1.discovery.memory_observation_activation import (
+        retained_evidence_role_source_kind_bindings,
+        EvidenceRole,
+    )
+
+    bindings = retained_evidence_role_source_kind_bindings()
+    assert (
+        "solana_rpc",
+        "restored_pump_migration_transaction",
+    ) in bindings[EvidenceRole.ORIGIN_LINEAGE]
+    assert (
+        "solana_rpc",
+        "pumpswap_pool_account_batch",
+    ) in bindings[EvidenceRole.PUMPSWAP_CONFIRMATION]
+    assert (
+        "dexscreener",
+        "candidate_market_batch",
+    ) in bindings[EvidenceRole.MARKET_OBSERVATION]
+    item = _direct_item(db, mint=PUMP_MINT, pool=PUMP_POOL)
+    complete, exclusions = _filter_observation_rows_by_retained_role_completeness(
+        db, [item], now=NOW
+    )
+    assert exclusions == []
+    assert len(complete) == 1
 
 
 def test_case_k_alternate_diagnostic_safety_no_authority_rewrite(db) -> None:
