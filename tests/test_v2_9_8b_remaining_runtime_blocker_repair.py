@@ -1079,8 +1079,15 @@ class TestPostFilterFreezeDepthCampaign:
             assert prefreeze.get("complete_count") == 3
             assert prefreeze.get("excluded_count") == 1
             assert any(
-                row.get("qualification_failures", {}).get("MARKET_OBSERVATION")
-                == "CANDIDATE_EVIDENCE_EXPIRED"
+                (
+                    row.get("qualification_failures", {}).get("timing")
+                    == "CANDIDATE_EVIDENCE_EXPIRED"
+                )
+                or (
+                    row.get("qualification_failures", {}).get("MARKET_OBSERVATION")
+                    == "CANDIDATE_EVIDENCE_EXPIRED"
+                )
+                or row.get("detail") == "CANDIDATE_EVIDENCE_EXPIRED"
                 for row in (prefreeze.get("exclusions") or [])
             )
             freeze = diag.get("observation_reserve") or {}

@@ -1836,3 +1836,277 @@ def test_case_ac_production_owner_uses_existing_pre_holder_recon() -> None:
         assert life.get("lifecycle_started") is False
     finally:
         base.tearDown()
+
+
+def test_case_ad_missing_expiry_excluded_before_freeze(db) -> None:
+    """CASE AD — missing evidence_expires_at excludes before freeze."""
+    bag = ProvenanceBag()
+    item = _market_item(db, bag, mint=MARKET_MINT_A, pool=MARKET_POOL_A)
+    item.pop("evidence_expires_at", None)
+    complete, exclusions = _filter(db, [item], bag)
+    assert complete == []
+    assert exclusions[0]["qualification_failures"]["timing"] == (
+        "CANDIDATE_EVIDENCE_EXPIRY_INVALID"
+    )
+    assert exclusions[0]["detail"] == "CANDIDATE_EVIDENCE_EXPIRY_INVALID"
+
+
+def test_case_ae_empty_and_malformed_expiry_fail_closed(db) -> None:
+    """CASE AE — empty/malformed evidence_expires_at fail closed before freeze."""
+    bag = ProvenanceBag()
+    empty_item = _market_item(db, bag, mint=MARKET_MINT_A, pool=MARKET_POOL_A)
+    empty_item["evidence_expires_at"] = ""
+    complete, exclusions = _filter(db, [empty_item], bag)
+    assert complete == []
+    assert exclusions[0]["qualification_failures"]["timing"] == (
+        "CANDIDATE_EVIDENCE_EXPIRY_INVALID"
+    )
+
+    bag2 = ProvenanceBag()
+    bad_item = _market_item(db, bag2, mint=MARKET_MINT_B, pool=MARKET_POOL_B)
+    bad_item["evidence_expires_at"] = "not-a-timestamp"
+    complete, exclusions = _filter(db, [bad_item], bag2)
+    assert complete == []
+    assert exclusions[0]["qualification_failures"]["timing"] == (
+        "CANDIDATE_EVIDENCE_EXPIRY_INVALID"
+    )
+
+
+def test_case_af_expired_evidence_excluded_before_freeze(db) -> None:
+    """CASE AF — expired evidence excluded before freeze."""
+    bag = ProvenanceBag()
+    item = _market_item(db, bag, mint=MARKET_MINT_A, pool=MARKET_POOL_A)
+    item["evidence_expires_at"] = "2000-01-01T00:00:00+00:00"
+    complete, exclusions = _filter(db, [item], bag)
+    assert complete == []
+    assert exclusions[0]["qualification_failures"]["timing"] == (
+        "CANDIDATE_EVIDENCE_EXPIRED"
+    )
+    assert exclusions[0]["detail"] == "CANDIDATE_EVIDENCE_EXPIRED"
+
+
+def test_case_ag_missing_retained_observation_time_excluded(db) -> None:
+    """CASE AG — missing retained observation time excludes before freeze."""
+    bag = ProvenanceBag()
+    item = _market_item(db, bag, mint=MARKET_MINT_A, pool=MARKET_POOL_A)
+    req = int(item["liquidity"]["source_request_id"])
+    item.pop("liquidity_observed_at", None)
+    item["liquidity"] = dict(item["liquidity"])
+    item["liquidity"].pop("liquidity_observed_at", None)
+    # Keep durable request/response/hash/manifest, but remove usable observation
+    # timestamps so selected activation would only invent frozen_at.
+    db.execute(
+        "UPDATE printer_source_requests SET requested_at=? WHERE id=?",
+        ("", req),
+    )
+    db.commit()
+    complete, exclusions = _filter(db, [item], bag)
+    assert complete == []
+    assert exclusions[0]["qualification_failures"]["timing"] == (
+        "RETAINED_OBSERVATION_TIME_MISSING"
+    )
+    assert exclusions[0]["detail"] == "RETAINED_OBSERVATION_TIME_MISSING"
+
+
+def test_case_ah_valid_timing_reaches_selector(db) -> None:
+    """CASE AH — valid observation time + current expiry reaches freeze input."""
+    bag = ProvenanceBag()
+    items = [
+        _market_item(db, bag, mint=MARKET_MINT_A, pool=MARKET_POOL_A, stage_sequence=1),
+        _market_item(db, bag, mint=MARKET_MINT_B, pool=MARKET_POOL_B, stage_sequence=2),
+        _market_item(db, bag, mint=MARKET_MINT_C, pool=MARKET_POOL_C, stage_sequence=3),
+        _market_item(db, bag, mint=MARKET_MINT_D, pool=MARKET_POOL_D, stage_sequence=4),
+    ]
+    complete, exclusions = _filter(db, items, bag)
+    assert exclusions == []
+    assert len(complete) == 4
+    for row in complete:
+        assert str(row.get("liquidity_observed_at") or "").strip()
+        assert str(row.get("evidence_expires_at") or "").strip()
+    frozen = freeze_eligible_reserve_for_campaign(
+        db,
+        complete,
+        cycle_seed="timing-ah",
+        at=NOW,
+        campaign_id=CAMPAIGN,
+        campaign_run_id=RUN,
+        enforce_campaign_historical_disjointness=False,
+    )
+    assert len(frozen.selected) == 2
+    assert len(frozen.alternates[:2]) == 2
+
+
+def test_case_ai_final_defense_timing_still_fail_closed(db) -> None:
+    """CASE AI — force timing-invalid past early gate; final validator fails closed."""
+    bag = ProvenanceBag()
+    item = _market_item(db, bag, mint=MARKET_MINT_A, pool=MARKET_POOL_A)
+    req = int(item["liquidity"]["source_request_id"])
+    resp = int(item["liquidity"]["source_response_id"])
+    digest = db.execute(
+        "SELECT response_hash FROM printer_source_responses WHERE id=?",
+        (resp,),
+    ).fetchone()[0]
+    key = tuple(
+        next(e for e in bag.manifest if int(e["source_request_id"]) == req)[
+            "transport_identity_keys"
+        ][0]
+    )
+    reference = RetainedEvidenceReference(
+        evidence_role=EvidenceRole.MARKET_OBSERVATION,
+        source_name="dexscreener",
+        request_kind="candidate_market_batch",
+        source_request_id=req,
+        source_response_id=resp,
+        source_failure_id=None,
+        transport_identity_keys=(key,),
+        observed_at=NOW,
+        raw_payload_hash=str(digest),
+        target_mint=MARKET_MINT_A,
+        target_pool=MARKET_POOL_A,
+        campaign_id=CAMPAIGN,
+        campaign_run_id=RUN,
+        cycle_id=CYCLE,
+    )
+    entry = ManifestRequestEntry(
+        source_request_id=req,
+        source_name="dexscreener",
+        request_kind="candidate_market_batch",
+        logical_stage_id=f"{CAMPAIGN}|{RUN}|{CYCLE}|MINT_MARKET_BATCH|1",
+        transport_identity_count=1,
+        transport_identity_keys=(key,),
+        terminal_status="COMPLETED",
+    )
+    bad = FrozenMemoryActivationCandidate(
+        slot_ordinal=1,
+        mint=MARKET_MINT_A,
+        pool=MARKET_POOL_A,
+        market_identity=f"solana-mainnet:pumpswap:{MARKET_POOL_A}",
+        lifecycle_identity="PRESENT_POOL_CONFIRMED",
+        activation_route="MARKET_PRESENT_POOL",
+        provenance="FRESH_AGGREGATOR_PROTOCOL_CONFIRMED",
+        memory_observation_eligible=True,
+        fully_eligible=False,
+        holder_condition="HOLDER_CONCENTRATION_EXTREME",
+        holder_evidence_status="COMPLETE",
+        future_action_eligibility="BLOCKED_OR_UNKNOWN",
+        evidence_expires_at="",
+        liquidity_observed_at="",
+        tracking_feasibility=_tracking(),
+        retained_evidence_references=(reference,),
+        admission_authority=AdmissionAuthority.MARKET_PRESENT_POOL,
+        claims_pump_origin=False,
+        claims_pumpswap_graduation=False,
+    )
+    other = FrozenMemoryActivationCandidate(
+        slot_ordinal=2,
+        mint=MARKET_MINT_B,
+        pool=MARKET_POOL_B,
+        market_identity=f"solana-mainnet:pumpswap:{MARKET_POOL_B}",
+        lifecycle_identity="PRESENT_POOL_CONFIRMED",
+        activation_route="MARKET_PRESENT_POOL",
+        provenance="FRESH_AGGREGATOR_PROTOCOL_CONFIRMED",
+        memory_observation_eligible=True,
+        fully_eligible=False,
+        holder_condition="HOLDER_CONCENTRATION_EXTREME",
+        holder_evidence_status="COMPLETE",
+        future_action_eligibility="BLOCKED_OR_UNKNOWN",
+        evidence_expires_at=EXPIRES,
+        liquidity_observed_at=NOW,
+        tracking_feasibility=_tracking(),
+        retained_evidence_references=(reference,),
+        admission_authority=AdmissionAuthority.MARKET_PRESENT_POOL,
+        claims_pump_origin=False,
+        claims_pumpswap_graduation=False,
+    )
+    alt_a = replace(other, slot_ordinal=3)
+    alt_b = replace(other, slot_ordinal=4)
+    activation = FrozenMemoryActivationSet(
+        activation_purpose=ActivationPurpose.MEMORY_OBSERVATION,
+        readiness_id="timing-ai",
+        selection_seed="timing-ai",
+        selected=(bad, other),
+        alternates=(alt_a, alt_b),
+        manifest_request_ids=(req,),
+        manifest_transport_identity_keys=(key,),
+        frozen_at=NOW,
+        expires_at=EXPIRES,
+        manifest_entries=(entry,),
+    )
+    with pytest.raises(MemoryObservationActivationError) as exc_info:
+        validate_memory_activation_set(
+            db,
+            activation,
+            now=NOW,
+            expected_ownership=(CAMPAIGN, RUN, CYCLE),
+        )
+    assert exc_info.value.code in {
+        "CANDIDATE_EVIDENCE_EXPIRY_INVALID",
+        "LIQUIDITY_OBSERVED_AT_INVALID",
+    }
+
+
+def test_production_caller_excludes_timing_invalid_before_freeze() -> None:
+    """Production owner excludes timing-invalid nominee before freeze."""
+    base = _CampaignBase()
+    base.setUp()
+    try:
+        supply = _permanent_supply(4)
+        _seed_exact_markets_for_campaign(
+            base.db,
+            supply,
+            command=base.command,
+            selection_seed="case-timing-prod",
+        )
+        # Expired evidence remains present enough to enter observation rows, but
+        # mandatory pre-freeze timing must exclude it before seeded freeze.
+        victim = supply.holder_reserve_supply[0]
+        victim_item = supply.holder_reserve_candidates[victim.mint.lower()]
+        victim_item["evidence_expires_at"] = "2000-01-01T00:00:00+00:00"
+        owner = AuthoritativeLiveOperationalCampaignOwner()
+        _force_holder_extreme_ineligible(owner, supply.holder_reserve_supply)
+        freeze_mints: list[tuple[str, ...]] = []
+        real_freeze = freeze_eligible_reserve_for_campaign
+
+        def _spy(connection, candidates, **kwargs):
+            mints = tuple(str(item.get("mint") or "") for item in candidates)
+            freeze_mints.append(mints)
+            assert victim.mint not in mints
+            return real_freeze(connection, candidates, **kwargs)
+
+        with patch(
+            "printer_v1.discovery.permanent_discovery_availability."
+            "freeze_eligible_reserve_for_campaign",
+            side_effect=_spy,
+        ):
+            result = owner.run(
+                mode=PILOT_INPUT_READINESS,
+                command=base.command,
+                pump_transport=_FakePumpTransport([], {}),
+                secondary_transport=None,
+                source_governor=GOV,
+                central_scheduler=SCH,
+                selection_seed="case-timing-prod",
+                cycle_id="cyc",
+                cycle_cutoff=e8.CUTOFF,
+                evaluated_at=e8.NOW,
+                backup_path=base.backup,
+                lifecycle_kwargs={
+                    "context_adapter_factories": _clean_goplus_extreme()
+                },
+                graduated_supply=supply,
+            )
+        assert len(freeze_mints) == 1
+        assert victim.mint not in freeze_mints[0]
+        diag = _campaign_supply_diagnostics(result.lifecycle)
+        exclusions = list(
+            (diag.get("retained_evidence_role_pre_freeze") or {}).get("exclusions")
+            or []
+        )
+        assert any(
+            row.get("mint") == victim.mint
+            and row.get("detail") == "CANDIDATE_EVIDENCE_EXPIRED"
+            for row in exclusions
+        )
+        assert result.lifecycle.get("lifecycle_started") is False
+    finally:
+        base.tearDown()

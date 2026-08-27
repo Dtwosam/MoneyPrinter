@@ -353,6 +353,138 @@ def qualify_current_run_retained_request_provenance(
     return True, None
 
 
+def resolve_retained_observation_time(
+    connection: sqlite3.Connection,
+    item: Mapping[str, Any],
+    *,
+    market_request_id: int | None = None,
+    market_response_id: int | None = None,
+    frozen_at: str | None = None,
+    allow_frozen_at_fallback: bool = False,
+) -> str | None:
+    """Resolve retained observation time using selected-activation hierarchy.
+
+    Order matches ``_build_frozen_memory_activation_set`` selected construction:
+
+    1. ``item.liquidity_observed_at``
+    2. ``liquidity.liquidity_observed_at``
+    3. reserve-layer ``observed_at`` bound to the market request/response pair
+    4. durable ``printer_source_requests.requested_at`` for the market request
+    5. ``frozen_at`` only when ``allow_frozen_at_fallback`` is True (report-only /
+       legacy role fill). Selected pre-freeze qualification never enables this.
+    """
+    liquidity = dict(item.get("liquidity") or {})
+    observed = str(
+        item.get("liquidity_observed_at")
+        or liquidity.get("liquidity_observed_at")
+        or ""
+    ).strip()
+    if observed:
+        return observed
+    request_id = market_request_id
+    response_id = market_response_id
+    if request_id is None:
+        raw = liquidity.get("source_request_id")
+        try:
+            request_id = None if raw is None else int(raw)
+        except (TypeError, ValueError):
+            request_id = None
+    if response_id is None:
+        raw = liquidity.get("source_response_id")
+        try:
+            response_id = None if raw is None else int(raw)
+        except (TypeError, ValueError):
+            response_id = None
+    mint = str(item.get("mint") or "").strip()
+    pool = str(item.get("pool") or item.get("pumpswap_pool") or "").strip()
+    if request_id is not None and response_id is not None and mint and pool:
+        reserve_rows = connection.execute(
+            """SELECT observed_at,evidence_json,source_provenance_json
+               FROM printer_discovery_reserve_layers
+               WHERE network='solana-mainnet' AND mint_identity=?
+                 AND pool_address=?
+               ORDER BY observed_at DESC""",
+            (mint, pool),
+        ).fetchall()
+        for reserve_row in reserve_rows:
+            envelope = f"{reserve_row[1] or ''} {reserve_row[2] or ''}"
+            if str(request_id) in envelope and str(response_id) in envelope:
+                observed = str(reserve_row[0] or "").strip()
+                if observed:
+                    return observed
+    if request_id is not None:
+        request_time = connection.execute(
+            "SELECT requested_at FROM printer_source_requests WHERE id=?",
+            (request_id,),
+        ).fetchone()
+        observed = str(request_time[0] if request_time else "").strip()
+        if observed:
+            return observed
+    if allow_frozen_at_fallback:
+        frozen = str(frozen_at or "").strip()
+        if frozen:
+            return frozen
+    return None
+
+
+def qualify_candidate_retained_evidence_timing(
+    connection: sqlite3.Connection,
+    item: Mapping[str, Any],
+    *,
+    now: str,
+    market_request_id: object = None,
+    market_response_id: object = None,
+) -> tuple[bool, str | None, str | None]:
+    """Prove mandatory expiry + selected retained observation time before freeze.
+
+    Returns ``(ok, failure_code, resolved_observation_time)``.
+    """
+    expiry_raw = item.get("evidence_expires_at")
+    if expiry_raw is None:
+        return False, "CANDIDATE_EVIDENCE_EXPIRY_INVALID", None
+    expiry_text = str(expiry_raw).strip()
+    if not expiry_text:
+        return False, "CANDIDATE_EVIDENCE_EXPIRY_INVALID", None
+    try:
+        expiry_instant = _parse_instant(
+            expiry_text, code="CANDIDATE_EVIDENCE_EXPIRY_INVALID"
+        )
+        now_instant = _parse_instant(now, code="ACTIVATION_TIME_INVALID")
+    except MemoryObservationActivationError as exc:
+        return False, exc.code, None
+    if expiry_instant <= now_instant:
+        return False, "CANDIDATE_EVIDENCE_EXPIRED", None
+
+    request_id: int | None
+    response_id: int | None
+    try:
+        request_id = (
+            None if market_request_id is None else int(market_request_id)
+        )
+    except (TypeError, ValueError):
+        request_id = None
+    try:
+        response_id = (
+            None if market_response_id is None else int(market_response_id)
+        )
+    except (TypeError, ValueError):
+        response_id = None
+    observed = resolve_retained_observation_time(
+        connection,
+        item,
+        market_request_id=request_id,
+        market_response_id=response_id,
+        allow_frozen_at_fallback=False,
+    )
+    if not observed:
+        return False, "RETAINED_OBSERVATION_TIME_MISSING", None
+    try:
+        _parse_instant(observed, code="LIQUIDITY_OBSERVED_AT_INVALID")
+    except MemoryObservationActivationError as exc:
+        return False, exc.code, None
+    return True, None, observed
+
+
 def qualify_candidate_local_retained_role(
     connection: sqlite3.Connection,
     *,
@@ -383,14 +515,18 @@ def qualify_candidate_local_retained_role(
         return False, "RETAINED_EVIDENCE_ROLE_MISSING"
     if failure_id_raw is not None:
         return False, "RETAINED_SUCCESS_HAS_FAILURE"
-    if evidence_expires_at:
-        try:
-            if _parse_instant(
-                str(evidence_expires_at), code="CANDIDATE_EVIDENCE_EXPIRY_INVALID"
-            ) <= _parse_instant(now, code="ACTIVATION_TIME_INVALID"):
-                return False, "CANDIDATE_EVIDENCE_EXPIRED"
-        except MemoryObservationActivationError as exc:
-            return False, exc.code
+    # Expiry is mandatory for retained-role pre-freeze qualification. Missing or
+    # empty values never default to now/frozen_at.
+    expiry_text = str(evidence_expires_at or "").strip()
+    if not expiry_text:
+        return False, "CANDIDATE_EVIDENCE_EXPIRY_INVALID"
+    try:
+        if _parse_instant(
+            expiry_text, code="CANDIDATE_EVIDENCE_EXPIRY_INVALID"
+        ) <= _parse_instant(now, code="ACTIVATION_TIME_INVALID"):
+            return False, "CANDIDATE_EVIDENCE_EXPIRED"
+    except MemoryObservationActivationError as exc:
+        return False, exc.code
     try:
         request_id = int(request_id_raw)
         response_id = int(response_id_raw)
@@ -1625,8 +1761,10 @@ __all__ = [
     "measure_source_row_ids",
     "build_prefreeze_manifest_transport_index",
     "qualify_candidate_local_retained_role",
+    "qualify_candidate_retained_evidence_timing",
     "qualify_current_run_retained_request_provenance",
     "reconcile_activation_source_rows",
+    "resolve_retained_observation_time",
     "required_evidence_roles_for_admission_authority",
     "required_evidence_roles_for_candidate",
     "required_evidence_roles_for_claims",

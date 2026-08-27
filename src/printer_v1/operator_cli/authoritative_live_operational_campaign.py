@@ -1505,6 +1505,7 @@ def _filter_observation_rows_by_retained_role_completeness(
         assess_retained_evidence_role_completeness,
         claims_consistent_with_admission_authority,
         qualify_candidate_local_retained_role,
+        qualify_candidate_retained_evidence_timing,
         required_evidence_roles_for_admission_authority,
     )
 
@@ -1615,6 +1616,45 @@ def _filter_observation_rows_by_retained_role_completeness(
                 continue
 
         liquidity = dict(item.get("liquidity") or {})
+        market_req, market_resp, _market_fail = _role_ids_from_candidate(
+            item, liquidity, "MARKET_OBSERVATION"
+        )
+        timing_ok, timing_reason, resolved_observed_at = (
+            qualify_candidate_retained_evidence_timing(
+                connection,
+                item,
+                now=now,
+                market_request_id=market_req,
+                market_response_id=market_resp,
+            )
+        )
+        if not timing_ok:
+            exclusions.append(
+                {
+                    "mint": mint,
+                    "pool": pool,
+                    "admission_authority": admission_authority.value,
+                    "required_roles": [
+                        role.value
+                        for role in required_evidence_roles_for_admission_authority(
+                            admission_authority
+                        )
+                    ],
+                    "present_roles": [],
+                    "missing_roles": [],
+                    "qualification_failures": {
+                        "timing": str(
+                            timing_reason or "RETAINED_OBSERVATION_TIME_MISSING"
+                        )
+                    },
+                    "disposition": RETAINED_EVIDENCE_ROLE_INCOMPLETE_PRE_FREEZE,
+                    "detail": str(
+                        timing_reason or "RETAINED_OBSERVATION_TIME_MISSING"
+                    ),
+                }
+            )
+            continue
+
         qualifying_roles = set()
         qualification_failures: dict[str, str] = {}
         for role in required_evidence_roles_for_admission_authority(admission_authority):
@@ -1666,6 +1706,12 @@ def _filter_observation_rows_by_retained_role_completeness(
             )
             item["claims_pump_origin"] = expected_direct
             item["claims_pumpswap_graduation"] = expected_direct
+            # Compose the proven retained observation time onto the freeze item
+            # so selected activation reuses the same established fact.
+            if resolved_observed_at:
+                item["liquidity_observed_at"] = str(resolved_observed_at)
+                liquidity["liquidity_observed_at"] = str(resolved_observed_at)
+                item["liquidity"] = liquidity
             complete_rows.append(item)
             continue
         exclusions.append(
@@ -1803,15 +1849,14 @@ def _build_frozen_memory_activation_set(
         )
 
     def candidate(raw: Mapping[str, Any], ordinal: int, *, soft: bool = False) -> Any:
+        from printer_v1.discovery.memory_observation_activation import (
+            resolve_retained_observation_time,
+        )
+
         item = dict(raw)
         mint = str(item.get("mint") or "")
         pool = str(item.get("pool") or "")
         liquidity = dict(item.get("liquidity") or {})
-        retained_time = str(
-            item.get("liquidity_observed_at")
-            or liquidity.get("liquidity_observed_at")
-            or ""
-        )
         # Preserve the categorical incomplete-market signal before role checks so
         # disposable fixtures that omit market response rows keep their exact
         # blocker code. Missing origin/pumpswap roles still fail closed below.
@@ -1827,6 +1872,32 @@ def _build_frozen_memory_activation_set(
                 raise MemoryObservationActivationError(
                     "RETAINED_EVIDENCE_REFERENCE_INCOMPLETE", mint
                 )
+
+        try:
+            market_request_id = (
+                None if market_req is None else int(market_req)
+            )
+        except (TypeError, ValueError):
+            market_request_id = None
+        try:
+            market_response_id = (
+                None if market_resp is None else int(market_resp)
+            )
+        except (TypeError, ValueError):
+            market_response_id = None
+        # Selected activation must not invent frozen_at as observation time.
+        # Report-only soft projection may still fall back to frozen_at.
+        retained_time = str(
+            resolve_retained_observation_time(
+                connection,
+                item,
+                market_request_id=market_request_id,
+                market_response_id=market_response_id,
+                frozen_at=frozen_at,
+                allow_frozen_at_fallback=soft,
+            )
+            or ""
+        )
 
         try:
             admission_authority = _admission_authority_from_freeze_item(item)
@@ -1865,28 +1936,25 @@ def _build_frozen_memory_activation_set(
                 response_id_raw=resp_raw,
                 failure_id_raw=fail_raw,
             )
-            observed = retained_time
-            if not observed:
-                reserve_rows = connection.execute(
-                    """SELECT observed_at,evidence_json,source_provenance_json
-                       FROM printer_discovery_reserve_layers
-                       WHERE network='solana-mainnet' AND mint_identity=?
-                         AND pool_address=?
-                       ORDER BY observed_at DESC""",
-                    (mint, pool),
-                ).fetchall()
-                for reserve_row in reserve_rows:
-                    envelope = f"{reserve_row[1] or ''} {reserve_row[2] or ''}"
-                    if str(request_id) in envelope and str(response_id) in envelope:
-                        observed = str(reserve_row[0] or "")
-                        break
-            if not observed:
-                request_time = connection.execute(
-                    "SELECT requested_at FROM printer_source_requests WHERE id=?",
-                    (request_id,),
-                ).fetchone()
-                observed = str(request_time[0] if request_time else "") or frozen_at
-            if role is EvidenceRole.MARKET_OBSERVATION:
+            observed = resolve_retained_observation_time(
+                connection,
+                item,
+                market_request_id=int(request_id),
+                market_response_id=int(response_id),
+                frozen_at=frozen_at,
+                # Selected MARKET retained_time never invents frozen_at.
+                # Soft/report-only and non-market role reference fills may.
+                allow_frozen_at_fallback=(
+                    soft or role is not EvidenceRole.MARKET_OBSERVATION
+                ),
+            ) or retained_time
+            if not observed and soft:
+                observed = frozen_at
+            if (
+                role is EvidenceRole.MARKET_OBSERVATION
+                and observed
+                and (soft or observed != str(frozen_at or "").strip())
+            ):
                 retained_time = observed
             role_refs.append(
                 _reference_for_role(
@@ -1899,7 +1967,7 @@ def _build_frozen_memory_activation_set(
                     request_kind=request_kind,
                     raw_hash=raw_hash,
                     failure_id=failure_id,
-                    observed_at=str(observed),
+                    observed_at=str(observed or retained_time or frozen_at),
                 )
             )
         if not retained_time:
