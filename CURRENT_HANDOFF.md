@@ -2,71 +2,81 @@
 
 ## Current lane
 
-`FRESH EXACT-HEAD / EXACT-DB ONE-SHOT AUTHORIZATION PREPARATION / INDEPENDENT REVIEW`
+`REMOTE HOST READINESS / PORTABILITY AUDIT ONLY — INFRASTRUCTURE SUPPORT; NO CAPABILITY ADVANCEMENT`
 
-Authorization preparation / independent review only. No Printer execution is
-authorized by this handoff.
+Infrastructure audit only. The active Printer memory-growth capability ordering
+is unchanged.
 
 ## Latest completed work
 
-Post-closeout fresh next-bounded-campaign authorization readiness/governance
-passed.
+Authorization `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260827T122355Z_8e43eae7` one-shot campaign is independently audited and closed.
 
-Readiness verdict:
+Evidence-audit verdict:
 
-`V2_9_8B_POST_CLOSEOUT_FRESH_NEXT_BOUNDED_CAMPAIGN_AUTHORIZATION_READINESS_GOVERNANCE_PASS`
+`V2_9_8B_AUTH_8E43EAE7_POST_APPLICATION_EVIDENCE_AUDIT_PASS`
 
-Readiness report:
+Campaign closeout verdict:
 
-`docs/printer-v1-v2-9-8b-post-closeout-fresh-next-bounded-campaign-authorization-readiness-governance.md`
+`V2_9_8B_AUTH_8E43EAE7_CAMPAIGN_CLOSEOUT_PASS`
 
-Repair closeout verdict:
+Closeout document:
 
-`V2_9_8B_RETAINED_EVIDENCE_PREFREEZE_ROLE_PROVENANCE_TIMING_REPAIR_CLOSEOUT_PASS`
+`docs/printer-v1-v2-9-8b-auth-8e43eae7-campaign-closeout.md`
 
-Bounded-proof verdict:
+## Execution / data baseline
 
-`V2_9_8B_RETAINED_EVIDENCE_PREFREEZE_ROLE_PROVENANCE_TIMING_BOUNDED_PROOF_PASS`
+Execution HEAD:
 
-## Baselines
+`978b5fa1cdbdfff76cb062a41631f21f401735e6`
 
-Readiness audit started from closeout HEAD:
+Authoritative post-campaign DB SHA:
 
-`941ddd727b0e8b6aabf7eacbf9513f47979adb46`
+`f4e54b3a2dc9f4dbd41b6f05bb5288f25ca15dc71b7e66de1e05ef7c213e34b1`
 
-Bounded-proof implementation HEAD:
+Campaign:
 
-`851d92627c3f5b05b1366af0d0dfef2712a330d8`
+`20260827T123325Z-22f4d5da4137-campaign`
 
-Authoritative DB SHA:
+Run:
 
-`b273b47973b0b76edd6c131afd410764cf5c6d09e35c81ab565480c3bb587e07`
+`20260827T123325Z-22f4d5da4137-campaign-run`
 
-The repository HEAD after this synchronization is the readiness commit containing
-this handoff. Any future authorization must bind to that exact new HEAD and to the
-exact DB SHA above.
+## Authorization state
 
-## Consumed authorization
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260827T122355Z_8e43eae7`
 
-`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260826T203834Z_c3063b7c`
+Permanently consumed. No retry, rerun, resume, restart, reuse, or successor.
 
-Permanently non-reusable. No retry, rerun, resume, restart, successor, or
-authority inheritance.
+## Campaign outcome
 
-## Blockers
+- Cycle 1: two distinct tokens;
+- both 15m windows clean-promoted;
+- both 1h windows closed dirty;
+- both standard-4h progression tokens ineligible;
+- no 4h successor created;
+- Cycle 2: `NO_PAIR / DURATION_EXHAUSTION`;
+- campaign safely stopped;
+- active current-campaign work: `0`;
+- no locked retrieval/financial capability activated.
 
-No open committed-code blocker remains from the retained-evidence repair chain.
+Classification:
 
-Execution remains governance-blocked until a fresh exact-HEAD/exact-DB one-shot
-authorization is separately prepared, independently reviewed, and later
-explicitly operator-approved.
+`EXPECTED_OPERATIONAL_BLOCKER__NO_CODE_CHANGE`
 
 ## Next permitted action
 
-`FRESH EXACT-HEAD / EXACT-DB ONE-SHOT AUTHORIZATION PREPARATION / INDEPENDENT REVIEW`
+`REMOTE HOST READINESS / PORTABILITY AUDIT ONLY — INFRASTRUCTURE SUPPORT; NO CAPABILITY ADVANCEMENT`
 
+Audit only:
+
+- inventory Mac-specific/runtime-host assumptions;
+- inventory exact filesystem/DB/authorization host bindings;
+- identify Linux/systemd portability requirements;
+- define single-authoritative-host cutover constraints;
+- preserve Source Governor, Central Scheduler, one-shot authorization,
+  no-restart/no-resume, and all V1 capability locks.
+
+Do not deploy or migrate yet.
+Do not create a new authorization.
 Do not run Printer.
-Do not contact providers/RPC/WebSocket.
-Do not run Central Scheduler.
-Do not mutate the authoritative DB.
-Do not unlock retrieval or financial capability.
+Do not restore the pre-run DB.

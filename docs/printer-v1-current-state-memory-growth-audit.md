@@ -1347,7 +1347,7 @@ execution, providers, RPC/WebSocket, Scheduler ticks, or authoritative DB writes
 <!-- V2_9_8B_RETAINED_EVIDENCE_REPAIR_CLOSEOUT_CURRENT_STATE_END -->
 
 <!-- V2_9_8B_POST_CLOSEOUT_AUTH_READINESS_CURRENT_STATE_START -->
-## V2-9.8B Post-Closeout Authorization Readiness — Current Authority
+## V2-9.8B Post-Closeout Authorization Readiness — Historical Authority
 
 Readiness verdict:
 
@@ -1359,7 +1359,7 @@ Authoritative DB SHA: `b273b47973b0b76edd6c131afd410764cf5c6d09e35c81ab565480c3b
 The retained-evidence repair chain is closed. The historical authorization
 `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260826T203834Z_c3063b7c` remains permanently non-reusable.
 
-The only next permitted lane is:
+At readiness time, the next permitted lane was:
 
 `FRESH EXACT-HEAD / EXACT-DB ONE-SHOT AUTHORIZATION PREPARATION / INDEPENDENT REVIEW`
 
@@ -1370,4 +1370,29 @@ this synchronization and to the exact DB SHA above. Separate operator approval
 is still required before execution.
 
 All permanent V1 locks remain unchanged.
+
+This readiness pointer is historical after the later authorized campaign closeout.
 <!-- V2_9_8B_POST_CLOSEOUT_AUTH_READINESS_CURRENT_STATE_END -->
+
+<!-- V2_9_8B_AUTH_8E43EAE7_CAMPAIGN_CLOSEOUT_CURRENT_STATE_START -->
+## V2-9.8B Authorization 8e43eae7 Campaign Closeout — Current Authority
+
+- campaign closeout: `V2_9_8B_AUTH_8E43EAE7_CAMPAIGN_CLOSEOUT_PASS`
+- authoritative post-campaign DB: `f4e54b3a2dc9f4dbd41b6f05bb5288f25ca15dc71b7e66de1e05ef7c213e34b1`
+- consumed authorization: `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260827T122355Z_8e43eae7`
+- campaign classification: `EXPECTED_OPERATIONAL_BLOCKER__NO_CODE_CHANGE`
+- Cycle 1: 2 tokens; 15m clean-promoted; 1h dirty; 4h ineligible/no successors
+- Cycle 2: `NO_PAIR / DURATION_EXHAUSTION`
+- no current-campaign active work
+- retrieval/financial/12h/24h locks remain closed
+
+The exact current next permitted lane is:
+
+`REMOTE HOST READINESS / PORTABILITY AUDIT ONLY — INFRASTRUCTURE SUPPORT; NO CAPABILITY ADVANCEMENT`
+
+This is infrastructure audit support only. It does not advance the active
+memory-growth capability build order and does not authorize deployment,
+migration, authorization issuance, provider/RPC/WebSocket calls, Scheduler
+execution, another campaign, retrieval, financial capabilities, or longer
+windows.
+<!-- V2_9_8B_AUTH_8E43EAE7_CAMPAIGN_CLOSEOUT_CURRENT_STATE_END -->
