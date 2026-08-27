@@ -1,14 +1,101 @@
 # Printer V1 Build Rules
 
+## Active Authority Stack and Current-Lane Rule — 2026-08-27
 
+This section is the current authority anchor for Printer V1 / Moneygoals work.
+It supersedes any older `source of truth`, `current active lane`, `current
+authority`, or `next correct action` wording later in this file when that wording
+conflicts with this section. Historical text remains preserved as evidence.
+
+Use this active source stack, in order:
+
+1. `AGENTS.md`
+2. `docs/printer-v1-clean-master-spec.md`
+3. `docs/printer-v1-post-rc-build-order.md`
+4. `docs/printer-v1-memory-factory-guide.md`
+5. `docs/printer-v1-current-state-memory-growth-audit.md`
+6. `docs/printer-v1-memory-growth-build-order-v2.md`
+
+`docs/printer-v1-memory-growth-build-order-v2.md` is the active memory-growth
+build order inside this stack. It is not the sole source of truth.
+
+Use `CURRENT_HANDOFF.md` only for current lane, current commit, latest completed
+work, blockers, and next permitted action. If `CURRENT_HANDOFF.md` conflicts
+with the authority stack above, the authority stack wins.
+
+Historical roadmaps, old lane documents, old chats, previous handoffs, and
+older current-looking pointers in this file are historical evidence only unless
+explicitly re-adopted.
+
+For every suggested change, shortcut, next step, repair, workflow, proof, or new
+lane:
+
+- check it against the active source stack, active build order, and
+  `CURRENT_HANDOFF.md`;
+- reject or correct anything that skips required sequencing, weakens a
+  safety/evidence rule, or drifts from V1;
+- distinguish proven code defects from source scarcity, provider limitations,
+  honest market blocks, missing evidence, documentation assumptions, and
+  infrastructure requirements before proposing implementation.
+
+Every major capability must preserve:
+
+`audit/readiness -> design/specification -> implementation if approved -> bounded proof/test -> closeout`
+
+Use minimum sufficient risk-based verification. Do not request broad regression
+suites unless the change risk or lane closeout requires them.
+
+### Current infrastructure-support lane
+
+Remote-host readiness / portability audit is closed PASS.
+
+Native Linux/systemd one-shot portability design is complete with verdict:
+
+`REMOTE_HOST_NATIVE_LINUX_SYSTEMD_PORTABILITY_DESIGN_PASS__OPERATOR_REVIEW_NEXT`
+
+Current governing design:
+
+`docs/printer-v1-remote-host-native-linux-systemd-portability-design.md`
+
+The exact current permitted lane is:
+
+`REMOTE HOST DESIGN / SPECIFICATION — OPERATOR REVIEW / IMPLEMENTATION APPROVAL GATE`
+
+This is infrastructure support only and does not reorder or advance the active
+memory-growth capability sequence.
+
+Until explicit implementation approval is given:
+
+- do not implement remote-host code;
+- do not provision a server;
+- do not transfer or migrate the authoritative DB;
+- do not create or apply a fresh authorization;
+- do not run Printer;
+- do not contact providers/RPC/WebSocket;
+- do not run Central Scheduler;
+- do not mutate the authoritative DB;
+- do not activate retrieval or any financial capability.
+
+Any future approved remote-host implementation must preserve the existing
+one-shot wrapper as the operational application boundary, `Restart=no`, no
+timer/watchdog/reboot relaunch, cooperative safe-stop through existing campaign
+supervision, exact remote HEAD+DB authorization binding after final remote
+identity exists, one sole authoritative operational DB writer/host, no Mac/VPS
+write overlap, Source Governor and Central Scheduler authority, and consumed
+authorization permanent non-reuse.
+
+Permanent V1 locks remain unchanged: Solana-only; Solana memecoin-only;
+paper-trading only; no live wallet/private keys/signing/real funds/live
+execution; no paid API dependency; no scoring/ranking/confidence percentages or
+weighted decision logic; no embeddings/vectors unless explicitly approved; no
+Source Governor or Central Scheduler bypass; no dirty memory for retrieval or
+decisions; no retrieval or financial capability before its explicit approved
+lane. `WINDOW_5M_MICRO_EVENT` remains support-only. `WINDOW_12H` and
+`WINDOW_24H` remain locked.
 
 Printer V1 is a Solana-only memecoin memory and paper-trading machine.
 
-
-
 Printer V1 is paper-trading only.
-
-
 
 Use these documents as the source of truth:
 
@@ -24,23 +111,13 @@ Use these documents as the source of truth:
 
 - docs/printer-v1-post-lane10-proposed-next-build-order.md
 
-
-
 ## Core Goal
-
-
 
 Printer's goal is to become a realistic paper-trading money machine by collecting clean Solana memecoin data, building clean historical memory, comparing current setups against past clean memory, making paper-only decisions, and auditing whether those decisions protected capital or produced realistic paper profit.
 
-
-
 Printer must avoid fake profit, dirty memory, forced trades, and rushed implementation.
 
-
-
 ## Locked V1 Rules
-
-
 
 Do not add:
 
@@ -72,8 +149,6 @@ Do not add:
 
 - combined score
 
-
-
 Printer decisions can only be:
 
 - BUY
@@ -88,16 +163,9 @@ Printer decisions can only be:
 
 - NO_ACTION
 
-
-
 All decisions must come from clean historical memory comparison.
 
-
-
 If there is not enough clean memory, Printer must choose WAIT, AVOID, or NO_ACTION depending on risk.
-
-
-
 
 ## Post-RC Build Order Anchor
 
@@ -176,23 +244,13 @@ The first Memory Factory implementation must keep paper decisions off.
 
 ## Future Build Order Anchor
 
-
-
 Before any phase after Phase 21, Codex must read:
-
-
 
 `docs/printer-v1-future-build-order.md`
 
-
-
 Codex must follow that future build order unless the operator explicitly replaces it.
 
-
-
 Rules:
-
-
 
 * Do not skip phases.
 
@@ -222,11 +280,7 @@ Rules:
 
 * Do not introduce vectors/embeddings unless explicitly approved as out-of-scope for V1.
 
-
-
 Printer V1 remains:
-
-
 
 * Solana-only
 
@@ -254,53 +308,27 @@ Printer V1 remains:
 
 * no paper position without valid clean-memory-backed paper decision
 
-
-
 Codex must stop after the requested phase and provide a pass/fail report.
-
-
-
-
 
 ## Architecture Rules
 
-
-
 Printer must work as one machine.
-
-
 
 No engine may bypass the central scheduler or source governor.
 
-
-
 No engine may create its own independent API loop.
-
-
 
 No engine may compete with token-level snapshots.
 
-
-
 No engine may write isolated memory outside the shared memory pipeline.
-
-
 
 No engine may duplicate source-fetching logic that belongs inside the source governor.
 
-
-
 Token-level snapshots and open paper-trade monitoring always take priority over broad context engines.
-
-
 
 ## Resource Priority Order
 
-
-
 When resources, rate limits, or scheduling capacity are tight, use this priority order:
-
-
 
 1\. Open paper-trade monitoring
 
@@ -322,15 +350,9 @@ When resources, rate limits, or scheduling capacity are tight, use this priority
 
 10\. Backup checks
 
-
-
 ## Build Order
 
-
-
 Follow the final build order:
-
-
 
 1\. Project Law + AGENTS.md
 
@@ -374,23 +396,13 @@ Follow the final build order:
 
 21\. Hardening + Long-Run Paper Validation
 
-
-
 Build only the requested phase.
-
-
 
 Do not build future phases early.
 
-
-
 ## Source Rules
 
-
-
 Printer V1 may only use free/public data sources.
-
-
 
 Allowed free-first sources:
 
@@ -424,8 +436,6 @@ Allowed free-first sources:
 
 - Jupiter quote API for paper simulation only
 
-
-
 Do not add dependency on:
 
 - paid Birdeye
@@ -440,19 +450,11 @@ Do not add dependency on:
 
 - paid execution infrastructure
 
-
-
 If a feature requires paid data, do not build it in Printer V1.
-
-
 
 ## Memory Rules
 
-
-
 Printer only learns from completed memory windows.
-
-
 
 Main memory windows:
 
@@ -466,21 +468,13 @@ Main memory windows:
 
 - 24 hours
 
-
-
 Support micro-event window:
 
 - 5 minutes
 
-
-
 The 5-minute window is not a main outcome window. It only explains fast pump/dump behavior inside or before the larger windows.
 
-
-
 Dirty, stale, incomplete, delayed, or broken data must not become clean memory.
-
-
 
 Use memory quality labels:
 
@@ -492,19 +486,11 @@ Use memory quality labels:
 
 - DO_NOT_TRAIN
 
-
-
 DIRTY_MEMORY and DO_NOT_TRAIN must never be used for decisions.
-
-
 
 ## Decision Rules
 
-
-
 Every Printer decision must follow this template:
-
-
 
 Decision:
 
@@ -530,43 +516,23 @@ Invalidation condition:
 
 Paper trade status:
 
-
-
 Printer must not make a BUY, SELL, or HOLD decision from one signal alone.
-
-
 
 Market regime is context only.
 
-
-
 Solana chain heat is context only.
-
-
 
 Discovery is intake only.
 
-
-
 Safety is protection only.
-
-
 
 Liquidity and exit realism determine whether paper profit was realistic.
 
-
-
 Trading flow and chart behavior are memory labels, not standalone signals.
-
-
 
 ## Paper Trading Rules
 
-
-
 Printer V1 is paper trading only.
-
-
 
 Paper trades must record:
 
@@ -594,59 +560,31 @@ Paper trades must record:
 
 - realistic or unrealistic profit result
 
-
-
 A paper profit is not clean unless entry and exit were realistic.
-
-
 
 If the chart moved but Printer could not realistically enter or exit, the result must be marked as unrealistic or fragile.
 
-
-
 ## Build Discipline
-
-
 
 Do not make unrelated refactors.
 
-
-
 Do not rename core concepts unless explicitly asked.
-
-
 
 Do not edit files outside the requested scope unless required, and explain why.
 
-
-
 Do not run destructive commands.
-
-
 
 Do not add live trading placeholders.
 
-
-
 Do not add wallet placeholders.
-
-
 
 Do not add paid API placeholders.
 
-
-
 Do not loosen rules to make tests pass.
-
-
 
 Prefer small, complete build lanes over broad patches.
 
-
-
 Each phase must have a clear pass/fail result before moving to the next phase.
-
-
 
 ## Production-Path Completeness Gate
 
@@ -677,15 +615,9 @@ require heavyweight preflight for formatting, dead imports, straightforward
 renames, documentation-only changes, or other clearly non-semantic edits.
 The existing Risk-Based Verification Policy remains authoritative.
 
-
-
 ## Risk-Based Verification Policy
 
-
-
 Use minimum sufficient verification based on change risk.
-
-
 
 - Documentation, audit, and design work: static checks only.
 
@@ -699,15 +631,9 @@ Use minimum sufficient verification based on change risk.
 
 - Never weaken tests, safety gates, evidence rules, or required bounded proof to save time or credits.
 
-
-
 ## Required Response Format
 
-
-
 Every Codex task must end with:
-
-
 
 - Files changed
 
