@@ -16,7 +16,8 @@ import os
 from pathlib import Path
 import re
 import stat
-from typing import Any, Mapping
+import sys
+from typing import Any, Callable, Mapping
 
 
 CHILD_TERMINAL_SCHEMA_VERSION = "PRINTER_V1_WINDOW_15M_CHILD_TERMINAL_V1"
@@ -447,6 +448,7 @@ def write_child_terminal_envelope(
     mode: str,
     exit_code: int,
     success: bool,
+    directory_sync: Callable[[Path], None] | None = None,
 ) -> dict[str, Any]:
     payload = build_child_terminal_envelope(
         binding=binding,
@@ -465,12 +467,27 @@ def write_child_terminal_envelope(
             os.fsync(handle.fileno())
     except FileExistsError as exc:
         raise ChildTerminalError("child terminal create-once artifact already exists") from exc
+
+    sync = directory_sync
+    if sync is None and sys.platform.startswith("linux"):
+        from printer_v1.operator_cli.linux_remote_host_portability import (
+            fsync_directory_required,
+        )
+
+        sync = fsync_directory_required
+    if sync is not None:
+        try:
+            sync(binding.terminal_path.parent)
+        except Exception as exc:
+            raise ChildTerminalError(
+                "child terminal parent directory durability failed"
+            ) from exc
+
     try:
         binding.terminal_path.chmod(0o444)
     except OSError:
         pass
     return payload
-
 
 
 
