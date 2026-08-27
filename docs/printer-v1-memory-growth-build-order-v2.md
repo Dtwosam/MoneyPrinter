@@ -1933,3 +1933,30 @@ advanced afterward and are synchronized into the active source stack by the
 | Candidate-acquisition N2/N7 is treated as current required next lane | Block; deferred unless later explicit reactivation |
 | Automatic retry/resume/restart/successor is assumed | Prohibited |
 | Design drifts into runtime or financial work during sync closeout | Stop immediately |
+
+<!-- V2_9_8B_RETAINED_EVIDENCE_REPAIR_CLOSEOUT_CURRENT_STATE_START -->
+## V2-9.8B Retained-Evidence Repair Closeout — Current Authority
+
+This current-state synchronization block supersedes earlier current-looking
+V2-9.8B repair/readiness/next-sub-lane pointers in this document for the
+retained-evidence repair chain. Historical lane text remains evidence only.
+
+- implementation / bounded-proof baseline: `851d92627c3f5b05b1366af0d0dfef2712a330d8`
+- authoritative DB SHA: `b273b47973b0b76edd6c131afd410764cf5c6d09e35c81ab565480c3bb587e07`
+- bounded-proof verdict: `V2_9_8B_RETAINED_EVIDENCE_PREFREEZE_ROLE_PROVENANCE_TIMING_BOUNDED_PROOF_PASS`
+- closeout verdict: `V2_9_8B_RETAINED_EVIDENCE_PREFREEZE_ROLE_PROVENANCE_TIMING_REPAIR_CLOSEOUT_PASS`
+- consumed authorization `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260826T203834Z_c3063b7c` remains permanently non-reusable
+- candidate-acquisition N2/N7 remains deferred and is not a prerequisite
+- no Source Governor or Central Scheduler bypass
+- successful freeze remains 4 candidates -> 2 selected + 2 report-only alternates
+- standard memory path remains 15m -> 1h -> 4h -> stop
+- 5m remains support-only; 12h/24h remain locked
+- retrieval and all financial capability remain locked
+
+The only next permitted lane is:
+
+`POST-CLOSEOUT FRESH NEXT-BOUNDED-CAMPAIGN AUTHORIZATION READINESS / GOVERNANCE ONLY`
+
+That lane is readiness/governance only. It does not itself authorize issuance,
+execution, providers, RPC/WebSocket, Scheduler ticks, or authoritative DB writes.
+<!-- V2_9_8B_RETAINED_EVIDENCE_REPAIR_CLOSEOUT_CURRENT_STATE_END -->
