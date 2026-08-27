@@ -1,5 +1,4 @@
 from pathlib import Path
-from types import SimpleNamespace
 import tempfile
 import unittest
 
@@ -20,8 +19,11 @@ class NativeHostRuntimePreflightTests(unittest.TestCase):
             python_path = root / ".venv" / "bin" / "python"
             python_path.parent.mkdir(parents=True)
             python_path.write_text("#!/bin/sh\n")
+            python_path.chmod(0o755)
             sizing_db = root / "sizing.sqlite3"
             sizing_db.write_bytes(b"db")
+            unit = root / "service.unit"
+            unit.write_text("[Service]\nType=exec\n")
             calls = []
 
             outputs = {
@@ -52,7 +54,7 @@ class NativeHostRuntimePreflightTests(unittest.TestCase):
                 sizing_db_path=sizing_db,
                 application_root=root / "applications",
                 artifact_root=root / "artifacts",
-                systemd_unit=root / "service.unit",
+                systemd_unit=unit,
                 storage_growth_ceiling_bytes=100,
                 python_version_info=(3, 11, 9),
                 python_executable=python_path,
@@ -113,8 +115,11 @@ class NativeHostRuntimePreflightTests(unittest.TestCase):
             python_path = root / ".venv" / "bin" / "python"
             python_path.parent.mkdir(parents=True)
             python_path.write_text("#!/bin/sh\n")
+            python_path.chmod(0o755)
             sizing_db = root / "sizing.sqlite3"
             sizing_db.write_bytes(b"db")
+            unit = root / "service.unit"
+            unit.write_text("[Service]\nType=exec\n")
 
             def runner(command, **kwargs):
                 command = tuple(command)
@@ -138,7 +143,7 @@ class NativeHostRuntimePreflightTests(unittest.TestCase):
                     sizing_db_path=sizing_db,
                     application_root=root / "applications",
                     artifact_root=root / "artifacts",
-                    systemd_unit=root / "service.unit",
+                    systemd_unit=unit,
                     storage_growth_ceiling_bytes=100,
                     python_version_info=(3, 11, 9),
                     python_executable=python_path,
