@@ -19,6 +19,7 @@ from printer_v1.operator_cli.linux_remote_host_portability import (
     StopSignalState,
     assert_local_ext4_paths,
     launch_child_foreground,
+    linux_verified_host_process_inventory,
 )
 
 
@@ -115,6 +116,7 @@ def run_linux_service(
                 application_root=app_root,
                 process_launcher=process_launcher,
                 authoritative_db_path=database,
+                printer_host_process_inventory=linux_verified_host_process_inventory,
             )
         )
     finally:
