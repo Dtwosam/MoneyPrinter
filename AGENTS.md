@@ -45,23 +45,30 @@ Every major capability must preserve:
 Use minimum sufficient risk-based verification. Do not request broad regression
 suites unless the change risk or lane closeout requires them.
 
-### Current V2-9.8B orchestration-correctness lane
+### Current V2-9.8B migration-062 readiness lane
 
 The consumed 4/2/2 campaign forensic audit proved four product defects. The
-orchestration-correctness design passed, the later Cycle-2 architecture audit
-required a narrow existing-owner amendment, and the operator has explicitly
-approved implementation and bounded offline proof.
+orchestration-correctness design and narrow Cycle-2 existing-owner amendment
+passed. The explicitly approved implementation and bounded offline proof are
+closed:
+
+`V2_9_8B_4_2_2_ORCHESTRATION_CORRECTNESS_IMPLEMENTATION_PASS`
+
+Governing closeout:
+
+`docs/printer-v1-v2-9-8b-4-2-2-orchestration-correctness-implementation-closeout.md`
 
 The exact current permitted lane is:
 
-`V2-9.8B 4/2/2 ORCHESTRATION CORRECTNESS — APPROVED IMPLEMENTATION / BOUNDED PROOF`
+`V2-9.8B MIGRATION 062 — CONTROLLED APPLICATION READINESS / AUTHORITY GATE`
 
-Remote-host work remains paused and preserved separately. This lane authorizes
-only the four proven product repairs, disposable/offline tests, and their
-implementation closeout. It does not authorize a new authorization, a live
-Printer campaign, provider/RPC/WebSocket contact, Central Scheduler execution
-against the authoritative database, or authoritative database mutation. After
-bounded proof, a separate closeout/readiness decision is required.
+Remote-host work remains paused and preserved separately. Migration 062 was
+proved only on disposable databases and is not applied to the authoritative
+database. This lane permits read-only readiness review and an explicit future
+application-approval decision only. It does not authorize applying migration
+062, creating an authorization, running Printer, contacting providers/RPC/
+WebSocket, running Central Scheduler against the authoritative database, or
+mutating the authoritative database.
 
 Any future approved remote-host implementation must preserve the existing
 one-shot wrapper as the operational application boundary, `Restart=no`, no
