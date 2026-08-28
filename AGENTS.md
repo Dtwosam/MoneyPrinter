@@ -72,17 +72,40 @@ Governing closeout:
 
 `docs/printer-v1-v2-9-8b-post-migration-062-fresh-next-bounded-campaign-readiness-governance-closeout.md`
 
-The exact current permitted lane is:
+The migration-062 authorization-provenance evidence-control audit and design
+are closed:
+
+`V2_9_8B_MIGRATION_062_AUTHORIZATION_PROVENANCE_EVIDENCE_CONTROL_AUDIT_PASS`
+
+`V2_9_8B_MIGRATION_062_AUTHORIZATION_PROVENANCE_EVIDENCE_CONTROL_DESIGN_PASS`
+
+Governing design:
+
+`docs/printer-v1-v2-9-8b-migration-062-authorization-provenance-evidence-control-design.md`
+
+The explicitly approved narrow implementation, bounded proof, independent
+closeout review, and normal commit are closed:
+
+`V2_9_8B_MIGRATION_062_AUTHORIZATION_PROVENANCE_EVIDENCE_CONTROL_IMPLEMENTATION_PASS`
+
+`V2_9_8B_MIGRATION_062_AUTHORIZATION_PROVENANCE_EVIDENCE_CONTROL_IMPLEMENTATION_CLOSEOUT_PASS`
+
+Governing closeout:
+
+`docs/printer-v1-v2-9-8b-migration-062-authorization-provenance-evidence-control-implementation-closeout.md`
+
+The existing verified migration-062 application package is now the singular
+current provenance package for both four-token profiles. Migration 061 remains
+immutable historical evidence. The exact current permitted lane is:
 
 `FRESH EXACT-HEAD / EXACT-DB ONE-SHOT AUTHORIZATION PREPARATION / INDEPENDENT REVIEW`
 
-That lane may prepare and independently review a fresh one-shot authorization
-bound to the exact committed readiness HEAD and the exact authoritative DB SHA
-above. It does not authorize applying/consuming the authorization, running
-Printer, contacting providers/RPC/WebSocket, running Central Scheduler, or
-starting a campaign. Separate explicit operator approval is required before any
-later one-shot execution. Remote-host work remains paused and preserved
-separately.
+That lane may prepare and independently review one fresh authorization bound to
+the exact post-repair commit HEAD, exact unchanged authoritative DB, and exact
+migration-062 current provenance. It does not authorize applying or consuming
+an authorization; mutating the database; running Printer; contacting
+providers/RPC/WebSocket; running Central Scheduler; starting a campaign; or
+resuming remote-host work.
 
 Any future approved remote-host implementation must preserve the existing
 one-shot wrapper as the operational application boundary, `Restart=no`, no

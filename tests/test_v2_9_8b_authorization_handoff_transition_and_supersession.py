@@ -57,6 +57,12 @@ NEWER_CONSUMED_AUTHORIZATION_ID = (
 AUG25_CONSUMED_AUTHORIZATION_ID = (
     "V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260825T134723Z_4563a9dd"
 )
+LATER_PRESERVED_AUTHORIZATION_IDS = (
+    "V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260826T114542Z_d3bc361a",
+    "V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260826T185611Z_b861fd4c",
+    "V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260826T203834Z_c3063b7c",
+    "V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260827T122355Z_8e43eae7",
+)
 APPLICATION_NAMESPACE = Path(
     "/Users/Dtwo1/PrinterOperations/v2-9-8/"
     "four-token-standard-four-hour-one-shot-applications"
@@ -67,8 +73,8 @@ PRODUCTION_MANIFEST = (
 )
 HANDOFF_PATH = REPOSITORY_ROOT / "CURRENT_HANDOFF.md"
 REQUIRED_NEXT_ACTION = (
-    "V2-9.8B AUTHORIZATION HANDOFF-TRANSITION AND SUPERSESSION\n"
-    "INDEPENDENT BOUNDED PROOF / ACTUAL PATCH INSPECTION ONLY"
+    "FRESH EXACT-HEAD / EXACT-DB ONE-SHOT AUTHORIZATION PREPARATION / "
+    "INDEPENDENT REVIEW"
 )
 
 
@@ -121,6 +127,7 @@ class AuthorizationHandoffTransitionAndSupersessionTests(unittest.TestCase):
                     AUTHORIZATION_ID,
                     NEWER_CONSUMED_AUTHORIZATION_ID,
                     AUG25_CONSUMED_AUTHORIZATION_ID,
+                    *LATER_PRESERVED_AUTHORIZATION_IDS,
                 ]
             )
         )
@@ -487,6 +494,7 @@ class AuthorizationHandoffTransitionAndSupersessionTests(unittest.TestCase):
             AUTHORIZATION_ID,
             NEWER_CONSUMED_AUTHORIZATION_ID,
             AUG25_CONSUMED_AUTHORIZATION_ID,
+            *LATER_PRESERVED_AUTHORIZATION_IDS,
         ):
             self.assertIn(required, validated)
 
@@ -520,57 +528,41 @@ class AuthorizationHandoffTransitionAndSupersessionTests(unittest.TestCase):
             git_auth._POLICY_TERMINAL_DISPOSITIONS,
         )
 
-    def test_handoff_encodes_transition_a_without_tracked_mutation(self) -> None:
-        """Break caught: preparation PASS still requires a tracked rewrite."""
-        self.assertIn("TRANSITION_A_INDEPENDENT_REVIEW_ONLY", self.handoff_text)
-        self.assertIn("WITHOUT tracked mutation", self.handoff_text)
+    def test_handoff_encodes_current_preparation_boundary(self) -> None:
+        """The current handoff permits preparation/review, never execution."""
+        self.assertIn(REQUIRED_NEXT_ACTION, self.handoff_text)
+        self.assertIn("exact post-repair commit HEAD", self.handoff_text)
+        self.assertIn("exact unchanged\nauthoritative DB SHA", self.handoff_text)
+        self.assertIn("MIGRATION_062_20260828T182504Z", self.handoff_text)
+        self.assertIn("exact four-file current provenance inventory", self.handoff_text)
+
+    def test_handoff_keeps_execution_as_separate_operator_authority(self) -> None:
+        """Preparation closeout cannot silently become start authority."""
         self.assertIn(
-            "FRESH EXACT-HEAD FOUR-TOKEN STANDARD-FOUR-HOUR 4/2/2\n"
-            "AUTHORIZATION INDEPENDENT REVIEW ONLY",
+            "Preparation does not authorize\napplication, consumption, Printer, "
+            "providers, Scheduler, or campaign execution.",
             self.handoff_text,
         )
-        self.assertIn("PREPARED / NOT_CONSUMED", self.handoff_text)
-        self.assertIn("no marker exists", self.handoff_text)
-        self.assertIn("no child exists", self.handoff_text)
-        self.assertIn("no campaign exists", self.handoff_text)
-
-    def test_handoff_encodes_transition_b_without_tracked_mutation(self) -> None:
-        """Break caught: review PASS still requires a tracked rewrite."""
-        self.assertIn("TRANSITION_B_SEPARATE_OPERATOR_START_ONLY", self.handoff_text)
         self.assertIn(
-            "SEPARATE OPERATOR START OF THAT EXACT REVIEWED AUTHORIZATION",
+            "Any later execution still\nrequires separate explicit operator approval.",
             self.handoff_text,
         )
-        self.assertIn("exact HEAD remains unchanged", self.handoff_text)
-        self.assertIn("package integrity remains exact", self.handoff_text)
-        self.assertIn("DB binding remains exact", self.handoff_text)
-        self.assertIn("temporal validity remains true", self.handoff_text)
-        self.assertGreaterEqual(self.handoff_text.count("WITHOUT tracked mutation"), 2)
 
-    def test_handoff_encodes_fail_closed_block_forbidding_operator_start(
+    def test_handoff_encodes_fail_closed_non_execution_boundary(
         self,
     ) -> None:
-        """Break caught: drift or BLOCK still leaves start permitted."""
-        self.assertIn(
-            "TRANSITION_BLOCK_OPERATOR_START_FORBIDDEN", self.handoff_text
-        )
-        self.assertIn("must forbid operator start", self.handoff_text)
+        """The current preparation lane keeps every runtime owner locked."""
         for phrase in (
-            "preparation BLOCKED",
-            "review BLOCKED",
-            "HEAD drift",
-            "package drift",
-            "DB drift",
-            "evidence/trust-root drift",
-            "schema blocker",
-            "zero-state blocker",
-            "host blocker",
-            "temporal expiry",
-            "existing marker/application/child/campaign",
+            "does **not** create, apply, or consume an authorization",
+            "contact providers/RPC/WebSocket",
+            "run Central Scheduler",
+            "mutate the\nauthoritative DB",
+            "start a campaign",
+            "resume remote-host work",
         ):
             self.assertIn(phrase, self.handoff_text)
         self.assertIn(
-            "No automatic replacement/retry/rerun/resume/restart/successor",
+            "It remains permanently consumed and non-reusable.",
             self.handoff_text,
         )
 
@@ -600,21 +592,9 @@ class AuthorizationHandoffTransitionAndSupersessionTests(unittest.TestCase):
             text=True,
         ).stdout.strip()
         self.assertNotEqual(live_head, BOUND_HEAD)
-        self.assertIn(
-            "Transitions A and B MUST NOT apply retroactively",
-            self.handoff_text,
-        )
-        self.assertIn(AUTHORIZATION_ID, self.handoff_text)
-        self.assertIn(BOUND_HEAD, self.handoff_text)
-        self.assertIn(
-            "That HEAD did not contain this prospective authority chain",
-            self.handoff_text,
-        )
-        self.assertIn(
-            "This handoff must not be read as authority to review, mark, apply, "
-            "or start",
-            self.handoff_text,
-        )
+        self.assertIn("exact post-repair commit HEAD", self.handoff_text)
+        self.assertIn("not the pre-repair", self.handoff_text)
+        self.assertNotIn(BOUND_HEAD, self.handoff_text)
         self.assertEqual(
             git_auth._POLICY_TERMINAL_DISPOSITIONS[AUTHORIZATION_ID],
             "BLOCKED_UNCONSUMED_SUPERSEDED",
@@ -624,29 +604,15 @@ class AuthorizationHandoffTransitionAndSupersessionTests(unittest.TestCase):
         self,
     ) -> None:
         """Break caught: later start still depends on a post-package rewrite."""
-        self.assertIn(
-            "IMMEDIATE NEXT ACTION AFTER THIS IMPLEMENTATION LANE IS LATER "
-            "CLOSED/REREADIED",
-            self.handoff_text,
-        )
-        self.assertIn("fresh authorization preparation only", self.handoff_text)
-        self.assertIn(
-            "later rereadiness checkpoint containing prospective A/B/BLOCK clauses",
-            self.handoff_text,
-        )
-        self.assertIn("replacement authorization preparation", self.handoff_text)
-        self.assertIn("package binds that exact unchanged HEAD", self.handoff_text)
-        self.assertIn("create-once marker", self.handoff_text)
-        self.assertIn("exactly one child", self.handoff_text)
-        self.assertIn(
-            "No tracked handoff mutation is required between package "
-            "preparation and\noperator start.",
-            self.handoff_text,
-        )
         self.assertIn(REQUIRED_NEXT_ACTION, self.handoff_text)
         self.assertIn(
-            "It may not change implementation, prepare a\n"
-            "replacement authorization, independently review, mark, apply, or run",
+            "A future authorization must bind that exact\ncommitted HEAD, not the "
+            "pre-repair or migration-synchronization baseline.",
+            self.handoff_text,
+        )
+        self.assertIn(
+            "Preparation does not authorize\napplication, consumption, Printer, "
+            "providers, Scheduler, or campaign execution.",
             self.handoff_text,
         )
 
@@ -698,15 +664,17 @@ class AuthorizationHandoffTransitionAndSupersessionTests(unittest.TestCase):
 
     def test_permanent_locks_remain_encoded_in_handoff(self) -> None:
         """Break caught: implementation text loosens a V1 lock."""
-        self.assertIn(
-            "Solana-only; Solana memecoin-only; paper-only. No live wallet/private keys/\n"
-            "signing/real funds/live execution. No paid API dependency. No scoring/ranking/\n"
-            "confidence/weighted logic. No embeddings/vectors. No Source Governor or Central\n"
-            "Scheduler bypass. Dirty memory remains excluded from retrieval and decisions.\n"
-            "`WINDOW_5M_MICRO_EVENT` remains support-only. Cycle 3, 12h/24h, retrieval,\n"
-            "BUY/SELL/HOLD, positions, trade events, paper audits, and PnL remain locked.",
-            self.handoff_text,
-        )
+        for phrase in (
+            "Solana-only; Solana memecoin-only; paper-trading only.",
+            "No wallet/private\nkeys/signing/real funds/live execution.",
+            "No paid API dependency.",
+            "No\nscoring/ranking/confidence/weighted decision logic.",
+            "No Source Governor or\nCentral Scheduler bypass.",
+            "No dirty-memory retrieval/decisions.",
+            "`WINDOW_5M_MICRO_EVENT` remains\nsupport-only.",
+            "`WINDOW_12H` and `WINDOW_24H` remain locked.",
+        ):
+            self.assertIn(phrase, self.handoff_text)
 
 
 if __name__ == "__main__":

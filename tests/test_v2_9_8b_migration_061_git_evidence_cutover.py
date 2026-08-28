@@ -1,4 +1,4 @@
-"""Focused offline proof for the Migration-061 Git-evidence cutover.
+"""Focused offline proof for the Migration-062 Git-evidence cutover.
 
 The tests copy immutable operator evidence into disposable repositories. They
 create only fixture authorization documents outside the real operator package,
@@ -30,6 +30,17 @@ MIGRATION_061_KIND = "MIGRATION_061_EVIDENCE"
 MIGRATION_061_FILE_COUNT = 5
 MIGRATION_061_INVENTORY_SHA256 = (
     "a6eac8d12e30e9f134c137f79a8b72bbe4f9af9d62e65e159a025c5c87108bd6"
+)
+HISTORICAL_MIGRATION_061_KIND = "HISTORICAL_MIGRATION_061_EVIDENCE"
+HISTORICAL_MIGRATION_061_INVENTORY_SHA256 = (
+    "ff8aefa1c0ee3fe4ec2063400a97cd81b8311bc4aa23dd402614bb609659a459"
+)
+MIGRATION_062_ROOT = "operator-runs/v2-9-8b-migration-062-application"
+MIGRATION_062_EXECUTION_ID = "MIGRATION_062_20260828T182504Z"
+MIGRATION_062_KIND = "MIGRATION_062_EVIDENCE"
+MIGRATION_062_FILE_COUNT = 4
+MIGRATION_062_INVENTORY_SHA256 = (
+    "fa617f77f288705e7e8a4d3676f78feee041f098292a59d431a60e66624bcd02"
 )
 MIGRATION_059_ROOT = "operator-runs/v2-9-8b-migration-059-application"
 MIGRATION_059_EXECUTION_ID = "MIGRATION_059_20260821T095456Z"
@@ -64,9 +75,11 @@ def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
 
 def _profile(
     *,
-    current_execution_id: str | None = MIGRATION_061_EXECUTION_ID,
-    current_file_count: int | None = MIGRATION_061_FILE_COUNT,
-    current_inventory_sha256: str | None = MIGRATION_061_INVENTORY_SHA256,
+    migration_root: str = MIGRATION_062_ROOT,
+    migration_kind: str = MIGRATION_062_KIND,
+    current_execution_id: str | None = MIGRATION_062_EXECUTION_ID,
+    current_file_count: int | None = MIGRATION_062_FILE_COUNT,
+    current_inventory_sha256: str | None = MIGRATION_062_INVENTORY_SHA256,
 ) -> git_auth.GitAuthorizationProfile:
     """Keep the real proof authority while isolating unrelated evidence sets."""
     production = git_auth.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE
@@ -95,8 +108,8 @@ def _profile(
         historical_authorization_package_roots=(
             production.historical_authorization_package_roots
         ),
-        migration_package_root=MIGRATION_061_ROOT,
-        migration_package_kind=MIGRATION_061_KIND,
+        migration_package_root=migration_root,
+        migration_package_kind=migration_kind,
         current_migration_execution_id=current_execution_id,
         current_migration_expected_file_count=current_file_count,
         current_migration_expected_inventory_sha256=current_inventory_sha256,
@@ -124,17 +137,17 @@ def _patched_profile(profile: git_auth.GitAuthorizationProfile):
 
 
 class CurrentMigrationFixture:
-    """Disposable Git repository with exact copied 061 bytes and fixture auth."""
+    """Disposable Git repository with exact copied 062 bytes and fixture auth."""
 
-    authorization_id = "V2_9_8B_FOUR_TOKEN_AUTH_MIG061_TESTONLY"
+    authorization_id = "V2_9_8B_FOUR_TOKEN_AUTH_MIG062_TESTONLY"
 
-    def __init__(self, tmp_path: Path, *, migration_id: str = MIGRATION_061_EXECUTION_ID):
+    def __init__(self, tmp_path: Path, *, migration_id: str = MIGRATION_062_EXECUTION_ID):
         self.outer = tmp_path
         self.repo = tmp_path / "repo"
         self.repo.mkdir()
         _git(self.repo, "init")
         _git(self.repo, "config", "user.email", "tests@example.invalid")
-        _git(self.repo, "config", "user.name", "Migration 061 Cutover Tests")
+        _git(self.repo, "config", "user.name", "Migration 062 Cutover Tests")
         (self.repo / "tracked.txt").write_text("clean\n", encoding="utf-8")
         _git(self.repo, "add", ".")
         _git(self.repo, "commit", "-m", "baseline")
@@ -153,16 +166,16 @@ class CurrentMigrationFixture:
             SYNTHETIC_HISTORICAL_BYTES
         )
 
-        source = REPOSITORY_ROOT / MIGRATION_061_ROOT / MIGRATION_061_EXECUTION_ID
-        self.migration_dir = self.repo / MIGRATION_061_ROOT / migration_id
+        source = REPOSITORY_ROOT / MIGRATION_062_ROOT / MIGRATION_062_EXECUTION_ID
+        self.migration_dir = self.repo / MIGRATION_062_ROOT / migration_id
         shutil.copytree(source, self.migration_dir)
         for copied in (self.migration_dir, *self.migration_dir.rglob("*")):
             mode = copied.stat().st_mode | stat.S_IWUSR
             if copied.is_dir():
                 mode |= stat.S_IXUSR
             copied.chmod(mode)
-        if migration_id != MIGRATION_061_EXECUTION_ID:
-            expected_dir = self.repo / MIGRATION_061_ROOT / MIGRATION_061_EXECUTION_ID
+        if migration_id != MIGRATION_062_EXECUTION_ID:
+            expected_dir = self.repo / MIGRATION_062_ROOT / MIGRATION_062_EXECUTION_ID
             shutil.copytree(source, expected_dir)
 
         self.authorization_dir = (
@@ -177,15 +190,13 @@ class CurrentMigrationFixture:
             branch=self.branch,
             head=self.head,
             database={
-                "path": "/tmp/printer-v1-migration-061-test.sqlite3",
+                "path": "/tmp/printer-v1-migration-062-test.sqlite3",
                 "sha256": "c" * 64,
                 "size": 4096,
                 "inode": 3,
                 "mtime_ns": 5,
-                "migration_count": 61,
-                "migration_head": (
-                    "061_standard_4h_progression_fault_preservation.sql"
-                ),
+                "migration_count": 62,
+                "migration_head": "062_pre_admission_attempt_evidence.sql",
             },
             authorization_id=self.authorization_id,
             migration_execution_id=migration_id,
@@ -236,19 +247,19 @@ def _inventory(
     )
 
 
-def test_real_migration_061_inventory_and_canonical_pre_marker_pass(tmp_path: Path) -> None:
+def test_real_migration_062_inventory_and_canonical_pre_marker_pass(tmp_path: Path) -> None:
     live_files = _inventory(
         REPOSITORY_ROOT,
-        package_root=MIGRATION_061_ROOT,
-        execution_id=MIGRATION_061_EXECUTION_ID,
+        package_root=MIGRATION_062_ROOT,
+        execution_id=MIGRATION_062_EXECUTION_ID,
     )
-    assert len(live_files) == MIGRATION_061_FILE_COUNT
+    assert len(live_files) == MIGRATION_062_FILE_COUNT
     assert git_auth.compute_historical_migration_inventory_sha256(
-        package_root=MIGRATION_061_ROOT,
-        execution_id=MIGRATION_061_EXECUTION_ID,
-        evidence_class=MIGRATION_061_KIND,
+        package_root=MIGRATION_062_ROOT,
+        execution_id=MIGRATION_062_EXECUTION_ID,
+        evidence_class=MIGRATION_062_KIND,
         files=live_files,
-    ) == MIGRATION_061_INVENTORY_SHA256
+    ) == MIGRATION_062_INVENTORY_SHA256
 
     fixture = CurrentMigrationFixture(tmp_path)
     _payload, manifest_path, manifest_sha256 = fixture.build_manifest()
@@ -256,8 +267,14 @@ def test_real_migration_061_inventory_and_canonical_pre_marker_pass(tmp_path: Pa
     assert prepared.authorization_id == fixture.authorization_id
 
 
-def test_sibling_execution_id_fails_before_pre_marker_pass(tmp_path: Path) -> None:
-    fixture = CurrentMigrationFixture(tmp_path, migration_id="MIGRATION_061_SIBLING")
+@pytest.mark.parametrize(
+    "migration_id",
+    [MIGRATION_061_EXECUTION_ID, "MIGRATION_062_SIBLING"],
+)
+def test_stale_or_wrong_execution_id_fails_before_pre_marker_pass(
+    tmp_path: Path, migration_id: str
+) -> None:
+    fixture = CurrentMigrationFixture(tmp_path, migration_id=migration_id)
     _payload, manifest_path, manifest_sha256 = fixture.build_manifest()
     with pytest.raises(
         git_auth.GitProvenanceAuthorizationError,
@@ -268,7 +285,7 @@ def test_sibling_execution_id_fails_before_pre_marker_pass(tmp_path: Path) -> No
 
 def test_tamper_before_manifest_fails_committed_current_digest(tmp_path: Path) -> None:
     fixture = CurrentMigrationFixture(tmp_path)
-    target = fixture.migration_dir / "pre_application_snapshot.json"
+    target = fixture.migration_dir / "migration_062_controlled_application_evidence.json"
     target.write_bytes(target.read_bytes() + b"\n")
     _payload, manifest_path, manifest_sha256 = fixture.build_manifest()
     with pytest.raises(
@@ -286,7 +303,7 @@ def test_current_package_completeness_fails_before_manifest_validation(
     if mutation == "extra":
         (fixture.migration_dir / "extra.txt").write_text("extra\n", encoding="utf-8")
     else:
-        (fixture.migration_dir / "pre_application_snapshot.json").unlink()
+        (fixture.migration_dir / "migration_062_controlled_application_evidence.json").unlink()
     _payload, manifest_path, manifest_sha256 = fixture.build_manifest()
     with pytest.raises(
         git_auth.GitProvenanceAuthorizationError,
@@ -298,7 +315,7 @@ def test_current_package_completeness_fails_before_manifest_validation(
 def test_tamper_after_manifest_still_fails_per_file_sha(tmp_path: Path) -> None:
     fixture = CurrentMigrationFixture(tmp_path)
     payload, manifest_path, manifest_sha256 = fixture.build_manifest()
-    target = fixture.migration_dir / "pre_application_snapshot.json"
+    target = fixture.migration_dir / "migration_062_controlled_application_evidence.json"
     original = target.read_bytes()
     target.write_bytes(bytes([original[0] ^ 1]) + original[1:])
     with pytest.raises(
@@ -322,12 +339,12 @@ def test_tamper_after_manifest_still_fails_per_file_sha(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("execution_id", "file_count", "inventory_sha256"),
     [
-        (MIGRATION_061_EXECUTION_ID, None, None),
-        (None, MIGRATION_061_FILE_COUNT, None),
-        (None, None, MIGRATION_061_INVENTORY_SHA256),
-        (MIGRATION_061_EXECUTION_ID, MIGRATION_061_FILE_COUNT, None),
-        (MIGRATION_061_EXECUTION_ID, None, MIGRATION_061_INVENTORY_SHA256),
-        (None, MIGRATION_061_FILE_COUNT, MIGRATION_061_INVENTORY_SHA256),
+        (MIGRATION_062_EXECUTION_ID, None, None),
+        (None, MIGRATION_062_FILE_COUNT, None),
+        (None, None, MIGRATION_062_INVENTORY_SHA256),
+        (MIGRATION_062_EXECUTION_ID, MIGRATION_062_FILE_COUNT, None),
+        (MIGRATION_062_EXECUTION_ID, None, MIGRATION_062_INVENTORY_SHA256),
+        (None, MIGRATION_062_FILE_COUNT, MIGRATION_062_INVENTORY_SHA256),
     ],
 )
 def test_partial_current_identity_profile_fails_closed(
@@ -350,7 +367,26 @@ def test_partial_current_identity_profile_fails_closed(
         fixture.validate(manifest_path, manifest_sha256, profile=malformed)
 
 
-def test_live_four_token_profiles_are_atomically_bound_to_current_061() -> None:
+@pytest.mark.parametrize(
+    "profile",
+    [
+        _profile(migration_root="operator-runs/migration-062-wrong-root"),
+        _profile(migration_kind="MIGRATION_062_WRONG_EVIDENCE"),
+        _profile(current_file_count=MIGRATION_062_FILE_COUNT + 1),
+        _profile(current_inventory_sha256="a" * 64),
+    ],
+    ids=["wrong-root", "wrong-kind", "wrong-count", "wrong-digest"],
+)
+def test_wrong_current_062_package_identity_fails_closed(
+    tmp_path: Path, profile: git_auth.GitAuthorizationProfile
+) -> None:
+    fixture = CurrentMigrationFixture(tmp_path)
+    _payload, manifest_path, manifest_sha256 = fixture.build_manifest()
+    with pytest.raises(git_auth.GitProvenanceAuthorizationError):
+        fixture.validate(manifest_path, manifest_sha256, profile=profile)
+
+
+def test_live_four_token_profiles_are_atomically_bound_to_current_062() -> None:
     proof = git_auth.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE
     operational = git_auth.FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE
     assert (
@@ -368,13 +404,13 @@ def test_live_four_token_profiles_are_atomically_bound_to_current_061() -> None:
         operational.current_migration_expected_inventory_sha256,
         operational.historical_migration_packages,
     )
-    assert proof.migration_package_kind == MIGRATION_061_KIND
-    assert proof.migration_package_root == MIGRATION_061_ROOT
-    assert proof.current_migration_execution_id == MIGRATION_061_EXECUTION_ID
-    assert proof.current_migration_expected_file_count == MIGRATION_061_FILE_COUNT
+    assert proof.migration_package_kind == MIGRATION_062_KIND
+    assert proof.migration_package_root == MIGRATION_062_ROOT
+    assert proof.current_migration_execution_id == MIGRATION_062_EXECUTION_ID
+    assert proof.current_migration_expected_file_count == MIGRATION_062_FILE_COUNT
     assert (
         proof.current_migration_expected_inventory_sha256
-        == MIGRATION_061_INVENTORY_SHA256
+        == MIGRATION_062_INVENTORY_SHA256
     )
 
 
@@ -418,6 +454,33 @@ def test_real_historical_059_declaration_and_enumeration_pass() -> None:
     assert len(records) == MIGRATION_059_FILE_COUNT
 
 
+def test_real_migration_061_is_historical_and_complete() -> None:
+    package = git_auth.FOUR_TOKEN_HISTORICAL_MIGRATION_PACKAGES[-1]
+    files = _inventory(
+        REPOSITORY_ROOT,
+        package_root=MIGRATION_061_ROOT,
+        execution_id=MIGRATION_061_EXECUTION_ID,
+    )
+    assert package.package_root == MIGRATION_061_ROOT
+    assert package.execution_id == MIGRATION_061_EXECUTION_ID
+    assert package.evidence_class == HISTORICAL_MIGRATION_061_KIND
+    assert package.expected_file_count == MIGRATION_061_FILE_COUNT
+    assert (
+        package.expected_inventory_sha256
+        == HISTORICAL_MIGRATION_061_INVENTORY_SHA256
+    )
+    assert (
+        package.inventory_sha256(files)
+        == HISTORICAL_MIGRATION_061_INVENTORY_SHA256
+    )
+    records = git_auth.enumerate_historical_migration_evidence(
+        repository_root=REPOSITORY_ROOT,
+        historical_migration_packages=(package,),
+        tracked_operator_runs_paths=set(),
+    )
+    assert len(records) == MIGRATION_061_FILE_COUNT
+
+
 @pytest.mark.parametrize("mutation", ["missing", "extra", "mutated"])
 def test_disposable_historical_059_tamper_fails_closed(
     tmp_path: Path, mutation: str
@@ -446,11 +509,11 @@ def test_current_and_historical_roots_are_exclusive() -> None:
     historical_roots = tuple(
         package.package_root for package in profile.historical_migration_packages
     )
-    assert profile.migration_package_root == MIGRATION_061_ROOT
-    assert MIGRATION_061_ROOT not in historical_roots
-    assert historical_roots[-1] == MIGRATION_059_ROOT
-    assert MIGRATION_059_ROOT != profile.migration_package_root
-    assert len(historical_roots) == len(set(historical_roots)) == 6
+    assert profile.migration_package_root == MIGRATION_062_ROOT
+    assert MIGRATION_062_ROOT not in historical_roots
+    assert historical_roots[-1] == MIGRATION_061_ROOT
+    assert MIGRATION_061_ROOT != profile.migration_package_root
+    assert len(historical_roots) == len(set(historical_roots)) == 7
 
 
 def test_consumed_512f2436_authorization_remains_unusable() -> None:
@@ -475,4 +538,4 @@ def test_consumed_512f2436_authorization_remains_unusable() -> None:
     }
     profile = git_auth.FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE
     assert document["migration_execution_id"] != profile.current_migration_execution_id
-    assert profile.migration_package_root == MIGRATION_061_ROOT
+    assert profile.migration_package_root == MIGRATION_062_ROOT

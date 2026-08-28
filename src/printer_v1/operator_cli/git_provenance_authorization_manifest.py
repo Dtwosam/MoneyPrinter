@@ -85,12 +85,17 @@ MIGRATION_058_PACKAGE_ROOT = "operator-runs/v2-9-8b-migration-058-application"
 MIGRATION_059_PACKAGE_KIND = "MIGRATION_059_EVIDENCE"
 MIGRATION_059_PACKAGE_ROOT = "operator-runs/v2-9-8b-migration-059-application"
 
-# The controlled migration-061 application is the singular current schema
+# Migration 061 remains a distinct package identity after migration 062 promotes
+# it to preserved historical schema-transition evidence.
+MIGRATION_061_PACKAGE_KIND = "MIGRATION_061_EVIDENCE"
+MIGRATION_061_PACKAGE_ROOT = "operator-runs/v2-9-8b-migration-061-application"
+
+# The controlled migration-062 application is the singular current schema
 # transition for both four-token authorities. Its exact execution and complete
 # inventory identity are committed on the profiles below; filesystem discovery
 # may only prove equality or fail closed.
-MIGRATION_061_PACKAGE_KIND = "MIGRATION_061_EVIDENCE"
-MIGRATION_061_PACKAGE_ROOT = "operator-runs/v2-9-8b-migration-061-application"
+MIGRATION_062_PACKAGE_KIND = "MIGRATION_062_EVIDENCE"
+MIGRATION_062_PACKAGE_ROOT = "operator-runs/v2-9-8b-migration-062-application"
 
 # Preserved historical schema-transition evidence. This class explains how the
 # current database evolved; it never becomes current schema-transition authority
@@ -130,11 +135,17 @@ FOUR_TOKEN_HISTORICAL_MIGRATION_058_EXECUTION_ID = "MIGRATION_058_20260818T08255
 HISTORICAL_MIGRATION_059_EVIDENCE_CLASS = "HISTORICAL_MIGRATION_059_EVIDENCE"
 FOUR_TOKEN_HISTORICAL_MIGRATION_059_EXECUTION_ID = "MIGRATION_059_20260821T095456Z"
 
+# Migration 061 became preserved historical evidence once Migration 062 took
+# over current schema-transition authority. Its historical class deliberately
+# produces a different inventory digest from its former current class.
+HISTORICAL_MIGRATION_061_EVIDENCE_CLASS = "HISTORICAL_MIGRATION_061_EVIDENCE"
+FOUR_TOKEN_HISTORICAL_MIGRATION_061_EXECUTION_ID = "MIGRATION_061_20260823T200709Z"
+
 # Immutable COMPLETE current inventory identity for both four-token profiles.
-FOUR_TOKEN_CURRENT_MIGRATION_061_EXECUTION_ID = "MIGRATION_061_20260823T200709Z"
-FOUR_TOKEN_CURRENT_MIGRATION_061_EXPECTED_FILE_COUNT = 5
-FOUR_TOKEN_CURRENT_MIGRATION_061_EXPECTED_INVENTORY_SHA256 = (
-    "a6eac8d12e30e9f134c137f79a8b72bbe4f9af9d62e65e159a025c5c87108bd6"
+FOUR_TOKEN_CURRENT_MIGRATION_062_EXECUTION_ID = "MIGRATION_062_20260828T182504Z"
+FOUR_TOKEN_CURRENT_MIGRATION_062_EXPECTED_FILE_COUNT = 4
+FOUR_TOKEN_CURRENT_MIGRATION_062_EXPECTED_INVENTORY_SHA256 = (
+    "fa617f77f288705e7e8a4d3676f78feee041f098292a59d431a60e66624bcd02"
 )
 
 # Immutable COMPLETE inventory identity for every declared historical migration
@@ -164,6 +175,10 @@ FOUR_TOKEN_HISTORICAL_MIGRATION_058_EXPECTED_INVENTORY_SHA256 = (
 FOUR_TOKEN_HISTORICAL_MIGRATION_059_EXPECTED_FILE_COUNT = 5
 FOUR_TOKEN_HISTORICAL_MIGRATION_059_EXPECTED_INVENTORY_SHA256 = (
     "d23c4f4bbf2b4683c69038bb6fc372f85c52e280b24662cb46c133690b1479c6"
+)
+FOUR_TOKEN_HISTORICAL_MIGRATION_061_EXPECTED_FILE_COUNT = 5
+FOUR_TOKEN_HISTORICAL_MIGRATION_061_EXPECTED_INVENTORY_SHA256 = (
+    "ff8aefa1c0ee3fe4ec2063400a97cd81b8311bc4aa23dd402614bb609659a459"
 )
 
 # Preserved historical reconciliation evidence is neither schema-transition
@@ -432,10 +447,10 @@ STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE = GitAuthorizationProfile(
 
 # The preserved historical migration chain shared by every four-token authority.
 #
-# Migrations 050, 055, 056, 057, 058 and 059 are the declared *required* historical
-# packages. Each was demoted in turn when its successor took over current
-# schema-transition authority; none is renamed, absorbed, or promoted back to
-# current authority, which is Migration 061 alone.
+# Migrations 050, 055, 056, 057, 058, 059 and 061 are the declared *required*
+# historical packages. Each was demoted in turn when its successor took over
+# current schema-transition authority; none is renamed, absorbed, or promoted
+# back to current authority, which is Migration 062 alone.
 #
 # Every entry is mandatory for every manifest build, so declaring them requires
 # their operator evidence to exist. That obligation is deliberate: it is the only
@@ -509,6 +524,17 @@ FOUR_TOKEN_HISTORICAL_MIGRATION_PACKAGES: tuple[HistoricalMigrationPackage, ...]
         ),
         expected_inventory_sha256=(
             FOUR_TOKEN_HISTORICAL_MIGRATION_059_EXPECTED_INVENTORY_SHA256
+        ),
+    ),
+    HistoricalMigrationPackage(
+        package_root=MIGRATION_061_PACKAGE_ROOT,
+        execution_id=FOUR_TOKEN_HISTORICAL_MIGRATION_061_EXECUTION_ID,
+        evidence_class=HISTORICAL_MIGRATION_061_EVIDENCE_CLASS,
+        expected_file_count=(
+            FOUR_TOKEN_HISTORICAL_MIGRATION_061_EXPECTED_FILE_COUNT
+        ),
+        expected_inventory_sha256=(
+            FOUR_TOKEN_HISTORICAL_MIGRATION_061_EXPECTED_INVENTORY_SHA256
         ),
     ),
 )
@@ -712,14 +738,14 @@ FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE = GitAuthorizationProfile(
         "operator-runs/v2-9-8b-standard-four-hour-final-authorization",
         "operator-runs/v2-9-8b-four-token-final-authorization",
     ),
-    migration_package_root=MIGRATION_061_PACKAGE_ROOT,
-    migration_package_kind=MIGRATION_061_PACKAGE_KIND,
-    current_migration_execution_id=FOUR_TOKEN_CURRENT_MIGRATION_061_EXECUTION_ID,
+    migration_package_root=MIGRATION_062_PACKAGE_ROOT,
+    migration_package_kind=MIGRATION_062_PACKAGE_KIND,
+    current_migration_execution_id=FOUR_TOKEN_CURRENT_MIGRATION_062_EXECUTION_ID,
     current_migration_expected_file_count=(
-        FOUR_TOKEN_CURRENT_MIGRATION_061_EXPECTED_FILE_COUNT
+        FOUR_TOKEN_CURRENT_MIGRATION_062_EXPECTED_FILE_COUNT
     ),
     current_migration_expected_inventory_sha256=(
-        FOUR_TOKEN_CURRENT_MIGRATION_061_EXPECTED_INVENTORY_SHA256
+        FOUR_TOKEN_CURRENT_MIGRATION_062_EXPECTED_INVENTORY_SHA256
     ),
     historical_migration_packages=FOUR_TOKEN_HISTORICAL_MIGRATION_PACKAGES,
     historical_reconciliation_packages=(
@@ -754,14 +780,14 @@ FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE = GitAuthorizationProfile(
         "operator-runs/v2-9-8b-four-token-final-authorization",
         "operator-runs/v2-9-8b-four-token-standard-four-hour-final-authorization",
     ),
-    migration_package_root=MIGRATION_061_PACKAGE_ROOT,
-    migration_package_kind=MIGRATION_061_PACKAGE_KIND,
-    current_migration_execution_id=FOUR_TOKEN_CURRENT_MIGRATION_061_EXECUTION_ID,
+    migration_package_root=MIGRATION_062_PACKAGE_ROOT,
+    migration_package_kind=MIGRATION_062_PACKAGE_KIND,
+    current_migration_execution_id=FOUR_TOKEN_CURRENT_MIGRATION_062_EXECUTION_ID,
     current_migration_expected_file_count=(
-        FOUR_TOKEN_CURRENT_MIGRATION_061_EXPECTED_FILE_COUNT
+        FOUR_TOKEN_CURRENT_MIGRATION_062_EXPECTED_FILE_COUNT
     ),
     current_migration_expected_inventory_sha256=(
-        FOUR_TOKEN_CURRENT_MIGRATION_061_EXPECTED_INVENTORY_SHA256
+        FOUR_TOKEN_CURRENT_MIGRATION_062_EXPECTED_INVENTORY_SHA256
     ),
     historical_migration_packages=FOUR_TOKEN_HISTORICAL_MIGRATION_PACKAGES,
     historical_reconciliation_packages=(
@@ -832,6 +858,9 @@ _POLICY_TERMINAL_DISPOSITIONS = {
         "CONSUMED_CHILD_EXITED_NONZERO"
     ),
     "V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260825T134723Z_4563a9dd": (
+        "CONSUMED_CHILD_EXITED_ZERO"
+    ),
+    "V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260827T122355Z_8e43eae7": (
         "CONSUMED_CHILD_EXITED_ZERO"
     ),
 }
@@ -917,6 +946,7 @@ _NON_RECONCILIATION_EVIDENCE_CLASSES = frozenset(
         HISTORICAL_MIGRATION_057_EVIDENCE_CLASS,
         HISTORICAL_MIGRATION_058_EVIDENCE_CLASS,
         HISTORICAL_MIGRATION_059_EVIDENCE_CLASS,
+        HISTORICAL_MIGRATION_061_EVIDENCE_CLASS,
         MIGRATION_PACKAGE_KIND,
         MIGRATION_055_PACKAGE_KIND,
         MIGRATION_056_PACKAGE_KIND,
@@ -924,6 +954,7 @@ _NON_RECONCILIATION_EVIDENCE_CLASSES = frozenset(
         MIGRATION_058_PACKAGE_KIND,
         MIGRATION_059_PACKAGE_KIND,
         MIGRATION_061_PACKAGE_KIND,
+        MIGRATION_062_PACKAGE_KIND,
         AUTHORIZATION_PACKAGE_KIND,
     }
 )
@@ -3544,14 +3575,16 @@ __all__ = [
     "HISTORICAL_MIGRATION_056_EVIDENCE_CLASS",
     "HISTORICAL_MIGRATION_058_EVIDENCE_CLASS",
     "HISTORICAL_MIGRATION_059_EVIDENCE_CLASS",
-    "FOUR_TOKEN_CURRENT_MIGRATION_061_EXECUTION_ID",
-    "FOUR_TOKEN_CURRENT_MIGRATION_061_EXPECTED_FILE_COUNT",
-    "FOUR_TOKEN_CURRENT_MIGRATION_061_EXPECTED_INVENTORY_SHA256",
+    "HISTORICAL_MIGRATION_061_EVIDENCE_CLASS",
+    "FOUR_TOKEN_CURRENT_MIGRATION_062_EXECUTION_ID",
+    "FOUR_TOKEN_CURRENT_MIGRATION_062_EXPECTED_FILE_COUNT",
+    "FOUR_TOKEN_CURRENT_MIGRATION_062_EXPECTED_INVENTORY_SHA256",
     "FOUR_TOKEN_HISTORICAL_MIGRATION_EXECUTION_ID",
     "FOUR_TOKEN_HISTORICAL_MIGRATION_055_EXECUTION_ID",
     "FOUR_TOKEN_HISTORICAL_MIGRATION_056_EXECUTION_ID",
     "FOUR_TOKEN_HISTORICAL_MIGRATION_058_EXECUTION_ID",
     "FOUR_TOKEN_HISTORICAL_MIGRATION_059_EXECUTION_ID",
+    "FOUR_TOKEN_HISTORICAL_MIGRATION_061_EXECUTION_ID",
     "FOUR_TOKEN_HISTORICAL_MIGRATION_EXPECTED_FILE_COUNT",
     "FOUR_TOKEN_HISTORICAL_MIGRATION_EXPECTED_INVENTORY_SHA256",
     "FOUR_TOKEN_HISTORICAL_MIGRATION_055_EXPECTED_FILE_COUNT",
@@ -3562,6 +3595,8 @@ __all__ = [
     "FOUR_TOKEN_HISTORICAL_MIGRATION_058_EXPECTED_INVENTORY_SHA256",
     "FOUR_TOKEN_HISTORICAL_MIGRATION_059_EXPECTED_FILE_COUNT",
     "FOUR_TOKEN_HISTORICAL_MIGRATION_059_EXPECTED_INVENTORY_SHA256",
+    "FOUR_TOKEN_HISTORICAL_MIGRATION_061_EXPECTED_FILE_COUNT",
+    "FOUR_TOKEN_HISTORICAL_MIGRATION_061_EXPECTED_INVENTORY_SHA256",
     "compute_historical_migration_inventory_sha256",
     "compute_historical_reconciliation_inventory_sha256",
     "MANIFEST_SCHEMA_VERSION",
@@ -3571,6 +3606,8 @@ __all__ = [
     "MIGRATION_059_PACKAGE_ROOT",
     "MIGRATION_061_PACKAGE_KIND",
     "MIGRATION_061_PACKAGE_ROOT",
+    "MIGRATION_062_PACKAGE_KIND",
+    "MIGRATION_062_PACKAGE_ROOT",
     "FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE",
     "FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE",
     "supported_profiles",

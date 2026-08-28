@@ -390,17 +390,17 @@ def test_k_consumed_authorization_binding_unusable_against_61(tmp_path) -> None:
     assert result.to_dict()["authorization_created"] is False
 
 
-def test_l_four_token_current_git_evidence_is_exact_061() -> None:
+def test_l_four_token_current_git_evidence_is_exact_062() -> None:
     for profile in (
         git_auth.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE,
         git_auth.FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE,
     ):
-        assert profile.migration_package_kind == "MIGRATION_061_EVIDENCE"
-        assert profile.migration_package_root == git_auth.MIGRATION_061_PACKAGE_ROOT
+        assert profile.migration_package_kind == "MIGRATION_062_EVIDENCE"
+        assert profile.migration_package_root == git_auth.MIGRATION_062_PACKAGE_ROOT
         assert profile.current_migration_execution_id == (
-            git_auth.FOUR_TOKEN_CURRENT_MIGRATION_061_EXECUTION_ID
+            git_auth.FOUR_TOKEN_CURRENT_MIGRATION_062_EXECUTION_ID
         )
-        assert profile.current_migration_expected_file_count == 5
+        assert profile.current_migration_expected_file_count == 4
 
 
 def test_m_cycle3_and_long_window_locks_unchanged() -> None:
@@ -579,8 +579,8 @@ def test_authoritative_db_untouched_identity() -> None:
         }
     finally:
         connection.close()
-    assert len(applied) == 61
-    assert applied[-1] == MIGRATION_061
-    assert "printer_pre_admission_attempt_evidence" not in tables
+    assert len(applied) == 62
+    assert applied[-1] == MIGRATION_062
+    assert "printer_pre_admission_attempt_evidence" in tables
     assert ATTEMPTS in tables
     assert "frozen_tracking_lane" in cols

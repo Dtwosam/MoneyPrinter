@@ -309,7 +309,7 @@ def _enumerate_reconciliation(root: Path, package, tracked=()):
 
 
 class FullShapePositiveProofTests(unittest.TestCase):
-    def test_full_55_file_shape_passes_canonical_pre_marker_validation(self) -> None:
+    def test_full_60_file_evidence_shape_passes_canonical_pre_marker_validation(self) -> None:
         full = _FullShapeFixture()
         try:
             payload, manifest_path, manifest_sha256 = full.manifest()
@@ -336,9 +336,9 @@ class FullShapePositiveProofTests(unittest.TestCase):
 
             self.assertEqual(len(current), 2)
             self.assertEqual(len(historical_authorization), 1)
-            self.assertEqual(len(historical_migration), 45)
+            self.assertEqual(len(historical_migration), 50)
             self.assertEqual(len(historical_reconciliation), 12)
-            self.assertEqual(prepared.file_count, 60)
+            self.assertEqual(prepared.file_count, 65)
             self.assertEqual(
                 set(prepared.allowed_untracked_paths),
                 current
@@ -348,7 +348,7 @@ class FullShapePositiveProofTests(unittest.TestCase):
             )
             self.assertTrue(
                 any(
-                    item["package_kind"] == git_auth.MIGRATION_061_PACKAGE_KIND
+                    item["package_kind"] == git_auth.MIGRATION_062_PACKAGE_KIND
                     for item in payload["files"]
                 )
             )
@@ -738,7 +738,7 @@ class WrapperConsumptionRegressionProofTests(unittest.TestCase):
 
 
 class ProfileScopeProofTests(unittest.TestCase):
-    def test_only_four_token_profiles_receive_061_059_and_pair_ready(self) -> None:
+    def test_only_four_token_profiles_receive_062_history_and_pair_ready(self) -> None:
         pair_root = git_auth.PAIR_READY_RESIDUAL_RECONCILIATION_PACKAGE_ROOT
         for profile in (
             git_auth.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE,
@@ -747,14 +747,18 @@ class ProfileScopeProofTests(unittest.TestCase):
             with self.subTest(mode=profile.command_mode):
                 self.assertEqual(
                     profile.migration_package_root,
-                    git_auth.MIGRATION_061_PACKAGE_ROOT,
+                    git_auth.MIGRATION_062_PACKAGE_ROOT,
                 )
                 self.assertEqual(
                     profile.migration_package_kind,
-                    git_auth.MIGRATION_061_PACKAGE_KIND,
+                    git_auth.MIGRATION_062_PACKAGE_KIND,
                 )
                 self.assertIn(
                     git_auth.MIGRATION_059_PACKAGE_ROOT,
+                    {item.package_root for item in profile.historical_migration_packages},
+                )
+                self.assertIn(
+                    git_auth.MIGRATION_061_PACKAGE_ROOT,
                     {item.package_root for item in profile.historical_migration_packages},
                 )
                 self.assertIn(
@@ -774,7 +778,7 @@ class ProfileScopeProofTests(unittest.TestCase):
                 self.assertEqual(profile.historical_reconciliation_packages, ())
                 self.assertNotEqual(
                     profile.migration_package_root,
-                    git_auth.MIGRATION_061_PACKAGE_ROOT,
+                    git_auth.MIGRATION_062_PACKAGE_ROOT,
                 )
 
 

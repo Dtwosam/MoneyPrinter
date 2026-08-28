@@ -2120,3 +2120,62 @@ exact DB SHA above. Preparation/review does not execute Printer, and later
 consumption/execution requires separate explicit operator approval. All
 permanent V1 locks remain unchanged.
 <!-- V2_9_8B_POST_MIGRATION_062_READINESS_CURRENT_STATE_END -->
+
+<!-- V2_9_8B_MIGRATION_062_AUTHORIZATION_PROVENANCE_CURRENT_STATE_START -->
+## V2-9.8B Migration-062 Authorization-Provenance — Current Authority
+
+This block supersedes older current-looking authorization-preparation and
+migration-provenance pointers for current-lane selection. Historical text
+remains evidence only.
+
+Fresh authorization preparation is blocked by
+`EVIDENCE_CONTROL_BLOCKER__CURRENT_MIGRATION_PROVENANCE_PIN_STILL_061`.
+The existing verified migration-062 application package is sufficient and must
+not be rerun or replaced. Audit and design are closed:
+
+- `V2_9_8B_MIGRATION_062_AUTHORIZATION_PROVENANCE_EVIDENCE_CONTROL_AUDIT_PASS`
+- `V2_9_8B_MIGRATION_062_AUTHORIZATION_PROVENANCE_EVIDENCE_CONTROL_DESIGN_PASS`
+
+Governing design:
+
+`docs/printer-v1-v2-9-8b-migration-062-authorization-provenance-evidence-control-design.md`
+
+The exact current permitted lane is:
+
+`MIGRATION-062 AUTHORIZATION-PROVENANCE EVIDENCE-CONTROL IMPLEMENTATION / BOUNDED PROOF ONLY`
+
+That later lane requires explicit operator approval. It may not create, apply,
+or consume an authorization; mutate the authoritative DB; run Printer,
+providers/RPC/WebSocket, or Central Scheduler; start a campaign; or resume
+remote-host work. Migration 061 and consumed authorization
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260827T122355Z_8e43eae7` remain permanently
+historical/non-reusable. All permanent V1 locks remain unchanged.
+<!-- V2_9_8B_MIGRATION_062_AUTHORIZATION_PROVENANCE_CURRENT_STATE_END -->
+
+<!-- V2_9_8B_MIGRATION_062_PROVENANCE_IMPLEMENTATION_CURRENT_STATE_START -->
+## V2-9.8B Migration-062 Provenance Implementation — Current Authority
+
+This block supersedes older current-looking provenance implementation and
+authorization-preparation pointers for current-lane selection.
+
+Implementation and independent closeout verdicts:
+
+`V2_9_8B_MIGRATION_062_AUTHORIZATION_PROVENANCE_EVIDENCE_CONTROL_IMPLEMENTATION_PASS`
+
+`V2_9_8B_MIGRATION_062_AUTHORIZATION_PROVENANCE_EVIDENCE_CONTROL_IMPLEMENTATION_CLOSEOUT_PASS`
+
+Governing closeout:
+
+`docs/printer-v1-v2-9-8b-migration-062-authorization-provenance-evidence-control-implementation-closeout.md`
+
+Both four-token profiles now bind exact migration-062 current provenance;
+migration 061 remains immutable historical evidence. The exact current lane is:
+
+`FRESH EXACT-HEAD / EXACT-DB ONE-SHOT AUTHORIZATION PREPARATION / INDEPENDENT REVIEW`
+
+One fresh authorization may be prepared and independently reviewed only against
+the exact post-repair commit HEAD, unchanged authoritative DB, and exact
+migration-062 current provenance. No authorization application/consumption,
+database mutation, Printer/provider/Scheduler/campaign, or remote-host work is
+authorized. All permanent V1 locks remain unchanged.
+<!-- V2_9_8B_MIGRATION_062_PROVENANCE_IMPLEMENTATION_CURRENT_STATE_END -->

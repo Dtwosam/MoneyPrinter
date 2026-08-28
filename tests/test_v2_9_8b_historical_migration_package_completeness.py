@@ -98,7 +98,7 @@ class CompletenessFixture:
 
         production = git_auth.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE
 
-        # M: synthetic current migration-061 evidence plus current authorization.
+        # M: synthetic current migration evidence plus current authorization.
         self.migration_root = (
             self.repo / production.migration_package_root / self.migration_id
         )
@@ -269,9 +269,9 @@ class CompletenessFixture:
 class HistoricalMigrationCompletenessPositiveTests(unittest.TestCase):
     """The production declaration and the accepted-inventory law."""
 
-    def test_production_profile_declares_050_through_059_exact_identities(self) -> None:
+    def test_production_profile_declares_050_through_061_exact_identities(self) -> None:
         profile = git_auth.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE
-        self.assertEqual(len(profile.historical_migration_packages), 6)
+        self.assertEqual(len(profile.historical_migration_packages), 7)
         by_root = {p.package_root: p for p in profile.historical_migration_packages}
 
         mig050 = by_root[HM_050_ROOT]
@@ -352,12 +352,27 @@ class HistoricalMigrationCompletenessPositiveTests(unittest.TestCase):
             "d23c4f4bbf2b4683c69038bb6fc372f85c52e280b24662cb46c133690b1479c6",
         )
 
-    def test_production_total_declared_hm_count_is_45(self) -> None:
+        mig061 = by_root[git_auth.MIGRATION_061_PACKAGE_ROOT]
+        self.assertEqual(
+            mig061.execution_id,
+            git_auth.FOUR_TOKEN_HISTORICAL_MIGRATION_061_EXECUTION_ID,
+        )
+        self.assertEqual(
+            mig061.evidence_class,
+            git_auth.HISTORICAL_MIGRATION_061_EVIDENCE_CLASS,
+        )
+        self.assertEqual(mig061.expected_file_count, 5)
+        self.assertEqual(
+            mig061.expected_inventory_sha256,
+            "ff8aefa1c0ee3fe4ec2063400a97cd81b8311bc4aa23dd402614bb609659a459",
+        )
+
+    def test_production_total_declared_hm_count_is_50(self) -> None:
         profile = git_auth.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE
         total = sum(
             p.expected_file_count for p in profile.historical_migration_packages
         )
-        self.assertEqual(total, 45)
+        self.assertEqual(total, 50)
 
     def test_completeness_fields_are_mandatory_with_no_defaults(self) -> None:
         """An optional path would leave mig050 under the old weak rule."""
@@ -366,13 +381,14 @@ class HistoricalMigrationCompletenessPositiveTests(unittest.TestCase):
                 package_root=HM_050_ROOT, execution_id=HM_050_EXEC
             )
 
-    def test_current_061_is_exclusive_and_059_is_historical(self) -> None:
+    def test_current_062_is_exclusive_and_061_is_historical(self) -> None:
         profile = git_auth.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE
         roots = {p.package_root for p in profile.historical_migration_packages}
         self.assertEqual(
-            profile.migration_package_root, git_auth.MIGRATION_061_PACKAGE_ROOT
+            profile.migration_package_root, git_auth.MIGRATION_062_PACKAGE_ROOT
         )
-        self.assertNotIn(git_auth.MIGRATION_061_PACKAGE_ROOT, roots)
+        self.assertNotIn(git_auth.MIGRATION_062_PACKAGE_ROOT, roots)
+        self.assertIn(git_auth.MIGRATION_061_PACKAGE_ROOT, roots)
         self.assertIn(git_auth.MIGRATION_059_PACKAGE_ROOT, roots)
 
     def test_complete_packages_prepare_and_validate(self) -> None:
@@ -433,7 +449,7 @@ class HistoricalMigrationCompletenessPositiveTests(unittest.TestCase):
             fixture.close()
         self.assertIs(git_auth.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE, before)
         self.assertIs(four_token.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE, before)
-        self.assertEqual(len(before.historical_migration_packages), 6)
+        self.assertEqual(len(before.historical_migration_packages), 7)
 
 
 class InventoryDigestTests(unittest.TestCase):
@@ -744,13 +760,13 @@ class FreshPreparationNegativeTests(unittest.TestCase):
 
 
 class CurrentPackageSeparationTests(unittest.TestCase):
-    """Current 061 evidence may never be tracked or satisfied by Hm."""
+    """Current 062 evidence may never be tracked or satisfied by Hm."""
 
-    def test_current_061_evidence_tracked_blocks_at_validation(self) -> None:
+    def test_current_062_evidence_tracked_blocks_at_validation(self) -> None:
         fixture = CompletenessFixture()
         try:
             relative = (
-                f"{git_auth.MIGRATION_061_PACKAGE_ROOT}/{fixture.migration_id}/"
+                f"{fixture.profile.migration_package_root}/{fixture.migration_id}/"
                 "migration_061_application_result.json"
             )
             fixture._git("add", "-f", relative)
@@ -767,7 +783,7 @@ class CurrentPackageSeparationTests(unittest.TestCase):
         try:
             payload, _path, _digest = fixture.prepare()
             current_prefix = (
-                f"{git_auth.MIGRATION_061_PACKAGE_ROOT}/{fixture.migration_id}/"
+                f"{fixture.profile.migration_package_root}/{fixture.migration_id}/"
             )
             for item in payload[git_auth.HISTORICAL_MIGRATION_EVIDENCE_KEY]:
                 self.assertFalse(item["path"].startswith(current_prefix))

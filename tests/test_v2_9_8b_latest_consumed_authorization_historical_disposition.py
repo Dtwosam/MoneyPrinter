@@ -60,6 +60,12 @@ NEWER_CONSUMED_AUTHORIZATION_ID = (
 AUG25_CONSUMED_AUTHORIZATION_ID = (
     "V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260825T134723Z_4563a9dd"
 )
+LATER_PRESERVED_AUTHORIZATION_IDS = (
+    "V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260826T114542Z_d3bc361a",
+    "V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260826T185611Z_b861fd4c",
+    "V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260826T203834Z_c3063b7c",
+    "V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260827T122355Z_8e43eae7",
+)
 APPLICATION_ROOT = Path(
     "/Users/Dtwo1/PrinterOperations/v2-9-8/"
     "four-token-standard-four-hour-one-shot-applications"
@@ -138,6 +144,7 @@ class LatestConsumedAuthorizationHistoricalDispositionTests(unittest.TestCase):
                     SUPERSEDED_UNCONSUMED_AUTHORIZATION_ID,
                     NEWER_CONSUMED_AUTHORIZATION_ID,
                     AUG25_CONSUMED_AUTHORIZATION_ID,
+                    *LATER_PRESERVED_AUTHORIZATION_IDS,
                 ]
             )
         )

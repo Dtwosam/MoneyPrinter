@@ -4,6 +4,29 @@
 
 `FRESH EXACT-HEAD / EXACT-DB ONE-SHOT AUTHORIZATION PREPARATION / INDEPENDENT REVIEW`
 
+The migration-provenance evidence-control blocker is closed:
+
+`V2_9_8B_MIGRATION_062_AUTHORIZATION_PROVENANCE_EVIDENCE_CONTROL_IMPLEMENTATION_CLOSEOUT_PASS`
+
+The migration-062 provenance audit and design are closed:
+
+`V2_9_8B_MIGRATION_062_AUTHORIZATION_PROVENANCE_EVIDENCE_CONTROL_AUDIT_PASS`
+
+`V2_9_8B_MIGRATION_062_AUTHORIZATION_PROVENANCE_EVIDENCE_CONTROL_DESIGN_PASS`
+
+Governing design:
+
+`docs/printer-v1-v2-9-8b-migration-062-authorization-provenance-evidence-control-design.md`
+
+The explicitly approved implementation, bounded proof, independent closeout
+review, and normal commit are closed:
+
+`V2_9_8B_MIGRATION_062_AUTHORIZATION_PROVENANCE_EVIDENCE_CONTROL_IMPLEMENTATION_PASS`
+
+Implementation closeout:
+
+`docs/printer-v1-v2-9-8b-migration-062-authorization-provenance-evidence-control-implementation-closeout.md`
+
 The post-migration fresh next-bounded-campaign readiness/governance audit is
 closed:
 
@@ -38,9 +61,9 @@ Governing Cycle-2 amendment:
 
 ## Current repository state
 
-Active reviewed branch:
+Active branch:
 
-`repair/v2-9-8b-422-followup`
+`agent/v2-9-8b-aug25-a2z-repair-application`
 
 Reviewed product-code repair commit:
 
@@ -54,15 +77,14 @@ Migration-application synchronization commit:
 
 `52bf15365bbf500ffe61f1b49a4d9ca38d1c3363`
 
-The final readiness commit is the repository HEAD containing this handoff and
-the governing readiness closeout. A later authorization must bind that exact
-committed readiness HEAD, not the synchronization baseline alone.
+The post-repair repository HEAD is the normal commit containing the exact
+migration-062 provenance owner repair, its focused tests, this handoff, and the
+governing implementation closeout. A future authorization must bind that exact
+committed HEAD, not the pre-repair or migration-synchronization baseline.
 
-The current branch HEAD is a documentation-only governance successor of that
-reviewed product-code commit. The follow-up closeout addendum was recorded by
-documentation commit `02b9da8c000c3c44a846efda8053159939cda5a4`;
-this handoff update follows it. No source, test, migration, or database change is
-authorized by those documentation-only successors.
+Audited pre-lane HEAD:
+
+`45329baafd71f5dba4e2c0e973acc6829fd05e30`
 
 Authoritative DB:
 
@@ -86,6 +108,28 @@ Consumed authorization:
 It remains permanently consumed and non-reusable.
 
 ## Latest completed work
+
+The sole production provenance owner now binds both four-token profiles to the
+existing exact migration-062 package and preserves migration 061 as the seventh
+immutable historical migration package. Exact current root/kind/execution,
+four-file inventory identity, historical 061 class identity, and consumed
+`...8e43eae7` diagnostic disposition are source-owned once. Validator schemas,
+equality checks, the ledger guard, wrappers, operational command, migration
+SQL, evidence bytes, and authoritative DB are unchanged. The direct bounded
+regression set passed `175 passed, 59 subtests passed`. The independently
+adjudicated adjacent historical-disposition/handoff set passed `31 passed, 5
+subtests passed` after supported test fixtures and governance expectations were
+synchronized; production validation was not changed.
+
+The migration-062 authorization-provenance evidence-control audit proved that
+both four-token Git authorization profiles still classify migration 061 as
+their singular current evidence package. The existing verified migration-062
+application package is complete and reconciles exactly with the authoritative
+62/tip-062 database, but production has no canonical migration-062 current
+provenance descriptor and does not yet preserve migration 061 through the
+historical migration package path. Existing schemas and fail-closed validators
+already express the required transition; neither migration rerun, new evidence,
+schema-version change, nor ledger-guard weakening is needed.
 
 The post-migration readiness/governance audit independently re-proved the exact
 post-062 DB identity, ledger, integrity, foreign keys, schema objects, zero
@@ -149,10 +193,13 @@ Remote-host / VPS work remains paused and preserved separately at branch
 
 ## Exact next permitted action
 
-Prepare and independently review, in a separate explicitly scoped lane, a fresh
-one-shot authorization bound to the exact final readiness commit HEAD and exact
+Prepare and independently review one fresh one-shot authorization bound to the
+exact post-repair commit HEAD containing this handoff and the exact unchanged
 authoritative DB SHA
 `dececa7ce402856978675c66ecbdfd23b88ed97e3ff23f282a2588a436c93836`.
+Preparation must bind migration execution `MIGRATION_062_20260828T182504Z` and
+the exact four-file current provenance inventory. Preparation does not authorize
+application, consumption, Printer, providers, Scheduler, or campaign execution.
 
 This handoff does **not** create, apply, or consume an authorization; run
 Printer; contact providers/RPC/WebSocket; run Central Scheduler; mutate the

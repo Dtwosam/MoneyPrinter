@@ -47,6 +47,12 @@ SUPERSEDED_UNCONSUMED_AUTHORIZATION_ID = (
 AUG25_CONSUMED_AUTHORIZATION_ID = (
     "V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260825T134723Z_4563a9dd"
 )
+LATER_PRESERVED_AUTHORIZATION_IDS = (
+    "V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260826T114542Z_d3bc361a",
+    "V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260826T185611Z_b861fd4c",
+    "V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260826T203834Z_c3063b7c",
+    "V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260827T122355Z_8e43eae7",
+)
 
 APPLICATION_ROOT = (
     Path.home()
@@ -143,6 +149,7 @@ class Consumed07d92adfHistoricalDispositionTests(unittest.TestCase):
                     ],
                     AUTHORIZATION_ID,
                     AUG25_CONSUMED_AUTHORIZATION_ID,
+                    *LATER_PRESERVED_AUTHORIZATION_IDS,
                 ]
             ),
             current_authorization_id=FUTURE_AUTHORIZATION_ID,
@@ -269,6 +276,7 @@ class Consumed07d92adfHistoricalDispositionTests(unittest.TestCase):
             SUPERSEDED_UNCONSUMED_AUTHORIZATION_ID,
             AUTHORIZATION_ID,
             AUG25_CONSUMED_AUTHORIZATION_ID,
+            *LATER_PRESERVED_AUTHORIZATION_IDS,
         ):
             self.assertIn(required, self.future_ids)
 
