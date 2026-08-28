@@ -1428,3 +1428,53 @@ migration, authorization issuance, provider/RPC/WebSocket calls, Scheduler
 execution, another campaign, retrieval, financial capabilities, or longer
 windows.
 <!-- V2_9_8B_AUTH_8E43EAE7_CAMPAIGN_CLOSEOUT_CURRENT_STATE_END -->
+
+<!-- V2_9_8B_REMOTE_HOST_PAUSE_MEMORY_GROWTH_RETURN_CURRENT_STATE_START -->
+## V2-9.8B Remote-Host Pause / Memory-Growth Return — Current Authority
+
+Operator decision: remote-host / VPS work is paused while Printer continues the
+local Mac V2-9.8B bounded memory-growth path.
+
+Completed remote-host work remains preserved separately on
+`agent/remote-host-linux-portability-implementation` at `f61419f2db37fc5eb220c20fafeaf15501218033`. It is not discarded, merged into this
+lane, or treated as current operational authority.
+
+This block supersedes older current-looking remote-host lane pointers in this
+document for current-lane selection only. Historical remote-host evidence
+remains valid evidence.
+
+Current preserved campaign/data baseline:
+
+- branch before this synchronization: `agent/v2-9-8b-aug25-a2z-repair-application`
+- pre-synchronization HEAD: `fd558c9e8a691ee1963509d7488aef05908f93c7`
+- authoritative DB: `data/printer_v1.sqlite3`
+- authoritative DB SHA-256: `f4e54b3a2dc9f4dbd41b6f05bb5288f25ca15dc71b7e66de1e05ef7c213e34b1`
+- consumed authorization:
+  `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260827T122355Z_8e43eae7`
+- that authorization remains permanently non-reusable
+- latest campaign classification remains
+  `EXPECTED_OPERATIONAL_BLOCKER__NO_CODE_CHANGE`
+- retrieval, financial capability, `WINDOW_12H`, and `WINDOW_24H` remain locked
+- `WINDOW_5M_MICRO_EVENT` remains support-only
+
+The exact current permitted lane is:
+
+`POST-CAMPAIGN FRESH NEXT-BOUNDED-CAMPAIGN READINESS / GOVERNANCE ONLY`
+
+This lane is read-only readiness/governance. It may establish exact final Git
+identity, authoritative DB identity/health, tracked-tree cleanliness, runtime
+quiescence, evidence continuity, and permanent-lock continuity.
+
+It does not create or apply an authorization. It does not run Printer, contact
+providers/RPC/WebSocket, run Central Scheduler, mutate the authoritative DB,
+activate retrieval, activate financial capability, or unlock longer windows.
+
+Only after a fresh exact-HEAD/exact-DB readiness PASS may the next separate lane
+be considered:
+
+`FRESH EXACT-HEAD / EXACT-DB ONE-SHOT AUTHORIZATION PREPARATION / INDEPENDENT REVIEW`
+
+Separate operator approval remains required before any later one-shot execution.
+
+Permanent V1 locks remain unchanged.
+<!-- V2_9_8B_REMOTE_HOST_PAUSE_MEMORY_GROWTH_RETURN_CURRENT_STATE_END -->

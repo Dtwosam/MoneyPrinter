@@ -2,45 +2,35 @@
 
 ## Current lane
 
-`REMOTE HOST DESIGN / SPECIFICATION — OPERATOR REVIEW / IMPLEMENTATION APPROVAL GATE`
+`POST-CAMPAIGN FRESH NEXT-BOUNDED-CAMPAIGN READINESS / GOVERNANCE ONLY`
 
-Design/specification lane only. Infrastructure support only. The active Printer memory-growth capability ordering is unchanged.
+Readiness/governance only. No authorization or execution is authorized by this
+handoff.
 
-## Latest completed work
+## Operator lane decision
 
-Native Linux/systemd one-shot portability design is complete.
+Remote-host / VPS work is paused.
 
-Design verdict:
+Preserved remote-host branch:
 
-`REMOTE_HOST_NATIVE_LINUX_SYSTEMD_PORTABILITY_DESIGN_PASS__OPERATOR_REVIEW_NEXT`
+`agent/remote-host-linux-portability-implementation`
 
-Design document:
+Preserved remote-host HEAD:
 
-`docs/printer-v1-remote-host-native-linux-systemd-portability-design.md`
+`f61419f2db37fc5eb220c20fafeaf15501218033`
 
-Prior readiness verdict remains:
+That work remains available for later resumption and is not required for the
+current local Mac readiness lane.
 
-`REMOTE_HOST_READINESS_CLOSEOUT_PASS__REMOTE_HOST_DESIGN_SPECIFICATION_NEXT`
-
-Readiness closeout:
-
-`docs/printer-v1-remote-host-readiness-audit-closeout.md`
-
-## Repository / data baseline
-
-Repository:
-
-`/Users/Dtwo1/Developer/MoneyPrinter`
+## Current baseline before synchronization
 
 Branch:
 
 `agent/v2-9-8b-aug25-a2z-repair-application`
 
-Design baseline HEAD:
+Pre-synchronization HEAD:
 
-`82c5de6be28d7869fb4b31cd5eda09eb237d2f6c`
-
-The current repository HEAD is the documentation commit containing this handoff/design. Resolve it with `git rev-parse HEAD`; do not create a self-referential follow-up commit merely to embed its own SHA.
+`fd558c9e8a691ee1963509d7488aef05908f93c7`
 
 Authoritative DB:
 
@@ -50,74 +40,47 @@ Authoritative DB SHA-256:
 
 `f4e54b3a2dc9f4dbd41b6f05bb5288f25ca15dc71b7e66de1e05ef7c213e34b1`
 
-Do not restore the pre-campaign DB.
-
-## Consumed authorization
+Consumed authorization:
 
 `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260827T122355Z_8e43eae7`
 
-SHA-256:
+It remains permanently consumed and non-reusable.
 
-`9711e77a5b169edc1e1bf7ee20560450662a373fb41aa05a9ff70e5f6dc3768a`
+## Latest campaign state
 
-Permanently consumed. No retry, rerun, resume, restart, reuse, inheritance, or successor. It cannot become remote-host authority.
+Campaign closeout:
 
-## Accepted design
+`V2_9_8B_AUTH_8E43EAE7_CAMPAIGN_CLOSEOUT_PASS`
 
-The design keeps the existing four-token standard-four-hour one-shot wrapper as the only operational application boundary. It does not create a second Memory Factory runner, Source Governor, Central Scheduler, discovery loop, campaign policy, or authorization model.
+Classification:
 
-Key design commitments:
+`EXPECTED_OPERATIONAL_BLOCKER__NO_CODE_CHANGE`
 
-- native systemd supervises the wrapper, never the child operational command directly;
-- foreground service, `Type=exec`, `Restart=no`, no timer/watchdog/boot relaunch;
-- first stop signal targets the wrapper only under `KillMode=mixed` semantics;
-- wrapper translates stop intent into the existing persisted cooperative-cancellation path after exact active ownership is proven;
-- child remains alive to perform canonical Scheduler cancellation, terminalization, cleanup, zero-active-work verification, lease release and terminal reporting;
-- forced service escalation is bounded, never creates restart authority, and never makes a consumed authorization reusable;
-- parent-directory durability becomes fail-closed at application/manifest/marker/child-terminal/wrapper-terminal/backup publication boundaries;
-- marker-created directory-durability failure is consumed-with-durability-unconfirmed, never a retry path;
-- first remote filesystem profile is positively proven local ext4 only; remote/unknown filesystems fail closed;
-- fresh Linux `.venv` and one exact tested runtime/dependency set are required; Mac `.venv` is never copied;
-- existing POSIX `ps -axo pid=,command=` inventory is proven on Linux before any repair is justified;
-- SQLite DELETE/FULL/normal semantics and sole-authoritative-writer rule remain unchanged;
-- Mac/VPS authoritative write overlap is forbidden;
-- final remote Git/DB/filesystem identity must exist before any fresh remote authorization is prepared.
+Cycle 1 produced two-token 15m clean promotion, with 1h dirty and 4h
+ineligible/no-successor outcome.
+
+Cycle 2 ended `NO_PAIR / DURATION_EXHAUSTION`.
+
+The authoritative DB remains the post-campaign corpus. Do not restore an older
+DB.
 
 ## Exact next permitted action
 
-`REMOTE HOST DESIGN / SPECIFICATION — OPERATOR REVIEW / IMPLEMENTATION APPROVAL GATE`
+Perform fresh exact-HEAD / exact-DB post-campaign readiness only.
 
-Allowed now:
+If that readiness passes, the next separate lane may be:
 
-- review `docs/printer-v1-remote-host-native-linux-systemd-portability-design.md` against the active authority stack;
-- accept, reject, or narrow the design;
-- if accepted, explicitly authorize the narrow implementation slice.
+`FRESH EXACT-HEAD / EXACT-DB ONE-SHOT AUTHORIZATION PREPARATION / INDEPENDENT REVIEW`
 
-Do not implement yet.
-Do not provision a server.
-Do not transfer the DB.
-Do not create or apply an authorization.
-Do not run Printer.
-Do not contact providers/RPC/WebSocket.
-Do not run Central Scheduler.
-Do not mutate the authoritative DB.
-Do not activate retrieval or any financial capability.
-
-## Future implementation scope if explicitly approved
-
-Expected narrow scope only:
-
-- wrapper-owned Linux CLI/systemd foreground signal supervision;
-- fail-closed directory durability primitives;
-- child-terminal durable parent publication;
-- positive local-ext4 filesystem preflight;
-- exact Linux runtime/dependency verification;
-- focused tests and a bounded Linux/systemd proof plan.
-
-No business logic, source adapters, Scheduler policy, Source Governor policy, DB schema/migrations, capacity/window policy, retrieval, or financial capability is approved by this handoff.
+Readiness does not itself create authorization or approve execution.
 
 ## Permanent locks
 
-Solana-only; Solana memecoin-only; paper-trading only. No live wallet, private keys, signing, real funds, or live execution. No paid API dependency. No scoring, ranking, confidence percentages, weighted decision logic, embeddings, or vectors. No Source Governor or Central Scheduler bypass. No dirty memory for retrieval or decisions. Retrieval, BUY/SELL/HOLD, positions, trades, audits, and PnL remain locked. `WINDOW_5M_MICRO_EVENT` remains support-only. 12h/24h remain locked.
+Solana-only; Solana memecoin-only; paper-trading only. No wallet/private
+keys/signing/real funds/live execution. No paid API dependency. No
+scoring/ranking/confidence/weighted decision logic. No Source Governor or
+Central Scheduler bypass. No dirty-memory retrieval/decisions. Retrieval and
+all financial capability remain locked. `WINDOW_5M_MICRO_EVENT` remains
+support-only. `WINDOW_12H` and `WINDOW_24H` remain locked.
 
 The active authority stack wins any conflict with this handoff.
