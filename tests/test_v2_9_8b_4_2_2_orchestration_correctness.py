@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import inspect
 import sqlite3
+import pytest
 import unittest
 from datetime import datetime, timedelta, timezone
 
@@ -432,6 +434,119 @@ def test_terminal_certificate_is_rebuilt_from_attempt_evidence() -> None:
     assert rebuilt["rejection_reasons"] == {
         "LIQUIDITY_BELOW_SELECTION_FLOOR": 2
     }
+
+
+def test_preclose_reservations_accumulate_without_overwriting() -> None:
+    from printer_v1.operator_cli.one_command_15m_factory import (
+        _merge_lifecycle_reservation_records,
+    )
+
+    base = {
+        "boundary": "LIFECYCLE_RESERVATION",
+        "run_id": "factory-run",
+        "scheduler_job_id": 9,
+        "step_key": "token_1_window_close_pre_close_critical",
+        "step_kind": "WINDOW_CLOSE_PRE_CLOSE_CRITICAL",
+        "token_id": 1,
+        "pair_id": 2,
+    }
+    first = {**base, "reservation_ordinal": 901, "source_unit_identity": "UNIT_A"}
+    second = {**base, "reservation_ordinal": 902, "source_unit_identity": "UNIT_B"}
+    merged = _merge_lifecycle_reservation_records([first], [second])
+    assert merged["records"] == [first, second]
+    assert merged["new_records"] == [second]
+    replay = _merge_lifecycle_reservation_records(merged["records"], [second])
+    assert replay["records"] == [first, second]
+    assert replay["new_records"] == []
+    with pytest.raises(ValueError, match="CONFLICT"):
+        _merge_lifecycle_reservation_records(
+            [first], [{**first, "source_unit_identity": "UNIT_WRONG"}]
+        )
+
+
+def test_durable_preclose_reservations_reconstruct_all_owner_identities() -> None:
+    from printer_v1.operator_cli.campaign_full_run_accounting import (
+        OperationalLifecycleOwnershipContext,
+        reservation_identities_from_durable_records,
+    )
+
+    context = OperationalLifecycleOwnershipContext(
+        campaign_id="campaign",
+        configuration_id="configuration",
+        campaign_run_id="campaign-run",
+        factory_run_id="factory-run",
+        cycle_id="cycle",
+    )
+    records = [
+        {
+            "boundary": "LIFECYCLE_RESERVATION",
+            "run_id": "factory-run",
+            "campaign_id": "campaign",
+            "campaign_run_id": "campaign-run",
+            "cycle_id": "cycle",
+            "factory_run_id": "factory-run",
+            "scheduler_job_id": 9,
+            "step_key": "token_1_window_close_pre_close_critical",
+            "step_kind": "WINDOW_CLOSE_PRE_CLOSE_CRITICAL",
+            "token_id": 1,
+            "pair_id": 2,
+            "reservation_ordinal": 901,
+            "source_unit_identity": "UNIT_A",
+        },
+        {
+            "boundary": "LIFECYCLE_RESERVATION",
+            "run_id": "factory-run",
+            "campaign_id": "campaign",
+            "campaign_run_id": "campaign-run",
+            "cycle_id": "cycle",
+            "factory_run_id": "factory-run",
+            "scheduler_job_id": 9,
+            "step_key": "token_1_window_close_pre_close_critical",
+            "step_kind": "WINDOW_CLOSE_PRE_CLOSE_CRITICAL",
+            "token_id": 1,
+            "pair_id": 2,
+            "reservation_ordinal": 901,
+            "source_unit_identity": "UNIT_A",
+        },
+        {
+            "boundary": "LIFECYCLE_RESERVATION",
+            "run_id": "factory-run",
+            "campaign_id": "campaign",
+            "campaign_run_id": "campaign-run",
+            "cycle_id": "cycle",
+            "factory_run_id": "factory-run",
+            "scheduler_job_id": 9,
+            "step_key": "token_1_window_close_pre_close_critical",
+            "step_kind": "WINDOW_CLOSE_PRE_CLOSE_CRITICAL",
+            "token_id": 1,
+            "pair_id": 2,
+            "reservation_ordinal": 902,
+            "source_unit_identity": "UNIT_B",
+        },
+    ]
+    identities = reservation_identities_from_durable_records(
+        context,
+        slot_ordinal=1,
+        scheduler_job_id=9,
+        step_key="token_1_window_close_pre_close_critical",
+        step_kind="WINDOW_CLOSE_PRE_CLOSE_CRITICAL",
+        token_id=1,
+        pair_id=2,
+        records=records,
+    )
+    assert [item.reservation_ordinal for item in identities] == [901, 902]
+
+
+def test_later_cycle_holder_forwards_action_local_transport_observer() -> None:
+    from printer_v1.operator_cli.authoritative_live_operational_campaign import (
+        AuthoritativeLiveOperationalCampaignOwner,
+    )
+
+    source = inspect.getsource(
+        AuthoritativeLiveOperationalCampaignOwner
+    )
+    assert "holder_transport_identity_observer=transport_identity_observer" in source
+    assert "holder_transport_identity_observer=None" not in source
 
 
 if __name__ == "__main__":

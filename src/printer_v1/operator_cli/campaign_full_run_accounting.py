@@ -42,6 +42,7 @@ from printer_v1.operator_cli.campaign_supervision import (
     INVOCATION_MARKER_VERSION,
     build_invocation_marker_payload,
 )
+from printer_v1.operator_cli.close_phases import PRE_CLOSE_STEP_KINDS
 from printer_v1.sources.campaign_six_unit_accounting import (
     CampaignActionLocalLedger,
     CampaignSixUnitOwner,
@@ -3198,6 +3199,88 @@ def reservation_identities_for_step(
     ]
 
 
+def reservation_identities_from_durable_records(
+    context: OperationalLifecycleOwnershipContext,
+    *,
+    slot_ordinal: int,
+    scheduler_job_id: int,
+    step_key: str,
+    step_kind: str,
+    token_id: int,
+    pair_id: int,
+    records: Sequence[Mapping[str, Any]],
+) -> list[LifecycleReservationIdentity]:
+    """Reconstruct every exact reservation preserved across step claims.
+
+    Exact duplicate rows from an idempotent checkpoint replay collapse to one
+    identity. Any ownership drift or ordinal conflict fails closed.
+    """
+    stage_id = _slot_stage_id(context, int(slot_ordinal))
+    job_id = int(scheduler_job_id)
+    exact: dict[int, dict[str, Any]] = {}
+    for raw in records:
+        if not isinstance(raw, Mapping):
+            raise FullRunAccountingError("LIFECYCLE_RESERVATION_RECORD_INVALID")
+        record = dict(raw)
+        expected = {
+            "boundary": "LIFECYCLE_RESERVATION",
+            "run_id": context.factory_run_id,
+            "scheduler_job_id": job_id,
+            "step_key": str(step_key),
+            "step_kind": str(step_kind),
+            "token_id": int(token_id),
+            "pair_id": int(pair_id),
+        }
+        if any(record.get(key) != value for key, value in expected.items()):
+            raise FullRunAccountingError(
+                "LIFECYCLE_RESERVATION_RECORD_OWNERSHIP_MISMATCH"
+            )
+        for key, value in (
+            ("campaign_id", context.campaign_id),
+            ("campaign_run_id", context.campaign_run_id),
+            ("cycle_id", context.cycle_id),
+            ("factory_run_id", context.factory_run_id),
+        ):
+            if key in record and record.get(key) != value:
+                raise FullRunAccountingError(
+                    "LIFECYCLE_RESERVATION_RECORD_OWNERSHIP_MISMATCH"
+                )
+        if record.get("reservation_ordinal") is None:
+            raise FullRunAccountingError(
+                "LIFECYCLE_RESERVATION_ORDINAL_MISSING"
+            )
+        ordinal = int(record["reservation_ordinal"])
+        existing = exact.get(ordinal)
+        if existing is not None:
+            if existing != record:
+                raise FullRunAccountingError(
+                    "LIFECYCLE_RESERVATION_ORDINAL_CONFLICT"
+                )
+            continue
+        if str(step_kind) in PRE_CLOSE_STEP_KINDS:
+            offset = ordinal - job_id * 100
+            if (
+                not str(record.get("source_unit_identity") or "").strip()
+                or offset < 1
+                or offset > PRECLOSE_CONTEXT_REQUEST_COUNT
+            ):
+                raise FullRunAccountingError(
+                    "PRECLOSE_LIFECYCLE_RESERVATION_IDENTITY_INVALID"
+                )
+        exact[ordinal] = record
+    return [
+        LifecycleReservationIdentity(
+            stage_id=stage_id,
+            factory_run_id=context.factory_run_id,
+            token_id=int(token_id),
+            pair_id=int(pair_id),
+            window_kind="WINDOW_15M",
+            reservation_ordinal=ordinal,
+        )
+        for ordinal in sorted(exact)
+    ]
+
+
 def transport_identity_for_step(
     context: OperationalLifecycleOwnershipContext,
     *,
@@ -4079,41 +4162,52 @@ def finalize_full_run_ownership_and_report(
             except (TypeError, ValueError, json.JSONDecodeError):
                 step_result = {}
             raw_reservations = step_result.get("lifecycle_reservations") or []
-            expected_reservations = reservation_identities_for_step(
-                context,
-                slot_ordinal=ordinal,
-                scheduler_job_id=job_id,
-                step_kind=step_kind,
-                token_id=token_id,
-                pair_id=pair_id,
-            )
-            # Timely pre-close planning can truthfully terminalize a pre-close
-            # step without reserving or attempting any provider operation when
-            # its desired start predates the earliest exact-identity boundary.
-            # The execution owner records that as zero lifecycle reservations;
-            # terminal accounting must verify the same durable fact rather than
-            # re-inflating the static one-operation schedulable policy.
-            if (
-                step_kind == "WINDOW_CLOSE_PRE_CLOSE_CRITICAL"
-                and str(step_result.get("preclose_plan_state") or "")
-                == "TIMELY_ACQUISITION_NOT_PRODUCIBLE"
-            ):
-                expected_reservations = []
-            actual_ordinals = [
-                int(item.get("reservation_ordinal"))
-                for item in raw_reservations
-                if isinstance(item, Mapping)
-                and item.get("reservation_ordinal") is not None
-            ]
-            expected_ordinals = [
-                int(item.reservation_ordinal) for item in expected_reservations
-            ]
-            if actual_ordinals != expected_ordinals:
-                blocked_reasons.append(
-                    f"LIFECYCLE_RESERVATION_EVIDENCE_MISMATCH:{step['id']}"
-                )
+            if step_kind in PRE_CLOSE_STEP_KINDS:
+                try:
+                    expected_reservations = (
+                        reservation_identities_from_durable_records(
+                            context,
+                            slot_ordinal=ordinal,
+                            scheduler_job_id=job_id,
+                            step_key=str(step["step_key"]),
+                            step_kind=step_kind,
+                            token_id=token_id,
+                            pair_id=pair_id,
+                            records=raw_reservations,
+                        )
+                    )
+                except FullRunAccountingError:
+                    blocked_reasons.append(
+                        f"LIFECYCLE_RESERVATION_EVIDENCE_MISMATCH:{step['id']}"
+                    )
+                    expected_reservations = []
+                else:
+                    ress.extend(expected_reservations)
             else:
-                ress.extend(expected_reservations)
+                expected_reservations = reservation_identities_for_step(
+                    context,
+                    slot_ordinal=ordinal,
+                    scheduler_job_id=job_id,
+                    step_kind=step_kind,
+                    token_id=token_id,
+                    pair_id=pair_id,
+                )
+                actual_ordinals = [
+                    int(item.get("reservation_ordinal"))
+                    for item in raw_reservations
+                    if isinstance(item, Mapping)
+                    and item.get("reservation_ordinal") is not None
+                ]
+                expected_ordinals = [
+                    int(item.reservation_ordinal)
+                    for item in expected_reservations
+                ]
+                if actual_ordinals != expected_ordinals:
+                    blocked_reasons.append(
+                        f"LIFECYCLE_RESERVATION_EVIDENCE_MISMATCH:{step['id']}"
+                    )
+                else:
+                    ress.extend(expected_reservations)
             attempts = load_attributable_lifecycle_source_attempts(
                 connection,
                 factory_run_id=context.factory_run_id,
@@ -4689,6 +4783,7 @@ __all__ = [
     "load_invocation_authority_evidence",
     "parse_durable_timestamp",
     "reservation_identities_for_step",
+    "reservation_identities_from_durable_records",
     "resolve_campaign_slot_terminal_disposition",
     "scheduler_work_identity_for_step",
     "transport_identity_for_step",

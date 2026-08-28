@@ -3897,7 +3897,9 @@ class AuthoritativeLiveOperationalCampaignOwner:
                                 },
                                 eligible_target=2,
                                 permanent_memory_observation=True,
-                                holder_transport_identity_observer=None,
+                                holder_transport_identity_observer=(
+                                    transport_identity_observer
+                                ),
                                 holder_stage_evidence_sealer=None,
                                 campaign_request_key_root=str(
                                     supply.diagnostics.get("request_key_root") or ""

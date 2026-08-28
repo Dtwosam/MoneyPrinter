@@ -6536,6 +6536,45 @@ def _lifecycle_reservation_records_for_step(
     return records
 
 
+def _merge_lifecycle_reservation_records(
+    prior_records: Sequence[Mapping[str, Any]],
+    current_records: Sequence[Mapping[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    """Accumulate exact reservations across cooperative claims.
+
+    Exact replay is idempotent. Reuse of one Scheduler-job/reservation ordinal
+    for different evidence fails closed.
+    """
+    ordered: list[dict[str, Any]] = []
+    by_identity: dict[tuple[int, int], dict[str, Any]] = {}
+    new_records: list[dict[str, Any]] = []
+    for is_current, records in ((False, prior_records), (True, current_records)):
+        for raw in records:
+            if not isinstance(raw, Mapping):
+                raise ValueError("LIFECYCLE_RESERVATION_RECORD_INVALID")
+            record = dict(raw)
+            if (
+                str(record.get("boundary") or "") != "LIFECYCLE_RESERVATION"
+                or record.get("scheduler_job_id") is None
+                or record.get("reservation_ordinal") is None
+            ):
+                raise ValueError("LIFECYCLE_RESERVATION_RECORD_INVALID")
+            identity = (
+                int(record["scheduler_job_id"]),
+                int(record["reservation_ordinal"]),
+            )
+            existing = by_identity.get(identity)
+            if existing is not None:
+                if existing != record:
+                    raise ValueError("LIFECYCLE_RESERVATION_IDENTITY_CONFLICT")
+                continue
+            by_identity[identity] = record
+            ordered.append(record)
+            if is_current:
+                new_records.append(record)
+    return {"records": ordered, "new_records": new_records}
+
+
 def _observe_scheduler_terminal(
     conn: sqlite3.Connection,
     *,
@@ -10061,8 +10100,20 @@ def run_one_command_15m_factory(
                     {**operation_cycle_identity, **record}
                     for record in reservation_records
                 ]
+                prior_reservation_records: list[Mapping[str, Any]] = []
+                if str(pending["step_kind"]) in PRE_CLOSE_STEP_KINDS:
+                    prior_reservation_records = list(
+                        _preclose_result_base(pending).get(
+                            "lifecycle_reservations"
+                        )
+                        or ()
+                    )
+                merged_reservations = _merge_lifecycle_reservation_records(
+                    prior_reservation_records,
+                    reservation_records,
+                )
                 if lifecycle_operation_observer is not None:
-                    for reservation_record in reservation_records:
+                    for reservation_record in merged_reservations["new_records"]:
                         lifecycle_operation_observer(reservation_record)
                 if str(pending["step_kind"]) in PRE_CLOSE_STEP_KINDS:
                     result = _execute_preclose_critical_phase(
@@ -10145,7 +10196,7 @@ def run_one_command_15m_factory(
                         timeout_seconds=timeout_seconds,
                         fallback_adapter_factory=fallback_factory,
                     )
-                result["lifecycle_reservations"] = reservation_records
+                result["lifecycle_reservations"] = merged_reservations["records"]
                 validation_kinds = [
                     "IMMUTABLE_IDENTITY_VALIDATED",
                     "CADENCE_DUE_VALIDATED",
