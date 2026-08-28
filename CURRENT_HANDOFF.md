@@ -2,7 +2,15 @@
 
 ## Current lane
 
-`V2-9.8B MIGRATION 062 — CONTROLLED APPLICATION READINESS / AUTHORITY GATE`
+`V2-9.8B POST-MIGRATION FRESH NEXT-BOUNDED-CAMPAIGN READINESS / GOVERNANCE ONLY`
+
+The explicitly approved controlled application of migration 062 is closed:
+
+`V2_9_8B_MIGRATION_062_CONTROLLED_APPLICATION_PASS`
+
+Application closeout:
+
+`operator-runs/v2-9-8b-migration-062-application/MIGRATION_062_20260828T182504Z/migration_062_controlled_application_closeout.md`
 
 The four-defect 4/2/2 orchestration repair and its independent follow-up code
 review/corrective proof are closed with verdicts:
@@ -43,16 +51,16 @@ Authoritative DB:
 
 `data/printer_v1.sqlite3`
 
-Previously recorded authoritative DB SHA-256:
+Current authoritative DB SHA-256:
 
-`f4e54b3a2dc9f4dbd41b6f05bb5288f25ca15dc71b7e66de1e05ef7c213e34b1`
+`dececa7ce402856978675c66ecbdfd23b88ed97e3ff23f282a2588a436c93836`
 
-The authoritative DB remains the post-campaign DB with migration 061 applied.
-Migration 062 exists in the repository and has been exercised only on
-disposable test databases. It has not been applied to the authoritative DB.
-The hosted follow-up proof did not contain the authoritative DB, so it did not
-re-hash that file; instead it verified that the follow-up repair commit contains
-no `data/printer_v1.sqlite3` diff.
+The authoritative DB now has canonical migration count 62 and tip
+`062_pre_admission_attempt_evidence.sql`. Controlled application preserved all
+pre-existing critical row counts, passed integrity and foreign-key checks,
+created the exact additive table/index/four-trigger object set, and left the new
+attempt-evidence table at zero rows. The verified pre-application backup remains
+preserved in the application evidence directory.
 
 Consumed authorization:
 
@@ -61,6 +69,14 @@ Consumed authorization:
 It remains permanently consumed and non-reusable.
 
 ## Latest completed work
+
+Migration 062 was applied exactly once through the canonical migration runner
+after exact operator approval. The fresh byte-identical backup, disposable
+restore rehearsal, pre/post identities, row-count reconciliation, schema-object
+proof, process/sidecar checks, and focused offline tests are recorded in the
+application evidence directory. No Printer, provider, Source Governor, Central
+Scheduler, campaign, authorization, retrieval, financial, or remote-host work
+ran as part of the application.
 
 The original four repair areas remain implemented:
 
@@ -108,25 +124,18 @@ Remote-host / VPS work remains paused and preserved separately at branch
 
 ## Exact next permitted action
 
-Perform the **read-only readiness/authority-gate phase** for controlled
-application of migration 062 to the authoritative DB.
+Perform the **read-only post-migration fresh next-bounded-campaign readiness /
+governance phase**. It may establish the exact final Git identity, new
+authoritative DB identity and health, migration-062 continuity, runtime
+quiescence, historical evidence continuity, consumed-authorization non-reuse,
+and permanent-lock continuity.
 
-That gate must verify, without applying the migration:
-
-- exact reviewed repository/product-code identity and authoritative DB identity;
-- migration 062 SQL identity, digest/order, additive-only scope, and schema-head
-  expectations;
-- backup creation procedure and disposable restore rehearsal readiness;
-- exclusive authoritative DB writer/process state and absence of unsafe
-  WAL/SHM/journal/process conditions;
-- exact pre/post integrity, foreign-key, schema/version, critical row-count, and
-  semantic-identity checks required for a future controlled application; and
-- rollback evidence and explicit governance/application approval boundary.
-
-This handoff does **not** authorize applying migration 062, creating or applying
-an authorization, running Printer, contacting providers/RPC/WebSocket, or
-running Central Scheduler against the authoritative DB. A fresh campaign
-readiness and authorization decision remains later and separate.
+This handoff does **not** authorize preparing, creating, or applying a new
+authorization; running Printer; contacting providers/RPC/WebSocket; running
+Central Scheduler; mutating the authoritative DB; resuming remote-host work; or
+unlocking retrieval, financial capability, or longer windows. Any later
+authorization preparation/review remains a separate lane after readiness PASS,
+and execution would still require separate explicit operator approval.
 
 ## Permanent locks
 
