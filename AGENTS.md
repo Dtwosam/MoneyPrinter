@@ -45,36 +45,23 @@ Every major capability must preserve:
 Use minimum sufficient risk-based verification. Do not request broad regression
 suites unless the change risk or lane closeout requires them.
 
-### Current infrastructure-support lane
+### Current V2-9.8B orchestration-correctness lane
 
-Remote-host readiness / portability audit is closed PASS.
-
-Native Linux/systemd one-shot portability design is complete with verdict:
-
-`REMOTE_HOST_NATIVE_LINUX_SYSTEMD_PORTABILITY_DESIGN_PASS__OPERATOR_REVIEW_NEXT`
-
-Current governing design:
-
-`docs/printer-v1-remote-host-native-linux-systemd-portability-design.md`
+The consumed 4/2/2 campaign forensic audit proved four product defects. The
+orchestration-correctness design passed, the later Cycle-2 architecture audit
+required a narrow existing-owner amendment, and the operator has explicitly
+approved implementation and bounded offline proof.
 
 The exact current permitted lane is:
 
-`REMOTE HOST DESIGN / SPECIFICATION — OPERATOR REVIEW / IMPLEMENTATION APPROVAL GATE`
+`V2-9.8B 4/2/2 ORCHESTRATION CORRECTNESS — APPROVED IMPLEMENTATION / BOUNDED PROOF`
 
-This is infrastructure support only and does not reorder or advance the active
-memory-growth capability sequence.
-
-Until explicit implementation approval is given:
-
-- do not implement remote-host code;
-- do not provision a server;
-- do not transfer or migrate the authoritative DB;
-- do not create or apply a fresh authorization;
-- do not run Printer;
-- do not contact providers/RPC/WebSocket;
-- do not run Central Scheduler;
-- do not mutate the authoritative DB;
-- do not activate retrieval or any financial capability.
+Remote-host work remains paused and preserved separately. This lane authorizes
+only the four proven product repairs, disposable/offline tests, and their
+implementation closeout. It does not authorize a new authorization, a live
+Printer campaign, provider/RPC/WebSocket contact, Central Scheduler execution
+against the authoritative database, or authoritative database mutation. After
+bounded proof, a separate closeout/readiness decision is required.
 
 Any future approved remote-host implementation must preserve the existing
 one-shot wrapper as the operational application boundary, `Restart=no`, no

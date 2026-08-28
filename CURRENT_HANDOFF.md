@@ -2,10 +2,12 @@
 
 ## Current lane
 
-`POST-CAMPAIGN FRESH NEXT-BOUNDED-CAMPAIGN READINESS / GOVERNANCE ONLY`
+`V2-9.8B 4/2/2 ORCHESTRATION CORRECTNESS — APPROVED IMPLEMENTATION / BOUNDED PROOF`
 
-Readiness/governance only. No authorization or execution is authorized by this
-handoff.
+The last 4/2/2 forensic audit proved four product defects. The focused
+orchestration-correctness design passed, the Cycle-2 cooperative-acquisition
+architecture audit required a narrow existing-owner amendment, and the operator
+has explicitly approved implementation and disposable/offline bounded proof.
 
 ## Operator lane decision
 
@@ -22,15 +24,15 @@ Preserved remote-host HEAD:
 That work remains available for later resumption and is not required for the
 current local Mac readiness lane.
 
-## Current baseline before synchronization
+## Current implementation baseline
 
 Branch:
 
 `agent/v2-9-8b-aug25-a2z-repair-application`
 
-Pre-synchronization HEAD:
+Approved implementation baseline HEAD:
 
-`fd558c9e8a691ee1963509d7488aef05908f93c7`
+`8b902554889ba4422b9815705a4cb076d6e9788a`
 
 Authoritative DB:
 
@@ -46,15 +48,19 @@ Consumed authorization:
 
 It remains permanently consumed and non-reusable.
 
-## Latest campaign state
+## Latest completed work and campaign state
+
+Forensic audit verdict:
+
+`LAST_4_2_2_RUN_CODE_DEFECT_PROVEN`
+
+Design verdict:
+
+`V2_9_8B_4_2_2_ORCHESTRATION_CORRECTNESS_DESIGN_PASS`
 
 Campaign closeout:
 
 `V2_9_8B_AUTH_8E43EAE7_CAMPAIGN_CLOSEOUT_PASS`
-
-Classification:
-
-`EXPECTED_OPERATIONAL_BLOCKER__NO_CODE_CHANGE`
 
 Cycle 1 produced two-token 15m clean promotion, with 1h dirty and 4h
 ineligible/no-successor outcome.
@@ -66,13 +72,16 @@ DB.
 
 ## Exact next permitted action
 
-Perform fresh exact-HEAD / exact-DB post-campaign readiness only.
+Implement the four proven orchestration-correctness defects through strict
+RED -> GREEN tests, focused offline proof, and implementation closeout. Amend
+the Cycle-2 design first to reuse the existing attempt, Scheduler, refresh,
+Source Governor, deterministic request, StageBudget, and cooperative-yield
+owners at one Source-Governed request per lawful claim.
 
-If that readiness passes, the next separate lane may be:
-
-`FRESH EXACT-HEAD / EXACT-DB ONE-SHOT AUTHORIZATION PREPARATION / INDEPENDENT REVIEW`
-
-Readiness does not itself create authorization or approve execution.
+This lane does not create or apply an authorization, run Printer, contact live
+providers/RPC/WebSocket, run Central Scheduler against the authoritative DB, or
+mutate the authoritative DB. A separate closeout/readiness decision is required
+after bounded proof.
 
 ## Permanent locks
 
