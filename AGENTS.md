@@ -1,5 +1,92 @@
 # Printer V1 Build Rules
 
+## Active Authority Stack and Current-Lane Rule — 2026-08-28
+
+This section is the current highest-priority authority anchor for Printer V1 /
+Moneygoals work. It supersedes the older 2026-08-27 current-lane anchor and any
+older `source of truth`, `current active lane`, `current authority`, or `next
+correct action` wording later in this file when that wording conflicts with this
+section. Historical text remains preserved as evidence.
+
+Use this active source stack, in order:
+
+1. `AGENTS.md`
+2. `docs/printer-v1-clean-master-spec.md`
+3. `docs/printer-v1-post-rc-build-order.md`
+4. `docs/printer-v1-memory-factory-guide.md`
+5. `docs/printer-v1-current-state-memory-growth-audit.md`
+6. `docs/printer-v1-memory-growth-build-order-v2.md`
+
+`docs/printer-v1-memory-growth-build-order-v2.md` remains the active
+memory-growth build order inside this stack. It is not the sole source of truth.
+
+Use `CURRENT_HANDOFF.md` only for current lane, current commit/latest completed
+work, blockers, and next permitted action. If it conflicts with this source
+stack, the source stack wins.
+
+Every major capability continues to preserve:
+
+`audit/readiness -> design/specification -> implementation if approved -> bounded proof/test -> closeout`
+
+### Current V2-9.8B repair lane
+
+Remote-host / VPS work is paused and remains preserved separately on
+`agent/remote-host-linux-portability-implementation` at
+`f61419f2db37fc5eb220c20fafeaf15501218033`. It is not current operational
+authority.
+
+The 4/2/2 orchestration correctness root-cause audit/design is complete. The
+committed design baseline is `8b902554889ba4422b9815705a4cb076d6e9788a` with
+verdict `V2_9_8B_4_2_2_ORCHESTRATION_CORRECTNESS_DESIGN_PASS`. The operator has
+directed implementation to continue.
+
+Governing design:
+
+- `docs/printer-v1-v2-9-8b-4-2-2-orchestration-correctness-design.md`
+- `docs/printer-v1-v2-9-8b-4-2-2-orchestration-correctness-design-amendment.md`
+
+The amendment supersedes only the original design's Cycle-2 implementation
+mechanics. Its existing safety/evidence invariants remain binding.
+
+The exact current permitted lane is:
+
+`V2-9.8B 4/2/2 ORCHESTRATION CORRECTNESS REPAIR — IMPLEMENTATION + BOUNDED OFFLINE PROOF ONLY`
+
+Allowed in this lane: documentation/governance synchronization, focused RED
+tests, minimum justified production-code repair, an additive attempt-evidence
+migration only if required by the amended design, disposable/offline fixture
+proof, directly affected regressions, and repair closeout.
+
+Not allowed in this lane:
+
+- authoritative DB mutation or migration;
+- Printer operational execution;
+- provider/RPC/WebSocket/source contact;
+- creation or application of a fresh one-shot authorization;
+- Central Scheduler execution against the authoritative DB;
+- retry/reuse/resume/restart of consumed authorization
+  `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260827T122355Z_8e43eae7`;
+- Source Governor or Central Scheduler bypass;
+- weakening cadence, memory-quality, exact-pair, liquidity, safety/holder,
+  historical-disjointness, or accounting gates;
+- retrieval, BUY/SELL/HOLD, paper positions, trades, paper audits, or PnL;
+- `WINDOW_12H` or `WINDOW_24H`;
+- any independent main-memory/continuation/retrieval/decision/position/PnL
+  authority for `WINDOW_5M_MICRO_EVENT`.
+
+Only after implementation + bounded offline proof + closeout PASS may a separate
+fresh exact-HEAD/exact-DB readiness/governance lane be considered. Repair
+closeout does not itself create authorization or approve execution.
+
+Permanent V1 locks remain unchanged: Solana-only; Solana memecoin-only;
+paper-trading only; no live wallet/private keys/signing/real funds/live
+execution; no paid API dependency; no scoring/ranking/confidence percentages or
+weighted decision logic; no embeddings/vectors unless explicitly approved; no
+Source Governor or Central Scheduler bypass; no dirty memory for retrieval or
+decisions; no retrieval or financial capability before its explicit approved
+lane. `WINDOW_5M_MICRO_EVENT` remains support-only. `WINDOW_12H` and
+`WINDOW_24H` remain locked.
+
 ## Active Authority Stack and Current-Lane Rule — 2026-08-27
 
 This section is the current authority anchor for Printer V1 / Moneygoals work.
