@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
+import json
 import sqlite3
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol, Sequence
@@ -2427,6 +2428,10 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 pre_admission_attempt_lock_owner,
                 terminalize_pre_admission_attempt,
             )
+            from printer_v1.operator_cli.pre_admission_attempt_evidence import (
+                rebuild_exhaustion_certificate_from_attempt_evidence,
+                record_later_cycle_supply_evidence,
+            )
             from printer_v1.scheduler.scheduler import (
                 cancel_job,
                 claim_due_job,
@@ -2742,6 +2747,12 @@ class AuthoritativeLiveOperationalCampaignOwner:
                                     raise LiveOperationalError(
                                         "LATER_CYCLE_SCHEDULER_YIELD_INVALID"
                                     )
+                            record_later_cycle_supply_evidence(
+                                connection,
+                                attempt_id=attempt_id,
+                                supply=supply,
+                                observed_at=instant.isoformat(),
+                            )
                             yielded_source_operations[attempt_id] = int(
                                 reported_operations or 0
                             )
@@ -2759,6 +2770,45 @@ class AuthoritativeLiveOperationalCampaignOwner:
                                 selected_count=0,
                                 failure_domain=None,
                             )
+                        reduced_attempt_evidence = record_later_cycle_supply_evidence(
+                            connection,
+                            attempt_id=attempt_id,
+                            supply=supply,
+                            observed_at=instant.isoformat(),
+                        )
+                        certificate = diagnostics.get("exhaustion_certificate")
+                        if isinstance(certificate, Mapping):
+                            rebuilt_certificate = (
+                                rebuild_exhaustion_certificate_from_attempt_evidence(
+                                    certificate,
+                                    reduced_attempt_evidence,
+                                )
+                            )
+                            certificate_id = str(
+                                rebuilt_certificate.get("certificate_id") or ""
+                            )
+                            if not certificate_id:
+                                raise LiveOperationalError(
+                                    "LATER_CYCLE_EXHAUSTION_CERTIFICATE_ID_MISSING"
+                                )
+                            original_json = json.dumps(
+                                dict(certificate), sort_keys=True
+                            )
+                            rebuilt_json = json.dumps(
+                                rebuilt_certificate, sort_keys=True
+                            )
+                            updated = connection.execute(
+                                """UPDATE printer_discovery_exhaustion_certificates
+                                      SET certificate_json=?
+                                    WHERE certificate_id=? AND certificate_json=?""",
+                                (rebuilt_json, certificate_id, original_json),
+                            )
+                            if updated.rowcount != 1:
+                                raise LiveOperationalError(
+                                    "LATER_CYCLE_EXHAUSTION_CERTIFICATE_CAS_FAILED"
+                                )
+                            diagnostics["exhaustion_certificate"] = rebuilt_certificate
+                            supply = replace(supply, diagnostics=diagnostics)
                         yielded_source_operations.pop(attempt_id, None)
                         for ordinal, evidence in enumerate(supply.source_evidence, start=1):
                             link_pre_admission_source_evidence(

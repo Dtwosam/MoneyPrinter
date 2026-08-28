@@ -26,6 +26,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 GATE_SOURCE = REPO_ROOT / "src/printer_v1/operator_cli/four_token_proof_zero_state_gate.py"
 HELPER_SOURCE = REPO_ROOT / "src/printer_v1/operator_cli/schema_admission_coherence.py"
 MIGRATION_061_NAME = "061_standard_4h_progression_fault_preservation.sql"
+MIGRATION_062_NAME = "062_pre_admission_attempt_evidence.sql"
 MIGRATION_059_NAME = "059_pair_ready_parent_terminal_cancellation_transition.sql"
 MIGRATION_058_NAME = "058_direct_pump_migration_cursor.sql"
 MIGRATION_057_NAME = "057_pre_lifecycle_discovery_refresh_work.sql"
@@ -79,9 +80,9 @@ def _names_through(ordinal: int) -> list[str]:
 # --------------------------------------------------------------------------
 
 
-def test_zero_state_gate_reexports_helper_pin_61() -> None:
-    assert gate.REQUIRED_MIGRATION_COUNT == 61
-    assert gate.REQUIRED_MIGRATION_HEAD == MIGRATION_061_NAME
+def test_zero_state_gate_reexports_helper_pin_62() -> None:
+    assert gate.REQUIRED_MIGRATION_COUNT == 62
+    assert gate.REQUIRED_MIGRATION_HEAD == MIGRATION_062_NAME
     assert gate.REQUIRED_MIGRATION_COUNT == coherence.REQUIRED_MIGRATION_COUNT
     assert gate.REQUIRED_MIGRATION_HEAD == coherence.REQUIRED_MIGRATION_HEAD
 
@@ -110,8 +111,8 @@ def test_helper_migration_pins_are_explicit_literals_not_derived() -> None:
     assert set(found) == {"REQUIRED_MIGRATION_COUNT", "REQUIRED_MIGRATION_HEAD"}
     for name, value in found.items():
         assert isinstance(value, ast.Constant), f"{name} must be a literal constant"
-    assert found["REQUIRED_MIGRATION_COUNT"].value == 61
-    assert found["REQUIRED_MIGRATION_HEAD"].value == MIGRATION_061_NAME
+    assert found["REQUIRED_MIGRATION_COUNT"].value == 62
+    assert found["REQUIRED_MIGRATION_HEAD"].value == MIGRATION_062_NAME
     source = HELPER_SOURCE.read_text()
     assert "REQUIRED_MIGRATION_COUNT = canonical_migration_count()" not in source
     assert gate.REQUIRED_MIGRATION_COUNT == len(_canonical_names())

@@ -332,5 +332,107 @@ def test_track_fast_deadline_priority_uses_next_request_not_coarse_stage() -> No
     )
 
 
+def test_attempt_evidence_reduces_truthfully_across_cooperative_claims(tmp_path) -> None:
+    from printer_v1.operator_cli.pre_admission_attempt_evidence import (
+        append_pre_admission_attempt_evidence,
+        reduce_pre_admission_attempt_evidence,
+    )
+
+    database = tmp_path / "attempt-evidence.sqlite3"
+    apply_migrations(database)
+    connection = sqlite3.connect(database)
+    try:
+        append_pre_admission_attempt_evidence(
+            connection,
+            attempt_id="attempt-evidence",
+            event_key="initial:claim:1:mint-a",
+            opportunity_ordinal=0,
+            claim_ordinal=1,
+            evidence_kind="CANDIDATE_OBSERVED",
+            mint_identity="MINT_A",
+            categorical_reason=None,
+            payload={"pair": "PAIR_A", "exact_pair_confirmed": False},
+            observed_at="2026-08-28T12:00:00+00:00",
+        )
+        append_pre_admission_attempt_evidence(
+            connection,
+            attempt_id="attempt-evidence",
+            event_key="initial:claim:2:reject-a",
+            opportunity_ordinal=0,
+            claim_ordinal=2,
+            evidence_kind="CANDIDATE_REJECTED",
+            mint_identity="MINT_A",
+            categorical_reason="EXACT_PAIR_NOT_CONFIRMED",
+            payload={"pair": "PAIR_A"},
+            observed_at="2026-08-28T12:00:10+00:00",
+        )
+        append_pre_admission_attempt_evidence(
+            connection,
+            attempt_id="attempt-evidence",
+            event_key="refresh-1:claim:1:failure-7",
+            opportunity_ordinal=1,
+            claim_ordinal=1,
+            evidence_kind="PROVIDER_FAILURE",
+            categorical_reason="RPC_RATE_LIMITED",
+            payload={"source": "solana_rpc", "provider_failure_id": 7},
+            observed_at="2026-08-28T12:10:00+00:00",
+        )
+        # Same deterministic event is an idempotent replay, not a second fact.
+        append_pre_admission_attempt_evidence(
+            connection,
+            attempt_id="attempt-evidence",
+            event_key="refresh-1:claim:1:failure-7",
+            opportunity_ordinal=1,
+            claim_ordinal=1,
+            evidence_kind="PROVIDER_FAILURE",
+            categorical_reason="RPC_RATE_LIMITED",
+            payload={"source": "solana_rpc", "provider_failure_id": 7},
+            observed_at="2026-08-28T12:10:00+00:00",
+        )
+        reduced = reduce_pre_admission_attempt_evidence(
+            connection, attempt_id="attempt-evidence"
+        )
+    finally:
+        connection.close()
+
+    assert reduced["unique_tokens_observed"] == 1
+    assert reduced["rejected_count"] == 1
+    assert reduced["rejection_reasons"] == {"EXACT_PAIR_NOT_CONFIRMED": 1}
+    assert reduced["provider_failures"] == 1
+    assert reduced["opportunities_executed"] == [0, 1]
+    assert reduced["claims_executed"] == 3
+
+
+def test_terminal_certificate_is_rebuilt_from_attempt_evidence() -> None:
+    from printer_v1.operator_cli.pre_admission_attempt_evidence import (
+        rebuild_exhaustion_certificate_from_attempt_evidence,
+    )
+
+    rebuilt = rebuild_exhaustion_certificate_from_attempt_evidence(
+        {
+            "unique_tokens_observed": 0,
+            "rejected_count": 0,
+            "rejection_reasons": {},
+            "provider_failures": 0,
+            "discovery_rounds": 0,
+        },
+        {
+            "unique_tokens_observed": 4,
+            "rejected_count": 3,
+            "rejection_reasons": {"LIQUIDITY_BELOW_SELECTION_FLOOR": 2},
+            "provider_failures": 1,
+            "refresh_rounds": 2,
+            "opportunities_executed": [0, 1, 2],
+        },
+    )
+    assert rebuilt["unique_tokens_observed"] == 4
+    assert rebuilt["rejected_count"] == 3
+    assert rebuilt["provider_failures"] == 1
+    assert rebuilt["discovery_rounds"] == 3
+    assert rebuilt["rejection_reasons"] == {
+        "LIQUIDITY_BELOW_SELECTION_FLOOR": 2
+    }
+
+
 if __name__ == "__main__":
     unittest.main()

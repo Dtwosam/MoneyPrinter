@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import json
 import sqlite3
 from typing import Any, Mapping
 
@@ -468,6 +469,27 @@ def callback_database(tmp_path):
             "RUNNING",
             FACTORY_RUN_ID,
             NOW.isoformat(),
+            NOW.isoformat(),
+        ),
+    )
+    connection.execute(
+        """INSERT INTO printer_discovery_exhaustion_certificates(
+               certificate_id,campaign_id,execution_id,run_id,cycle_id,
+               required_eligible_capacity,eligible_reserve_count,
+               shortage_classification,certificate_json,certificate_version,
+               created_at
+           ) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            EXHAUSTION_CERTIFICATE["certificate_id"],
+            CAMPAIGN_ID,
+            EXPECTED_CYCLE_EXECUTION_IDENTITY,
+            CAMPAIGN_RUN_ID,
+            PROPOSED_CYCLE_ID,
+            4,
+            2,
+            "TRACKING_STATE_CAPACITY_BLOCKED",
+            json.dumps(EXHAUSTION_CERTIFICATE, sort_keys=True),
+            "TEST_V1",
             NOW.isoformat(),
         ),
     )

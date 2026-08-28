@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import hashlib
+import json
 import sqlite3
 import threading
 from types import SimpleNamespace
@@ -70,6 +72,24 @@ QUANTUM_SECONDS = 115.0
 
 
 def _candidate(slot: int) -> LaterCycleDiscoveryCandidate:
+    evidence = json.dumps(
+        {
+            "token_mint": f"mint-{slot}",
+            "pair_address": f"pool-{slot}",
+            "chain": "solana",
+            "source_name": "dexscreener",
+            "source_channel": "DEXSCREENER_LATEST_PROFILES",
+            "captured_at": NOW.isoformat(),
+            "price_usd": 0.001,
+            "liquidity_usd": 6000.0,
+            "volume_5m": 1200.0,
+            "volume_1h": 1200.0,
+            "txns_5m": 12,
+            "txns_1h": 12,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
     return LaterCycleDiscoveryCandidate(
         token_identity=f"solana-mainnet:mint-{slot}",
         token_row_id=slot,
@@ -79,10 +99,10 @@ def _candidate(slot: int) -> LaterCycleDiscoveryCandidate:
         lifecycle_identity="PUMPSWAP_GRADUATED_CONFIRMED",
         canonical_market_identity=f"solana-mainnet:pumpswap:pool-{slot}",
         canonical_pool_identity=f"pool-{slot}",
-        channels=frozenset({f"fixture-{slot}"}),
+        channels=frozenset({"DEXSCREENER_LATEST_PROFILES"}),
         holder_evidence_eligible=True,
-        canonical_evidence_json='{"quality":"exact"}',
-        canonical_evidence_hash=str(slot) * 64,
+        canonical_evidence_json=evidence,
+        canonical_evidence_hash=hashlib.sha256(evidence.encode()).hexdigest(),
         evidence_version="slice-g-v1",
         observed_at=NOW,
     )

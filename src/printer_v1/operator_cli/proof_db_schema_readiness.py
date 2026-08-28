@@ -73,6 +73,13 @@ REQUIRED_TABLE_COLUMNS = {
         "frozen_lane_evidence_hash", "frozen_lane_decided_at",
         "frozen_lane_decision_owner",
     },
+    "printer_pre_admission_attempt_evidence": {
+        "attempt_id", "event_key", "opportunity_ordinal", "claim_ordinal",
+        "evidence_kind", "mint_identity", "pair_identity",
+        "categorical_reason", "source_request_id", "source_response_id",
+        "source_failure_id", "payload_json", "payload_hash", "observed_at",
+        "created_at",
+    },
 }
 
 REQUIRED_NOT_NULL_COLUMNS = {
@@ -107,6 +114,11 @@ REQUIRED_NOT_NULL_COLUMNS = {
         "fault_details_json", "created_at", "updated_at",
     },
     "printer_pre_admission_discovery_attempt_items": set(),
+    "printer_pre_admission_attempt_evidence": {
+        "attempt_id", "event_key", "opportunity_ordinal", "claim_ordinal",
+        "evidence_kind", "payload_json", "payload_hash", "observed_at",
+        "created_at",
+    },
 }
 
 REQUIRED_INDEXES = {
@@ -141,6 +153,10 @@ REQUIRED_INDEXES = {
         "printer_memory_factory_standard_4h_progression_tokens",
         ("successor_window_4h_id",),
     ),
+    "idx_pre_admission_attempt_evidence_reduce": (
+        "printer_pre_admission_attempt_evidence",
+        ("attempt_id", "opportunity_ordinal", "claim_ordinal", "evidence_kind"),
+    ),
 }
 
 REQUIRED_UNIQUE_KEYS = {
@@ -164,6 +180,9 @@ REQUIRED_UNIQUE_KEYS = {
         ("progression_attempt_id", "token_slot_id"),
     },
     "printer_pre_admission_discovery_attempt_items": set(),
+    "printer_pre_admission_attempt_evidence": {
+        ("attempt_id", "event_key"),
+    },
 }
 
 REQUIRED_TRIGGERS = {
@@ -194,6 +213,18 @@ REQUIRED_TRIGGERS = {
     "printer_standard_4h_progression_token_evidence_immutable": (
         "printer_memory_factory_standard_4h_progression_tokens"
     ),
+    "printer_pre_admission_attempt_evidence_immutable_update": (
+        "printer_pre_admission_attempt_evidence"
+    ),
+    "printer_pre_admission_attempt_evidence_immutable_delete": (
+        "printer_pre_admission_attempt_evidence"
+    ),
+    "printer_pre_admission_attempt_evidence_response_match": (
+        "printer_pre_admission_attempt_evidence"
+    ),
+    "printer_pre_admission_attempt_evidence_failure_match": (
+        "printer_pre_admission_attempt_evidence"
+    ),
 }
 
 MIGRATION_060_REQUIRED_TABLES = frozenset({
@@ -221,6 +252,18 @@ MIGRATION_061_REQUIRED_INDEXES = frozenset({
     "idx_standard_4h_progression_attempt_scope",
     "idx_standard_4h_progression_token_disposition",
     "idx_standard_4h_progression_successor",
+})
+MIGRATION_062_REQUIRED_TABLES = frozenset({
+    "printer_pre_admission_attempt_evidence",
+})
+MIGRATION_062_REQUIRED_TRIGGERS = frozenset({
+    "printer_pre_admission_attempt_evidence_immutable_update",
+    "printer_pre_admission_attempt_evidence_immutable_delete",
+    "printer_pre_admission_attempt_evidence_response_match",
+    "printer_pre_admission_attempt_evidence_failure_match",
+})
+MIGRATION_062_REQUIRED_INDEXES = frozenset({
+    "idx_pre_admission_attempt_evidence_reduce",
 })
 
 REQUIRED_STEP_FOREIGN_KEYS = {
