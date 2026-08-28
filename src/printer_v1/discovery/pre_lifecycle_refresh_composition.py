@@ -249,7 +249,6 @@ def build_pre_lifecycle_refresh_stage(
                         {"channel": channel, "reason": "INSUFFICIENT_WORST_CASE_SOURCE_BUDGET"}
                     )
                     continue
-                stage_budget.consume(fresh_budget_stage, 1)
                 channels_attempted.append(channel)
                 from printer_v1.discovery.direct_migration_discovery import (
                     run_direct_migration_discovery,
@@ -281,11 +280,37 @@ def build_pre_lifecycle_refresh_stage(
                         run_id=run_id,
                         cycle_id=cycle_id,
                         stage_sequence=refresh_stage_sequence,
+                        cooperative_request_limit=(1 if cooperative_yield else None),
+                        cooperative_checkpoint_reserve_seconds=5.0,
                     )
                 )
-                report["source_requests"] = len(report.get("source_request_ids") or ())
+                report["source_requests"] = int(
+                    report.get("new_governed_request_count")
+                    if report.get("new_governed_request_count") is not None
+                    else len(report.get("source_request_ids") or ())
+                )
                 charge(report, channel=channel)
                 stage_reports[channel] = report
+                if report.get("status") == "ACQUISITION_QUANTUM_YIELDED":
+                    return {
+                        "source_operations": source_operations,
+                        "provider_failures": provider_failures,
+                        "channels_unavailable": tuple(channels_unavailable),
+                        "channels_attempted": tuple(channels_attempted),
+                        "channels_skipped": tuple(channels_skipped),
+                        "newly_observed_exact_identities": (),
+                        "promoted_observation_eligible": (),
+                        "stage_reports": stage_reports,
+                        "budget_exhausted_before_refresh": False,
+                        "cooperative_incomplete": True,
+                        "next_governed_request_kind": report.get(
+                            "next_governed_request_kind"
+                        ),
+                        "next_governed_request_worst_case_seconds": report.get(
+                            "next_governed_request_worst_case_seconds"
+                        ),
+                    }
+                stage_budget.consume(fresh_budget_stage, 1)
                 if report.get("status") == "ACCOUNTING_BLOCKED":
                     raise PreLifecycleRefreshCompositionError(
                         "DIRECT_PUMP_REFRESH_ACCOUNTING_BLOCKED"

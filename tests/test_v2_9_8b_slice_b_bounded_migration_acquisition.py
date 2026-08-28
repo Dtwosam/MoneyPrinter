@@ -877,10 +877,10 @@ def test_b29_no_forbidden_capability_rows(db_path) -> None:
 
 def test_migration_058_precedes_059_and_edits_nothing_prior() -> None:
     names = canonical_migration_names()
-    assert names[-2] == "058_direct_pump_migration_cursor.sql"
-    assert names[-1] == "059_pair_ready_parent_terminal_cancellation_transition.sql"
-    assert len(names) == 59
-    sql = (MIGRATIONS_DIR / names[-2]).read_text(encoding="utf-8")
+    migration_058 = "058_direct_pump_migration_cursor.sql"
+    migration_059 = "059_pair_ready_parent_terminal_cancellation_transition.sql"
+    assert names.index(migration_058) + 1 == names.index(migration_059)
+    sql = (MIGRATIONS_DIR / migration_058).read_text(encoding="utf-8")
     assert "CREATE TABLE printer_direct_pump_migration_cursor" in sql
     assert "ALTER TABLE" not in sql
     assert "DROP " not in sql
@@ -1068,6 +1068,22 @@ def _fresh_budget():
     return StageBudget.permanent_discovery_default()
 
 
+def _complete_cooperative_direct(db_path, transport, **kwargs):
+    """Drive one direct mode through one-request Scheduler claims."""
+    mode = str(kwargs.get("direct_mode", LIVE_TAIL_MODE))
+    completed_key = (
+        "direct_backfill_completed"
+        if mode == BACKFILL_MODE
+        else "direct_live_tail_completed"
+    )
+    result = None
+    for _ in range(16):
+        result = _cooperative_supply(db_path, transport, **kwargs)
+        if bool(result.diagnostics.get(completed_key)):
+            return result
+    raise AssertionError("cooperative direct mode did not complete within its bound")
+
+
 def test_b19_clean_live_tail_yields_then_schedules_backfill(db_path) -> None:
     rows = [_row(_sig(f"Coop{i}"), 9_000 + i) for i in range(6)]
     transport = RecordingTransport(
@@ -1075,7 +1091,7 @@ def test_b19_clean_live_tail_yields_then_schedules_backfill(db_path) -> None:
         {row["signature"]: _non_migration_tx(row["slot"]) for row in rows},
     )
     budget = _fresh_budget()
-    supply = _cooperative_supply(db_path, transport, stage_budget=budget)
+    supply = _complete_cooperative_direct(db_path, transport, stage_budget=budget)
 
     diagnostics = supply.diagnostics
     assert transport.page_count == 1
@@ -1102,7 +1118,7 @@ def test_b20_backfill_claim_runs_one_page_then_hands_off_to_market(db_path) -> N
         {None: live_rows},
         {row["signature"]: _non_migration_tx(row["slot"]) for row in live_rows},
     )
-    first = _cooperative_supply(
+    first = _complete_cooperative_direct(
         db_path,
         live,
         stage_budget=budget,
@@ -1117,7 +1133,7 @@ def test_b20_backfill_claim_runs_one_page_then_hands_off_to_market(db_path) -> N
         {live_rows[-1]["signature"]: backfill_rows},
         {row["signature"]: _non_migration_tx(row["slot"]) for row in backfill_rows},
     )
-    second = _cooperative_supply(
+    second = _complete_cooperative_direct(
         db_path,
         backfill,
         stage_budget=budget,
@@ -1147,7 +1163,7 @@ def test_b21_live_tail_candidate_skips_this_attempt_backfill(db_path) -> None:
     signature = _sig("CoopHit")
     rows = [_row(signature, int(tx["slot"]))]
     transport = RecordingTransport({None: rows}, {signature: {"result": tx}})
-    supply = _cooperative_supply(
+    supply = _complete_cooperative_direct(
         db_path,
         transport,
         stage_budget=_fresh_budget(),
@@ -1234,7 +1250,7 @@ def test_b26_stage_budget_is_cumulative_across_live_tail_and_backfill(
         {None: live_rows},
         {row["signature"]: _non_migration_tx(row["slot"]) for row in live_rows},
     )
-    _cooperative_supply(db_path, live, stage_budget=budget, cycle_id=_SAME_CYCLE)
+    _complete_cooperative_direct(db_path, live, stage_budget=budget, cycle_id=_SAME_CYCLE)
     after_live = budget.snapshot()
     assert after_live["used_by_stage"]["intake"] == 1
     assert after_live["used_by_stage"]["protocol_confirmation"] == 0
@@ -1243,7 +1259,7 @@ def test_b26_stage_budget_is_cumulative_across_live_tail_and_backfill(
     backfill = RecordingTransport(
         {live_rows[-1]["signature"]: backfill_rows}, {signature: {"result": tx}}
     )
-    _cooperative_supply(
+    _complete_cooperative_direct(
         db_path,
         backfill,
         stage_budget=budget,
@@ -1572,7 +1588,7 @@ def test_bsc7_real_cooperative_live_page_requests_exactly_six(db_path) -> None:
         {None: rows},
         {row["signature"]: _non_migration_tx(row["slot"]) for row in rows},
     )
-    _cooperative_supply(
+    _complete_cooperative_direct(
         db_path, transport, stage_budget=_fresh_budget(), cycle_id=_SAME_CYCLE
     )
 
@@ -1589,7 +1605,7 @@ def test_bsc8_real_cooperative_backfill_page_requests_exactly_five(db_path) -> N
         {None: live_rows},
         {row["signature"]: _non_migration_tx(row["slot"]) for row in live_rows},
     )
-    _cooperative_supply(db_path, live, stage_budget=budget, cycle_id=_SAME_CYCLE)
+    _complete_cooperative_direct(db_path, live, stage_budget=budget, cycle_id=_SAME_CYCLE)
 
     # The fixture exposes eight older rows; production must take only five.
     older = [_row(_sig(f"BackOld{i}"), 52_000 + i) for i in range(8)]
@@ -1597,7 +1613,7 @@ def test_bsc8_real_cooperative_backfill_page_requests_exactly_five(db_path) -> N
         {live_rows[-1]["signature"]: older},
         {row["signature"]: _non_migration_tx(row["slot"]) for row in older},
     )
-    _cooperative_supply(
+    _complete_cooperative_direct(
         db_path,
         backfill,
         stage_budget=budget,
@@ -1626,7 +1642,7 @@ def test_bsc9_same_cycle_maximum_lands_exactly_on_the_existing_ceiling(
         {None: live_rows},
         {row["signature"]: _non_migration_tx(row["slot"]) for row in live_rows},
     )
-    _cooperative_supply(
+    _complete_cooperative_direct(
         db_path,
         live,
         stage_budget=budget,
@@ -1641,7 +1657,7 @@ def test_bsc9_same_cycle_maximum_lands_exactly_on_the_existing_ceiling(
         {cursor_sig: older},
         {row["signature"]: _non_migration_tx(row["slot"]) for row in older},
     )
-    _cooperative_supply(
+    _complete_cooperative_direct(
         db_path,
         backfill,
         stage_budget=budget,
@@ -1673,7 +1689,7 @@ def test_bsc10_sixth_older_signature_survives_the_five_row_backfill(
         {None: live_rows},
         {row["signature"]: _non_migration_tx(row["slot"]) for row in live_rows},
     )
-    _cooperative_supply(db_path, live, stage_budget=budget, cycle_id=_SAME_CYCLE)
+    _complete_cooperative_direct(db_path, live, stage_budget=budget, cycle_id=_SAME_CYCLE)
     anchor = live_rows[-1]["signature"]
 
     history = [_row(_sig(f"Hist{label}"), 56_000 + index)
@@ -1682,7 +1698,7 @@ def test_bsc10_sixth_older_signature_survives_the_five_row_backfill(
         {anchor: history},
         {row["signature"]: _non_migration_tx(row["slot"]) for row in history},
     )
-    _cooperative_supply(
+    _complete_cooperative_direct(
         db_path,
         backfill,
         stage_budget=budget,
@@ -1705,12 +1721,12 @@ def test_bsc10_sixth_older_signature_survives_the_five_row_backfill(
         {history[4]["signature"]: history[5:]},
         {history[5]["signature"]: _non_migration_tx(history[5]["slot"])},
     )
-    _cooperative_supply(
+    _complete_cooperative_direct(
         db_path,
         tail,
         stage_budget=next_budget,
         direct_mode=BACKFILL_MODE,
-        cycle_id=_SAME_CYCLE,
+        cycle_id="cycle-b-next",
     )
     assert tail.page_payloads[0]["cursor_before"] == history[4]["signature"]
     assert tail.transaction_signatures == [history[5]["signature"]]

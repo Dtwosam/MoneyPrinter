@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from contextvars import ContextVar, Token
 from datetime import datetime, timedelta, timezone
+import json
+import sqlite3
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Mapping
 
@@ -99,6 +101,127 @@ class GovernedSourceExecutionResult:
     normalized_result: NormalizedSourceResult
     response_record: SourceResponseRecord | None = None
     failure_record: SourceFailureRecord | None = None
+
+
+class GovernedSourceReplayError(RuntimeError):
+    """Fail-closed durable replay fault for a deterministic source request."""
+
+
+def load_terminal_governed_execution_by_request_key(
+    connection: sqlite3.Connection,
+    *,
+    source_name: str,
+    request_kind: str,
+    request_key: str,
+) -> GovernedSourceExecutionResult | None:
+    """Reconstruct one exact terminal governed request without executing I/O.
+
+    Deterministic request keys are replay authority only when exactly one
+    matching request and exactly one response-or-failure terminal row exist.
+    Ambiguous or unterminated durable state fails closed; absence returns None
+    so the caller may lawfully execute the one missing governed request.
+    """
+    connection.row_factory = sqlite3.Row
+    rows = connection.execute(
+        """SELECT * FROM printer_source_requests
+           WHERE source_name=? AND request_kind=? AND request_key=?
+           ORDER BY id""",
+        (str(source_name), str(request_kind), str(request_key)),
+    ).fetchall()
+    if not rows:
+        return None
+    if len(rows) != 1:
+        raise GovernedSourceReplayError("SOURCE_REQUEST_REPLAY_IDENTITY_AMBIGUOUS")
+    row = rows[0]
+    request_record = SourceRequestRecord(
+        id=int(row["id"]),
+        source_name=str(row["source_name"]),
+        request_kind=str(row["request_kind"]),
+        requested_at=str(row["requested_at"]),
+        request_key=None if row["request_key"] is None else str(row["request_key"]),
+        tracking_priority=(
+            None if row["tracking_priority"] is None else int(row["tracking_priority"])
+        ),
+        source_status=SourceStatus(str(row["source_status"])),
+        data_quality_label=DataQualityLabel(str(row["data_quality_label"])),
+    )
+    responses = connection.execute(
+        "SELECT * FROM printer_source_responses WHERE source_request_id=? ORDER BY id",
+        (request_record.id,),
+    ).fetchall()
+    failures = connection.execute(
+        "SELECT * FROM printer_source_failures WHERE source_request_id=? ORDER BY id",
+        (request_record.id,),
+    ).fetchall()
+    if len(responses) + len(failures) != 1:
+        raise GovernedSourceReplayError("SOURCE_REQUEST_REPLAY_TERMINAL_AMBIGUOUS")
+    if responses:
+        terminal = responses[0]
+        payload = json.loads(str(terminal["normalized_payload_json"] or "{}"))
+        response_record = SourceResponseRecord(
+            id=int(terminal["id"]),
+            source_request_id=request_record.id,
+            source_name=str(terminal["source_name"]),
+            received_at=str(terminal["received_at"]),
+            status_code=(
+                None if terminal["status_code"] is None else int(terminal["status_code"])
+            ),
+            source_status=SourceStatus(str(terminal["source_status"])),
+            data_quality_label=DataQualityLabel(str(terminal["data_quality_label"])),
+            response_hash=(
+                None if terminal["response_hash"] is None else str(terminal["response_hash"])
+            ),
+            normalized_payload=payload,
+        )
+        normalized = NormalizedSourceResult(
+            source_name=response_record.source_name,
+            request_kind=request_record.request_kind,
+            source_status=response_record.source_status,
+            data_quality_label=response_record.data_quality_label,
+            normalized_payload=MappingProxyType(dict(payload)),
+            status_code=response_record.status_code,
+            received_at=response_record.received_at,
+        )
+        return GovernedSourceExecutionResult(
+            request_record=request_record,
+            normalized_result=normalized,
+            response_record=response_record,
+        )
+    terminal = failures[0]
+    payload = json.loads(str(terminal["normalized_payload_json"] or "{}"))
+    failure_record = SourceFailureRecord(
+        id=int(terminal["id"]),
+        source_name=str(terminal["source_name"]),
+        request_kind=str(terminal["request_kind"]),
+        failed_at=str(terminal["failed_at"]),
+        failure_type=str(terminal["failure_type"]),
+        failure_message=(
+            None if terminal["failure_message"] is None else str(terminal["failure_message"])
+        ),
+        source_status=SourceStatus(str(terminal["source_status"])),
+        data_quality_label=DataQualityLabel(str(terminal["data_quality_label"])),
+        retry_after_at=(
+            None if terminal["retry_after_at"] is None else str(terminal["retry_after_at"])
+        ),
+        normalized_payload=payload,
+        source_request_id=request_record.id,
+    )
+    normalized = NormalizedSourceResult(
+        source_name=failure_record.source_name,
+        request_kind=failure_record.request_kind,
+        source_status=failure_record.source_status,
+        data_quality_label=failure_record.data_quality_label,
+        normalized_payload=MappingProxyType(dict(payload)),
+        failure_type=failure_record.failure_type,
+        failure_message=failure_record.failure_message,
+        retry_after_at=failure_record.retry_after_at,
+        received_at=failure_record.failed_at,
+    )
+    return GovernedSourceExecutionResult(
+        request_record=request_record,
+        normalized_result=normalized,
+        failure_record=failure_record,
+    )
 
 
 class FixtureSourceAdapter:

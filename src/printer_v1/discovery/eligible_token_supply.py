@@ -139,6 +139,25 @@ class AcquisitionQuantumBound:
         return sum(item.count * item.timeout_seconds for item in self.components)
 
 
+@dataclass(frozen=True)
+class AcquisitionGovernedRequestBound:
+    """Deadline-fit bound for one existing Source-Governed request."""
+
+    kind: AcquisitionQuantumKind
+    request_kind: str
+    governed_request_count: int
+    transport_count: int
+    governed_request_worst_case_seconds: float
+    checkpoint_reserve_seconds: float
+
+    @property
+    def worst_case_seconds(self) -> float:
+        return (
+            self.governed_request_worst_case_seconds
+            + self.checkpoint_reserve_seconds
+        )
+
+
 _AUXILIARY_INTAKE_COMPONENTS = (
     AcquisitionQuantumComponent(
         "dexscreener_fresh_profiles_http", 2, DEXSCREENER_SMOKE_TIMEOUT_SECONDS
@@ -250,6 +269,50 @@ def acquisition_quantum_bound(
 ) -> AcquisitionQuantumBound:
     """Return the configured transport-derived bound for the actual next unit."""
     return _ACQUISITION_QUANTUM_BOUNDS[AcquisitionQuantumKind(kind)]
+
+
+def acquisition_governed_request_bound(
+    kind: AcquisitionQuantumKind | str,
+    *,
+    request_kind: str,
+    checkpoint_reserve_seconds: float,
+) -> AcquisitionGovernedRequestBound:
+    """Return the schedulable bound for one existing governed request.
+
+    PumpSwap exact verification remains one Source-Governed request although
+    its pinned verifier may perform four internal RPC transports.  The
+    scheduler fits the governed request's whole verifier bound plus checkpoint
+    reserve; it never fragments that authority into physical transports.
+    """
+    quantum_kind = AcquisitionQuantumKind(kind)
+    reserve = float(checkpoint_reserve_seconds)
+    if reserve < 0:
+        raise ValueError("ACQUISITION_CHECKPOINT_RESERVE_INVALID")
+    normalized = str(request_kind).upper()
+    if normalized in {
+        "DIRECT_PUMP_SIGNATURE_PAGE",
+        "DIRECT_PUMP_TRANSACTION",
+        "PUMP_MIGRATION_SIGNATURE_PAGE",
+        "PUMP_MIGRATION_TRANSACTION",
+    }:
+        duration = float(ORDINARY_WINDOW_15M_TRANSPORT_TIMEOUT_SECONDS)
+        transports = 1
+    elif normalized in {
+        "PUMPSWAP_EXACT_VERIFICATION",
+        "PUMPSWAP_SIGNATURE_POOL_RESOLUTION",
+    }:
+        duration = float(GRADUATION_VERIFIER_TIMEOUT_SECONDS) * 4
+        transports = 4
+    else:
+        raise ValueError("ACQUISITION_GOVERNED_REQUEST_KIND_UNSUPPORTED")
+    return AcquisitionGovernedRequestBound(
+        kind=quantum_kind,
+        request_kind=str(request_kind),
+        governed_request_count=1,
+        transport_count=transports,
+        governed_request_worst_case_seconds=duration,
+        checkpoint_reserve_seconds=reserve,
+    )
 
 
 # Compatibility export only. It now denotes the largest *transport* count, not
@@ -1069,6 +1132,8 @@ def run_persistent_eligible_token_supply(
             ),
             # One page per Scheduler claim, in exactly one categorical mode.
             acquisition_mode=direct_acquisition_mode,
+            cooperative_request_limit=(1 if cooperative_quantum else None),
+            cooperative_checkpoint_reserve_seconds=5.0,
             collection_rounds=collection_rounds,
             settle_seconds=settle_seconds,
             reverify_on_transient=reverify_on_transient,
@@ -1090,8 +1155,16 @@ def run_persistent_eligible_token_supply(
         }
     latest_mints = set(discovery.get("confirmed_this_cycle") or ())
 
-    ops_used = int(prior_source_operations_used) + int(locator.get("source_requests") or 0) + int(
-        (discovery.get("source_operation_ledger") or {}).get("source_requests") or 0
+    direct_new_source_requests = int(
+        discovery.get("new_governed_request_count")
+        if discovery.get("new_governed_request_count") is not None
+        else (discovery.get("source_operation_ledger") or {}).get("source_requests")
+        or 0
+    )
+    ops_used = (
+        int(prior_source_operations_used)
+        + int(locator.get("source_requests") or 0)
+        + direct_new_source_requests
     )
     if ops_used > int(discovery_operation_budget):
         raise EligibleTokenSupplyError("PRIOR_SOURCE_OPERATIONS_EXCEED_BUDGET")
@@ -1291,9 +1364,17 @@ def run_persistent_eligible_token_supply(
 
         # Direct migration remains one intake opportunity even though its
         # governed request/transport lineage has finer-grained accounting.
-        if permanent_availability and run_direct_this_quantum and int(
-            (discovery.get("source_operation_ledger") or {}).get("source_requests")
-            or 0
+        if (
+            permanent_availability
+            and run_direct_this_quantum
+            and str(discovery.get("status") or "")
+            != ACQUISITION_QUANTUM_YIELDED
+            and int(
+                (discovery.get("source_operation_ledger") or {}).get(
+                    "source_requests"
+                )
+                or 0
+            )
         ):
             stage_budget.consume("intake", 1)
 
@@ -1311,6 +1392,7 @@ def run_persistent_eligible_token_supply(
                 == "pumpswap_signature_pool_resolution"
                 and "DIRECT_MIGRATION_VERIFY"
                 in str(row.get("logical_stage_id") or "")
+                and not bool(row.get("replayed"))
             )
             if direct_protocol_confirmation_calls:
                 stage_budget.consume(
@@ -1331,7 +1413,12 @@ def run_persistent_eligible_token_supply(
         ):
             direct_status = str(discovery.get("status") or "")
             live_tail_clean = (
-                direct_status not in {"PROVIDER_FAILURE", "ACCOUNTING_BLOCKED"}
+                direct_status
+                not in {
+                    "PROVIDER_FAILURE",
+                    "ACCOUNTING_BLOCKED",
+                    ACQUISITION_QUANTUM_YIELDED,
+                }
                 and not (discovery.get("migration_intake") or {}).get(
                     "direct_pump_live_tail_failures"
                 )
@@ -3009,6 +3096,11 @@ def run_persistent_eligible_token_supply(
                 and protocol_confirmation_work_remaining
                 else "DIRECT_MIGRATION"
                 if cooperative_quantum
+                and cooperative_phase == "DIRECT_MIGRATION"
+                and str(discovery.get("status") or "")
+                == ACQUISITION_QUANTUM_YIELDED
+                else "DIRECT_MIGRATION"
+                if cooperative_quantum
                 and cooperative_phase == "AUXILIARY_PROTOCOL_CONFIRMATION"
                 # One attempt performs at most one LIVE_TAIL page and one
                 # BACKFILL page, always in separate Scheduler claims.
@@ -3055,10 +3147,14 @@ def run_persistent_eligible_token_supply(
             "direct_live_tail_completed": bool(
                 run_direct_this_quantum
                 and direct_acquisition_mode == LIVE_TAIL_MODE
+                and str(discovery.get("status") or "")
+                != ACQUISITION_QUANTUM_YIELDED
             ),
             "direct_backfill_completed": bool(
                 run_direct_this_quantum
                 and direct_acquisition_mode == BACKFILL_MODE
+                and str(discovery.get("status") or "")
+                != ACQUISITION_QUANTUM_YIELDED
             ),
             "direct_migration_cursor": dict(
                 discovery.get("cursor_state_after") or {}
@@ -3140,12 +3236,16 @@ def run_persistent_eligible_token_supply(
                     "accounting_blocker_reason"
                 )
                 or discovery.get("accounting_block_reason"),
+                "new_governed_request_count": direct_new_source_requests,
+                "next_governed_request_kind": discovery.get(
+                    "next_governed_request_kind"
+                ),
+                "next_governed_request_worst_case_seconds": discovery.get(
+                    "next_governed_request_worst_case_seconds"
+                ),
             },
             "geckoterminal_nomination": geckoterminal_nomination_report,
-            "discovery_source_requests": int(
-                (discovery.get("source_operation_ledger") or {}).get("source_requests")
-                or 0
-            ),
+            "discovery_source_requests": direct_new_source_requests,
             "direct_migration_protocol_confirmation_requests": (
                 direct_protocol_confirmation_calls
             ),

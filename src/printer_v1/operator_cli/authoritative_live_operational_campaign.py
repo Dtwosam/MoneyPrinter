@@ -3898,6 +3898,20 @@ class AuthoritativeLiveOperationalCampaignOwner:
                             cooperative_stage_budget=cooperative_stage_budget,
                         )
                         if outcome.status == WAITING_FOR_ELIGIBLE_SUPPLY:
+                            completed_partial_operations = int(
+                                outcome.source_operations
+                            )
+                            if completed_partial_operations:
+                                progress["source_operations_used"] = (
+                                    prior_operations
+                                    + completed_partial_operations
+                                )
+                                prior_operations = int(
+                                    progress["source_operations_used"]
+                                )
+                            progress["next_governed_request_worst_case_seconds"] = (
+                                outcome.next_governed_request_worst_case_seconds
+                            )
                             return LaterCycleCandidateSupply(
                                 (),
                                 (),
@@ -4003,6 +4017,31 @@ class AuthoritativeLiveOperationalCampaignOwner:
                         "ACQUISITION_QUANTUM_YIELDED",
                     }:
                         diagnostics = dict(result.diagnostics or {})
+                        next_phase = str(
+                            diagnostics.get("next_cooperative_phase")
+                            or "MARKET_DISCOVERY"
+                        )
+                        next_request_bound = (
+                            (
+                                diagnostics.get("direct_migration_discovery")
+                                or {}
+                            ).get("next_governed_request_worst_case_seconds")
+                        )
+                        if next_request_bound is None:
+                            next_request_bound = (
+                                diagnostics.get("scheduler_yield") or {}
+                            ).get("next_governed_request_worst_case_seconds")
+                        if next_phase == "DIRECT_MIGRATION" and next_request_bound is None:
+                            from printer_v1.discovery.eligible_token_supply import (
+                                AcquisitionQuantumKind,
+                                acquisition_governed_request_bound,
+                            )
+
+                            next_request_bound = acquisition_governed_request_bound(
+                                AcquisitionQuantumKind.DIRECT_MIGRATION,
+                                request_kind="DIRECT_PUMP_SIGNATURE_PAGE",
+                                checkpoint_reserve_seconds=5.0,
+                            ).worst_case_seconds
                         later_cycle_progress[progress_key] = {
                             "refresh_owner": later_cycle_refresh_owner,
                             "stage_budget": cooperative_stage_budget,
@@ -4022,10 +4061,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                                 ).get("refresh_ordinal")
                                 or 0
                             ),
-                            "cooperative_phase": str(
-                                diagnostics.get("next_cooperative_phase")
-                                or "MARKET_DISCOVERY"
-                            ),
+                            "cooperative_phase": next_phase,
                             # Slice B attempt-local direct acquisition facts.
                             "direct_acquisition_mode": str(
                                 diagnostics.get("next_direct_acquisition_mode")
@@ -4039,6 +4075,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                                 (progress or {}).get("direct_backfill_completed")
                                 or diagnostics.get("direct_backfill_completed")
                             ),
+                            "next_governed_request_worst_case_seconds": next_request_bound,
                         }
                     else:
                         later_cycle_progress.pop(progress_key, None)
@@ -4056,6 +4093,18 @@ class AuthoritativeLiveOperationalCampaignOwner:
             )
 
             def next_later_cycle_quantum_seconds() -> float:
+                if later_cycle_progress:
+                    progress = next(iter(later_cycle_progress.values()))
+                    next_request_bound = progress.get(
+                        "next_governed_request_worst_case_seconds"
+                    )
+                    if next_request_bound is not None:
+                        value = float(next_request_bound)
+                        if value <= 0:
+                            raise LiveOperationalError(
+                                "LATER_CYCLE_NEXT_REQUEST_BOUND_INVALID"
+                            )
+                        return value
                 kind = _next_later_cycle_quantum_kind(later_cycle_progress)
                 return acquisition_quantum_bound(kind).worst_case_seconds
 

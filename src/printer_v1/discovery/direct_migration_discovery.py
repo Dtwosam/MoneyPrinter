@@ -40,8 +40,12 @@ from typing import Any, Callable, Mapping
 from printer_v1.contracts.enums import SourceStatus
 from printer_v1.db.sqlite_write_contracts import connect_operational
 from printer_v1.sources.contracts import build_governed_source_request
-from printer_v1.sources.governed_execution import execute_source_request_with_governor
+from printer_v1.sources.governed_execution import (
+    execute_source_request_with_governor,
+    load_terminal_governed_execution_by_request_key,
+)
 from printer_v1.sources.pump_migration import (
+    GRADUATION_VERIFIER_TIMEOUT_SECONDS,
     MIGRATION_PROVENANCE,
     build_graduation_verifier_transport,
 )
@@ -200,6 +204,14 @@ _CONTRACT_BLOCKING_REASONS = frozenset(
 
 class DirectMigrationCursorError(RuntimeError):
     """Fail-closed direct Pump migration cursor fault."""
+
+
+class _CooperativeGovernedRequestYield(RuntimeError):
+    """Internal control flow: the next governed request belongs to a later claim."""
+
+    def __init__(self, request_kind: str) -> None:
+        super().__init__(request_kind)
+        self.request_kind = str(request_kind)
 
 
 @dataclass(frozen=True)
@@ -798,6 +810,8 @@ def run_direct_migration_discovery(
     stage_sequence: int | None = None,
     max_transaction_lookups: int = MAX_TRANSACTION_LOOKUPS,
     acquisition_mode: str = LIVE_TAIL_MODE,
+    cooperative_request_limit: int | None = None,
+    cooperative_checkpoint_reserve_seconds: float = 5.0,
 ) -> dict[str, Any]:
     """Run one bounded direct-migration discovery cycle (governed, fail-closed).
 
@@ -840,6 +854,13 @@ def run_direct_migration_discovery(
         raise ValueError("DIRECT_PUMP_TRANSACTION_LOOKUP_CAP_INVALID")
     if acquisition_mode not in DIRECT_ACQUISITION_MODES:
         raise ValueError("DIRECT_PUMP_ACQUISITION_MODE_INVALID")
+    if cooperative_request_limit is not None and (
+        type(cooperative_request_limit) is not int
+        or cooperative_request_limit < 1
+    ):
+        raise ValueError("DIRECT_PUMP_COOPERATIVE_REQUEST_LIMIT_INVALID")
+    if float(cooperative_checkpoint_reserve_seconds) < 0:
+        raise ValueError("DIRECT_PUMP_CHECKPOINT_RESERVE_INVALID")
     # LIVE_TAIL and BACKFILL are two claims of the SAME campaign/run/cycle, so
     # every identity they emit must be separated by the direct stage sequence,
     # never by a different cycle identity.
@@ -892,9 +913,6 @@ def run_direct_migration_discovery(
         started_at=now,
     )
     measured_ledger = campaign_units.ledger
-    # Independent action-local observation at measurement time (pre-seal).
-    if transport_identity_observer is not None:
-        measured_ledger.on_transport_recorded = transport_identity_observer
     local_validations = 0
     started_mono = datetime.now(timezone.utc)
     accounting_block_reason: str | None = None
@@ -914,6 +932,41 @@ def run_direct_migration_discovery(
     last_direct_evidence: dict[str, int | None] = {}
     origin_evidence_by_signature: dict[str, dict[str, int | None]] = {}
     pumpswap_evidence_by_mint: dict[str, dict[str, int | None]] = {}
+    new_governed_request_count = 0
+    replayed_governed_request_count = 0
+    cooperative_yield_request_kind: str | None = None
+
+    def _execution_for_request(*, request, adapter, recent_request_count: int):
+        """Replay exact durable truth or execute the one next missing request."""
+        nonlocal new_governed_request_count, replayed_governed_request_count
+        existing = load_terminal_governed_execution_by_request_key(
+            connection,
+            source_name=str(request.source_name),
+            request_kind=str(request.request_kind),
+            request_key=str(request.request_key),
+        )
+        if existing is not None:
+            replayed_governed_request_count += 1
+            return existing, True
+        if (
+            cooperative_request_limit is not None
+            and new_governed_request_count >= cooperative_request_limit
+        ):
+            raise _CooperativeGovernedRequestYield(str(request.request_kind))
+        execution = execute_source_request_with_governor(
+            connection,
+            request,
+            adapter,
+            recent_request_count=recent_request_count,
+        )
+        new_governed_request_count += 1
+        return execution, False
+
+    def _observe_new_measured_identities(before_len: int, *, replayed: bool) -> None:
+        if replayed or transport_identity_observer is None:
+            return
+        for identity in tuple(measured_ledger.transports)[before_len:]:
+            transport_identity_observer(identity)
 
     def _execute_direct_request(
         *,
@@ -934,8 +987,10 @@ def run_direct_migration_discovery(
             tracking_priority=0,
             payload=payload,
         )
-        execution = execute_source_request_with_governor(
-            connection, request, adapter, recent_request_count=migration_request_count
+        execution, replayed = _execution_for_request(
+            request=request,
+            adapter=adapter,
+            recent_request_count=migration_request_count,
         )
         rid = int(execution.request_record.id)
         stage_request_ids.append(rid)
@@ -953,6 +1008,7 @@ def run_direct_migration_discovery(
                     payload,
                     default_stage="DIRECT_PUMP_NOMINATION",
                 )
+                _observe_new_measured_identities(before_len, replayed=replayed)
                 transport_count = int(
                     measured_ledger.source_transport_operations - before
                 )
@@ -1000,6 +1056,7 @@ def run_direct_migration_discovery(
                 "transport_identity_count": transport_count,
                 "transport_identity_keys": transport_keys,
                 "normalized_member_count": members,
+                "replayed": bool(replayed),
                 "terminal_status": (
                     "BLOCKED" if failed or measurement_failed else "COMPLETED"
                 ),
@@ -1238,8 +1295,10 @@ def run_direct_migration_discovery(
                 "chain": "solana",
             },
         )
-        execution = execute_source_request_with_governor(
-            connection, request, adapter, recent_request_count=pumpswap_request_count
+        execution, replayed = _execution_for_request(
+            request=request,
+            adapter=adapter,
+            recent_request_count=pumpswap_request_count,
         )
         rid = int(execution.request_record.id)
         stage_request_ids.append(rid)
@@ -1257,6 +1316,7 @@ def run_direct_migration_discovery(
                     payload,
                     default_stage="DIRECT_PUMP_NOMINATION",
                 )
+                _observe_new_measured_identities(before_len, replayed=replayed)
                 transport_count = int(
                     measured_ledger.source_transport_operations - before
                 )
@@ -1294,6 +1354,7 @@ def run_direct_migration_discovery(
                 "transport_identity_count": transport_count,
                 "transport_identity_keys": transport_keys,
                 "normalized_member_count": 1 if not failed else 0,
+                "replayed": bool(replayed),
                 "terminal_status": (
                     "BLOCKED" if failed or measurement_failed else "COMPLETED"
                 ),
@@ -1733,6 +1794,17 @@ def run_direct_migration_discovery(
             0.0,
             (datetime.now(timezone.utc) - started_mono).total_seconds(),
         )
+    except _CooperativeGovernedRequestYield as exc:
+        cooperative_yield_request_kind = exc.request_kind
+        stage_terminal_status = "YIELDED"
+        elapsed_seconds = max(
+            0.0,
+            (datetime.now(timezone.utc) - started_mono).total_seconds(),
+        )
+        ledger = _ledger_counts(connection, request_ids=stage_request_ids)
+        ledger["source_request_ids"] = list(stage_request_ids)
+        ledger["source_request_coverage"] = list(stage_request_coverage)
+        ledger["source_requests"] = int(new_governed_request_count)
     except BaseException as exc:
         # Unexpected failure after partial work: seal FAILED before re-raise.
         unexpected_exception = exc
@@ -1750,7 +1822,11 @@ def run_direct_migration_discovery(
         # Seal and ingest exactly once for every started stage before any
         # unexpected exception escapes. Sink failures must not replace the
         # original source/market terminal cause.
-        if stage_evidence_sink is not None and stage_started:
+        if (
+            stage_evidence_sink is not None
+            and stage_started
+            and cooperative_yield_request_kind is None
+        ):
             sink_error: BaseException | None = None
             try:
                 if not all(
@@ -1815,7 +1891,9 @@ def run_direct_migration_discovery(
         raise unexpected_exception
 
     status = "COMPLETE"
-    if accounting_block_reason is not None:
+    if cooperative_yield_request_kind is not None:
+        status = "ACQUISITION_QUANTUM_YIELDED"
+    elif accounting_block_reason is not None:
         status = "ACCOUNTING_BLOCKED"
     elif intake.get("direct_pump_live_tail_failures") or intake.get(
         "transaction_source_failures"
@@ -1843,6 +1921,22 @@ def run_direct_migration_discovery(
         "six_unit_evidence": ledger.get("six_unit_evidence"),
         "sealed_stage_evidence": sealed_stage_evidence,
         "accounting_block_reason": accounting_block_reason,
+        "new_governed_request_count": int(new_governed_request_count),
+        "replayed_governed_request_count": int(replayed_governed_request_count),
+        "next_governed_request_kind": cooperative_yield_request_kind,
+        "next_governed_request_worst_case_seconds": (
+            None
+            if cooperative_yield_request_kind is None
+            else round(
+                (
+                    4.0 * GRADUATION_VERIFIER_TIMEOUT_SECONDS
+                    if cooperative_yield_request_kind == VERIFY_REQUEST_KIND
+                    else 5.0
+                )
+                + float(cooperative_checkpoint_reserve_seconds),
+                6,
+            )
+        ),
         "forbidden_capability_deltas": forbidden,
         "forbidden_delta_total": sum(forbidden.values()),
         # --- Slice B bounded migration-targeted acquisition facts ------------

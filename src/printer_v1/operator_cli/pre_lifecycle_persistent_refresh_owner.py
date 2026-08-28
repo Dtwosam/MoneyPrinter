@@ -5,7 +5,9 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from printer_v1.discovery.pre_lifecycle_refresh_work import insert_refresh_work, terminalize_refresh_work
+from printer_v1.discovery.pre_lifecycle_refresh_work import (
+ active_refresh_work, insert_refresh_work, terminalize_refresh_work,
+)
 from printer_v1.discovery.pre_lifecycle_temporal_acquisition import (
  ACQUISITION_DEADLINE_EXHAUSTED, ALREADY_PENDING_REFRESH, CANCELLED,
  INTERNAL_INVARIANT, INTERNAL_RUNTIME_ERROR, REFRESH_COMPLETED,
@@ -14,11 +16,13 @@ from printer_v1.discovery.pre_lifecycle_temporal_acquisition import (
  PreLifecycleTemporalAcquisitionError, TemporalRefreshOutcome,
  active_refresh_waits, evaluate_wait_eligibility, insert_refresh_wait, iso,
  mark_refresh_wait_claimed, next_refresh_ordinal, parse_iso,
- refresh_window_fits, terminalize_refresh_wait,
+ refresh_opportunity_at, terminalize_refresh_wait,
 )
 from printer_v1.scheduler.contracts import JobKind, JobStatus, LockResult
 from printer_v1.scheduler.resource_governor import next_check_interval_seconds
-from printer_v1.scheduler.scheduler import cancel_job, claim_due_job, complete_job, enqueue_job, fail_job
+from printer_v1.scheduler.scheduler import (
+ cancel_job, claim_due_job, complete_job, enqueue_job, fail_job, yield_job,
+)
 
 REFRESH_WORK_TYPE = "PRE_LIFECYCLE_DISCOVERY_REFRESH"
 WAIT_ABORT_SUPERVISION = "SUPERVISION_FAILED"
@@ -202,12 +206,18 @@ class PreLifecycleTemporalRefreshOwner:
         active,cancelled=self._supervision()
         pending=active_refresh_waits(c,campaign_id=self.campaign_id,run_id=self.run_id,cycle_id=self.cycle_id)
         resuming=bool(pending)
+        resuming_claimed_work=False
         if resuming:
-            if len(pending)!=1 or str(pending[0]['wait_state'])!='WAITING':
+            if len(pending)!=1 or str(pending[0]['wait_state']) not in {'WAITING','CLAIMED'}:
                 return TemporalRefreshOutcome(status=UNSAFE_SCHEDULER_STATE,reserve_depth_before=reserve_depth,reserve_depth_after=reserve_depth,detail='pending refresh ownership is ambiguous')
             row=pending[0]
             wait_id=str(row['wait_id']); job_id=int(row['scheduler_job_id'])
             ordinal=int(row['refresh_ordinal']); scheduled=str(row['scheduled_for'])
+            resuming_claimed_work=str(row['wait_state'])=='CLAIMED'
+            if resuming_claimed_work:
+                running_work=active_refresh_work(c,campaign_id=self.campaign_id,run_id=self.run_id,cycle_id=self.cycle_id)
+                if len(running_work)!=1 or str(running_work[0]['wait_id'])!=wait_id or int(running_work[0]['scheduler_job_id'])!=job_id or int(running_work[0]['refresh_ordinal'])!=ordinal:
+                    return TemporalRefreshOutcome(status=UNSAFE_SCHEDULER_STATE,reserve_depth_before=reserve_depth,reserve_depth_after=reserve_depth,detail='claimed refresh work ownership is ambiguous')
             job_name=f'PRE_LIFECYCLE_DISCOVERY_REFRESH:{self.campaign_id}:{self.run_id}:{self.cycle_id}:{ordinal}'
             due=parse_iso(scheduled)
             waiting=TemporalRefreshOutcome(status=WAITING_FOR_ELIGIBLE_SUPPLY,wait_id=wait_id,scheduler_job_id=job_id,refresh_ordinal=ordinal,scheduled_for=scheduled,reserve_depth_before=reserve_depth,reserve_depth_after=reserve_depth,detail='pre-lifecycle acquisition waiting for a due Scheduler refresh')
@@ -217,10 +227,11 @@ class PreLifecycleTemporalRefreshOwner:
         else:
             eligibility=evaluate_wait_eligibility(reserve_depth=reserve_depth,required_capacity=required_capacity,universe_state=universe_state,now=now,acquisition_deadline_at=self.acquisition_deadline_at,source_operations_remaining=source_operations_remaining,provider_terminal_failure=provider_terminal_failure,supervision_active=active,cancellation_requested=cancelled,pending_refresh_exists=False)
             if not eligibility.eligible: return TemporalRefreshOutcome(status=eligibility.reason,reserve_depth_before=reserve_depth,reserve_depth_after=reserve_depth,detail='wait eligibility not satisfied')
-            if not refresh_window_fits(now=now,acquisition_deadline_at=self.acquisition_deadline_at,refresh_interval_seconds=self.refresh_interval_seconds):
-                return TemporalRefreshOutcome(status='NO_LAWFUL_REFRESH_WINDOW',reserve_depth_before=reserve_depth,reserve_depth_after=reserve_depth,detail='next canonical DISCOVERY_REFRESH interval is not strictly before acquisition deadline')
-            due=parse_iso(now)+timedelta(seconds=self.refresh_interval_seconds)
             ordinal=next_refresh_ordinal(c,campaign_id=self.campaign_id,run_id=self.run_id,cycle_id=self.cycle_id)
+            acquisition_started_at=iso(parse_iso(self.acquisition_deadline_at)-timedelta(seconds=2400))
+            due=parse_iso(refresh_opportunity_at(acquisition_started_at,refresh_ordinal=ordinal,refresh_interval_seconds=self.refresh_interval_seconds))
+            if due>=parse_iso(self.acquisition_deadline_at):
+                return TemporalRefreshOutcome(status='NO_LAWFUL_REFRESH_WINDOW',reserve_depth_before=reserve_depth,reserve_depth_after=reserve_depth,detail='anchored DISCOVERY_REFRESH opportunity is not strictly before acquisition deadline')
             job_name=f'PRE_LIFECYCLE_DISCOVERY_REFRESH:{self.campaign_id}:{self.run_id}:{self.cycle_id}:{ordinal}'
             result,job_id=enqueue_job(c,job_name=job_name,job_kind=JobKind.DISCOVERY_REFRESH,target_table='printer_discovery_batches',scheduled_for=due)
             if job_id is None: return TemporalRefreshOutcome(status=ALREADY_PENDING_REFRESH if result==LockResult.DUPLICATE_ACTIVE_JOB else UNSAFE_SCHEDULER_STATE,reserve_depth_before=reserve_depth,reserve_depth_after=reserve_depth,detail=f'enqueue refused: {result}')
@@ -243,14 +254,17 @@ class PreLifecycleTemporalRefreshOwner:
         if claim!=LockResult.ACQUIRED:
             self._abandon(c,wait_id,int(job_id),'FAILED',f'PRE_LIFECYCLE_REFRESH_CLAIM_{claim.value}',woke)
             return TemporalRefreshOutcome(status=UNSAFE_SCHEDULER_STATE,wait_id=wait_id,scheduler_job_id=int(job_id),refresh_ordinal=ordinal,scheduled_for=scheduled,reserve_depth_before=reserve_depth,reserve_depth_after=reserve_depth,detail=f'claim not acquired: {claim}')
-        self._require_claim(c,int(job_id),job_name,lock_owner); mark_refresh_wait_claimed(c,wait_id=wait_id,now=woke); c.commit()
+        self._require_claim(c,int(job_id),job_name,lock_owner)
+        if not resuming_claimed_work:
+            mark_refresh_wait_claimed(c,wait_id=wait_id,now=woke); c.commit()
         refresh_work_id=f'prelifecycle-refresh-work:{self.campaign_id}:{self.run_id}:{self.cycle_id}:{ordinal}'
-        try:
-            insert_refresh_work(c,refresh_work_id=refresh_work_id,wait_id=wait_id,campaign_id=self.campaign_id,run_id=self.run_id,cycle_id=self.cycle_id,supervision_id=self.supervision_id,scheduler_job_id=int(job_id),refresh_ordinal=ordinal,work_deadline_at=self.work_deadline_at,now=woke); c.commit()
-        except Exception as exc:
-            fail_job(c,job_id=int(job_id),error='PRE_LIFECYCLE_REFRESH_WORK_OWNERSHIP_FAILED',max_retries=0)
-            terminalize_refresh_wait(c,wait_id=wait_id,wait_state='FAILED',first_terminal_cause='PRE_LIFECYCLE_REFRESH_WORK_OWNERSHIP_FAILED',now=woke); c.commit()
-            return TemporalRefreshOutcome(status=UNSAFE_SCHEDULER_STATE,wait_id=wait_id,scheduler_job_id=int(job_id),refresh_ordinal=ordinal,scheduled_for=scheduled,claimed=True,reserve_depth_before=reserve_depth,reserve_depth_after=reserve_depth,detail=f'refresh work ownership failed: {type(exc).__name__}')
+        if not resuming_claimed_work:
+            try:
+                insert_refresh_work(c,refresh_work_id=refresh_work_id,wait_id=wait_id,campaign_id=self.campaign_id,run_id=self.run_id,cycle_id=self.cycle_id,supervision_id=self.supervision_id,scheduler_job_id=int(job_id),refresh_ordinal=ordinal,work_deadline_at=self.work_deadline_at,now=woke); c.commit()
+            except Exception as exc:
+                fail_job(c,job_id=int(job_id),error='PRE_LIFECYCLE_REFRESH_WORK_OWNERSHIP_FAILED',max_retries=0)
+                terminalize_refresh_wait(c,wait_id=wait_id,wait_state='FAILED',first_terminal_cause='PRE_LIFECYCLE_REFRESH_WORK_OWNERSHIP_FAILED',now=woke); c.commit()
+                return TemporalRefreshOutcome(status=UNSAFE_SCHEDULER_STATE,wait_id=wait_id,scheduler_job_id=int(job_id),refresh_ordinal=ordinal,scheduled_for=scheduled,claimed=True,reserve_depth_before=reserve_depth,reserve_depth_after=reserve_depth,detail=f'refresh work ownership failed: {type(exc).__name__}')
         try:
             raw_stage=self._refresh_stage(c,campaign_id=self.campaign_id,run_id=self.run_id,cycle_id=self.cycle_id,refresh_work_id=refresh_work_id,discovery_work_id=refresh_work_id,scheduler_job_id=int(job_id),refresh_ordinal=ordinal,source_operations_remaining=source_operations_remaining,now=woke,cooperative_yield=self._cooperative_yield,cooperative_stage_budget=cooperative_stage_budget)
         except Exception as exc:
@@ -275,6 +289,13 @@ class PreLifecycleTemporalRefreshOwner:
         if ops>source_operations_remaining:
             self._terminalize(c,wait_id,refresh_work_id,int(job_id),False,'PRE_LIFECYCLE_REFRESH_BUDGET_OVERRUN',woke)
             return TemporalRefreshOutcome(status=SOURCE_BUDGET_EXHAUSTED,wait_id=wait_id,scheduler_job_id=int(job_id),refresh_ordinal=ordinal,scheduled_for=scheduled,claimed=True,source_operations=source_operations_remaining,reserve_depth_before=reserve_depth,reserve_depth_after=reserve_depth,detail='refresh stage exceeded cumulative discovery budget')
+        if bool(stage.get('cooperative_incomplete')):
+            next_bound=stage.get('next_governed_request_worst_case_seconds')
+            if next_bound is None or float(next_bound)<=0:
+                self._terminalize(c,wait_id,refresh_work_id,int(job_id),False,'PRE_LIFECYCLE_REFRESH_NEXT_REQUEST_BOUND_MISSING',woke)
+                return TemporalRefreshOutcome(status=INTERNAL_INVARIANT,wait_id=wait_id,scheduler_job_id=int(job_id),refresh_ordinal=ordinal,scheduled_for=scheduled,claimed=True,source_operations=ops,reserve_depth_before=reserve_depth,reserve_depth_after=reserve_depth,detail='cooperative refresh did not declare its next governed-request bound',failure_domain=FAILURE_DOMAIN_INTERNAL)
+            yield_job(c,job_id=int(job_id),scheduled_for=parse_iso(woke),now=parse_iso(woke)); c.commit()
+            return TemporalRefreshOutcome(status=WAITING_FOR_ELIGIBLE_SUPPLY,wait_id=wait_id,scheduler_job_id=int(job_id),refresh_ordinal=ordinal,scheduled_for=scheduled,claimed=True,source_operations=ops,provider_failures=failures,channels_unavailable=unavailable,channels_attempted=tuple(str(x) for x in stage.get('channels_attempted',())),channels_skipped=tuple(dict(x) for x in stage.get('channels_skipped',()) if isinstance(x,Mapping)),reserve_depth_before=reserve_depth,reserve_depth_after=reserve_depth,detail='cooperative refresh yielded after one governed request',next_governed_request_kind=(None if stage.get('next_governed_request_kind') is None else str(stage.get('next_governed_request_kind'))),next_governed_request_worst_case_seconds=float(next_bound))
         self._terminalize(c,wait_id,refresh_work_id,int(job_id),True,'PRE_LIFECYCLE_REFRESH_COMPLETED',woke)
         self._publish(REFRESH_COMPLETED,wait_id=wait_id,scheduler_job_id=int(job_id),refresh_ordinal=ordinal,source_operations=ops)
         return TemporalRefreshOutcome(status=REFRESH_COMPLETED,wait_id=wait_id,scheduler_job_id=int(job_id),refresh_ordinal=ordinal,scheduled_for=scheduled,claimed=True,source_operations=ops,provider_failures=failures,channels_unavailable=unavailable,channels_attempted=tuple(str(x) for x in stage.get('channels_attempted',())),channels_skipped=tuple(dict(x) for x in stage.get('channels_skipped',()) if isinstance(x,Mapping)),newly_observed_exact_identities=tuple(dict(x) for x in stage.get('newly_observed_exact_identities',()) if isinstance(x,Mapping)),promoted_observation_eligible=tuple(dict(x) for x in stage.get('promoted_observation_eligible',())),reserve_depth_before=reserve_depth,reserve_depth_after=reserve_depth,detail='bounded Source-Governed refresh stage completed')

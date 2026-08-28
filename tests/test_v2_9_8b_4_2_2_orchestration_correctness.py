@@ -4,10 +4,19 @@ from __future__ import annotations
 
 import sqlite3
 import unittest
+from datetime import datetime, timedelta, timezone
+
+from printer_v1.db import apply_migrations
 
 from printer_v1.operator_cli import one_command_15m_factory as factory
 from tests.test_v2_9_8b_post_dtw100_checkpoint6_1h_terminal_reconciliation import (
     Checkpoint6FirstHourTerminalReconciliationTests,
+)
+from tests.test_v2_9_8b_slice_b_bounded_migration_acquisition import (
+    RecordingTransport,
+    _non_migration_tx,
+    _row,
+    _sig,
 )
 
 
@@ -113,6 +122,214 @@ class OneHourCampaignBindingOrderTests(unittest.TestCase):
         self.fx.connection.commit()
         with self.assertRaisesRegex(Exception, "ambiguous"):
             self._bind()
+
+
+def test_direct_migration_next_request_bound_fits_track_fast() -> None:
+    from printer_v1.discovery.eligible_token_supply import (
+        AcquisitionQuantumKind,
+        acquisition_governed_request_bound,
+        acquisition_quantum_bound,
+    )
+
+    coarse = acquisition_quantum_bound(
+        AcquisitionQuantumKind.DIRECT_MIGRATION
+    ).worst_case_seconds
+    next_request = acquisition_governed_request_bound(
+        AcquisitionQuantumKind.DIRECT_MIGRATION,
+        request_kind="DIRECT_PUMP_SIGNATURE_PAGE",
+        checkpoint_reserve_seconds=5.0,
+    ).worst_case_seconds
+    assert coarse == 115.0
+    assert next_request == 10.0
+    now = datetime(2026, 8, 28, 12, 0, tzinfo=timezone.utc)
+    deadline = now + timedelta(seconds=117)
+    assert coarse >= (deadline - now).total_seconds() - 2
+    assert next_request < (deadline - now).total_seconds()
+
+
+def test_direct_migration_claim_executes_one_missing_governed_request_and_replays(
+    tmp_path,
+) -> None:
+    from printer_v1.discovery.direct_migration_discovery import (
+        run_direct_migration_discovery,
+    )
+
+    database = tmp_path / "cooperative-direct.sqlite3"
+    apply_migrations(database)
+    signature = _sig("OneRequest")
+    transport = RecordingTransport(
+        {None: [_row(signature, 900)]},
+        {signature: _non_migration_tx(900)},
+    )
+    kwargs = dict(
+        migration_transport=transport,
+        verifier_transport_factory=lambda _mint, _signature: (_ for _ in ()).throw(
+            AssertionError("non-migration must not verify")
+        ),
+        now="2026-08-28T12:00:00+00:00",
+        request_key_prefix="cooperative-direct",
+        max_candidates=1,
+        max_transaction_lookups=1,
+        cooperative_request_limit=1,
+        cooperative_checkpoint_reserve_seconds=5.0,
+    )
+
+    first = run_direct_migration_discovery(database, **kwargs)
+    assert first["status"] == "ACQUISITION_QUANTUM_YIELDED"
+    assert transport.page_count == 1
+    assert transport.transaction_signatures == []
+    assert first["new_governed_request_count"] == 1
+    assert first["next_governed_request_worst_case_seconds"] == 10.0
+
+    second = run_direct_migration_discovery(database, **kwargs)
+    assert second["status"] == "COMPLETE"
+    assert transport.page_count == 1
+    assert transport.transaction_signatures == [signature]
+    assert second["new_governed_request_count"] == 1
+
+    third = run_direct_migration_discovery(database, **kwargs)
+    assert third["status"] == "COMPLETE"
+    assert transport.page_count == 1
+    assert transport.transaction_signatures == [signature]
+    assert third["new_governed_request_count"] == 0
+
+
+def test_pumpswap_verifier_remains_one_source_governed_request() -> None:
+    from printer_v1.discovery.eligible_token_supply import (
+        AcquisitionQuantumKind,
+        acquisition_governed_request_bound,
+    )
+
+    bound = acquisition_governed_request_bound(
+        AcquisitionQuantumKind.DIRECT_MIGRATION,
+        request_kind="PUMPSWAP_EXACT_VERIFICATION",
+        checkpoint_reserve_seconds=5.0,
+    )
+    assert bound.governed_request_count == 1
+    assert bound.transport_count == 4
+    assert bound.worst_case_seconds == 85.0
+
+
+def test_refresh_opportunities_are_anchored_to_original_acquisition_start() -> None:
+    from printer_v1.discovery.pre_lifecycle_temporal_acquisition import (
+        refresh_opportunity_at,
+    )
+
+    started = "2026-08-28T12:00:00+00:00"
+    assert refresh_opportunity_at(started, refresh_ordinal=1) == (
+        "2026-08-28T12:10:00+00:00"
+    )
+    assert refresh_opportunity_at(started, refresh_ordinal=2) == (
+        "2026-08-28T12:20:00+00:00"
+    )
+    assert refresh_opportunity_at(started, refresh_ordinal=3) == (
+        "2026-08-28T12:30:00+00:00"
+    )
+
+
+def test_claimed_refresh_work_yields_and_resumes_same_scheduler_owner(tmp_path) -> None:
+    from printer_v1.discovery.pre_lifecycle_temporal_acquisition import (
+        REFRESH_COMPLETED,
+        WAITING_FOR_ELIGIBLE_SUPPLY,
+    )
+    from printer_v1.operator_cli.pre_lifecycle_persistent_refresh_owner import (
+        PreLifecycleTemporalRefreshOwner,
+    )
+
+    database = tmp_path / "cooperative-refresh.sqlite3"
+    apply_migrations(database)
+    calls: list[int] = []
+
+    def stage(_connection, **context):
+        calls.append(int(context["refresh_ordinal"]))
+        if len(calls) == 1:
+            return {
+                "source_operations": 1,
+                "provider_failures": 0,
+                "cooperative_incomplete": True,
+                "next_governed_request_kind": "restored_pump_migration_transaction",
+                "next_governed_request_worst_case_seconds": 10.0,
+            }
+        return {"source_operations": 1, "provider_failures": 0}
+
+    owner = PreLifecycleTemporalRefreshOwner(
+        database,
+        campaign_id="campaign-refresh",
+        run_id="run-refresh",
+        cycle_id="cycle-refresh",
+        supervision_id="supervision-refresh",
+        source_governor=True,
+        central_scheduler=True,
+        acquisition_deadline_at="2026-08-28T12:40:00+00:00",
+        work_deadline_at="2026-08-28T13:00:00+00:00",
+        refresh_stage=stage,
+        waiter=None,
+        refresh_interval_seconds=600,
+    )
+    waiting = owner.request_temporal_refresh(
+        reserve_depth=0,
+        required_capacity=2,
+        universe_state="ALL_REACHABLE_CANDIDATES_EVALUATED",
+        source_operations_remaining=10,
+        now="2026-08-28T12:00:00+00:00",
+    )
+    partial = owner.request_temporal_refresh(
+        reserve_depth=0,
+        required_capacity=2,
+        universe_state="ALL_REACHABLE_CANDIDATES_EVALUATED",
+        source_operations_remaining=10,
+        now="2026-08-28T12:10:00+00:00",
+    )
+    assert waiting.status == WAITING_FOR_ELIGIBLE_SUPPLY
+    assert partial.status == WAITING_FOR_ELIGIBLE_SUPPLY
+    assert partial.claimed is True
+    assert partial.scheduler_job_id == waiting.scheduler_job_id
+    assert partial.source_operations == 1
+    assert partial.next_governed_request_worst_case_seconds == 10.0
+
+    connection = sqlite3.connect(database)
+    wait_state = connection.execute(
+        "SELECT wait_state FROM printer_pre_lifecycle_discovery_refresh_waits"
+    ).fetchone()[0]
+    work_state = connection.execute(
+        "SELECT work_state FROM printer_pre_lifecycle_discovery_refresh_work"
+    ).fetchone()[0]
+    job_state = connection.execute(
+        "SELECT status FROM printer_scheduler_jobs WHERE id=?",
+        (partial.scheduler_job_id,),
+    ).fetchone()[0]
+    connection.close()
+    assert (wait_state, work_state, job_state) == ("CLAIMED", "RUNNING", "PENDING")
+
+    completed = owner.request_temporal_refresh(
+        reserve_depth=0,
+        required_capacity=2,
+        universe_state="ALL_REACHABLE_CANDIDATES_EVALUATED",
+        source_operations_remaining=9,
+        now="2026-08-28T12:10:01+00:00",
+    )
+    assert completed.status == REFRESH_COMPLETED
+    assert completed.scheduler_job_id == waiting.scheduler_job_id
+    assert calls == [1, 1]
+
+
+def test_track_fast_deadline_priority_uses_next_request_not_coarse_stage() -> None:
+    from printer_v1.operator_cli.one_command_15m_factory import (
+        _later_cycle_acquisition_deadline_conflict,
+    )
+
+    now = datetime(2026, 8, 28, 12, 0, 2, tzinfo=timezone.utc)
+    next_deadline = datetime(2026, 8, 28, 12, 1, 57, tzinfo=timezone.utc)
+    assert _later_cycle_acquisition_deadline_conflict(
+        now=now,
+        earliest_lifecycle_deadline=next_deadline,
+        worst_case_quantum_seconds=115.0,
+    )
+    assert not _later_cycle_acquisition_deadline_conflict(
+        now=now,
+        earliest_lifecycle_deadline=next_deadline,
+        worst_case_quantum_seconds=85.0,
+    )
 
 
 if __name__ == "__main__":

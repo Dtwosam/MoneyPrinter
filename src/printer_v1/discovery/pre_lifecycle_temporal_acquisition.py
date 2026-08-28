@@ -103,6 +103,25 @@ def acquisition_deadline_at(
     return iso(parse_iso(started_at) + timedelta(seconds=duration))
 
 
+def refresh_opportunity_at(
+    acquisition_started_at: str,
+    *,
+    refresh_ordinal: int,
+    refresh_interval_seconds: int = 600,
+) -> str:
+    """Return the non-drifting temporal opportunity anchored at attempt start."""
+    ordinal = int(refresh_ordinal)
+    interval = int(refresh_interval_seconds)
+    if ordinal < 1 or interval <= 0:
+        raise PreLifecycleTemporalAcquisitionError(
+            "INVALID_PRE_LIFECYCLE_REFRESH_OPPORTUNITY"
+        )
+    return iso(
+        parse_iso(acquisition_started_at)
+        + timedelta(seconds=ordinal * interval)
+    )
+
+
 @dataclass(frozen=True)
 class TemporalRefreshOutcome:
     """Result of one requested Scheduler-owned temporal refresh opportunity."""
@@ -124,6 +143,8 @@ class TemporalRefreshOutcome:
     reserve_depth_after: int = 0
     detail: str = ""
     failure_domain: str | None = None
+    next_governed_request_kind: str | None = None
+    next_governed_request_worst_case_seconds: float | None = None
 
     @property
     def waiting(self) -> bool:
@@ -159,6 +180,10 @@ class TemporalRefreshOutcome:
             "reserve_depth_after": self.reserve_depth_after,
             "detail": self.detail,
             "failure_domain": self.failure_domain,
+            "next_governed_request_kind": self.next_governed_request_kind,
+            "next_governed_request_worst_case_seconds": (
+                self.next_governed_request_worst_case_seconds
+            ),
         }
 
 
