@@ -4257,7 +4257,26 @@ def _audit_1h_close_from_evidence(
         current_close_snapshot_id=int(closing_snapshot_id),
     )
     result["window_audit"] = audit_15m_memory_window(conn, int(window_id))
+    result["campaign_window_bind"] = (
+        _bind_precreated_1h_campaign_window_before_e2z(
+            conn,
+            step=step,
+            memory_window_row_id=int(window_id),
+        )
+    )
     conn.commit()
+    if result.get("campaign_window_bind") is not None:
+        visible = conn.execute(
+            """SELECT memory_window_row_id
+               FROM printer_memory_factory_campaign_windows
+               WHERE window_id=?""",
+            (str(result["campaign_window_bind"]["window_id"]),),
+        ).fetchone()
+        if (
+            visible is None
+            or int(visible["memory_window_row_id"] or -1) != int(window_id)
+        ):
+            raise ValueError("WINDOW_1H_CAMPAIGN_WINDOW_BIND_NOT_VISIBLE")
     result["memory_pipeline"] = run_e2z_pipeline(
         str(conn.execute("PRAGMA database_list").fetchone()[2]),
         operator_approved=True,
@@ -5841,6 +5860,43 @@ def _owned_continuation_window_for_job(
         scheduler_job_id=int(scheduler_job_id),
         expected_stage="WINDOW_1H",
         expected_window_kind="WINDOW_1H",
+    )
+
+
+def _bind_precreated_1h_campaign_window_before_e2z(
+    conn: sqlite3.Connection,
+    *,
+    step: sqlite3.Row,
+    memory_window_row_id: int,
+) -> dict[str, Any] | None:
+    """Bind the exact Scheduler-owned WINDOW_1H before Lane Q/E2Z."""
+    if step["scheduler_job_id"] is None:
+        return None
+    window = _owned_continuation_window_for_job(
+        conn, scheduler_job_id=int(step["scheduler_job_id"])
+    )
+    if window is None:
+        return None
+    if (
+        int(window["token_row_id"]) != int(step["token_id"])
+        or int(window["pair_row_id"]) != int(step["pair_id"])
+        or str(window["window_kind"]) != "WINDOW_1H"
+    ):
+        raise ValueError("WINDOW_1H_CAMPAIGN_WINDOW_IDENTITY_MISMATCH")
+    from printer_v1.operator_cli.operational_selective_1h import (
+        bind_precreated_1h_campaign_window_memory_row,
+    )
+
+    return bind_precreated_1h_campaign_window_memory_row(
+        conn,
+        campaign_id=str(window["campaign_id"]),
+        run_id=str(window["run_id"]),
+        cycle_id=str(window["cycle_id"]),
+        token_slot_id=str(window["token_slot_id"]),
+        token_row_id=int(step["token_id"]),
+        pair_row_id=int(step["pair_id"]),
+        campaign_window_id=str(window["window_id"]),
+        memory_window_row_id=int(memory_window_row_id),
     )
 
 
