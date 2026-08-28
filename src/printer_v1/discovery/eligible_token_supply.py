@@ -673,10 +673,15 @@ class ExhaustionCertificate:
 
 def persist_exhaustion_certificate(
     connection: sqlite3.Connection,
-    certificate: ExhaustionCertificate,
+    certificate: ExhaustionCertificate | Mapping[str, Any],
 ) -> None:
     if not _table_exists(connection, "printer_discovery_exhaustion_certificates"):
         return
+    payload = (
+        certificate.to_dict()
+        if isinstance(certificate, ExhaustionCertificate)
+        else dict(certificate)
+    )
     connection.execute(
         """INSERT INTO printer_discovery_exhaustion_certificates(
             certificate_id, campaign_id, execution_id, run_id, cycle_id,
@@ -685,17 +690,17 @@ def persist_exhaustion_certificate(
             created_at
         ) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
         (
-            certificate.certificate_id,
-            certificate.campaign_id,
-            certificate.execution_id,
-            certificate.run_id,
-            certificate.cycle_id,
-            certificate.required_eligible_capacity,
-            certificate.eligible_reserve_count,
-            certificate.shortage_classification,
-            json.dumps(certificate.to_dict(), sort_keys=True),
-            certificate.certificate_version,
-            certificate.created_at,
+            payload.get("certificate_id"),
+            payload.get("campaign_id"),
+            payload.get("execution_id"),
+            payload.get("run_id"),
+            payload.get("cycle_id"),
+            payload.get("required_eligible_capacity"),
+            payload.get("eligible_reserve_count"),
+            payload.get("shortage_classification"),
+            json.dumps(payload, sort_keys=True),
+            payload.get("certificate_version"),
+            payload.get("created_at"),
         ),
     )
 
@@ -961,6 +966,7 @@ def run_persistent_eligible_token_supply(
     cooperative_phase: str | None = None,
     cooperative_stage_budget: StageBudget | None = None,
     cooperative_direct_mode: str | None = None,
+    persist_terminal_certificate: bool = True,
 ) -> PersistentSupplyResult:
     """Run persistent multi-round eligible discovery inside one campaign.
 
@@ -2982,7 +2988,8 @@ def run_persistent_eligible_token_supply(
                     else acquisition_ledger.to_dict(now=_utc_now_iso())
                 ),
             )
-            persist_exhaustion_certificate(connection, certificate)
+            if persist_terminal_certificate:
+                persist_exhaustion_certificate(connection, certificate)
             connection.commit()
 
         # Build a synthetic front-door report compatible with existing consumers.

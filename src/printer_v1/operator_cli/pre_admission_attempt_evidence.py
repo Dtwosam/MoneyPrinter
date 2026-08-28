@@ -220,24 +220,28 @@ def rebuild_exhaustion_certificate_from_attempt_evidence(
     certificate: Mapping[str, Any] | None,
     reduced: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Replace action-local zeroes with the durable attempt-wide reduction."""
+    """Build certificate totals from the durable attempt-wide reduction.
+
+    Invocation-local certificate counters are descriptive only for cooperative
+    later-cycle execution. Once migration-062 attempt evidence exists, the
+    reducer is the terminal reporting authority; local values must never win by
+    ``max()`` or preserve a stale over-count.
+    """
     rebuilt = dict(certificate or {})
     for key in (
         "unique_tokens_observed",
         "rejected_count",
         "provider_failures",
     ):
-        rebuilt[key] = max(int(rebuilt.get(key) or 0), int(reduced.get(key) or 0))
-    durable_reasons = dict(reduced.get("rejection_reasons") or {})
-    base_reasons = dict(rebuilt.get("rejection_reasons") or {})
+        rebuilt[key] = int(reduced.get(key) or 0)
     rebuilt["rejection_reasons"] = {
-        reason: max(int(base_reasons.get(reason) or 0), int(count))
-        for reason, count in sorted({**base_reasons, **durable_reasons}.items())
+        str(reason): int(count)
+        for reason, count in sorted(
+            dict(reduced.get("rejection_reasons") or {}).items()
+        )
     }
     opportunities = list(reduced.get("opportunities_executed") or ())
-    rebuilt["discovery_rounds"] = max(
-        int(rebuilt.get("discovery_rounds") or 0), len(opportunities)
-    )
+    rebuilt["discovery_rounds"] = len(opportunities)
     rebuilt["attempt_evidence"] = dict(reduced)
     return rebuilt
 
@@ -345,7 +349,8 @@ def record_later_cycle_supply_evidence(
             }
         )
 
-    seen_candidate_events: set[str] = set()
+    seen_exact_this_claim: set[tuple[str, str]] = set()
+    seen_outcomes_this_claim: set[tuple[str, str, str]] = set()
     for index, candidate in enumerate(candidate_rows, start=1):
         mint = str(
             candidate.get("mint") or candidate.get("mint_identity") or ""
@@ -357,25 +362,37 @@ def record_later_cycle_supply_evidence(
             or candidate.get("pairAddress")
             or ""
         ).strip()
-        identity = mint or f"anonymous-{index}"
-        event_key = f"candidate:{identity}"
-        if event_key not in seen_candidate_events and connection.execute(
-            """SELECT 1 FROM printer_pre_admission_attempt_evidence
-               WHERE attempt_id=? AND event_key=?""",
-            (attempt_id, event_key),
-        ).fetchone() is None:
+        mint_key = mint or f"anonymous-{index}"
+        pair_key = pair or "NO_PAIR"
+        exact_key = (mint_key, pair_key)
+        if exact_key not in seen_exact_this_claim:
+            prior = connection.execute(
+                """SELECT 1 FROM printer_pre_admission_attempt_evidence
+                   WHERE attempt_id=?
+                     AND COALESCE(mint_identity,'')=?
+                     AND COALESCE(pair_identity,'')=?
+                     AND evidence_kind IN ('CANDIDATE_OBSERVED','CANDIDATE_REOBSERVED')
+                   LIMIT 1""",
+                (attempt_id, mint, pair),
+            ).fetchone()
             append(
-                event_key=event_key,
-                evidence_kind="CANDIDATE_OBSERVED",
+                event_key=(
+                    f"claim:{claim_ordinal}:candidate:{mint_key}:{pair_key}"
+                ),
+                evidence_kind=(
+                    "CANDIDATE_REOBSERVED" if prior is not None
+                    else "CANDIDATE_OBSERVED"
+                ),
                 mint_identity=(mint or None),
                 pair_identity=(pair or None),
                 payload={"candidate": dict(candidate)},
             )
-        seen_candidate_events.add(event_key)
+            seen_exact_this_claim.add(exact_key)
+
         reason = candidate.get("rejection") or candidate.get("reason")
         eligible = candidate.get("eligible")
         if reason and eligible is not True:
-            rejection_key = f"rejection:{identity}:{str(reason)}"
+            rejection_key = f"rejection:{mint_key}:{pair_key}:{str(reason)}"
             if connection.execute(
                 """SELECT 1 FROM printer_pre_admission_attempt_evidence
                    WHERE attempt_id=? AND event_key=?""",
@@ -390,21 +407,66 @@ def record_later_cycle_supply_evidence(
                     payload={"candidate": dict(candidate)},
                 )
 
-    certificate = dict(diagnostics.get("exhaustion_certificate") or {})
-    for reason, count in dict(certificate.get("rejection_reasons") or {}).items():
-        for ordinal in range(int(count)):
-            event_key = f"certificate-rejection:{reason}:{ordinal + 1}"
-            if connection.execute(
-                """SELECT 1 FROM printer_pre_admission_attempt_evidence
-                   WHERE attempt_id=? AND event_key=?""",
-                (attempt_id, event_key),
-            ).fetchone() is None:
+        duplicate_reason = candidate.get("duplicate_reason")
+        if duplicate_reason is None and candidate.get("already_used") is True:
+            duplicate_reason = "ALREADY_USED"
+        if duplicate_reason is None and candidate.get("duplicate") is True:
+            duplicate_reason = "DUPLICATE"
+        if duplicate_reason is not None:
+            key = ("DUPLICATE_OR_ALREADY_USED", mint_key, pair_key)
+            if key not in seen_outcomes_this_claim:
                 append(
-                    event_key=event_key,
-                    evidence_kind="CANDIDATE_REJECTED",
-                    categorical_reason=str(reason),
-                    payload={"certificate_aggregate_ordinal": ordinal + 1},
+                    event_key=(
+                        f"claim:{claim_ordinal}:duplicate:{mint_key}:{pair_key}"
+                    ),
+                    evidence_kind="DUPLICATE_OR_ALREADY_USED",
+                    mint_identity=(mint or None),
+                    pair_identity=(pair or None),
+                    categorical_reason=str(duplicate_reason),
+                    payload={"candidate": dict(candidate)},
                 )
+                seen_outcomes_this_claim.add(key)
+
+        liquidity = candidate.get("liquidity")
+        liquidity_status = candidate.get("liquidity_status")
+        if liquidity_status is None and isinstance(liquidity, Mapping):
+            liquidity_status = liquidity.get("status")
+        outcome_values = (
+            ("EXACT_PAIR_RESULT", "exact_pair_confirmed", candidate.get("exact_pair_confirmed")),
+            ("PUMPSWAP_RESULT", "pumpswap_confirmed", candidate.get("pumpswap_confirmed")),
+            ("LIQUIDITY_RESULT", "liquidity_status", liquidity_status),
+            (
+                "SAFETY_EVIDENCE_RESULT",
+                "safety_evidence_status",
+                candidate.get("safety_evidence_status")
+                if candidate.get("safety_evidence_status") is not None
+                else candidate.get("holder_evidence_status"),
+            ),
+            ("INVENTORY_RESULT", "inventory_status", candidate.get("inventory_status")),
+        )
+        for evidence_kind, value_name, raw_value in outcome_values:
+            if raw_value is None:
+                continue
+            outcome_key = (evidence_kind, mint_key, pair_key)
+            if outcome_key in seen_outcomes_this_claim:
+                continue
+            if isinstance(raw_value, bool):
+                categorical = "CONFIRMED" if raw_value else "NOT_CONFIRMED"
+            else:
+                categorical = str(raw_value)
+            append(
+                event_key=(
+                    f"claim:{claim_ordinal}:outcome:{evidence_kind}:"
+                    f"{mint_key}:{pair_key}"
+                ),
+                evidence_kind=evidence_kind,
+                mint_identity=(mint or None),
+                pair_identity=(pair or None),
+                categorical_reason=categorical,
+                payload={value_name: raw_value, "candidate": dict(candidate)},
+            )
+            seen_outcomes_this_claim.add(outcome_key)
+
     terminal = getattr(supply, "terminal_cause", None)
     if terminal not in (None, "WAITING_FOR_ELIGIBLE_SUPPLY", "ACQUISITION_QUANTUM_YIELDED"):
         append(

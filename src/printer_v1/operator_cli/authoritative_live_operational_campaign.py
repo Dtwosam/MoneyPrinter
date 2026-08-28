@@ -2446,6 +2446,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
             )
             from printer_v1.discovery.eligible_token_supply import (
                 ACQUISITION_QUANTUM_YIELDED,
+                persist_exhaustion_certificate,
             )
 
             if db_path is None or configuration_id is None:
@@ -2791,22 +2792,64 @@ class AuthoritativeLiveOperationalCampaignOwner:
                                 raise LiveOperationalError(
                                     "LATER_CYCLE_EXHAUSTION_CERTIFICATE_ID_MISSING"
                                 )
-                            original_json = json.dumps(
-                                dict(certificate), sort_keys=True
-                            )
                             rebuilt_json = json.dumps(
                                 rebuilt_certificate, sort_keys=True
                             )
-                            updated = connection.execute(
-                                """UPDATE printer_discovery_exhaustion_certificates
-                                      SET certificate_json=?
-                                    WHERE certificate_id=? AND certificate_json=?""",
-                                (rebuilt_json, certificate_id, original_json),
-                            )
-                            if updated.rowcount != 1:
-                                raise LiveOperationalError(
-                                    "LATER_CYCLE_EXHAUSTION_CERTIFICATE_CAS_FAILED"
+                            existing_certificate = connection.execute(
+                                """SELECT campaign_id,execution_id,run_id,cycle_id,
+                                          certificate_json
+                                     FROM printer_discovery_exhaustion_certificates
+                                    WHERE certificate_id=?""",
+                                (certificate_id,),
+                            ).fetchone()
+                            if existing_certificate is None:
+                                # Normal cooperative production path: local supply
+                                # persistence was deferred, so the attempt-wide
+                                # reducer owns the first durable certificate write.
+                                persist_exhaustion_certificate(
+                                    connection, rebuilt_certificate
                                 )
+                            else:
+                                # Compatibility for an exact preexisting local
+                                # certificate (including historical/injected paths).
+                                # Never overwrite a different identity or unknown
+                                # payload under the same certificate id.
+                                expected_identity = tuple(
+                                    str(rebuilt_certificate.get(key) or "")
+                                    for key in (
+                                        "campaign_id",
+                                        "execution_id",
+                                        "run_id",
+                                        "cycle_id",
+                                    )
+                                )
+                                observed_identity = tuple(
+                                    str(existing_certificate[index] or "")
+                                    for index in range(4)
+                                )
+                                if observed_identity != expected_identity:
+                                    raise LiveOperationalError(
+                                        "LATER_CYCLE_EXHAUSTION_CERTIFICATE_IDENTITY_CONFLICT"
+                                    )
+                                existing_json = str(existing_certificate[4] or "")
+                                if existing_json != rebuilt_json:
+                                    original_json = json.dumps(
+                                        dict(certificate), sort_keys=True
+                                    )
+                                    if existing_json != original_json:
+                                        raise LiveOperationalError(
+                                            "LATER_CYCLE_EXHAUSTION_CERTIFICATE_CAS_FAILED"
+                                        )
+                                    updated = connection.execute(
+                                        """UPDATE printer_discovery_exhaustion_certificates
+                                              SET certificate_json=?
+                                            WHERE certificate_id=? AND certificate_json=?""",
+                                        (rebuilt_json, certificate_id, original_json),
+                                    )
+                                    if updated.rowcount != 1:
+                                        raise LiveOperationalError(
+                                            "LATER_CYCLE_EXHAUSTION_CERTIFICATE_CAS_FAILED"
+                                        )
                             diagnostics["exhaustion_certificate"] = rebuilt_certificate
                             supply = replace(supply, diagnostics=diagnostics)
                         yielded_source_operations.pop(attempt_id, None)
@@ -3949,6 +3992,32 @@ class AuthoritativeLiveOperationalCampaignOwner:
                             now=evaluated.isoformat(),
                             cooperative_stage_budget=cooperative_stage_budget,
                         )
+                        from printer_v1.discovery.permanent_discovery_availability import (
+                            build_campaign_source_request_scope,
+                        )
+                        from printer_v1.operator_cli.later_cycle_graduated_supply import (
+                            _source_lineage,
+                        )
+                        from printer_v1.db.sqlite_write_contracts import connect_operational
+
+                        refresh_scope = build_campaign_source_request_scope(
+                            execution_id=(
+                                f"{selection_seed}:c"
+                                f"{int(context['proposed_cycle_ordinal']):04d}"
+                            ),
+                            campaign_id=str(context["campaign_id"]),
+                            run_id=str(context["campaign_run_id"]),
+                            cycle_id=str(context["proposed_cycle_id"]),
+                        )
+                        refresh_lineage_connection = connect_operational(command.db_path)
+                        try:
+                            refresh_lineage = _source_lineage(
+                                refresh_lineage_connection,
+                                request_key_root=refresh_scope.request_key_root,
+                                required=False,
+                            )
+                        finally:
+                            refresh_lineage_connection.close()
                         if outcome.status == WAITING_FOR_ELIGIBLE_SUPPLY:
                             completed_partial_operations = int(
                                 outcome.source_operations
@@ -3966,7 +4035,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                             )
                             return LaterCycleCandidateSupply(
                                 (),
-                                (),
+                                refresh_lineage,
                                 WAITING_FOR_ELIGIBLE_SUPPLY,
                                 {
                                     "stage_local_source_requests": prior_operations,
@@ -3981,7 +4050,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                             later_cycle_progress.pop(progress_key, None)
                             return LaterCycleCandidateSupply(
                                 (),
-                                (),
+                                refresh_lineage,
                                 terminal,
                                 {
                                     "stage_local_source_requests": prior_operations
@@ -4014,7 +4083,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                         # batch can start under the same claim.
                         return LaterCycleCandidateSupply(
                             (),
-                            (),
+                            refresh_lineage,
                             "ACQUISITION_QUANTUM_YIELDED",
                             {
                                 "stage_local_source_requests": prior_operations,
@@ -4045,7 +4114,10 @@ class AuthoritativeLiveOperationalCampaignOwner:
                         execution_id=selection_seed,
                         selection_seed=str(context["selection_seed"]),
                         migration_transport=migration_transport,
-                        graduated_supply_kwargs=later_supply_kwargs,
+                        graduated_supply_kwargs={
+                            **later_supply_kwargs,
+                            "persist_terminal_certificate": False,
+                        },
                         holder_evidence_owner=holder_evidence_owner,
                         deadline_at=later_cycle_deadline,
                         temporal_refresh_owner=later_cycle_refresh_owner,

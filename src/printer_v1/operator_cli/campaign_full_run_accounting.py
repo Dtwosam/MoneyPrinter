@@ -3209,6 +3209,7 @@ def reservation_identities_from_durable_records(
     token_id: int,
     pair_id: int,
     records: Sequence[Mapping[str, Any]],
+    source_unit_manifest: Sequence[Mapping[str, Any]] = (),
 ) -> list[LifecycleReservationIdentity]:
     """Reconstruct every exact reservation preserved across step claims.
 
@@ -3217,7 +3218,24 @@ def reservation_identities_from_durable_records(
     """
     stage_id = _slot_stage_id(context, int(slot_ordinal))
     job_id = int(scheduler_job_id)
-    exact: dict[int, dict[str, Any]] = {}
+    exact: dict[int, Mapping[str, Any]] = {}
+    expected_source_units: dict[int, str] = {}
+    if str(step_kind) in PRE_CLOSE_STEP_KINDS:
+        for offset, unit in enumerate(source_unit_manifest, start=1):
+            if not isinstance(unit, Mapping):
+                raise FullRunAccountingError(
+                    "PRECLOSE_SOURCE_UNIT_MANIFEST_INVALID"
+                )
+            identity = str(unit.get("source_unit_identity") or "").strip()
+            if not identity or identity in expected_source_units.values():
+                raise FullRunAccountingError(
+                    "PRECLOSE_SOURCE_UNIT_MANIFEST_INVALID"
+                )
+            expected_source_units[job_id * 100 + offset] = identity
+        if not expected_source_units:
+            raise FullRunAccountingError(
+                "PRECLOSE_SOURCE_UNIT_MANIFEST_INVALID"
+            )
     for raw in records:
         if not isinstance(raw, Mapping):
             raise FullRunAccountingError("LIFECYCLE_RESERVATION_RECORD_INVALID")
@@ -3259,10 +3277,15 @@ def reservation_identities_from_durable_records(
             continue
         if str(step_kind) in PRE_CLOSE_STEP_KINDS:
             offset = ordinal - job_id * 100
+            source_unit_identity = str(
+                record.get("source_unit_identity") or ""
+            ).strip()
             if (
-                not str(record.get("source_unit_identity") or "").strip()
+                not source_unit_identity
                 or offset < 1
                 or offset > PRECLOSE_CONTEXT_REQUEST_COUNT
+                or ordinal not in expected_source_units
+                or expected_source_units[ordinal] != source_unit_identity
             ):
                 raise FullRunAccountingError(
                     "PRECLOSE_LIFECYCLE_RESERVATION_IDENTITY_INVALID"
@@ -4174,6 +4197,9 @@ def finalize_full_run_ownership_and_report(
                             token_id=token_id,
                             pair_id=pair_id,
                             records=raw_reservations,
+                            source_unit_manifest=(
+                                step_result.get("source_unit_manifest") or ()
+                            ),
                         )
                     )
                 except FullRunAccountingError:

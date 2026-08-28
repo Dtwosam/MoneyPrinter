@@ -6536,6 +6536,41 @@ def _lifecycle_reservation_records_for_step(
     return records
 
 
+def _persist_preclose_reservation_manifest_before_provider(
+    conn: sqlite3.Connection,
+    *,
+    pending: sqlite3.Row,
+    reservation_records: Sequence[Mapping[str, Any]],
+) -> None:
+    """Commit the cumulative reservation manifest before provider execution."""
+    step_kind = str(pending["step_kind"] or "")
+    if step_kind not in PRE_CLOSE_STEP_KINDS:
+        raise ValueError("PRE_CLOSE_RESERVATION_CHECKPOINT_STEP_INVALID")
+    current = conn.execute(
+        "SELECT * FROM printer_memory_factory_run_steps WHERE id=?",
+        (int(pending["id"]),),
+    ).fetchone()
+    if current is None or str(current["step_status"] or "") != "RUNNING":
+        raise ValueError("PRE_CLOSE_RESERVATION_CHECKPOINT_OWNER_INVALID")
+    payload = _preclose_result_base(current)
+    payload["lifecycle_reservations"] = [
+        dict(item) for item in reservation_records
+    ]
+    updated = conn.execute(
+        """UPDATE printer_memory_factory_run_steps
+              SET result_json=?, updated_at=?
+            WHERE id=? AND step_status='RUNNING'""",
+        (
+            json.dumps(payload, sort_keys=True),
+            datetime.now(timezone.utc).isoformat(),
+            int(pending["id"]),
+        ),
+    )
+    if updated.rowcount != 1:
+        raise ValueError("PRE_CLOSE_RESERVATION_CHECKPOINT_CAS_FAILED")
+    conn.commit()
+
+
 def _merge_lifecycle_reservation_records(
     prior_records: Sequence[Mapping[str, Any]],
     current_records: Sequence[Mapping[str, Any]],
@@ -10112,6 +10147,12 @@ def run_one_command_15m_factory(
                     prior_reservation_records,
                     reservation_records,
                 )
+                if str(pending["step_kind"]) in PRE_CLOSE_STEP_KINDS:
+                    _persist_preclose_reservation_manifest_before_provider(
+                        conn,
+                        pending=pending,
+                        reservation_records=merged_reservations["records"],
+                    )
                 if lifecycle_operation_observer is not None:
                     for reservation_record in merged_reservations["new_records"]:
                         lifecycle_operation_observer(reservation_record)

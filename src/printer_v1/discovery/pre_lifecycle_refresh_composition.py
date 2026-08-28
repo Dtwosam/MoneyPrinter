@@ -134,6 +134,79 @@ def _dedup_exact_identities(items: list[Mapping[str, Any]]) -> tuple[dict[str, s
     return tuple(result)
 
 
+def _cooperative_checkpointed_request(
+    connection: sqlite3.Connection,
+    *,
+    request_key: str,
+    prefix: bool = False,
+    allow_many: bool = False,
+) -> bool:
+    """True only for terminal source work already sealed into attempt evidence.
+
+    A durable source row without attempt evidence means the previous claim did
+    not cross its cooperative checkpoint. Repeating that provider call would be
+    unsafe, so the refresh fails closed instead.
+    """
+    comparator = "LIKE" if prefix else "="
+    value = f"{request_key}%" if prefix else request_key
+    rows = connection.execute(
+        f"SELECT id FROM printer_source_requests WHERE request_key {comparator} ? ORDER BY id",
+        (value,),
+    ).fetchall()
+    if not rows:
+        return False
+    if not allow_many and len(rows) != 1:
+        raise PreLifecycleRefreshCompositionError(
+            "COOPERATIVE_REFRESH_REQUEST_IDENTITY_AMBIGUOUS"
+        )
+    table = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' "
+        "AND name='printer_pre_admission_attempt_evidence'"
+    ).fetchone()
+    if table is None:
+        raise PreLifecycleRefreshCompositionError(
+            "COOPERATIVE_REFRESH_ATTEMPT_EVIDENCE_MISSING"
+        )
+    for (request_id,) in rows:
+        responses = int(connection.execute(
+            "SELECT COUNT(*) FROM printer_source_responses WHERE source_request_id=?",
+            (int(request_id),),
+        ).fetchone()[0])
+        failures = int(connection.execute(
+            "SELECT COUNT(*) FROM printer_source_failures WHERE source_request_id=?",
+            (int(request_id),),
+        ).fetchone()[0])
+        if responses + failures != 1:
+            raise PreLifecycleRefreshCompositionError(
+                "COOPERATIVE_REFRESH_REQUEST_TERMINAL_AMBIGUOUS"
+            )
+        checkpointed = int(connection.execute(
+            """SELECT COUNT(*) FROM printer_pre_admission_attempt_evidence
+               WHERE source_request_id=?
+                 AND evidence_kind IN ('SOURCE_REQUEST_TERMINAL','PROVIDER_FAILURE')""",
+            (int(request_id),),
+        ).fetchone()[0])
+        if checkpointed != 1:
+            raise PreLifecycleRefreshCompositionError(
+                "COOPERATIVE_REFRESH_REQUEST_NOT_CHECKPOINTED"
+            )
+    return True
+
+
+def _cooperative_next_request_bound_seconds() -> float:
+    from printer_v1.discovery.eligible_token_supply import (
+        AcquisitionQuantumKind,
+        acquisition_governed_request_bound,
+    )
+    return float(
+        acquisition_governed_request_bound(
+            AcquisitionQuantumKind.DIRECT_MIGRATION,
+            request_kind="PUMPSWAP_EXACT_VERIFICATION",
+            checkpoint_reserve_seconds=5.0,
+        ).worst_case_seconds
+    )
+
+
 def build_pre_lifecycle_refresh_stage(
     *,
     db_path: str | Path,
@@ -233,6 +306,26 @@ def build_pre_lifecycle_refresh_stage(
             source_operations += used
             return used
 
+        def cooperative_result(next_kind: str) -> Mapping[str, Any]:
+            return {
+                "source_operations": source_operations,
+                "provider_failures": provider_failures,
+                "channels_unavailable": tuple(dict.fromkeys(channels_unavailable)),
+                "channels_attempted": tuple(channels_attempted),
+                "channels_skipped": tuple(channels_skipped),
+                "newly_observed_exact_identities": _dedup_exact_identities(
+                    observed_identities
+                ),
+                "promoted_observation_eligible": tuple(promoted),
+                "stage_reports": stage_reports,
+                "budget_exhausted_before_refresh": False,
+                "cooperative_incomplete": True,
+                "next_governed_request_kind": str(next_kind),
+                "next_governed_request_worst_case_seconds": (
+                    _cooperative_next_request_bound_seconds()
+                ),
+            }
+
         rotated_channels = _rotated_fresh_channels(refresh_ordinal)
         selected_channels = (
             rotated_channels[:1] if cooperative_yield else rotated_channels
@@ -328,6 +421,19 @@ def build_pre_lifecycle_refresh_stage(
                         {"channel": channel, "reason": "SOURCE_BUDGET_EXHAUSTED"}
                     )
                     continue
+                dex_request_key = (
+                    f"{request_key_prefix}-refresh-{refresh_ordinal}-dex-fresh"
+                )
+                if cooperative_yield and _cooperative_checkpointed_request(
+                    connection, request_key=dex_request_key
+                ):
+                    channels_attempted.append(channel)
+                    stage_reports[channel] = {
+                        "status": "COOPERATIVE_CHECKPOINT_REPLAY",
+                        "source_requests": 0,
+                        "request_key": dex_request_key,
+                    }
+                    continue
                 stage_budget.consume(fresh_budget_stage, 1)
                 channels_attempted.append(channel)
                 from printer_v1.operator_cli.graduated_supply_front_door import (
@@ -338,9 +444,7 @@ def build_pre_lifecycle_refresh_stage(
                     run_fresh_profile_locator(
                         refresh_db_path,
                         transport=locator_transport,
-                        request_key=(
-                            f"{request_key_prefix}-refresh-{refresh_ordinal}-dex-fresh"
-                        ),
+                        request_key=dex_request_key,
                         now=now,
                         stage_evidence_sink=stage_evidence_sink,
                         transport_identity_observer=transport_identity_observer,
@@ -387,14 +491,25 @@ def build_pre_lifecycle_refresh_stage(
                         {"channel": channel, "reason": "SOURCE_BUDGET_EXHAUSTED"}
                     )
                     continue
+                gt_request_key = (
+                    f"{request_key_prefix}-refresh-{refresh_ordinal}-gt-new-pools"
+                )
+                if cooperative_yield and _cooperative_checkpointed_request(
+                    connection, request_key=gt_request_key
+                ):
+                    channels_attempted.append(channel)
+                    stage_reports[channel] = {
+                        "status": "COOPERATIVE_CHECKPOINT_REPLAY",
+                        "source_requests": 0,
+                        "request_key": gt_request_key,
+                    }
+                    continue
                 stage_budget.consume(fresh_budget_stage, 1)
                 channels_attempted.append(channel)
                 report = dict(
                     run_geckoterminal_fresh_nomination(
                         connection,
-                        request_key=(
-                            f"{request_key_prefix}-refresh-{refresh_ordinal}-gt-new-pools"
-                        ),
+                        request_key=gt_request_key,
                         now=now,
                         campaign_id=campaign_id,
                         run_id=run_id,
@@ -420,12 +535,32 @@ def build_pre_lifecycle_refresh_stage(
                     if isinstance(item, Mapping)
                 )
 
+        if cooperative_yield and source_operations > 0:
+            connection.commit()
+            return cooperative_result(UNKNOWN_LIQUIDITY_BACKUP_CHANNEL)
+
         # Conversion/reconciliation owners run after all fresh source channels.
         # Candidate-local absence/failure in one source never suppresses peers.
         conversion_allowed = not (
             cooperative_yield and selected_channels == (PUMP_FRESH_CHANNEL,)
         )
-        if (
+        backup_request_prefix = (
+            f"{request_key_prefix}-refresh-{refresh_ordinal}-liq-backup"
+        )
+        backup_checkpointed = bool(
+            cooperative_yield
+            and _cooperative_checkpointed_request(
+                connection, request_key=backup_request_prefix, prefix=True
+            )
+        )
+        if backup_checkpointed:
+            channels_attempted.append(UNKNOWN_LIQUIDITY_BACKUP_CHANNEL)
+            stage_reports[UNKNOWN_LIQUIDITY_BACKUP_CHANNEL] = {
+                "status": "COOPERATIVE_CHECKPOINT_REPLAY",
+                "source_requests": 0,
+                "request_key_prefix": backup_request_prefix,
+            }
+        elif (
             conversion_allowed
             and budget_left() >= 1
             and stage_budget.available("reconciliation") >= 1
@@ -439,9 +574,7 @@ def build_pre_lifecycle_refresh_stage(
                     campaign_id=campaign_id,
                     run_id=run_id,
                     cycle_id=cycle_id,
-                    request_key_prefix=(
-                        f"{request_key_prefix}-refresh-{refresh_ordinal}-liq-backup"
-                    ),
+                    request_key_prefix=backup_request_prefix,
                     dexscreener_transport_factory=(
                         dexscreener_backup_transport_factory
                     ),
@@ -468,6 +601,20 @@ def build_pre_lifecycle_refresh_stage(
                 }
             )
 
+        if cooperative_yield and source_operations > 0:
+            connection.commit()
+            return cooperative_result(PROTOCOL_CONFIRMATION_CHANNEL)
+
+        protocol_request_prefix = (
+            f"{request_key_prefix}-refresh-{refresh_ordinal}-protocol"
+        )
+        if cooperative_yield:
+            _cooperative_checkpointed_request(
+                connection,
+                request_key=protocol_request_prefix,
+                prefix=True,
+                allow_many=True,
+            )
         if (
             conversion_allowed
             and budget_left() >= 1
@@ -502,7 +649,7 @@ def build_pre_lifecycle_refresh_stage(
                     ),
                     stage_sequence=protocol_stage_sequence,
                     request_key_prefix=(
-                        f"{request_key_prefix}-refresh-{refresh_ordinal}-protocol"
+                        protocol_request_prefix
                         + (
                             f"-q{protocol_stage_sequence}"
                             if cooperative_yield
@@ -533,6 +680,9 @@ def build_pre_lifecycle_refresh_stage(
             raise PreLifecycleRefreshCompositionError(
                 "REFRESH_SOURCE_OPERATION_BUDGET_OVERRUN"
             )
+        if cooperative_yield and source_operations > 0:
+            connection.commit()
+            return cooperative_result(PROTOCOL_CONFIRMATION_CHANNEL)
 
         return {
             "source_operations": source_operations,

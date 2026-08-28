@@ -533,6 +533,10 @@ def test_durable_preclose_reservations_reconstruct_all_owner_identities() -> Non
         token_id=1,
         pair_id=2,
         records=records,
+        source_unit_manifest=(
+            {"source_unit_identity": "UNIT_A"},
+            {"source_unit_identity": "UNIT_B"},
+        ),
     )
     assert [item.reservation_ordinal for item in identities] == [901, 902]
 
