@@ -140,3 +140,90 @@ Exact next permitted lane:
 That gate may inspect and prepare the controlled migration procedure. It does
 not itself authorize migration application, a new authorization, or live
 Printer execution.
+
+## 8. Independent follow-up code review and corrective proof
+
+This section is the controlling follow-up addendum to the implementation
+closeout above where it adds stricter evidence or corrects the earlier proof
+record.
+
+Independent review of the actual implementation baseline
+`ea8d8d633994245a597bd4aae64fb5e303cbcd97` found five additional correctness
+gaps inside the already-approved four-defect repair scope. They were corrected
+in product-code commit:
+
+`91ec3131318f5bff4d3c6dfed12b09c5b6747827`
+
+The governing Cycle-2 amendment in the current repository is unambiguously:
+
+`docs/printer-v1-v2-9-8b-cycle-2-cooperative-acquisition-design-amendment.md`
+
+with verdict:
+
+`V2_9_8B_CYCLE_2_COOPERATIVE_ACQUISITION_DESIGN_AMENDMENT_PASS`
+
+No duplicate amendment under an alternate filename is adopted by this
+closeout.
+
+### 8.1 Follow-up repairs
+
+The corrective commit closes these five gaps without expanding V1 scope:
+
+1. Cooperative delayed-refresh composition now returns after at most one newly
+   executed Source-Governed request per claim. Durable terminal requests are
+   replayed only after exact request-terminal lineage and attempt-evidence
+   checkpoint ownership are established; ambiguous or incomplete lineage fails
+   closed rather than reissuing provider work.
+2. Attempt evidence preserves exact `(mint,pair)` candidate observations and
+   re-observations plus exact-pair, PumpSwap, liquidity, safety, inventory, and
+   provider-failure outcomes. Event-key replay remains exact-idempotent and
+   conflicting reuse fails closed.
+3. The attempt reducer is the terminal certificate count authority. Rebuilt
+   counts come from durable attempt-wide evidence rather than stale invocation-
+   local lower bounds. Cooperative Cycle-2 defers ordinary local terminal
+   certificate persistence until that reduction. If an exact pre-existing
+   certificate identity is encountered, only an exact expected original payload
+   may be compare-and-swap reduced; identity or payload conflict fails closed.
+4. PRE_CLOSE now persists the cumulative durable reservation checkpoint before
+   provider execution. Only newly added reservation records are emitted to the
+   action-local observer, preserving replay idempotency while retaining prior
+   reservations across claims.
+5. Full-run PRE_CLOSE reconstruction now requires the immutable exact source-
+   unit manifest and checks every durable reservation ordinal/source-unit
+   identity against it. Missing, duplicate, malformed, or mismatched manifest
+   evidence fails closed.
+
+### 8.2 Independent bounded proof
+
+The follow-up repair was proved offline/disposably with:
+
+- follow-up regressions: **5 passed**;
+- retained original orchestration proof: **22 passed**; and
+- nearby affected acceptance families: **167 passed, 1 deselected, 8 subtests
+  passed**.
+
+The one deselected nearby test is the authoritative-DB identity check. Hosted
+GitHub checkout intentionally did not contain `data/printer_v1.sqlite3`, so the
+test could not truthfully execute there. It was not rewritten, weakened, or
+replaced with a synthetic authoritative DB. The repair commit itself does not
+touch `data/printer_v1.sqlite3`, and the workflow explicitly checked that no DB
+diff was present.
+
+Changed-module compilation and `git diff --check` also passed. The final proof
+workflow's overall GitHub status was non-success only because its last
+`git push --force-with-lease` used a stale triggering lease after the repair
+branch had already advanced to `91ec3131`; all substantive test and static gates
+had completed successfully before that push-only failure. The ephemeral CI
+commit was therefore not used as the repository identity claim. Critical code
+and the one-commit `ea8d8d6..91ec3131` repair scope were inspected directly on
+the repository branch.
+
+Independent follow-up verdict:
+
+`V2_9_8B_4_2_2_ORCHESTRATION_CORRECTNESS_FOLLOWUP_REPAIR_PASS`
+
+This follow-up verdict authorizes no migration application, authorization,
+campaign, provider/RPC/WebSocket contact, Scheduler execution against the
+authoritative database, retrieval, financial capability, or longer window.
+The next permitted lane remains the read-only migration-062 controlled
+application readiness / authority gate.
