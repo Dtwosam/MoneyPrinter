@@ -191,3 +191,43 @@ Separate operator approval remains required before any later one-shot execution.
 
 Permanent V1 locks remain unchanged.
 <!-- V2_9_8B_REMOTE_HOST_PAUSE_MEMORY_GROWTH_RETURN_CURRENT_STATE_END -->
+
+<!-- V2_9_8B_POST_MIGRATION_062_READINESS_CURRENT_STATE_START -->
+## V2-9.8B Post-Migration 062 Fresh Next-Bounded-Campaign Readiness — Current Authority
+
+This block supersedes older current-looking migration, post-campaign,
+remote-host, and next-bounded-campaign readiness pointers for current-lane
+selection. Historical text remains evidence only.
+
+- migration application verdict:
+  `V2_9_8B_MIGRATION_062_CONTROLLED_APPLICATION_PASS`
+- migration-application synchronization commit:
+  `52bf15365bbf500ffe61f1b49a4d9ca38d1c3363`
+- authoritative DB SHA-256:
+  `dececa7ce402856978675c66ecbdfd23b88ed97e3ff23f282a2588a436c93836`
+- migration state: `62 / 062_pre_admission_attempt_evidence.sql`
+- reviewed product-code repair:
+  `91ec3131318f5bff4d3c6dfed12b09c5b6747827`
+- consumed authorization
+  `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260827T122355Z_8e43eae7`
+  remains permanently non-reusable
+- readiness verdict:
+  `V2_9_8B_POST_MIGRATION_FRESH_NEXT_BOUNDED_CAMPAIGN_READINESS_GOVERNANCE_PASS`
+- historical `NO_PAIR / DURATION_EXHAUSTION` classification remains
+  `EXPECTED_OPERATIONAL_BLOCKER__NO_CODE_CHANGE`
+- no campaign, authorization, provider/RPC/WebSocket, Source Governor, Central
+  Scheduler, retrieval, financial, or remote-host action occurred in readiness
+
+Governing closeout:
+
+`docs/printer-v1-v2-9-8b-post-migration-062-fresh-next-bounded-campaign-readiness-governance-closeout.md`
+
+The exact current permitted lane is:
+
+`FRESH EXACT-HEAD / EXACT-DB ONE-SHOT AUTHORIZATION PREPARATION / INDEPENDENT REVIEW`
+
+Any fresh authorization must bind the final committed readiness HEAD and the
+exact DB SHA above. Preparation/review does not execute Printer, and later
+consumption/execution requires separate explicit operator approval. All
+permanent V1 locks remain unchanged.
+<!-- V2_9_8B_POST_MIGRATION_062_READINESS_CURRENT_STATE_END -->

@@ -2,7 +2,16 @@
 
 ## Current lane
 
-`V2-9.8B POST-MIGRATION FRESH NEXT-BOUNDED-CAMPAIGN READINESS / GOVERNANCE ONLY`
+`FRESH EXACT-HEAD / EXACT-DB ONE-SHOT AUTHORIZATION PREPARATION / INDEPENDENT REVIEW`
+
+The post-migration fresh next-bounded-campaign readiness/governance audit is
+closed:
+
+`V2_9_8B_POST_MIGRATION_FRESH_NEXT_BOUNDED_CAMPAIGN_READINESS_GOVERNANCE_PASS`
+
+Readiness closeout:
+
+`docs/printer-v1-v2-9-8b-post-migration-062-fresh-next-bounded-campaign-readiness-governance-closeout.md`
 
 The explicitly approved controlled application of migration 062 is closed:
 
@@ -41,6 +50,14 @@ Its parent implementation baseline is:
 
 `ea8d8d633994245a597bd4aae64fb5e303cbcd97`
 
+Migration-application synchronization commit:
+
+`52bf15365bbf500ffe61f1b49a4d9ca38d1c3363`
+
+The final readiness commit is the repository HEAD containing this handoff and
+the governing readiness closeout. A later authorization must bind that exact
+committed readiness HEAD, not the synchronization baseline alone.
+
 The current branch HEAD is a documentation-only governance successor of that
 reviewed product-code commit. The follow-up closeout addendum was recorded by
 documentation commit `02b9da8c000c3c44a846efda8053159939cda5a4`;
@@ -69,6 +86,14 @@ Consumed authorization:
 It remains permanently consumed and non-reusable.
 
 ## Latest completed work
+
+The post-migration readiness/governance audit independently re-proved the exact
+post-062 DB identity, ledger, integrity, foreign keys, schema objects, zero
+initial evidence rows, critical-count continuity, rollback backup, runtime
+quiescence, reviewed-repair ancestry, all 12 zero-state domains, consumed
+authorization non-reuse, and the adopted 4/2/2 operational envelope. Focused
+offline proof passed 8 tests. The prior `NO_PAIR / DURATION_EXHAUSTION` remains
+`EXPECTED_OPERATIONAL_BLOCKER__NO_CODE_CHANGE`; no repair lane is justified.
 
 Migration 062 was applied exactly once through the canonical migration runner
 after exact operator approval. The fresh byte-identical backup, disposable
@@ -124,18 +149,16 @@ Remote-host / VPS work remains paused and preserved separately at branch
 
 ## Exact next permitted action
 
-Perform the **read-only post-migration fresh next-bounded-campaign readiness /
-governance phase**. It may establish the exact final Git identity, new
-authoritative DB identity and health, migration-062 continuity, runtime
-quiescence, historical evidence continuity, consumed-authorization non-reuse,
-and permanent-lock continuity.
+Prepare and independently review, in a separate explicitly scoped lane, a fresh
+one-shot authorization bound to the exact final readiness commit HEAD and exact
+authoritative DB SHA
+`dececa7ce402856978675c66ecbdfd23b88ed97e3ff23f282a2588a436c93836`.
 
-This handoff does **not** authorize preparing, creating, or applying a new
-authorization; running Printer; contacting providers/RPC/WebSocket; running
-Central Scheduler; mutating the authoritative DB; resuming remote-host work; or
-unlocking retrieval, financial capability, or longer windows. Any later
-authorization preparation/review remains a separate lane after readiness PASS,
-and execution would still require separate explicit operator approval.
+This handoff does **not** create, apply, or consume an authorization; run
+Printer; contact providers/RPC/WebSocket; run Central Scheduler; mutate the
+authoritative DB; start a campaign; resume remote-host work; or unlock
+retrieval, financial capability, or longer windows. Any later execution still
+requires separate explicit operator approval.
 
 ## Permanent locks
 

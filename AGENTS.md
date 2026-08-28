@@ -45,7 +45,7 @@ Every major capability must preserve:
 Use minimum sufficient risk-based verification. Do not request broad regression
 suites unless the change risk or lane closeout requires them.
 
-### Current V2-9.8B migration-062 readiness lane
+### Current V2-9.8B post-migration-062 readiness closeout
 
 The consumed 4/2/2 campaign forensic audit proved four product defects. The
 orchestration-correctness design and narrow Cycle-2 existing-owner amendment
@@ -58,17 +58,31 @@ Governing closeout:
 
 `docs/printer-v1-v2-9-8b-4-2-2-orchestration-correctness-implementation-closeout.md`
 
+Migration 062 was explicitly approved, applied exactly once through the
+canonical migration runner, and independently re-verified. The authoritative
+database is at `62 / 062_pre_admission_attempt_evidence.sql`, with exact SHA-256
+`dececa7ce402856978675c66ecbdfd23b88ed97e3ff23f282a2588a436c93836`.
+
+The post-migration fresh next-bounded-campaign readiness/governance audit is
+closed:
+
+`V2_9_8B_POST_MIGRATION_FRESH_NEXT_BOUNDED_CAMPAIGN_READINESS_GOVERNANCE_PASS`
+
+Governing closeout:
+
+`docs/printer-v1-v2-9-8b-post-migration-062-fresh-next-bounded-campaign-readiness-governance-closeout.md`
+
 The exact current permitted lane is:
 
-`V2-9.8B MIGRATION 062 — CONTROLLED APPLICATION READINESS / AUTHORITY GATE`
+`FRESH EXACT-HEAD / EXACT-DB ONE-SHOT AUTHORIZATION PREPARATION / INDEPENDENT REVIEW`
 
-Remote-host work remains paused and preserved separately. Migration 062 was
-proved only on disposable databases and is not applied to the authoritative
-database. This lane permits read-only readiness review and an explicit future
-application-approval decision only. It does not authorize applying migration
-062, creating an authorization, running Printer, contacting providers/RPC/
-WebSocket, running Central Scheduler against the authoritative database, or
-mutating the authoritative database.
+That lane may prepare and independently review a fresh one-shot authorization
+bound to the exact committed readiness HEAD and the exact authoritative DB SHA
+above. It does not authorize applying/consuming the authorization, running
+Printer, contacting providers/RPC/WebSocket, running Central Scheduler, or
+starting a campaign. Separate explicit operator approval is required before any
+later one-shot execution. Remote-host work remains paused and preserved
+separately.
 
 Any future approved remote-host implementation must preserve the existing
 one-shot wrapper as the operational application boundary, `Restart=no`, no
