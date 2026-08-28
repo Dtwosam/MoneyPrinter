@@ -38,6 +38,14 @@ class FourTokenFactoryAdapterError(ValueError):
     """Fail-closed four-token proof adapter violation."""
 
 
+PARENT_CAMPAIGN_INTERRUPTED_PREFIX = "PARENT_CAMPAIGN_INTERRUPTED:"
+
+
+def parent_interrupted_attempt_cause(parent_cause: str) -> str:
+    cause = _required(parent_cause, "parent_cause")
+    return f"{PARENT_CAMPAIGN_INTERRUPTED_PREFIX}{cause}"
+
+
 def derive_peer_cycle_stop_effect(
     connection: sqlite3.Connection,
     *,
@@ -1210,6 +1218,208 @@ def reconcile_four_token_cycle_terminal(
     }
 
 
+def reconcile_parent_interrupted_open_pre_admission_attempts(
+    connection: sqlite3.Connection,
+    *,
+    campaign_id: str,
+    campaign_run_id: str,
+    factory_run_id: str,
+    now: datetime,
+) -> dict[str, Any]:
+    """Terminalize open later-cycle acquisition under a terminal parent cycle.
+
+    Sole production caller: ``finalize_four_token_shared_terminal``. Performs zero
+    provider calls and never claims/executes Scheduler work.
+    """
+    from printer_v1.operator_cli.pre_admission_discovery_attempt import (
+        PreAdmissionAttemptState,
+        terminalize_pre_admission_attempt,
+    )
+    from printer_v1.scheduler.scheduler import cancel_job
+
+    campaign = _required(campaign_id, "campaign_id")
+    run = _required(campaign_run_id, "campaign_run_id")
+    factory = _required(factory_run_id, "factory_run_id")
+    instant = _utc(now, "now")
+    if not _table_exists(connection, "printer_pre_admission_discovery_attempts"):
+        return {
+            "reconciled": False,
+            "idempotent_replay": False,
+            "reason": "pre_admission_table_absent",
+        }
+    cycles = connection.execute(
+        "SELECT cycle_id,cycle_ordinal,cycle_state,first_terminal_cause "
+        "FROM printer_memory_factory_campaign_cycles "
+        "WHERE campaign_id=? AND run_id=? ORDER BY cycle_ordinal",
+        (campaign, run),
+    ).fetchall()
+    if len(cycles) != 1 or int(cycles[0][1]) != 1:
+        return {
+            "reconciled": False,
+            "idempotent_replay": False,
+            "reason": "not_one_cycle_parent_shape",
+        }
+    if not str(cycles[0][2]).startswith("TERMINAL_"):
+        return {
+            "reconciled": False,
+            "idempotent_replay": False,
+            "reason": "cycle1_not_terminal",
+        }
+    parent_cause = str(cycles[0][3] or "").strip()
+    if not parent_cause:
+        raise FourTokenFactoryAdapterError(
+            "parent-interrupted cleanup requires exact Cycle-1 terminal cause"
+        )
+    expected_cause = parent_interrupted_attempt_cause(parent_cause)
+    attempts = connection.execute(
+        "SELECT attempt_id,attempt_state,first_terminal_cause,scheduler_job_id,"
+        "consumed_cycle_id "
+        "FROM printer_pre_admission_discovery_attempts "
+        "WHERE campaign_id=? AND campaign_run_id=? "
+        "AND authoritative_factory_run_id=? AND proposed_cycle_ordinal=2 "
+        "ORDER BY attempt_id",
+        (campaign, run, factory),
+    ).fetchall()
+    if len(attempts) == 0:
+        return {
+            "reconciled": False,
+            "idempotent_replay": False,
+            "reason": "no_cycle2_attempt",
+        }
+    if len(attempts) != 1:
+        raise FourTokenFactoryAdapterError(
+            "parent-interrupted cleanup requires exactly one Cycle-2 attempt"
+        )
+    attempt = attempts[0]
+    attempt_id = str(attempt[0])
+    state = str(attempt[1])
+    cause = str(attempt[2] or "").strip()
+    job_id = int(attempt[3])
+    if attempt[4] is not None:
+        raise FourTokenFactoryAdapterError(
+            "parent-interrupted cleanup refuses consumed Cycle-2 attempt"
+        )
+    job = connection.execute(
+        "SELECT id,status,locked_at,lock_owner,job_kind "
+        "FROM printer_scheduler_jobs WHERE id=?",
+        (job_id,),
+    ).fetchone()
+    if job is None:
+        raise FourTokenFactoryAdapterError(
+            "parent-interrupted cleanup missing attempt Scheduler job"
+        )
+    if str(job[4]) != "PRE_ADMISSION_DISCOVERY_SELECTION":
+        raise FourTokenFactoryAdapterError(
+            "parent-interrupted cleanup Scheduler ownership mismatch"
+        )
+    job_active = str(job[1]) in {"PENDING", "RUNNING", "COOLDOWN"} or (
+        job[2] is not None or job[3] is not None
+    )
+    job_cancelled = str(job[1]) == "CANCELLED" and job[2] is None and job[3] is None
+
+    def _cancel_owned_job() -> bool:
+        if not job_active:
+            return False
+        cancel_job(connection, job_id=job_id, now=instant)
+        return True
+
+    def _terminalize_attempt() -> None:
+        terminalize_pre_admission_attempt(
+            connection,
+            attempt_id=attempt_id,
+            state=PreAdmissionAttemptState.CANCELLED,
+            cause=expected_cause,
+            now=instant,
+        )
+
+    if state in {
+        PreAdmissionAttemptState.NO_PAIR.value,
+        PreAdmissionAttemptState.BLOCKED.value,
+        PreAdmissionAttemptState.FAILED.value,
+    }:
+        return {
+            "reconciled": False,
+            "idempotent_replay": False,
+            "reason": "attempt_already_acquisition_terminal",
+            "attempt_id": attempt_id,
+            "expected_cause": expected_cause,
+        }
+    if state == PreAdmissionAttemptState.PAIR_READY.value:
+        raise FourTokenFactoryAdapterError(
+            "parent-interrupted cleanup refuses PAIR_READY on this owner"
+        )
+    if state == PreAdmissionAttemptState.CONSUMED.value:
+        raise FourTokenFactoryAdapterError(
+            "parent-interrupted cleanup refuses CONSUMED attempt"
+        )
+    if state == PreAdmissionAttemptState.CANCELLED.value:
+        if cause != expected_cause:
+            if cause.startswith(PARENT_CAMPAIGN_INTERRUPTED_PREFIX):
+                raise FourTokenFactoryAdapterError(
+                    "parent-interrupted cleanup conflicting interruption cause"
+                )
+            return {
+                "reconciled": False,
+                "idempotent_replay": False,
+                "reason": "attempt_already_cancelled_other_cause",
+                "attempt_id": attempt_id,
+                "expected_cause": expected_cause,
+            }
+        # States B or D.
+        owns_txn = not connection.in_transaction
+        if owns_txn:
+            connection.execute("BEGIN IMMEDIATE")
+        try:
+            cancelled = _cancel_owned_job()
+            if owns_txn:
+                connection.commit()
+        except Exception:
+            if owns_txn and connection.in_transaction:
+                connection.rollback()
+            raise
+        return {
+            "reconciled": True,
+            "idempotent_replay": not cancelled,
+            "replay_state": "D" if not cancelled else "B",
+            "attempt_id": attempt_id,
+            "scheduler_job_id": job_id,
+            "expected_cause": expected_cause,
+            "job_cancelled": cancelled,
+            "attempt_terminalized": False,
+        }
+    if state not in {
+        PreAdmissionAttemptState.PLANNED.value,
+        PreAdmissionAttemptState.RUNNING.value,
+    }:
+        raise FourTokenFactoryAdapterError(
+            "parent-interrupted cleanup unexpected attempt state"
+        )
+
+    # States A or C.
+    owns_txn = not connection.in_transaction
+    if owns_txn:
+        connection.execute("BEGIN IMMEDIATE")
+    try:
+        _terminalize_attempt()
+        cancelled = _cancel_owned_job()
+        if owns_txn:
+            connection.commit()
+    except Exception:
+        if owns_txn and connection.in_transaction:
+            connection.rollback()
+        raise
+    return {
+        "reconciled": True,
+        "idempotent_replay": False,
+        "replay_state": "A" if cancelled or job_active else "C",
+        "attempt_id": attempt_id,
+        "scheduler_job_id": job_id,
+        "expected_cause": expected_cause,
+        "job_cancelled": cancelled,
+        "attempt_terminalized": True,
+    }
+
+
 def finalize_four_token_shared_terminal(
     connection: sqlite3.Connection,
     *,
@@ -1218,11 +1428,19 @@ def finalize_four_token_shared_terminal(
     factory_run_id: str,
     shared_terminalizer: Callable[..., Mapping[str, Any]],
     configuration_id: str | None = None,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
     """Phase B: compose the existing shared terminal/cleanup owner once."""
     campaign = _required(campaign_id, "campaign_id")
     run = _required(campaign_run_id, "campaign_run_id")
     factory = _required(factory_run_id, "factory_run_id")
+    interrupt_report = reconcile_parent_interrupted_open_pre_admission_attempts(
+        connection,
+        campaign_id=campaign,
+        campaign_run_id=run,
+        factory_run_id=factory,
+        now=now or datetime.now(timezone.utc),
+    )
     rows = connection.execute(
         "SELECT cycle_id,cycle_ordinal,cycle_state,first_terminal_cause "
         "FROM printer_memory_factory_campaign_cycles "
@@ -1253,15 +1471,32 @@ def finalize_four_token_shared_terminal(
             )
             else []
         )
+        parent_cause = str(rows[0][3] or "").strip()
+        interrupted_open_attempt = (
+            len(attempt_rows) == 1
+            and str(attempt_rows[0][0]) == "CANCELLED"
+            and str(attempt_rows[0][1] or "")
+            == parent_interrupted_attempt_cause(parent_cause)
+            and attempt_rows[0][2] is None
+            and bool(parent_cause)
+        )
+        attempt_cause = str(attempt_rows[0][1] or "").strip() if attempt_rows else ""
         honest_no_admission = (
             len(attempt_rows) == 1
             and str(attempt_rows[0][0]) in {
                 "NO_PAIR", "BLOCKED", "FAILED", "CANCELLED"
             }
-            and bool(str(attempt_rows[0][1] or "").strip())
+            and bool(attempt_cause)
+            and not attempt_cause.startswith(PARENT_CAMPAIGN_INTERRUPTED_PREFIX)
             and attempt_rows[0][2] is None
         )
-        if honest_no_admission:
+        if interrupted_open_attempt:
+            if provenance_rows:
+                raise FourTokenFactoryAdapterError(
+                    "interrupted one-cycle terminal has contradictory pre-lifecycle provenance"
+                )
+            admitted_shape = "ONE_CYCLE_CAMPAIGN_INTERRUPTED_OPEN_ATTEMPT"
+        elif honest_no_admission:
             if provenance_rows:
                 raise FourTokenFactoryAdapterError(
                     "one-cycle terminal has contradictory attempt and pre-lifecycle provenance"
@@ -1373,6 +1608,7 @@ def finalize_four_token_shared_terminal(
             "shared_cleanup_count": 0,
             "already_terminal": True,
             "admitted_shape": admitted_shape,
+            "parent_interrupt_reconciliation": dict(interrupt_report),
         }
     terminal_accounting: dict[str, Any] | None = None
     if configuration_id is not None and admitted_shape == "TWO_CYCLE_COMPLETION":
@@ -1431,4 +1667,5 @@ def finalize_four_token_shared_terminal(
         "terminal_accounting": terminal_accounting,
         "shared_evidence": dict(result),
         "active_work": active_report,
+        "parent_interrupt_reconciliation": dict(interrupt_report),
     }

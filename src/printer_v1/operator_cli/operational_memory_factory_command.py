@@ -4041,6 +4041,17 @@ def _run_operational_campaign(
                 )
             if heartbeat is not None:
                 heartbeat.stop()
+            reconciliation_result = reconcile_campaign_terminal(
+                command.db_path,
+                campaign_id=command.campaign_id,
+                run_id=command.run_id,
+                cycle_id=cycle_id,
+                terminal_cause=terminal_cause,
+                run_status=run_status,
+                factory_run_id=initialized_factory_run_id,
+                lifecycle_started=True,
+                now=_iso(),
+            )
             cleanup_result = cleanup_campaign_supervision(
                 command.db_path,
                 supervision_id=command.supervision_id,
@@ -4055,17 +4066,6 @@ def _run_operational_campaign(
                 scheduler_operation_observer=(
                     action_local_ledger.observe_scheduler_transition
                 ),
-            )
-            reconciliation_result = reconcile_campaign_terminal(
-                command.db_path,
-                campaign_id=command.campaign_id,
-                run_id=command.run_id,
-                cycle_id=cycle_id,
-                terminal_cause=terminal_cause,
-                run_status=run_status,
-                factory_run_id=initialized_factory_run_id,
-                lifecycle_started=True,
-                now=_iso(),
             )
             result = {
                 "cleanup": cleanup_result,

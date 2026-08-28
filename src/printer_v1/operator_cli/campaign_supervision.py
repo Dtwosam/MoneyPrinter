@@ -29,6 +29,12 @@ LEASE_REPLACE_RETRY_SECONDS = 0.05
 SQLITE_BUSY_TIMEOUT_SECONDS = 2.0
 SQLITE_BUSY_MAX_ATTEMPTS = 5
 SQLITE_BUSY_RETRY_SECONDS = 0.05
+# V2-9.8B post-consumption lease-contention contract: one hard renewal deadline.
+LEASE_CONTENTION_WALL_CLOCK_SECONDS = 15.0
+LEASE_CONTENTION_REMAINING_SAFETY_SECONDS = 15.0
+LEASE_CONTENTION_OUTER_MAX_ATTEMPTS = 3
+LEASE_CONTENTION_OUTER_SLEEP_SECONDS = 0.25
+LEASE_CONTENTION_MIN_BLOCK_SECONDS = 0.001
 _TRANSIENT_WINDOWS_REPLACE_ERRORS = {5, 32, 33}
 _ACTIVE_WORK = ("PENDING", "RUNNING", "COOLDOWN")
 _ACTIVE_WINDOWS = ("PLANNED", "COLLECTING", "CLOSE_PENDING", "AUDITING")
@@ -256,11 +262,22 @@ def persist_campaign_heartbeat_failure(
         connection.close()
 
 
-def _connect(db_path: str | Path, *, read_only: bool = False) -> sqlite3.Connection:
+def _connect(
+    db_path: str | Path,
+    *,
+    read_only: bool = False,
+    busy_timeout_seconds: float | None = None,
+) -> sqlite3.Connection:
     path = Path(db_path).resolve()
     if not path.is_file():
         raise CampaignSupervisionError(f"database missing: {path}")
-    timeout = SQLITE_BUSY_TIMEOUT_SECONDS
+    timeout = (
+        SQLITE_BUSY_TIMEOUT_SECONDS
+        if busy_timeout_seconds is None
+        else float(busy_timeout_seconds)
+    )
+    if timeout < 0:
+        raise CampaignSupervisionError("busy timeout must be non-negative")
     if read_only:
         connection = sqlite3.connect(
             f"file:{path.as_posix()}?mode=ro", uri=True, timeout=timeout
@@ -269,17 +286,48 @@ def _connect(db_path: str | Path, *, read_only: bool = False) -> sqlite3.Connect
     else:
         connection = sqlite3.connect(path, timeout=timeout)
         connection.execute("PRAGMA foreign_keys=ON")
-        connection.execute(
-            f"PRAGMA busy_timeout={int(SQLITE_BUSY_TIMEOUT_SECONDS * 1000)}"
-        )
+        connection.execute(f"PRAGMA busy_timeout={int(timeout * 1000)}")
     connection.row_factory = sqlite3.Row
     return connection
 
 
-def _begin_immediate(connection: sqlite3.Connection) -> None:
-    """Begin IMMEDIATE with bounded retries for transient SQLite lock contention."""
+def _configure_busy_timeout(
+    connection: sqlite3.Connection, *, busy_timeout_seconds: float
+) -> None:
+    timeout = float(busy_timeout_seconds)
+    if timeout < 0:
+        raise CampaignSupervisionError("busy timeout must be non-negative")
+    connection.execute(f"PRAGMA busy_timeout={int(timeout * 1000)}")
+
+
+def _begin_immediate(
+    connection: sqlite3.Connection,
+    *,
+    deadline_monotonic: float | None = None,
+    busy_timeout_ceiling: float | None = None,
+) -> None:
+    """Begin IMMEDIATE with bounded retries for transient SQLite lock contention.
+
+    When ``deadline_monotonic`` is set, every inner wait/sleep is clamped so the
+    call cannot extend past that hard deadline. Other callers omit it and keep
+    the historical busy contract unchanged.
+    """
     last_error: BaseException | None = None
+    ceiling = (
+        SQLITE_BUSY_TIMEOUT_SECONDS
+        if busy_timeout_ceiling is None
+        else float(busy_timeout_ceiling)
+    )
     for attempt in range(1, SQLITE_BUSY_MAX_ATTEMPTS + 1):
+        planned = ceiling
+        if deadline_monotonic is not None:
+            remaining = deadline_monotonic - time.monotonic()
+            if remaining < LEASE_CONTENTION_MIN_BLOCK_SECONDS:
+                raise sqlite3.OperationalError("database is locked")
+            planned = min(ceiling, remaining)
+            if planned < LEASE_CONTENTION_MIN_BLOCK_SECONDS:
+                raise sqlite3.OperationalError("database is locked")
+            _configure_busy_timeout(connection, busy_timeout_seconds=planned)
         try:
             connection.execute("BEGIN IMMEDIATE")
             return
@@ -287,7 +335,12 @@ def _begin_immediate(connection: sqlite3.Connection) -> None:
             last_error = exc
             if not _is_sqlite_locked(exc) or attempt >= SQLITE_BUSY_MAX_ATTEMPTS:
                 raise
-            time.sleep(SQLITE_BUSY_RETRY_SECONDS)
+            sleep_for = SQLITE_BUSY_RETRY_SECONDS
+            if deadline_monotonic is not None:
+                remaining = deadline_monotonic - time.monotonic()
+                if sleep_for > remaining:
+                    raise sqlite3.OperationalError("database is locked")
+            time.sleep(sleep_for)
     if last_error is not None:
         raise last_error
 
@@ -514,6 +567,35 @@ def inspect_campaign_supervision(
         connection.close()
 
 
+def _renewal_contention_preflight(
+    *,
+    row: sqlite3.Row,
+    check_now: datetime,
+    renewal_deadline: float,
+) -> float:
+    """Return planned busy seconds or raise fail-closed without blocking."""
+    remaining_deadline = renewal_deadline - time.monotonic()
+    if remaining_deadline < LEASE_CONTENTION_MIN_BLOCK_SECONDS:
+        raise sqlite3.OperationalError("database is locked")
+    if str(row["supervision_state"]) != "ACTIVE":
+        raise CampaignSupervisionError("campaign supervision is not renewable")
+    previous_expiry = _parse(str(row["lease_expires_at"]))
+    remaining_lease = (previous_expiry - check_now).total_seconds()
+    if remaining_lease <= 0:
+        raise CampaignSupervisionError("operational campaign lease is expired")
+    if remaining_lease <= LEASE_CONTENTION_REMAINING_SAFETY_SECONDS:
+        raise sqlite3.OperationalError("database is locked")
+    planned_block = min(SQLITE_BUSY_TIMEOUT_SECONDS, remaining_deadline)
+    if planned_block < LEASE_CONTENTION_MIN_BLOCK_SECONDS:
+        raise sqlite3.OperationalError("database is locked")
+    if (
+        remaining_lease - planned_block
+        <= LEASE_CONTENTION_REMAINING_SAFETY_SECONDS
+    ):
+        raise sqlite3.OperationalError("database is locked")
+    return planned_block
+
+
 def renew_campaign_lease(
     db_path: str | Path,
     *,
@@ -530,84 +612,64 @@ def renew_campaign_lease(
     V2-9.8B.2: lease renewal never terminalizes owned work. Heartbeat threads must
     only signal failure; the main terminal coordinator owns cleanup, first-cause
     preservation, lease release, and report persistence.
+
+    Post-consumption amendment: one hard monotonic 15s deadline, deadline-clamped
+    busy waits, DB ledger CAS commit before lease-file mirror, and
+    ``renewal_confirmed=True`` only when DB and file agree.
     """
     if lease_seconds < 15:
         raise CampaignSupervisionError("lease must be at least 15 seconds")
+    t0 = time.monotonic()
+    renewal_deadline = t0 + LEASE_CONTENTION_WALL_CLOCK_SECONDS
     instant = now or datetime.now(timezone.utc)
     attempt_at = _iso(instant)
     row: sqlite3.Row | None = None
-    connection = _connect(db_path, read_only=True)
-    try:
-        row = _load_exact(
-            connection, supervision_id=supervision_id, campaign_id=campaign_id,
-            configuration_id=configuration_id, run_id=run_id, owner_id=owner_id,
-        )
-        if row["supervision_state"] != "ACTIVE":
-            raise CampaignSupervisionError("campaign supervision is not renewable")
-    finally:
-        connection.close()
+    db_ledger_advanced = False
+    contention_outer_attempts = 0
+    next_heartbeat = _iso(instant)
+    next_expiry_iso = _iso(instant + timedelta(seconds=lease_seconds))
+    previous_heartbeat_iso: str | None = None
+    previous_expiry_iso: str | None = None
+    lock: Path | None = None
+    lease_replace_attempts = 0
 
-    try:
-        previous_heartbeat = _parse(str(row["heartbeat_at"]))
-        previous_expiry = _parse(str(row["lease_expires_at"]))
-        if previous_expiry <= instant:
-            raise CampaignSupervisionError("operational campaign lease is expired")
-        next_expiry = instant + timedelta(seconds=lease_seconds)
-        if instant <= previous_heartbeat or next_expiry <= previous_expiry:
-            raise CampaignSupervisionError("lease renewal must advance monotonically")
-        lock = Path(row["lease_lock_path"])
-        payload = _lock_payload(lock)
-        _exact_lock(payload, row)
-        payload.update({
-            "heartbeat_at": _iso(instant),
-            "lease_expires_at": _iso(next_expiry),
-            "updated_at": _iso(instant),
-        })
-        attempts = _replace_lock(lock, payload, row)
-        connection = _connect(db_path)
-        try:
-            _begin_immediate(connection)
-            cursor = connection.execute(
-                """UPDATE printer_memory_factory_campaign_supervision
-                   SET heartbeat_at=?,lease_expires_at=?,updated_at=?
-                   WHERE supervision_id=? AND owner_id=?
-                     AND supervision_state='ACTIVE'
-                     AND heartbeat_at=? AND lease_expires_at=?""",
-                (
-                    _iso(instant), _iso(next_expiry), _iso(instant),
-                    supervision_id, owner_id, _iso(previous_heartbeat),
-                    _iso(previous_expiry),
+    def _failure_return(exc: BaseException) -> dict[str, Any]:
+        nonlocal db_ledger_advanced
+        if db_ledger_advanced:
+            evidence = _safe_renewal_failure(
+                CampaignSupervisionError(
+                    "Operational campaign lease renewal was not confirmed."
                 ),
+                attempted_at=attempt_at,
+                prior_heartbeat_at=previous_heartbeat_iso,
+                prior_lease_expires_at=previous_expiry_iso,
             )
-            if cursor.rowcount != 1:
-                raise CampaignSupervisionError("lease ledger renewal was unconfirmed")
-            connection.commit()
-        except Exception:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
-    except (CampaignSupervisionError, OSError, sqlite3.Error) as exc:
-        evidence = _safe_renewal_failure(
-            exc,
-            attempted_at=attempt_at,
-            prior_heartbeat_at=(None if row is None else str(row["heartbeat_at"])),
-            prior_lease_expires_at=(
-                None if row is None else str(row["lease_expires_at"])
-            ),
-        )
+        else:
+            evidence = _safe_renewal_failure(
+                exc,
+                attempted_at=attempt_at,
+                prior_heartbeat_at=previous_heartbeat_iso,
+                prior_lease_expires_at=previous_expiry_iso,
+            )
         durable_location: str | None = None
-        try:
-            persist_campaign_heartbeat_failure(
-                db_path,
-                supervision_id=supervision_id, campaign_id=campaign_id,
-                configuration_id=configuration_id, run_id=run_id,
-                owner_id=owner_id, evidence=evidence,
-            )
-            durable_location = "SQLITE"
-        except (CampaignSupervisionError, OSError, sqlite3.Error):
-            if row is not None and _persist_failure_to_lease_file(row, evidence):
+        # After a contention-bound failure the writer may still hold SQLite.
+        # Prefer lease-file evidence immediately for lock contention so failure
+        # persistence cannot extend past the renewal deadline; otherwise try DB.
+        if evidence.get("sqlite_locked") and row is not None:
+            if _persist_failure_to_lease_file(row, evidence):
                 durable_location = "LEASE_FILE"
+        if durable_location is None:
+            try:
+                persist_campaign_heartbeat_failure(
+                    db_path,
+                    supervision_id=supervision_id, campaign_id=campaign_id,
+                    configuration_id=configuration_id, run_id=run_id,
+                    owner_id=owner_id, evidence=evidence,
+                )
+                durable_location = "SQLITE"
+            except (CampaignSupervisionError, OSError, sqlite3.Error):
+                if row is not None and _persist_failure_to_lease_file(row, evidence):
+                    durable_location = "LEASE_FILE"
         return {
             "renewal_confirmed": False,
             "renewal_error": evidence["safe_message"],
@@ -624,15 +686,177 @@ def renew_campaign_lease(
             "new_child_work_allowed": False,
             "signal_main_coordinator": True,
             "suggested_terminal_cause": evidence["terminal_cause"],
+            "db_ledger_advanced": db_ledger_advanced,
+            "lease_file_synced": False,
+            "contention_outer_attempts": contention_outer_attempts,
+            "contention_wait_ms": int(max(0.0, (time.monotonic() - t0) * 1000.0)),
         }
+
+    # Ownership / ACTIVE precheck remains outside the sanitized failure-return
+    # path so exact ownership mismatches still raise to the caller.
+    connection = _connect(db_path, read_only=True)
+    try:
+        row = _load_exact(
+            connection, supervision_id=supervision_id, campaign_id=campaign_id,
+            configuration_id=configuration_id, run_id=run_id, owner_id=owner_id,
+        )
+        if row["supervision_state"] != "ACTIVE":
+            raise CampaignSupervisionError("campaign supervision is not renewable")
+        previous_heartbeat = _parse(str(row["heartbeat_at"]))
+        previous_expiry = _parse(str(row["lease_expires_at"]))
+        previous_heartbeat_iso = str(row["heartbeat_at"])
+        previous_expiry_iso = str(row["lease_expires_at"])
+        lock = Path(str(row["lease_lock_path"]))
+        payload = _lock_payload(lock)
+        _exact_lock(payload, row)
+    finally:
+        connection.close()
+
+    try:
+        if previous_expiry <= instant:
+            raise CampaignSupervisionError("operational campaign lease is expired")
+        next_expiry = instant + timedelta(seconds=lease_seconds)
+        if instant <= previous_heartbeat or next_expiry <= previous_expiry:
+            raise CampaignSupervisionError(
+                "lease renewal must advance monotonically"
+            )
+        next_expiry_iso = _iso(next_expiry)
+
+        for outer in range(1, LEASE_CONTENTION_OUTER_MAX_ATTEMPTS + 1):
+            contention_outer_attempts = outer
+            remaining_deadline = renewal_deadline - time.monotonic()
+            if remaining_deadline < LEASE_CONTENTION_MIN_BLOCK_SECONDS:
+                raise sqlite3.OperationalError("database is locked")
+            preflight_busy = min(
+                SQLITE_BUSY_TIMEOUT_SECONDS, remaining_deadline
+            )
+            connection = _connect(
+                db_path,
+                read_only=True,
+                busy_timeout_seconds=preflight_busy,
+            )
+            try:
+                row = _load_exact(
+                    connection,
+                    supervision_id=supervision_id,
+                    campaign_id=campaign_id,
+                    configuration_id=configuration_id,
+                    run_id=run_id,
+                    owner_id=owner_id,
+                )
+                check_now = (
+                    instant if now is not None else datetime.now(timezone.utc)
+                )
+                planned_block = _renewal_contention_preflight(
+                    row=row,
+                    check_now=check_now,
+                    renewal_deadline=renewal_deadline,
+                )
+                previous_heartbeat_iso = str(row["heartbeat_at"])
+                previous_expiry_iso = str(row["lease_expires_at"])
+                lock = Path(str(row["lease_lock_path"]))
+            finally:
+                connection.close()
+
+            connection = _connect(db_path, busy_timeout_seconds=planned_block)
+            try:
+                _begin_immediate(
+                    connection,
+                    deadline_monotonic=renewal_deadline,
+                    busy_timeout_ceiling=planned_block,
+                )
+                cursor = connection.execute(
+                    """UPDATE printer_memory_factory_campaign_supervision
+                       SET heartbeat_at=?,lease_expires_at=?,updated_at=?
+                       WHERE supervision_id=? AND owner_id=?
+                         AND supervision_state='ACTIVE'
+                         AND heartbeat_at=? AND lease_expires_at=?""",
+                    (
+                        next_heartbeat, next_expiry_iso, next_heartbeat,
+                        supervision_id, owner_id,
+                        previous_heartbeat_iso, previous_expiry_iso,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise CampaignSupervisionError(
+                        "lease ledger renewal was unconfirmed"
+                    )
+                connection.commit()
+                db_ledger_advanced = True
+                break
+            except sqlite3.OperationalError as exc:
+                connection.rollback()
+                if not _is_sqlite_locked(exc):
+                    raise
+                if outer >= LEASE_CONTENTION_OUTER_MAX_ATTEMPTS:
+                    raise
+                remaining = renewal_deadline - time.monotonic()
+                if LEASE_CONTENTION_OUTER_SLEEP_SECONDS > remaining:
+                    raise sqlite3.OperationalError("database is locked")
+                time.sleep(LEASE_CONTENTION_OUTER_SLEEP_SECONDS)
+                continue
+            except Exception:
+                connection.rollback()
+                raise
+            finally:
+                connection.close()
+        else:
+            raise sqlite3.OperationalError("database is locked")
+
+        assert lock is not None
+        remaining = renewal_deadline - time.monotonic()
+        if remaining < LEASE_CONTENTION_MIN_BLOCK_SECONDS:
+            raise CampaignSupervisionError(
+                "Operational campaign lease renewal was not confirmed."
+            )
+        payload = _lock_payload(lock)
+        _exact_lock(payload, row)
+        payload.update({
+            "heartbeat_at": next_heartbeat,
+            "lease_expires_at": next_expiry_iso,
+            "updated_at": next_heartbeat,
+        })
+        # Existing replace-attempt bound; no new SQLite waits on this path.
+        lease_replace_attempts = _replace_lock(lock, payload, row)
+
+        connection = _connect(db_path, read_only=True)
+        try:
+            durable = _load_exact(
+                connection,
+                supervision_id=supervision_id,
+                campaign_id=campaign_id,
+                configuration_id=configuration_id,
+                run_id=run_id,
+                owner_id=owner_id,
+            )
+            file_payload = _lock_payload(lock)
+            _exact_lock(file_payload, durable)
+            if (
+                str(durable["heartbeat_at"]) != next_heartbeat
+                or str(durable["lease_expires_at"]) != next_expiry_iso
+                or file_payload.get("heartbeat_at") != next_heartbeat
+                or file_payload.get("lease_expires_at") != next_expiry_iso
+            ):
+                raise CampaignSupervisionError(
+                    "Operational campaign lease renewal was not confirmed."
+                )
+        finally:
+            connection.close()
+    except (CampaignSupervisionError, OSError, sqlite3.Error) as exc:
+        return _failure_return(exc)
+
     return {
         "renewal_confirmed": True,
-        "heartbeat_at": _iso(instant),
-        "lease_expires_at": _iso(next_expiry),
-        "lease_replace_attempts": attempts,
-        "lease_replace_retries": attempts - 1,
+        "heartbeat_at": next_heartbeat,
+        "lease_expires_at": next_expiry_iso,
+        "lease_replace_attempts": lease_replace_attempts,
+        "lease_replace_retries": max(0, lease_replace_attempts - 1),
         "terminal_cleanup_performed": False,
         "new_child_work_allowed": True,
+        "db_ledger_advanced": True,
+        "lease_file_synced": True,
+        "contention_outer_attempts": contention_outer_attempts,
+        "contention_wait_ms": int(max(0.0, (time.monotonic() - t0) * 1000.0)),
     }
 
 
@@ -750,6 +974,7 @@ def cleanup_campaign_supervision(
     replay = False
     discovery_work_rowcount = 0
     discovery_batch_rowcount = 0
+    pre_admission_job_rowcount = 0
     work_cursor = None
     job_cursor = None
     window_cursor = None
@@ -898,6 +1123,40 @@ def cleanup_campaign_supervision(
                               OR locked_at IS NOT NULL OR lock_owner IS NOT NULL)""",
                     (timestamp, cause, timestamp, campaign_id, run_id),
                 )
+            pre_admission_job_rowcount = 0
+            if _table_exists(
+                connection, "printer_pre_admission_discovery_attempts"
+            ):
+                pre_admission_job_rows = connection.execute(
+                    """SELECT id FROM printer_scheduler_jobs
+                       WHERE id IN (
+                           SELECT scheduler_job_id
+                           FROM printer_pre_admission_discovery_attempts
+                           WHERE campaign_id=? AND campaign_run_id=?
+                             AND scheduler_job_id IS NOT NULL
+                       ) AND (status IN ('PENDING','RUNNING','COOLDOWN')
+                              OR locked_at IS NOT NULL OR lock_owner IS NOT NULL)
+                       ORDER BY id""",
+                    (campaign_id, run_id),
+                ).fetchall()
+                pre_admission_job_cursor = connection.execute(
+                    """UPDATE printer_scheduler_jobs
+                       SET status='CANCELLED',finished_at=?,locked_at=NULL,
+                           lock_owner=NULL,
+                           last_error=COALESCE(last_error,?),updated_at=?
+                       WHERE id IN (
+                           SELECT scheduler_job_id
+                           FROM printer_pre_admission_discovery_attempts
+                           WHERE campaign_id=? AND campaign_run_id=?
+                             AND scheduler_job_id IS NOT NULL
+                       ) AND (status IN ('PENDING','RUNNING','COOLDOWN')
+                              OR locked_at IS NOT NULL OR lock_owner IS NOT NULL)""",
+                    (timestamp, cause, timestamp, campaign_id, run_id),
+                )
+                pre_admission_job_rowcount = int(pre_admission_job_cursor.rowcount)
+                cancelled_job_rows = list(cancelled_job_rows) + list(
+                    pre_admission_job_rows
+                )
             if scheduler_operation_observer is not None:
                 for cancelled_job in cancelled_job_rows:
                     scheduler_operation_observer(
@@ -931,8 +1190,16 @@ def cleanup_campaign_supervision(
                     f"SELECT {state_column},first_terminal_cause FROM {table} WHERE {identity_column}=?",
                     (identity,),
                 ).fetchone()
-                if current is None or str(current[state_column]).startswith("TERMINAL_"):
+                if current is None:
                     raise CampaignSupervisionError("campaign terminal ownership is inconsistent")
+                if str(current[state_column]).startswith("TERMINAL_"):
+                    # Reconcile-then-cleanup may already have terminalized campaign/run
+                    # with the same first cause while supervision remains ACTIVE.
+                    if str(current["first_terminal_cause"] or "") != cause:
+                        raise CampaignSupervisionError(
+                            "campaign terminal ownership is inconsistent"
+                        )
+                    continue
                 connection.execute(
                     f"""UPDATE {table} SET {state_column}=?,first_terminal_cause=?,
                         terminal_at=?,updated_at=? WHERE {identity_column}=?""",
@@ -962,7 +1229,22 @@ def cleanup_campaign_supervision(
                               OR job.lock_owner IS NOT NULL)""",
                     (campaign_id, run_id),
                 ).fetchone()[0])
-            if active_work or active_discovery:
+            active_pre_admission = 0
+            if _table_exists(
+                connection, "printer_pre_admission_discovery_attempts"
+            ):
+                active_pre_admission = int(connection.execute(
+                    """SELECT COUNT(*)
+                       FROM printer_pre_admission_discovery_attempts AS attempt
+                       JOIN printer_scheduler_jobs AS job
+                         ON job.id=attempt.scheduler_job_id
+                       WHERE attempt.campaign_id=? AND attempt.campaign_run_id=?
+                         AND (job.status IN ('PENDING','RUNNING','COOLDOWN')
+                              OR job.locked_at IS NOT NULL
+                              OR job.lock_owner IS NOT NULL)""",
+                    (campaign_id, run_id),
+                ).fetchone()[0])
+            if active_work or active_discovery or active_pre_admission:
                 raise CampaignSupervisionError("campaign child-work cleanup is incomplete")
             connection.execute(
                 """UPDATE printer_memory_factory_campaign_supervision
@@ -1008,6 +1290,18 @@ def cleanup_campaign_supervision(
                           OR job.lock_owner IS NOT NULL)""",
                 (campaign_id, run_id),
             ).fetchone()[0])
+        if _table_exists(connection, "printer_pre_admission_discovery_attempts"):
+            active_after += int(connection.execute(
+                """SELECT COUNT(*)
+                   FROM printer_pre_admission_discovery_attempts AS attempt
+                   JOIN printer_scheduler_jobs AS job
+                     ON job.id=attempt.scheduler_job_id
+                   WHERE attempt.campaign_id=? AND attempt.campaign_run_id=?
+                     AND (job.status IN ('PENDING','RUNNING','COOLDOWN')
+                          OR job.locked_at IS NOT NULL
+                          OR job.lock_owner IS NOT NULL)""",
+                (campaign_id, run_id),
+            ).fetchone()[0])
     finally:
         connection.close()
     release_path = (
@@ -1048,7 +1342,11 @@ def cleanup_campaign_supervision(
         "terminalized_discovery_batches": (
             0 if replay else discovery_batch_rowcount
         ),
-        "cancelled_scheduler_jobs": 0 if replay else int(job_cursor.rowcount),
+        "cancelled_scheduler_jobs": (
+            0
+            if replay
+            else int(job_cursor.rowcount) + int(pre_admission_job_rowcount)
+        ),
         "cancelled_windows": 0 if replay else int(window_cursor.rowcount),
         "terminalized_cycles": 0 if replay else int(cycle_cursor.rowcount),
         "active_owned_work_after": active_after,

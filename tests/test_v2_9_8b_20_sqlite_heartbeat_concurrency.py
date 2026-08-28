@@ -179,12 +179,12 @@ class TestProductionLockPatternAndRepair(unittest.TestCase):
 
             thread = threading.Thread(target=renew, name="heartbeat-renew")
             thread.start()
-            # Hold the lock past the supervision busy budget (~10s).
-            hold = (
-                SQLITE_BUSY_TIMEOUT_SECONDS * SQLITE_BUSY_MAX_ATTEMPTS
-                + SQLITE_BUSY_MAX_ATTEMPTS * 0.05
-                + 1.0
+            # Hold the lock past the hard renewal contention deadline (15s).
+            from printer_v1.operator_cli.campaign_supervision import (
+                LEASE_CONTENTION_WALL_CLOCK_SECONDS,
             )
+
+            hold = LEASE_CONTENTION_WALL_CLOCK_SECONDS + 1.0
             time.sleep(hold)
             holder.commit()
             thread.join(timeout=30)
