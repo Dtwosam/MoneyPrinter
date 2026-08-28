@@ -119,6 +119,7 @@ class PreLifecycleTemporalRefreshOwner:
         cycle_id: str, supervision_id: str, source_governor: Any,
         central_scheduler: Any, acquisition_deadline_at: str, work_deadline_at: str,
         refresh_stage: Callable[..., Mapping[str, Any]],
+        acquisition_started_at: str | None = None,
         discovery_batch_resolver: Callable[[sqlite3.Connection, str, int], str] | None = None,
         supervision_probe: Callable[[], Mapping[str, Any]] | None = None,
         waiter: Callable[[float], bool] | None = None, clock: Callable[[], str] | None = None,
@@ -129,6 +130,9 @@ class PreLifecycleTemporalRefreshOwner:
         self.cycle_id=str(cycle_id); self.supervision_id=str(supervision_id)
         self.source_governor=source_governor; self.central_scheduler=central_scheduler
         self.acquisition_deadline_at=str(acquisition_deadline_at); self.work_deadline_at=str(work_deadline_at)
+        self.acquisition_started_at=(
+            None if acquisition_started_at is None else str(acquisition_started_at)
+        )
         self._refresh_stage=refresh_stage
         self._discovery_batch_resolver=discovery_batch_resolver
         self._supervision_probe=supervision_probe; self._waiter=waiter; self._clock=clock
@@ -228,8 +232,9 @@ class PreLifecycleTemporalRefreshOwner:
             eligibility=evaluate_wait_eligibility(reserve_depth=reserve_depth,required_capacity=required_capacity,universe_state=universe_state,now=now,acquisition_deadline_at=self.acquisition_deadline_at,source_operations_remaining=source_operations_remaining,provider_terminal_failure=provider_terminal_failure,supervision_active=active,cancellation_requested=cancelled,pending_refresh_exists=False)
             if not eligibility.eligible: return TemporalRefreshOutcome(status=eligibility.reason,reserve_depth_before=reserve_depth,reserve_depth_after=reserve_depth,detail='wait eligibility not satisfied')
             ordinal=next_refresh_ordinal(c,campaign_id=self.campaign_id,run_id=self.run_id,cycle_id=self.cycle_id)
-            acquisition_started_at=iso(parse_iso(self.acquisition_deadline_at)-timedelta(seconds=2400))
-            due=parse_iso(refresh_opportunity_at(acquisition_started_at,refresh_ordinal=ordinal,refresh_interval_seconds=self.refresh_interval_seconds))
+            if self.acquisition_started_at is None:
+                self.acquisition_started_at=iso(parse_iso(now))
+            due=parse_iso(refresh_opportunity_at(self.acquisition_started_at,refresh_ordinal=ordinal,refresh_interval_seconds=self.refresh_interval_seconds))
             if due>=parse_iso(self.acquisition_deadline_at):
                 return TemporalRefreshOutcome(status='NO_LAWFUL_REFRESH_WINDOW',reserve_depth_before=reserve_depth,reserve_depth_after=reserve_depth,detail='anchored DISCOVERY_REFRESH opportunity is not strictly before acquisition deadline')
             job_name=f'PRE_LIFECYCLE_DISCOVERY_REFRESH:{self.campaign_id}:{self.run_id}:{self.cycle_id}:{ordinal}'

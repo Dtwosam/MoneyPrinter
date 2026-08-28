@@ -939,11 +939,15 @@ def run_direct_migration_discovery(
     def _execution_for_request(*, request, adapter, recent_request_count: int):
         """Replay exact durable truth or execute the one next missing request."""
         nonlocal new_governed_request_count, replayed_governed_request_count
-        existing = load_terminal_governed_execution_by_request_key(
-            connection,
-            source_name=str(request.source_name),
-            request_kind=str(request.request_kind),
-            request_key=str(request.request_key),
+        existing = (
+            load_terminal_governed_execution_by_request_key(
+                connection,
+                source_name=str(request.source_name),
+                request_kind=str(request.request_kind),
+                request_key=str(request.request_key),
+            )
+            if cooperative_request_limit is not None
+            else None
         )
         if existing is not None:
             replayed_governed_request_count += 1

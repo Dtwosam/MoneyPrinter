@@ -1294,7 +1294,8 @@ def test_stopped_ownership_terminalizes_stranded_evaluation_for_review() -> None
 def test_migration_does_not_backfill_legacy_standard_campaigns(tmp_path) -> None:
     db = tmp_path / "legacy-no-inference.sqlite3"
     migrations = canonical_migration_names()
-    assert migrations[-1] == "061_standard_4h_progression_fault_preservation.sql"
+    assert migrations[-2] == "061_standard_4h_progression_fault_preservation.sql"
+    assert migrations[-1] == "062_pre_admission_attempt_evidence.sql"
     connection = sqlite3.connect(db)
     try:
         from printer_v1.db import migrate as migration_runner
@@ -1303,7 +1304,7 @@ def test_migration_does_not_backfill_legacy_standard_campaigns(tmp_path) -> None
             "CREATE TABLE printer_schema_migrations ("
             "version TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')))"
         )
-        for name in migrations[:-1]:
+        for name in migrations[:-2]:
             connection.executescript(
                 (migration_runner.MIGRATIONS_DIR / name).read_text(encoding="utf-8")
             )

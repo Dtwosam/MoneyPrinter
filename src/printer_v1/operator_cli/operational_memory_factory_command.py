@@ -1952,6 +1952,7 @@ def _build_pre_lifecycle_temporal_refresh_owner(
                 owner_evaluated_at,
                 acquisition_duration_seconds=int(acquisition_seconds),
             ),
+            acquisition_started_at=owner_evaluated_at,
             # Later acquisition cannot extend the original authorization's
             # shared work/lifecycle envelope.
             work_deadline_at=shared_work_deadline_at,
