@@ -1,0 +1,255 @@
+from pathlib import Path
+
+BASELINE = "d0c1d88d0fa6984a8ad45f3b5a3fa7c09e8f3024"
+POST_DB = "a7ad83d5f368192da7a4e7522870e3956e6f42f70b51748ff642f2c2c53683f8"
+PRE_DB = "c90376b9e26d0f2953a8d9b2fd5fee01d80ac4984510113e595fd1ccc3d9033d"
+AUTH = "V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260828T211924Z_5fcb1bf5"
+
+agents = Path("AGENTS.md")
+text = agents.read_text(encoding="utf-8")
+start_marker = "### Current V2-9.8B post-migration-062 readiness closeout\n"
+end_marker = "Any future approved remote-host implementation must preserve"
+start = text.index(start_marker)
+end = text.index(end_marker, start)
+replacement = f'''### Current V2-9.8B post-reconciliation governance state — 2026-08-29
+
+The consumed four-token campaign interruption has been repaired and reconciled through the required sequence:
+
+- production lease/contention + parent-interrupt cleanup repair closed PASS;
+- exact-execution residue recovery owner implemented and disposable-proven;
+- independent exact-recovery implementation closeout PASS;
+- separately operator-approved authoritative reconciliation executed exactly once at reviewed HEAD
+  `{BASELINE}`;
+- operator-produced local evidence reports authoritative reconciliation PASS.
+
+Authoritative post-reconciliation DB identity reported by the local application lane:
+
+`{POST_DB}`
+
+Migration state remains canonical `62 / 062_pre_admission_attempt_evidence.sql`; integrity/FKs were reported `ok / 0` after application. The interrupted Cycle-2 attempt is terminal `CANCELLED` with exact cause `PARENT_CAMPAIGN_INTERRUPTED:LEASE_RENEWAL_SQLITE_LOCKED`; Scheduler job `2808` is terminal `CANCELLED` and unlocked; campaign/run are `TERMINAL_BLOCKED`; factory run is `SAFE_STOPPED`; supervision is `TERMINAL`; the exact campaign lease is released/absent; and zero provider or Scheduler-runtime calls were reported during recovery.
+
+Consumed authorization
+`{AUTH}`
+remains permanently consumed and non-reusable. No retry, resume, restart, successor, new authorization, or campaign execution is authorized by this governance synchronization.
+
+The exact current permitted lane is:
+
+`POST-RECONCILIATION FRESH NEXT-BOUNDED-CAMPAIGN READINESS / GOVERNANCE AUDIT`
+
+That lane is read-only/readiness-governance work. It must freshly verify the reconciled exact HEAD/DB state, zero active residue, migration/provenance health, lock preservation, and whether a later fresh authorization-preparation lane is justified. It does **not** itself authorize authorization preparation/application, Printer execution, providers/RPC/WebSocket, Central Scheduler runtime, another campaign, remote/VPS work, retrieval, paper decisions, positions, trades, PnL, or longer-window activation.
+
+Governing application closeout:
+
+`docs/printer-v1-v2-9-8b-interrupted-four-token-704f53472011-authoritative-residue-reconciliation-application-closeout.md`
+
+'''
+agents.write_text(text[:start] + replacement + text[end:], encoding="utf-8")
+
+handoff = f'''# CURRENT_HANDOFF — Printer V1
+
+## Current lane
+
+`POST-RECONCILIATION FRESH NEXT-BOUNDED-CAMPAIGN READINESS / GOVERNANCE AUDIT`
+
+This is a read-only/readiness-governance lane. It does not authorize a new authorization, Printer execution, provider/RPC/WebSocket contact, Central Scheduler runtime, another campaign, or remote/VPS work.
+
+## Current repository state
+
+Governance branch:
+
+`governance/v2-9-8b-post-reconciliation-sync`
+
+Reviewed authoritative-reconciliation application HEAD:
+
+`{BASELINE}`
+
+Reviewed exact-recovery implementation commit:
+
+`0d539aa317fe6082d14bad21479f448190656286`
+
+Production lease/cleanup repair baseline:
+
+`9614bb172d2dc8765f03c67320047e6828f285ef`
+
+This governance synchronization changes documentation only; it does not modify product code or the authoritative database.
+
+## Authoritative database
+
+Path:
+
+`data/printer_v1.sqlite3`
+
+Post-reconciliation SHA-256 reported by the operator-executed local application lane:
+
+`{POST_DB}`
+
+Migration state remains `62 / 062_pre_admission_attempt_evidence.sql`.
+
+Post-application integrity / foreign keys were reported `ok / 0`.
+
+## Latest completed work
+
+The separately approved exact authoritative reconciliation for consumed execution
+`20260828T220832Z-704f53472011`
+completed exactly once at reviewed HEAD.
+
+Operator-produced local evidence reports:
+
+- pre-DB SHA `{PRE_DB}`;
+- fresh byte backup preserved at
+  `/Users/Dtwo1/PrinterOperations/v2-9-8/20260829T113433Z-704f53472011-authoritative-residue-reconciliation/backup/printer_v1.pre-recovery.c90376b9.sqlite3`
+  with the same SHA;
+- canonical backup/restore rehearsal PASS;
+- one exact recovery invocation returned `RECOVERED` with admitted shape
+  `ONE_CYCLE_CAMPAIGN_INTERRUPTED_OPEN_ATTEMPT`;
+- Cycle-2 attempt is `CANCELLED` with
+  `PARENT_CAMPAIGN_INTERRUPTED:LEASE_RENEWAL_SQLITE_LOCKED` and `consumed_cycle_id=NULL`;
+- Scheduler job `2808` is `CANCELLED` and unlocked;
+- campaign/run are `TERMINAL_BLOCKED / LEASE_RENEWAL_SQLITE_LOCKED`;
+- factory run is `SAFE_STOPPED / LEASE_RENEWAL_SQLITE_LOCKED`;
+- supervision is `TERMINAL` and the exact lease file is absent;
+- Cycle-1 row and all 19 migration-062 attempt-evidence rows were preserved;
+- locked retrieval/financial table hashes and campaign/run/factory counts were unchanged;
+- source calls `0`; Scheduler-runtime calls `0`;
+- post-DB SHA is `{POST_DB}`.
+
+Evidence directory:
+
+`/Users/Dtwo1/PrinterOperations/v2-9-8/20260829T113433Z-704f53472011-authoritative-residue-reconciliation/`
+
+The local evidence directory is not readable from GitHub-hosted review; these facts are recorded as operator-produced application evidence, while the recovery code/disposable proof/independent closeout were separately reviewed in GitHub.
+
+Application verdict:
+
+`V2_9_8B_INTERRUPTED_FOUR_TOKEN_704F53472011_AUTHORITATIVE_RESIDUE_RECONCILIATION_PASS`
+
+Governance closeout:
+
+`docs/printer-v1-v2-9-8b-interrupted-four-token-704f53472011-authoritative-residue-reconciliation-application-closeout.md`
+
+## Consumed authorization
+
+`{AUTH}`
+
+It remains permanently consumed and non-reusable. Do not retry, resume, restart, reuse, delete its marker, or create a successor from it.
+
+## Exact next permitted action
+
+Perform a **fresh post-reconciliation next-bounded-campaign readiness/governance audit**.
+
+That audit must re-establish current repository/DB identity and confirm at minimum:
+
+- authoritative DB identity and migration 62/tip 062;
+- clean integrity/FKs and no SQLite sidecars;
+- zero active Printer/Governor/Scheduler processes;
+- recovered execution has zero active Scheduler/pre-admission/factory work;
+- no lease residue;
+- consumed authorization remains non-reusable;
+- migration-062 provenance/evidence-control contracts remain current;
+- retrieval and all financial capability remain locked;
+- no remote/VPS lane resumed.
+
+Only a later PASS closeout may identify whether fresh exact-HEAD/exact-DB authorization preparation is the next lane. This handoff does not authorize it.
+
+## Permanent locks
+
+Solana-only; Solana memecoin-only; paper-trading only. No live wallet/private keys/signing/real funds/live execution. No paid API dependency. No scoring/ranking/confidence/weighted decision logic. No embeddings/vectors unless explicitly approved. No Source Governor or Central Scheduler bypass. No dirty-memory retrieval/decisions. Retrieval and all financial capability remain locked. `WINDOW_5M_MICRO_EVENT` remains support-only. `WINDOW_12H` and `WINDOW_24H` remain locked. Remote/VPS work remains paused at `agent/remote-host-linux-portability-implementation`, HEAD `f61419f2db37fc5eb220c20fafeaf15501218033`.
+'''
+Path("CURRENT_HANDOFF.md").write_text(handoff, encoding="utf-8")
+
+closeout = f'''# Printer V1 V2-9.8B — Interrupted Four-Token 704f53472011 Authoritative Residue Reconciliation Application Closeout
+
+Date: 2026-08-29
+
+Lane: **AUTHORITATIVE EXACT-RESIDUE RECONCILIATION APPLICATION CLOSEOUT / GOVERNANCE RECORD**
+
+## Authority and evidence basis
+
+The exact-recovery implementation and disposable proof closed PASS at implementation commit
+`0d539aa317fe6082d14bad21479f448190656286`, followed by independent closeout commit
+`{BASELINE}`.
+
+The operator then gave the separately required explicit approval for one authoritative reconciliation. The local application was executed on the Mac against the authoritative DB and PrinterOperations tree and stopped after evidence capture. GitHub-hosted review cannot independently open those local paths, so this closeout records the exact operator-produced local application evidence and checks it for consistency with the reviewed recovery contract; it does not claim a second remote byte-level re-execution.
+
+## Exact application binding
+
+- Reviewed HEAD: `{BASELINE}`
+- Execution: `20260828T220832Z-704f53472011`
+- Consumed authorization: `{AUTH}`
+- Pre-DB SHA-256: `{PRE_DB}`
+- Required marker SHA-256: `9099e5f31949bd9dc219dbe58a301e095df1600cd5698b705841ee33bfd0c76a`
+- Factory run: `42ef6217-3932-4846-948d-e2103fd34309`
+- Scheduler residue: job `2808`
+- Originating terminal cause: `LEASE_RENEWAL_SQLITE_LOCKED`
+
+## Operator-produced application evidence
+
+The operator reports all pre-application gates passed:
+
+1. exact reviewed HEAD with clean tracked/index state;
+2. public read-only inspection returned `PRE_RECOVERY`;
+3. authoritative pre-DB SHA exactly matched `{PRE_DB}`;
+4. fresh canonical `operational_backup_restore_preflight` and disposable restore/migration rehearsal passed;
+5. the second immediate pre-mutation inspection still returned `PRE_RECOVERY` with the same DB SHA;
+6. no Printer / Scheduler runtime / provider activity occurred.
+
+Fresh backup:
+
+`/Users/Dtwo1/PrinterOperations/v2-9-8/20260829T113433Z-704f53472011-authoritative-residue-reconciliation/backup/printer_v1.pre-recovery.c90376b9.sqlite3`
+
+Backup SHA-256:
+
+`{PRE_DB}`
+
+The reviewed public reconciliation owner was invoked exactly once with operator approval and returned:
+
+- `status=RECOVERED`;
+- `admitted_shape=ONE_CYCLE_CAMPAIGN_INTERRUPTED_OPEN_ATTEMPT`.
+
+## Exact reported post-state
+
+- Cycle-2 attempt: `CANCELLED`;
+- attempt cause: `PARENT_CAMPAIGN_INTERRUPTED:LEASE_RENEWAL_SQLITE_LOCKED`;
+- `consumed_cycle_id=NULL`;
+- Scheduler job `2808`: `CANCELLED`, unlocked;
+- campaign: `TERMINAL_BLOCKED / LEASE_RENEWAL_SQLITE_LOCKED`;
+- campaign run: `TERMINAL_BLOCKED / LEASE_RENEWAL_SQLITE_LOCKED`;
+- factory run: `SAFE_STOPPED / LEASE_RENEWAL_SQLITE_LOCKED`;
+- supervision: `TERMINAL`;
+- exact campaign lease file: absent/released;
+- integrity / FK: `ok / 0`;
+- source calls: `0`;
+- Scheduler-runtime calls: `0`;
+- Cycle-1 row preserved byte-equivalently;
+- all 19 migration-062 attempt-evidence rows preserved;
+- locked retrieval/financial table hashes unchanged;
+- campaign/run/factory counts unchanged;
+- authorization remained consumed and `authorization_reused=False`.
+
+Post-DB SHA-256:
+
+`{POST_DB}`
+
+Evidence directory:
+
+`/Users/Dtwo1/PrinterOperations/v2-9-8/20260829T113433Z-704f53472011-authoritative-residue-reconciliation/`
+
+## Sequencing / lock review
+
+The result matches the reviewed exact-recovery contract: it terminalizes only the interrupted residue, preserves the original first cause and append-only evidence, releases owned residue, makes no provider or Scheduler-runtime call, and does not reuse or revive the consumed authorization.
+
+No governance synchronization may be interpreted as approval for a fresh authorization or campaign. The active build order requires post-synchronization fresh next-bounded-campaign readiness/governance before any later exact-HEAD authorization lane.
+
+Permanent V1 locks remain unchanged.
+
+## Verdict
+
+`V2_9_8B_INTERRUPTED_FOUR_TOKEN_704F53472011_AUTHORITATIVE_RESIDUE_RECONCILIATION_APPLICATION_CLOSEOUT_PASS`
+
+## Exact next permitted action
+
+`POST-RECONCILIATION FRESH NEXT-BOUNDED-CAMPAIGN READINESS / GOVERNANCE AUDIT`
+
+This next lane is read-only/readiness-governance only. It does not authorize authorization preparation/application, Printer/provider/Scheduler execution, another campaign, remote/VPS work, retrieval, paper decisions, positions, trades, PnL, or longer-window activation.
+'''
+Path("docs/printer-v1-v2-9-8b-interrupted-four-token-704f53472011-authoritative-residue-reconciliation-application-closeout.md").write_text(closeout, encoding="utf-8")
