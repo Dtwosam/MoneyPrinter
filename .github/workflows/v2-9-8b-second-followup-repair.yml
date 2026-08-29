@@ -53,6 +53,7 @@ jobs:
           }
 
           git checkout --detach "$BASE"
+          git reset --hard "$BASE"
           git apply "$PATCH"
           git diff --check
 
