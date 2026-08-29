@@ -2,107 +2,53 @@
 
 ## Current lane
 
-`POST-RECONCILIATION FRESH NEXT-BOUNDED-CAMPAIGN READINESS / GOVERNANCE AUDIT`
+`FRESH EXACT-HEAD / EXACT-DB ONE-SHOT STANDARD-4H AUTHORIZATION PREPARATION + INDEPENDENT REVIEW`
 
-This is a read-only/readiness-governance lane. It does not authorize a new authorization, Printer execution, provider/RPC/WebSocket contact, Central Scheduler runtime, another campaign, or remote/VPS work.
+This lane may prepare and independently review one brand-new authorization package only. It does not authorize authorization application/consumption, Printer execution, providers/RPC/WebSocket, Central Scheduler runtime, another campaign, or remote/VPS work.
 
 ## Current repository state
 
-Governance branch:
+Readiness governance branch:
 
-`governance/v2-9-8b-post-reconciliation-sync`
+`governance/v2-9-8b-post-reconciliation-readiness-closeout`
 
-Reviewed authoritative-reconciliation application HEAD:
+Latest reviewed provenance implementation:
 
-`d0c1d88d0fa6984a8ad45f3b5a3fa7c09e8f3024`
+`784d4afd1e2cb479e6773e588b5d62ebea53f71e`
 
-Reviewed exact-recovery implementation commit:
+Independent implementation closeout:
 
-`0d539aa317fe6082d14bad21479f448190656286`
-
-Production lease/cleanup repair baseline:
-
-`9614bb172d2dc8765f03c67320047e6828f285ef`
-
-This governance synchronization changes documentation only; it does not modify product code or the authoritative database.
+`096d179983f7fe5481879fd898c3202dad479dd6`
 
 ## Authoritative database
 
-Path:
+Path: `data/printer_v1.sqlite3`
 
-`data/printer_v1.sqlite3`
-
-Post-reconciliation SHA-256 reported by the operator-executed local application lane:
+Exact SHA-256, re-confirmed locally after the code-only provenance repair:
 
 `a7ad83d5f368192da7a4e7522870e3956e6f42f70b51748ff642f2c2c53683f8`
 
-Migration state remains `62 / 062_pre_admission_attempt_evidence.sql`.
-
-Post-application integrity / foreign keys were reported `ok / 0`.
+Read-only readiness evidence reports `RECOVERED`, integrity `ok`, FK violations `0`, migration count `62`, tip `062_pre_admission_attempt_evidence.sql`, zero active Scheduler jobs, zero active pre-admission attempts, zero active factory runs, no campaign lease, zero Printer/Governor/Central Scheduler processes, and no SQLite WAL/SHM/journal sidecars.
 
 ## Latest completed work
 
-The separately approved exact authoritative reconciliation for consumed execution
-`20260828T220832Z-704f53472011`
-completed exactly once at reviewed HEAD.
+Post-reconciliation next-bounded-campaign readiness closed PASS.
 
-Operator-produced local evidence reports:
+Consumed authorization `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260828T211924Z_5fcb1bf5` remains permanently consumed/non-reusable and now has exact diagnostic historical disposition `CONSUMED_CHILD_EXITED_NONZERO`.
 
-- pre-DB SHA `c90376b9e26d0f2953a8d9b2fd5fee01d80ac4984510113e595fd1ccc3d9033d`;
-- fresh byte backup preserved at
-  `/Users/Dtwo1/PrinterOperations/v2-9-8/20260829T113433Z-704f53472011-authoritative-residue-reconciliation/backup/printer_v1.pre-recovery.c90376b9.sqlite3`
-  with the same SHA;
-- canonical backup/restore rehearsal PASS;
-- one exact recovery invocation returned `RECOVERED` with admitted shape
-  `ONE_CYCLE_CAMPAIGN_INTERRUPTED_OPEN_ATTEMPT`;
-- Cycle-2 attempt is `CANCELLED` with
-  `PARENT_CAMPAIGN_INTERRUPTED:LEASE_RENEWAL_SQLITE_LOCKED` and `consumed_cycle_id=NULL`;
-- Scheduler job `2808` is `CANCELLED` and unlocked;
-- campaign/run are `TERMINAL_BLOCKED / LEASE_RENEWAL_SQLITE_LOCKED`;
-- factory run is `SAFE_STOPPED / LEASE_RENEWAL_SQLITE_LOCKED`;
-- supervision is `TERMINAL` and the exact lease file is absent;
-- Cycle-1 row and all 19 migration-062 attempt-evidence rows were preserved;
-- locked retrieval/financial table hashes and campaign/run/factory counts were unchanged;
-- source calls `0`; Scheduler-runtime calls `0`;
-- post-DB SHA is `a7ad83d5f368192da7a4e7522870e3956e6f42f70b51748ff642f2c2c53683f8`.
+Implementation proof: RED `2 failed, 3 passed`; GREEN `35 passed, 8 subtests passed`, plus `py_compile` and `git diff --check` PASS. Independent implementation review PASS.
 
-Evidence directory:
+Readiness closeout:
 
-`/Users/Dtwo1/PrinterOperations/v2-9-8/20260829T113433Z-704f53472011-authoritative-residue-reconciliation/`
-
-The local evidence directory is not readable from GitHub-hosted review; these facts are recorded as operator-produced application evidence, while the recovery code/disposable proof/independent closeout were separately reviewed in GitHub.
-
-Application verdict:
-
-`V2_9_8B_INTERRUPTED_FOUR_TOKEN_704F53472011_AUTHORITATIVE_RESIDUE_RECONCILIATION_PASS`
-
-Governance closeout:
-
-`docs/printer-v1-v2-9-8b-interrupted-four-token-704f53472011-authoritative-residue-reconciliation-application-closeout.md`
-
-## Consumed authorization
-
-`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260828T211924Z_5fcb1bf5`
-
-It remains permanently consumed and non-reusable. Do not retry, resume, restart, reuse, delete its marker, or create a successor from it.
+`docs/printer-v1-v2-9-8b-post-reconciliation-next-bounded-campaign-readiness-closeout.md`
 
 ## Exact next permitted action
 
-Perform a **fresh post-reconciliation next-bounded-campaign readiness/governance audit**.
+Prepare a brand-new exact-HEAD/exact-DB one-shot Standard-4H authorization package and then independently review it.
 
-That audit must re-establish current repository/DB identity and confirm at minimum:
+The package must bind its exact reviewed Git HEAD and authoritative DB SHA `a7ad83d5f368192da7a4e7522870e3956e6f42f70b51748ff642f2c2c53683f8`; preserve migration-062 evidence identity; explicitly include all required historical non-reusable authorization IDs including `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260828T211924Z_5fcb1bf5`; preserve one-shot/non-retry semantics, Source Governor and Central Scheduler authority; and keep retrieval and financial capability locked.
 
-- authoritative DB identity and migration 62/tip 062;
-- clean integrity/FKs and no SQLite sidecars;
-- zero active Printer/Governor/Scheduler processes;
-- recovered execution has zero active Scheduler/pre-admission/factory work;
-- no lease residue;
-- consumed authorization remains non-reusable;
-- migration-062 provenance/evidence-control contracts remain current;
-- retrieval and all financial capability remain locked;
-- no remote/VPS lane resumed.
-
-Only a later PASS closeout may identify whether fresh exact-HEAD/exact-DB authorization preparation is the next lane. This handoff does not authorize it.
+Preparation/review does not authorize execution. A later separately explicit operator approval is required before any new authorization may be consumed.
 
 ## Permanent locks
 

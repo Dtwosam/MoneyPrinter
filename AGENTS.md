@@ -47,34 +47,50 @@ suites unless the change risk or lane closeout requires them.
 
 ### Current V2-9.8B post-reconciliation governance state — 2026-08-29
 
-The consumed four-token campaign interruption has been repaired and reconciled through the required sequence:
+The interrupted consumed four-token execution has completed production repair,
+exact-residue recovery, separately approved authoritative reconciliation, and
+post-reconciliation readiness review.
 
-- production lease/contention + parent-interrupt cleanup repair closed PASS;
-- exact-execution residue recovery owner implemented and disposable-proven;
-- independent exact-recovery implementation closeout PASS;
-- separately operator-approved authoritative reconciliation executed exactly once at reviewed HEAD
-  `d0c1d88d0fa6984a8ad45f3b5a3fa7c09e8f3024`;
-- operator-produced local evidence reports authoritative reconciliation PASS.
-
-Authoritative post-reconciliation DB identity reported by the local application lane:
+Authoritative DB identity remains:
 
 `a7ad83d5f368192da7a4e7522870e3956e6f42f70b51748ff642f2c2c53683f8`
 
-Migration state remains canonical `62 / 062_pre_admission_attempt_evidence.sql`; integrity/FKs were reported `ok / 0` after application. The interrupted Cycle-2 attempt is terminal `CANCELLED` with exact cause `PARENT_CAMPAIGN_INTERRUPTED:LEASE_RENEWAL_SQLITE_LOCKED`; Scheduler job `2808` is terminal `CANCELLED` and unlocked; campaign/run are `TERMINAL_BLOCKED`; factory run is `SAFE_STOPPED`; supervision is `TERMINAL`; the exact campaign lease is released/absent; and zero provider or Scheduler-runtime calls were reported during recovery.
+Fresh local read-only evidence reports `RECOVERED`, integrity/FKs `ok / 0`,
+migration `62 / 062_pre_admission_attempt_evidence.sql`, zero active Scheduler
+jobs, zero active pre-admission attempts, zero active factory runs, no campaign
+lease, no Printer/Governor/Central Scheduler process, and no SQLite sidecars.
+A final post-implementation local re-hash returned the same authoritative DB
+SHA above.
 
-Consumed authorization
+The consumed authorization
 `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260828T211924Z_5fcb1bf5`
-remains permanently consumed and non-reusable. No retry, resume, restart, successor, new authorization, or campaign execution is authorized by this governance synchronization.
+remains permanently consumed and non-reusable. Its exact diagnostic historical
+disposition is now `CONSUMED_CHILD_EXITED_NONZERO`; this records the original
+wrapper/child result and does not grant reuse authority. Any future authorization
+must explicitly carry this exact ID in its approved
+`prior_authorizations_non_reusable` trust root.
+
+Post-reconciliation readiness verdict:
+
+`V2_9_8B_POST_RECONCILIATION_NEXT_BOUNDED_CAMPAIGN_READINESS_PASS`
 
 The exact current permitted lane is:
 
-`POST-RECONCILIATION FRESH NEXT-BOUNDED-CAMPAIGN READINESS / GOVERNANCE AUDIT`
+`FRESH EXACT-HEAD / EXACT-DB ONE-SHOT STANDARD-4H AUTHORIZATION PREPARATION + INDEPENDENT REVIEW`
 
-That lane is read-only/readiness-governance work. It must freshly verify the reconciled exact HEAD/DB state, zero active residue, migration/provenance health, lock preservation, and whether a later fresh authorization-preparation lane is justified. It does **not** itself authorize authorization preparation/application, Printer execution, providers/RPC/WebSocket, Central Scheduler runtime, another campaign, remote/VPS work, retrieval, paper decisions, positions, trades, PnL, or longer-window activation.
+That lane may prepare and independently review one brand-new authorization
+package only. The package must bind the then-current reviewed Git HEAD and exact
+authoritative DB SHA, preserve migration-062 provenance and all historical
+non-reuse trust, and remain unusable until its own independent review and later
+separate operator execution approval. This lane does **not** authorize applying
+or consuming an authorization, Printer execution, provider/RPC/WebSocket calls,
+Central Scheduler runtime, another campaign, retry/resume/restart of the
+consumed campaign, remote/VPS work, retrieval, paper decisions, positions,
+trades, audits, PnL, or longer-window activation.
 
-Governing application closeout:
+Governing readiness closeout:
 
-`docs/printer-v1-v2-9-8b-interrupted-four-token-704f53472011-authoritative-residue-reconciliation-application-closeout.md`
+`docs/printer-v1-v2-9-8b-post-reconciliation-next-bounded-campaign-readiness-closeout.md`
 
 Any future approved remote-host implementation must preserve the existing
 one-shot wrapper as the operational application boundary, `Restart=no`, no
