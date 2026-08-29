@@ -45,52 +45,71 @@ Every major capability must preserve:
 Use minimum sufficient risk-based verification. Do not request broad regression
 suites unless the change risk or lane closeout requires them.
 
-### Current V2-9.8B post-reconciliation governance state — 2026-08-29
+### Current V2-9.8B fresh Standard-4H authorization state — 2026-08-29
 
 The interrupted consumed four-token execution has completed production repair,
-exact-residue recovery, separately approved authoritative reconciliation, and
-post-reconciliation readiness review.
+exact-residue recovery, separately approved authoritative reconciliation,
+post-reconciliation readiness review, latest-consumed-authorization historical
+disposition repair, fresh next-campaign readiness, and fresh exact-HEAD/exact-DB
+Standard-4H authorization preparation plus independent review.
 
 Authoritative DB identity remains:
 
 `a7ad83d5f368192da7a4e7522870e3956e6f42f70b51748ff642f2c2c53683f8`
 
-Fresh local read-only evidence reports `RECOVERED`, integrity/FKs `ok / 0`,
-migration `62 / 062_pre_admission_attempt_evidence.sql`, zero active Scheduler
-jobs, zero active pre-admission attempts, zero active factory runs, no campaign
-lease, no Printer/Governor/Central Scheduler process, and no SQLite sidecars.
-A final post-implementation local re-hash returned the same authoritative DB
-SHA above.
+Fresh authorization preparation and independent review both PASS for:
+
+- authorization ID: `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260829T125811Z_98d1df41`
+- authorization SHA-256: `dde07b151b07a50e782830e0111eb860bb147f4ef51ebfcfd70bde1d46f3e6af`
+- exact authorized branch: `governance/v2-9-8b-post-reconciliation-readiness-closeout`
+- exact authorized HEAD: `ba75c76b16cf1b5a2b44ec27822733e161b10abc`
+- authoritative DB SHA-256: `a7ad83d5f368192da7a4e7522870e3956e6f42f70b51748ff642f2c2c53683f8`
+- current migration evidence: `MIGRATION_062_20260828T182504Z`
+- prior non-reusable authorization count: `51`
+- consumed Aug-28 authorization included explicitly: true
+- allowed evidence file count: `110`
+- allowed-file-set SHA-256: `f0146f5823291ceab9aff6fea92814025c41edee9d76551b1055385396a7bfa4`
+- authorized at: `2026-08-29T12:58:11.442104+00:00`
+- expires at: `2026-08-30T00:58:11.442104+00:00`
+- application state exists: false
+- authorization consumed: false
+- runtime started: false
+- independent zero-state ready: true
 
 The consumed authorization
 `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260828T211924Z_5fcb1bf5`
-remains permanently consumed and non-reusable. Its exact diagnostic historical
-disposition is now `CONSUMED_CHILD_EXITED_NONZERO`; this records the original
-wrapper/child result and does not grant reuse authority. Any future authorization
-must explicitly carry this exact ID in its approved
-`prior_authorizations_non_reusable` trust root.
+remains permanently consumed and non-reusable with diagnostic historical
+disposition `CONSUMED_CHILD_EXITED_NONZERO`. It is explicitly present in the
+new authorization's `prior_authorizations_non_reusable` trust root.
 
-Post-reconciliation readiness verdict:
+Preparation verdict:
 
-`V2_9_8B_POST_RECONCILIATION_NEXT_BOUNDED_CAMPAIGN_READINESS_PASS`
+`V2_9_8B_FRESH_EXACT_HEAD_EXACT_DB_STANDARD_4H_AUTHORIZATION_PREPARATION_PASS`
+
+Independent review verdict:
+
+`V2_9_8B_FRESH_EXACT_HEAD_EXACT_DB_STANDARD_4H_AUTHORIZATION_INDEPENDENT_REVIEW_PASS`
 
 The exact current permitted lane is:
 
-`FRESH EXACT-HEAD / EXACT-DB ONE-SHOT STANDARD-4H AUTHORIZATION PREPARATION + INDEPENDENT REVIEW`
+`SEPARATE OPERATOR APPROVAL GATE FOR ONE EXACT ONE-SHOT STANDARD-4H APPLICATION`
 
-That lane may prepare and independently review one brand-new authorization
-package only. The package must bind the then-current reviewed Git HEAD and exact
-authoritative DB SHA, preserve migration-062 provenance and all historical
-non-reuse trust, and remain unusable until its own independent review and later
-separate operator execution approval. This lane does **not** authorize applying
-or consuming an authorization, Printer execution, provider/RPC/WebSocket calls,
-Central Scheduler runtime, another campaign, retry/resume/restart of the
-consumed campaign, remote/VPS work, retrieval, paper decisions, positions,
-trades, audits, PnL, or longer-window activation.
+This gate does not itself authorize consumption or execution. Approval must be
+explicit and unmistakable; generic continuation language does not authorize the
+one-shot application. If separately approved before expiry, the application
+must return to the exact authorized branch/HEAD above and freshly revalidate the
+exact authorization bytes/hash, temporal validity, authoritative DB identity,
+migration/provenance inventory, absence of application state, host/process and
+SQLite-sidecar quiescence, and operational zero-state before the canonical
+one-shot wrapper may consume the authorization exactly once.
 
-Governing readiness closeout:
+If the authorization expires, any bound identity drifts, or any fresh preflight
+fails, stop without consumption. Do not extend, rewrite, retry, resume, restart,
+or create application state for the expired/drifted package.
 
-`docs/printer-v1-v2-9-8b-post-reconciliation-next-bounded-campaign-readiness-closeout.md`
+Governing preparation/review closeout:
+
+`docs/printer-v1-v2-9-8b-fresh-exact-head-exact-db-standard-4h-authorization-preparation-independent-review-closeout.md`
 
 Any future approved remote-host implementation must preserve the existing
 one-shot wrapper as the operational application boundary, `Restart=no`, no
