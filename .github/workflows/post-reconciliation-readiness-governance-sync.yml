@@ -32,7 +32,7 @@ jobs:
           path.write_text(text.replace(old, new, 1), encoding='utf-8')
           PY
           python .github/post_reconciliation_readiness_governance_sync.py
-          git rm \
+          git rm -f \
             .github/workflows/post-reconciliation-readiness-governance-sync.yml \
             .github/post_reconciliation_readiness_governance_sync.py
           git add \
