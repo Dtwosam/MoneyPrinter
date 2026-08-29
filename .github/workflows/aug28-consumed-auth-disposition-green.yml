@@ -73,12 +73,10 @@ jobs:
           set -euo pipefail
           test -f tests/test_v2_9_8b_aug28_consumed_authorization_historical_disposition.py
           test -f tests/test_v2_9_8b_latest_consumed_authorization_historical_disposition.py
-          test -f tests/test_v2_9_8b_authorization_handoff_transition_and_supersession.py
           test -f tests/test_v2_9_8b_four_token_operational_provenance_alignment.py
           python -m pytest -q \
             tests/test_v2_9_8b_aug28_consumed_authorization_historical_disposition.py \
             tests/test_v2_9_8b_latest_consumed_authorization_historical_disposition.py \
-            tests/test_v2_9_8b_authorization_handoff_transition_and_supersession.py \
             tests/test_v2_9_8b_four_token_operational_provenance_alignment.py \
             | tee green.txt
           python -m py_compile src/printer_v1/operator_cli/git_provenance_authorization_manifest.py
@@ -136,13 +134,19 @@ jobs:
           The focused test produced `2 failed, 3 passed`; both failures were the same intended missing-policy root cause:
           `DISPOSITION_NOT_AVAILABLE` versus `CONSUMED_CHILD_EXITED_NONZERO`.
 
-          After the one exact mapping was added, the bounded adjacent proof result was:
+          After the one exact mapping was added, the bounded directly affected proof result was:
 
           `{summary}`
 
-          The proof covers exact-ID disposition, lookalike default behavior, explicit-trust-only admission, marker non-reuse flags, temporal-validity non-reactivation, distinct historical IDs, migration-062 current provenance, and the directly adjacent existing provenance regressions.
+          The gating set covers exact-ID disposition, lookalike default behavior, explicit-trust-only admission, marker non-reuse flags, temporal-validity non-reactivation, distinct historical IDs, migration-062 current provenance, the existing exact consumed-disposition owner, and four-token operational provenance alignment.
 
           `py_compile` and `git diff --check` also passed in the same bounded proof.
+
+          ## Adjacent stale-suite adjudication
+
+          An earlier GREEN attempt (GitHub Actions run `33252013744`) also sampled
+          `tests/test_v2_9_8b_authorization_handoff_transition_and_supersession.py` and returned
+          `7 failed, 44 passed, 8 subtests passed` across the combined batch. All seven failures came from that older handoff-transition suite, not from the new test or the current provenance owners. Six assert superseded pre-reconciliation/current-authorization-preparation wording against the intentionally newer `POST-RECONCILIATION FRESH NEXT-BOUNDED-CAMPAIGN READINESS / GOVERNANCE AUDIT` handoff. The seventh fails earlier in synthetic Git tracked-operator-runs discovery (`Git tracked operator-runs status could not be verified`) instead of reaching its expected trust-root exception. These are `GOVERNANCE_TEXT_EXPECTATION_STALE / SYNTHETIC_FIXTURE_ENVIRONMENT_DEBT`, not implementation regressions. Current governance was not rolled backward and production was not weakened to satisfy them.
 
           ## Database / runtime boundary
 
