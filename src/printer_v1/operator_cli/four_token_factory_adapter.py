@@ -1312,10 +1312,23 @@ def reconcile_parent_interrupted_open_pre_admission_attempts(
         raise FourTokenFactoryAdapterError(
             "parent-interrupted cleanup Scheduler ownership mismatch"
         )
-    job_active = str(job[1]) in {"PENDING", "RUNNING", "COOLDOWN"} or (
-        job[2] is not None or job[3] is not None
-    )
-    job_cancelled = str(job[1]) == "CANCELLED" and job[2] is None and job[3] is None
+    job_status = str(job[1])
+    locked_at = job[2]
+    lock_owner = job[3]
+    locks_clear = locked_at is None and lock_owner is None
+    if job_status == "RUNNING":
+        job_active = locked_at is not None and bool(str(lock_owner or "").strip())
+    elif job_status in {"PENDING", "COOLDOWN"}:
+        job_active = locks_clear
+    else:
+        job_active = False
+    job_cancelled = job_status == "CANCELLED" and locks_clear
+
+    def _require_interrupt_job_shape() -> None:
+        if not job_active and not job_cancelled:
+            raise FourTokenFactoryAdapterError(
+                "parent-interrupted cleanup Scheduler state is contradictory"
+            )
 
     def _cancel_owned_job() -> bool:
         if not job_active:
@@ -1365,12 +1378,28 @@ def reconcile_parent_interrupted_open_pre_admission_attempts(
                 "attempt_id": attempt_id,
                 "expected_cause": expected_cause,
             }
-        # States B or D.
+        _require_interrupt_job_shape()
+        if job_cancelled:
+            return {
+                "reconciled": True,
+                "idempotent_replay": True,
+                "replay_state": "D",
+                "attempt_id": attempt_id,
+                "scheduler_job_id": job_id,
+                "expected_cause": expected_cause,
+                "job_cancelled": False,
+                "attempt_terminalized": False,
+            }
+        # State B: exact interruption attempt, still-active owned Scheduler job.
         owns_txn = not connection.in_transaction
         if owns_txn:
             connection.execute("BEGIN IMMEDIATE")
         try:
             cancelled = _cancel_owned_job()
+            if not cancelled:
+                raise FourTokenFactoryAdapterError(
+                    "parent-interrupted cleanup Scheduler cancellation was not owned"
+                )
             if owns_txn:
                 connection.commit()
         except Exception:
@@ -1379,12 +1408,12 @@ def reconcile_parent_interrupted_open_pre_admission_attempts(
             raise
         return {
             "reconciled": True,
-            "idempotent_replay": not cancelled,
-            "replay_state": "D" if not cancelled else "B",
+            "idempotent_replay": False,
+            "replay_state": "B",
             "attempt_id": attempt_id,
             "scheduler_job_id": job_id,
             "expected_cause": expected_cause,
-            "job_cancelled": cancelled,
+            "job_cancelled": True,
             "attempt_terminalized": False,
         }
     if state not in {
@@ -1395,13 +1424,42 @@ def reconcile_parent_interrupted_open_pre_admission_attempts(
             "parent-interrupted cleanup unexpected attempt state"
         )
 
-    # States A or C.
+    _require_interrupt_job_shape()
+    # State C: job is already exactly CANCELLED + unlocked; terminalize attempt only.
+    if job_cancelled:
+        owns_txn = not connection.in_transaction
+        if owns_txn:
+            connection.execute("BEGIN IMMEDIATE")
+        try:
+            _terminalize_attempt()
+            if owns_txn:
+                connection.commit()
+        except Exception:
+            if owns_txn and connection.in_transaction:
+                connection.rollback()
+            raise
+        return {
+            "reconciled": True,
+            "idempotent_replay": False,
+            "replay_state": "C",
+            "attempt_id": attempt_id,
+            "scheduler_job_id": job_id,
+            "expected_cause": expected_cause,
+            "job_cancelled": False,
+            "attempt_terminalized": True,
+        }
+
+    # State A: open attempt plus still-active exact owned Scheduler job.
     owns_txn = not connection.in_transaction
     if owns_txn:
         connection.execute("BEGIN IMMEDIATE")
     try:
         _terminalize_attempt()
         cancelled = _cancel_owned_job()
+        if not cancelled:
+            raise FourTokenFactoryAdapterError(
+                "parent-interrupted cleanup Scheduler cancellation was not owned"
+            )
         if owns_txn:
             connection.commit()
     except Exception:
@@ -1411,11 +1469,11 @@ def reconcile_parent_interrupted_open_pre_admission_attempts(
     return {
         "reconciled": True,
         "idempotent_replay": False,
-        "replay_state": "A" if cancelled or job_active else "C",
+        "replay_state": "A",
         "attempt_id": attempt_id,
         "scheduler_job_id": job_id,
         "expected_cause": expected_cause,
-        "job_cancelled": cancelled,
+        "job_cancelled": True,
         "attempt_terminalized": True,
     }
 

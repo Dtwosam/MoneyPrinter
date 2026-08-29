@@ -305,12 +305,14 @@ def _begin_immediate(
     *,
     deadline_monotonic: float | None = None,
     busy_timeout_ceiling: float | None = None,
+    before_block: Callable[[float], None] | None = None,
 ) -> None:
     """Begin IMMEDIATE with bounded retries for transient SQLite lock contention.
 
     When ``deadline_monotonic`` is set, every inner wait/sleep is clamped so the
-    call cannot extend past that hard deadline. Other callers omit it and keep
-    the historical busy contract unchanged.
+    call cannot extend past that hard deadline. A renewal-only ``before_block``
+    callback may additionally re-prove lease safety before each blocking wait or
+    retry sleep. Other callers omit both and keep the historical busy contract.
     """
     last_error: BaseException | None = None
     ceiling = (
@@ -327,6 +329,9 @@ def _begin_immediate(
             planned = min(ceiling, remaining)
             if planned < LEASE_CONTENTION_MIN_BLOCK_SECONDS:
                 raise sqlite3.OperationalError("database is locked")
+        if before_block is not None:
+            before_block(planned)
+        if deadline_monotonic is not None:
             _configure_busy_timeout(connection, busy_timeout_seconds=planned)
         try:
             connection.execute("BEGIN IMMEDIATE")
@@ -340,6 +345,8 @@ def _begin_immediate(
                 remaining = deadline_monotonic - time.monotonic()
                 if sleep_for > remaining:
                     raise sqlite3.OperationalError("database is locked")
+            if before_block is not None:
+                before_block(sleep_for)
             time.sleep(sleep_for)
     if last_error is not None:
         raise last_error
@@ -633,6 +640,55 @@ def renew_campaign_lease(
     lock: Path | None = None
     lease_replace_attempts = 0
 
+    def _renewal_now() -> datetime:
+        if now is None:
+            return datetime.now(timezone.utc)
+        elapsed = max(0.0, time.monotonic() - t0)
+        return instant + timedelta(seconds=elapsed)
+
+    def _renewal_block_preflight(planned_block: float) -> None:
+        remaining_deadline = renewal_deadline - time.monotonic()
+        planned = float(planned_block)
+        if (
+            planned < LEASE_CONTENTION_MIN_BLOCK_SECONDS
+            or remaining_deadline < LEASE_CONTENTION_MIN_BLOCK_SECONDS
+            or planned > remaining_deadline
+        ):
+            raise sqlite3.OperationalError("database is locked")
+        preflight = _connect(
+            db_path,
+            read_only=True,
+            busy_timeout_seconds=0.0,
+        )
+        try:
+            current = _load_exact(
+                preflight,
+                supervision_id=supervision_id,
+                campaign_id=campaign_id,
+                configuration_id=configuration_id,
+                run_id=run_id,
+                owner_id=owner_id,
+            )
+            if str(current["supervision_state"]) != "ACTIVE":
+                raise CampaignSupervisionError(
+                    "campaign supervision is not renewable"
+                )
+            remaining_lease = (
+                _parse(str(current["lease_expires_at"])) - _renewal_now()
+            ).total_seconds()
+            if remaining_lease <= 0:
+                raise CampaignSupervisionError(
+                    "operational campaign lease is expired"
+                )
+            if (
+                remaining_lease <= LEASE_CONTENTION_REMAINING_SAFETY_SECONDS
+                or remaining_lease - planned
+                <= LEASE_CONTENTION_REMAINING_SAFETY_SECONDS
+            ):
+                raise sqlite3.OperationalError("database is locked")
+        finally:
+            preflight.close()
+
     def _failure_return(exc: BaseException) -> dict[str, Any]:
         nonlocal db_ledger_advanced
         if db_ledger_advanced:
@@ -744,12 +800,9 @@ def renew_campaign_lease(
                     run_id=run_id,
                     owner_id=owner_id,
                 )
-                check_now = (
-                    instant if now is not None else datetime.now(timezone.utc)
-                )
                 planned_block = _renewal_contention_preflight(
                     row=row,
-                    check_now=check_now,
+                    check_now=_renewal_now(),
                     renewal_deadline=renewal_deadline,
                 )
                 previous_heartbeat_iso = str(row["heartbeat_at"])
@@ -764,6 +817,7 @@ def renew_campaign_lease(
                     connection,
                     deadline_monotonic=renewal_deadline,
                     busy_timeout_ceiling=planned_block,
+                    before_block=_renewal_block_preflight,
                 )
                 cursor = connection.execute(
                     """UPDATE printer_memory_factory_campaign_supervision
@@ -793,6 +847,7 @@ def renew_campaign_lease(
                 remaining = renewal_deadline - time.monotonic()
                 if LEASE_CONTENTION_OUTER_SLEEP_SECONDS > remaining:
                     raise sqlite3.OperationalError("database is locked")
+                _renewal_block_preflight(LEASE_CONTENTION_OUTER_SLEEP_SECONDS)
                 time.sleep(LEASE_CONTENTION_OUTER_SLEEP_SECONDS)
                 continue
             except Exception:
