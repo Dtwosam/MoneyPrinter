@@ -86,14 +86,23 @@ jobs:
             exit 1
           }
 
-          git diff --binary "$BASE" -- \
+          # Stage the exact three product-lane deliverables so the new closeout
+          # file is included in the saved patch. The CI harness itself is never
+          # staged or published to the implementation branch.
+          git add \
+            docs/printer-v1-v2-9-8b-interrupted-four-token-704f53472011-exact-residue-reconciliation-implementation-closeout.md \
+            src/printer_v1/operator_cli/interrupted_four_token_704f53472011_residue_reconciliation.py \
+            tests/test_v2_9_8b_interrupted_four_token_704f53472011_residue_reconciliation.py
+          git diff --cached --binary "$BASE" -- \
+            docs/printer-v1-v2-9-8b-interrupted-four-token-704f53472011-exact-residue-reconciliation-implementation-closeout.md \
             src/printer_v1/operator_cli/interrupted_four_token_704f53472011_residue_reconciliation.py \
             tests/test_v2_9_8b_interrupted_four_token_704f53472011_residue_reconciliation.py \
-            docs/printer-v1-v2-9-8b-interrupted-four-token-704f53472011-exact-residue-reconciliation-implementation-closeout.md \
             > "$PATCH"
           test -s "$PATCH"
 
-          git checkout --detach "$BASE"
+          # Reconstruct only the proved product patch on the reviewed parent.
+          # This local reset cannot move the remote CI branch; the only push
+          # below targets the dedicated implementation branch.
           git reset --hard "$BASE"
           git apply "$PATCH"
           git diff --check
