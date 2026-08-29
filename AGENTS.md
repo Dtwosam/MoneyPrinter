@@ -45,67 +45,36 @@ Every major capability must preserve:
 Use minimum sufficient risk-based verification. Do not request broad regression
 suites unless the change risk or lane closeout requires them.
 
-### Current V2-9.8B post-migration-062 readiness closeout
+### Current V2-9.8B post-reconciliation governance state — 2026-08-29
 
-The consumed 4/2/2 campaign forensic audit proved four product defects. The
-orchestration-correctness design and narrow Cycle-2 existing-owner amendment
-passed. The explicitly approved implementation and bounded offline proof are
-closed:
+The consumed four-token campaign interruption has been repaired and reconciled through the required sequence:
 
-`V2_9_8B_4_2_2_ORCHESTRATION_CORRECTNESS_IMPLEMENTATION_PASS`
+- production lease/contention + parent-interrupt cleanup repair closed PASS;
+- exact-execution residue recovery owner implemented and disposable-proven;
+- independent exact-recovery implementation closeout PASS;
+- separately operator-approved authoritative reconciliation executed exactly once at reviewed HEAD
+  `d0c1d88d0fa6984a8ad45f3b5a3fa7c09e8f3024`;
+- operator-produced local evidence reports authoritative reconciliation PASS.
 
-Governing closeout:
+Authoritative post-reconciliation DB identity reported by the local application lane:
 
-`docs/printer-v1-v2-9-8b-4-2-2-orchestration-correctness-implementation-closeout.md`
+`a7ad83d5f368192da7a4e7522870e3956e6f42f70b51748ff642f2c2c53683f8`
 
-Migration 062 was explicitly approved, applied exactly once through the
-canonical migration runner, and independently re-verified. The authoritative
-database is at `62 / 062_pre_admission_attempt_evidence.sql`, with exact SHA-256
-`dececa7ce402856978675c66ecbdfd23b88ed97e3ff23f282a2588a436c93836`.
+Migration state remains canonical `62 / 062_pre_admission_attempt_evidence.sql`; integrity/FKs were reported `ok / 0` after application. The interrupted Cycle-2 attempt is terminal `CANCELLED` with exact cause `PARENT_CAMPAIGN_INTERRUPTED:LEASE_RENEWAL_SQLITE_LOCKED`; Scheduler job `2808` is terminal `CANCELLED` and unlocked; campaign/run are `TERMINAL_BLOCKED`; factory run is `SAFE_STOPPED`; supervision is `TERMINAL`; the exact campaign lease is released/absent; and zero provider or Scheduler-runtime calls were reported during recovery.
 
-The post-migration fresh next-bounded-campaign readiness/governance audit is
-closed:
+Consumed authorization
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260828T211924Z_5fcb1bf5`
+remains permanently consumed and non-reusable. No retry, resume, restart, successor, new authorization, or campaign execution is authorized by this governance synchronization.
 
-`V2_9_8B_POST_MIGRATION_FRESH_NEXT_BOUNDED_CAMPAIGN_READINESS_GOVERNANCE_PASS`
+The exact current permitted lane is:
 
-Governing closeout:
+`POST-RECONCILIATION FRESH NEXT-BOUNDED-CAMPAIGN READINESS / GOVERNANCE AUDIT`
 
-`docs/printer-v1-v2-9-8b-post-migration-062-fresh-next-bounded-campaign-readiness-governance-closeout.md`
+That lane is read-only/readiness-governance work. It must freshly verify the reconciled exact HEAD/DB state, zero active residue, migration/provenance health, lock preservation, and whether a later fresh authorization-preparation lane is justified. It does **not** itself authorize authorization preparation/application, Printer execution, providers/RPC/WebSocket, Central Scheduler runtime, another campaign, remote/VPS work, retrieval, paper decisions, positions, trades, PnL, or longer-window activation.
 
-The migration-062 authorization-provenance evidence-control audit and design
-are closed:
+Governing application closeout:
 
-`V2_9_8B_MIGRATION_062_AUTHORIZATION_PROVENANCE_EVIDENCE_CONTROL_AUDIT_PASS`
-
-`V2_9_8B_MIGRATION_062_AUTHORIZATION_PROVENANCE_EVIDENCE_CONTROL_DESIGN_PASS`
-
-Governing design:
-
-`docs/printer-v1-v2-9-8b-migration-062-authorization-provenance-evidence-control-design.md`
-
-The explicitly approved narrow implementation, bounded proof, independent
-closeout review, and normal commit are closed:
-
-`V2_9_8B_MIGRATION_062_AUTHORIZATION_PROVENANCE_EVIDENCE_CONTROL_IMPLEMENTATION_PASS`
-
-`V2_9_8B_MIGRATION_062_AUTHORIZATION_PROVENANCE_EVIDENCE_CONTROL_IMPLEMENTATION_CLOSEOUT_PASS`
-
-Governing closeout:
-
-`docs/printer-v1-v2-9-8b-migration-062-authorization-provenance-evidence-control-implementation-closeout.md`
-
-The existing verified migration-062 application package is now the singular
-current provenance package for both four-token profiles. Migration 061 remains
-immutable historical evidence. The exact current permitted lane is:
-
-`FRESH EXACT-HEAD / EXACT-DB ONE-SHOT AUTHORIZATION PREPARATION / INDEPENDENT REVIEW`
-
-That lane may prepare and independently review one fresh authorization bound to
-the exact post-repair commit HEAD, exact unchanged authoritative DB, and exact
-migration-062 current provenance. It does not authorize applying or consuming
-an authorization; mutating the database; running Printer; contacting
-providers/RPC/WebSocket; running Central Scheduler; starting a campaign; or
-resuming remote-host work.
+`docs/printer-v1-v2-9-8b-interrupted-four-token-704f53472011-authoritative-residue-reconciliation-application-closeout.md`
 
 Any future approved remote-host implementation must preserve the existing
 one-shot wrapper as the operational application boundary, `Restart=no`, no
