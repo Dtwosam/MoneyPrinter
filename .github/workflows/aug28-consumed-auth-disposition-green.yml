@@ -37,24 +37,33 @@ jobs:
           set -euo pipefail
           python - <<'PY'
           from pathlib import Path
+          import re
+
           path = Path('src/printer_v1/operator_cli/git_provenance_authorization_manifest.py')
           text = path.read_text(encoding='utf-8')
-          old = '''    "V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260827T122355Z_8e43eae7": (
-              "CONSUMED_CHILD_EXITED_ZERO"
-          ),
-          }
-          '''
-          new = '''    "V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260827T122355Z_8e43eae7": (
-              "CONSUMED_CHILD_EXITED_ZERO"
-          ),
-              "V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260828T211924Z_5fcb1bf5": (
-                  "CONSUMED_CHILD_EXITED_NONZERO"
-              ),
-          }
-          '''
-          if text.count(old) != 1:
-              raise SystemExit('exact disposition insertion anchor missing or ambiguous')
-          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          target_id = 'V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260828T211924Z_5fcb1bf5'
+          if target_id in text:
+              raise SystemExit('target disposition mapping already present unexpectedly')
+
+          pattern = re.compile(
+              r'(?P<anchor>    "V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260827T122355Z_8e43eae7": \(\n'
+              r'        "CONSUMED_CHILD_EXITED_ZERO"\n'
+              r'    \),\n)'
+          )
+          matches = list(pattern.finditer(text))
+          if len(matches) != 1:
+              raise SystemExit(
+                  f'exact disposition insertion anchor count={len(matches)}'
+              )
+          addition = (
+              '    "V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260828T211924Z_5fcb1bf5": (\n'
+              '        "CONSUMED_CHILD_EXITED_NONZERO"\n'
+              '    ),\n'
+          )
+          text = pattern.sub(lambda m: m.group('anchor') + addition, text, count=1)
+          if text.count(target_id) != 1:
+              raise SystemExit('target disposition mapping count is not exactly one')
+          path.write_text(text, encoding='utf-8')
           PY
           git diff -- src/printer_v1/operator_cli/git_provenance_authorization_manifest.py
 
@@ -82,7 +91,9 @@ jobs:
           export PYTEST_SUMMARY="$(tail -n 1 green.txt)"
           python - <<'PY'
           import os
+          import textwrap
           from pathlib import Path
+
           summary = os.environ['PYTEST_SUMMARY']
           content = f'''# Printer V1 V2-9.8B — Aug28 Consumed Authorization Historical Disposition Implementation Closeout
 
@@ -129,16 +140,7 @@ jobs:
 
           `{summary}`
 
-          The proof covers:
-
-          - exact-ID disposition;
-          - lookalike ID retains `DISPOSITION_NOT_AVAILABLE`;
-          - omitting the consumed ID from a future explicit trust root fails closed;
-          - marker retry/rerun/resume/restart/successor flags remain false;
-          - temporal validity cannot turn historical disposition into reuse authority;
-          - historical authorization IDs remain distinct;
-          - current four-token migration provenance remains migration 062;
-          - existing latest-consumed, authorization-handoff/supersession, and operational-provenance alignment regressions.
+          The proof covers exact-ID disposition, lookalike default behavior, explicit-trust-only admission, marker non-reuse flags, temporal-validity non-reactivation, distinct historical IDs, migration-062 current provenance, and the directly adjacent existing provenance regressions.
 
           `py_compile` and `git diff --check` also passed in the same bounded proof.
 
@@ -162,8 +164,6 @@ jobs:
 
           This closeout does not authorize preparation, application, or consumption of a new authorization and does not authorize another campaign.
           '''
-          # Remove workflow indentation from the doc literal.
-          import textwrap
           Path('docs/printer-v1-v2-9-8b-aug28-consumed-auth-historical-disposition-implementation-closeout.md').write_text(
               textwrap.dedent(content), encoding='utf-8'
           )
