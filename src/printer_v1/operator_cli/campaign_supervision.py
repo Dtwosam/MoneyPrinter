@@ -647,18 +647,43 @@ def renew_campaign_lease(
         return instant + timedelta(seconds=elapsed)
 
     def _renewal_block_preflight(planned_block: float) -> None:
-        remaining_deadline = renewal_deadline - time.monotonic()
         planned = float(planned_block)
+        remaining_deadline = renewal_deadline - time.monotonic()
         if (
             planned < LEASE_CONTENTION_MIN_BLOCK_SECONDS
             or remaining_deadline < LEASE_CONTENTION_MIN_BLOCK_SECONDS
             or planned > remaining_deadline
         ):
             raise sqlite3.OperationalError("database is locked")
+        if previous_expiry_iso is None:
+            raise CampaignSupervisionError(
+                "lease renewal preflight has no prior expiry"
+            )
+
+        # The ledger re-read is itself a blocking action. Reserve enough
+        # deadline and lease lifetime for the next requested block, then give
+        # this re-read at most the existing 2s SQLite busy ceiling.
+        prior_remaining_lease = (
+            _parse(previous_expiry_iso) - _renewal_now()
+        ).total_seconds()
+        if prior_remaining_lease <= 0:
+            raise CampaignSupervisionError(
+                "operational campaign lease is expired"
+            )
+        preflight_timeout = min(
+            SQLITE_BUSY_TIMEOUT_SECONDS,
+            remaining_deadline - planned,
+            prior_remaining_lease
+            - LEASE_CONTENTION_REMAINING_SAFETY_SECONDS
+            - planned,
+        )
+        if preflight_timeout < LEASE_CONTENTION_MIN_BLOCK_SECONDS:
+            raise sqlite3.OperationalError("database is locked")
+
         preflight = _connect(
             db_path,
             read_only=True,
-            busy_timeout_seconds=0.0,
+            busy_timeout_seconds=preflight_timeout,
         )
         try:
             current = _load_exact(
@@ -673,6 +698,15 @@ def renew_campaign_lease(
                 raise CampaignSupervisionError(
                     "campaign supervision is not renewable"
                 )
+
+            # The bounded re-read may itself have waited. Recompute all safety
+            # predicates before the next BEGIN/sleep is permitted.
+            remaining_deadline = renewal_deadline - time.monotonic()
+            if (
+                remaining_deadline < LEASE_CONTENTION_MIN_BLOCK_SECONDS
+                or planned > remaining_deadline
+            ):
+                raise sqlite3.OperationalError("database is locked")
             remaining_lease = (
                 _parse(str(current["lease_expires_at"])) - _renewal_now()
             ).total_seconds()

@@ -153,3 +153,24 @@ INDEPENDENT PRODUCTION IMPLEMENTATION CLOSEOUT / REVIEW
 Only after that passes may a **separately approved** exact-residue
 reconciliation implementation lane be considered for consumed execution
 `20260828T220832Z-704f53472011`.
+
+
+## Second follow-up repair — bounded preflight-read contention
+
+Baseline: `48a4ef5005b5b8e45f40e96d0137deb033a2a0a9`.
+
+The corrected proof exposed one regression introduced by the first follow-up: the per-block safety re-read used a zero-timeout auxiliary SQLite reader and could convert a legitimate short concurrent writer commit into immediate `SQLITE_LOCK_CONTENTION`.
+
+The second follow-up preserves the approved 15.0s hard renewal deadline, 15.0s remaining-lease safety margin, outer/inner caps, DB-first/file-second renewal authority, and fail-closed ownership/expiry checks. The auxiliary ledger re-read now receives only a bounded timeout that fits the same fixed deadline and the most recently proven lease expiry while reserving time for the next requested block. After the read returns, deadline and lease-safety predicates are recomputed before the next `BEGIN IMMEDIATE` or sleep may start. No global SQLite timeout, journal mode, Source Governor, Scheduler, recovery, or capability behavior changed.
+
+Isolated former regression: `1 passed in 2.30s`.
+
+Corrected focused proof: `41 passed in 92.08s (0:01:32)`.
+
+`py_compile` and `git diff --check`: PASS.
+
+The CI runner contained no authoritative consumed-run database or live residue and performed no provider or Scheduler runtime work. The preceding operator-local corrected proof established the authoritative DB remained `c90376b9e26d0f2953a8d9b2fd5fee01d80ac4984510113e595fd1ccc3d9033d` with Cycle-2 attempt RUNNING, Scheduler job 2808 PENDING, supervision ACTIVE, and lease present. This repair does not authorize residue reconciliation.
+
+Verdict:
+
+`V2_9_8B_POST_CONSUMPTION_INTERRUPTED_FOUR_TOKEN_LEASE_FAILURE_CLEANUP_SECOND_FOLLOWUP_REPAIR_PASS`
