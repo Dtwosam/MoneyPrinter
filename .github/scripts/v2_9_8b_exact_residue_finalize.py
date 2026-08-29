@@ -12,10 +12,71 @@ module.write_text(text.replace(old, new, 1), encoding="utf-8")
 
 test = Path("tests/test_v2_9_8b_interrupted_four_token_704f53472011_residue_reconciliation.py")
 text = test.read_text(encoding="utf-8")
-old = '''    monkeypatch.setattr(recovery, "LEASE_LOCK_PATH", Path(residue["lease"]))\n    monkeypatch.setattr(recovery, "_default_git_head_probe", lambda _root: "proof-head")\n    with pytest.raises(recovery.InterruptedFourTokenResidueRecoveryError, match="database SHA"):\n'''
-new = '''    monkeypatch.setattr(recovery, "LEASE_LOCK_PATH", Path(residue["lease"]))\n    monkeypatch.setattr(recovery, "_default_git_head_probe", lambda _root: "proof-head")\n    connection = _open(Path(residue["db"]))\n    try:\n        connection.execute(\n            "UPDATE printer_memory_factory_campaign_supervision SET lease_lock_path=? "\n            "WHERE supervision_id=?",\n            (str(residue["lease"]), recovery.SUPERVISION_ID),\n        )\n        connection.commit()\n    finally:\n        connection.close()\n    with pytest.raises(recovery.InterruptedFourTokenResidueRecoveryError, match="database SHA"):\n'''
+text = text.replace(
+    "def _seed(path: Path, lease_path: Path) -> None:\n",
+    "def _seed(\n    path: Path,\n    lease_path: Path,\n    *,\n    supervision_lease_path: str | None = None,\n) -> None:\n",
+    1,
+)
+old = '''                str(recovery.LEASE_LOCK_PATH),\n                NOW.isoformat(),\n                NOW.isoformat(),\n'''
+new = '''                str(supervision_lease_path or recovery.LEASE_LOCK_PATH),\n                NOW.isoformat(),\n                NOW.isoformat(),\n'''
 if old not in text:
-    raise SystemExit("production hard-binding test marker not found")
+    raise SystemExit("fixture lease path marker not found")
 text = text.replace(old, new, 1)
-text += '''\n\ndef test_recovered_lease_path_identity_drift_fails_closed(residue) -> None:\n    _apply_fixture(residue)\n    db = Path(residue["db"])\n    connection = _open(db)\n    try:\n        connection.execute(\n            "UPDATE printer_memory_factory_campaign_supervision SET lease_lock_path=? "\n            "WHERE supervision_id=?",\n            ("/tmp/not-the-consumed-execution.lock", recovery.SUPERVISION_ID),\n        )\n        connection.commit()\n    finally:\n        connection.close()\n    with pytest.raises(recovery.InterruptedFourTokenResidueRecoveryError):\n        recovery._reconcile(\n            operator_approved=True,\n            db_path=db,\n            repository_root=db.parent,\n            expected_git_head="proof-head",\n            expected_db_sha256=recovery._sha256(db),\n            marker_path=Path(residue["marker"]),\n            expected_marker_sha256=str(residue["marker_sha"]),\n            lease_path=Path(residue["lease"]),\n            process_probe=lambda: False,\n            git_head_probe=lambda _root: "proof-head",\n            lease_lock_path_override=Path(residue["lease"]),\n            now=NOW,\n        )\n'''
-test.write_text(text, encoding="utf-8")
+
+marker = "\ndef test_production_entry_point_remains_bound_to_live_database_sha"
+head, separator, _tail = text.partition(marker)
+if not separator:
+    raise SystemExit("production hard-binding test marker not found")
+replacement = r'''
+
+def test_production_entry_point_remains_bound_to_live_database_sha(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_reconcile(**kwargs):
+        captured.update(kwargs)
+        return {"status": "NOT_EXECUTED_PROOF"}
+
+    monkeypatch.setattr(recovery, "_reconcile", fake_reconcile)
+    result = recovery.reconcile_exact_interrupted_four_token_residue(
+        operator_approved=True,
+        db_path="/tmp/not-opened.sqlite3",
+        repository_root="/tmp/not-opened-repo",
+        expected_git_head="proof-head",
+        process_probe=lambda: False,
+        now=NOW,
+    )
+    assert result == {"status": "NOT_EXECUTED_PROOF"}
+    assert captured["expected_db_sha256"] == recovery.EXPECTED_DB_SHA256
+    assert captured["marker_path"] == recovery.APPLICATION_MARKER_PATH
+    assert captured["expected_marker_sha256"] == recovery.EXPECTED_APPLICATION_MARKER_SHA256
+    assert captured["lease_path"] == recovery.LEASE_LOCK_PATH
+    assert captured["lease_lock_path_override"] is None
+
+
+def test_recovered_lease_path_identity_drift_fails_closed(tmp_path: Path) -> None:
+    db = tmp_path / "bad-lease-identity.sqlite3"
+    lease = tmp_path / "campaign.lease.lock"
+    marker_path = tmp_path / "application-marker.json"
+    _seed(
+        db,
+        lease,
+        supervision_lease_path="/tmp/not-the-consumed-execution.lock",
+    )
+    marker_sha = _marker(marker_path)
+    with pytest.raises(recovery.InterruptedFourTokenResidueRecoveryError):
+        recovery._reconcile(
+            operator_approved=True,
+            db_path=db,
+            repository_root=tmp_path,
+            expected_git_head="proof-head",
+            expected_db_sha256=recovery._sha256(db),
+            marker_path=marker_path,
+            expected_marker_sha256=marker_sha,
+            lease_path=lease,
+            process_probe=lambda: False,
+            git_head_probe=lambda _root: "proof-head",
+            lease_lock_path_override=lease,
+            now=NOW,
+        )
+'''
+test.write_text(head + replacement, encoding="utf-8")
