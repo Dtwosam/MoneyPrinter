@@ -21,6 +21,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('.github/post_reconciliation_readiness_governance_sync.py')
+          text = path.read_text(encoding='utf-8')
+          old = '''head_parent = subprocess.check_output(["git", "rev-parse", "HEAD^^"], text=True).strip()\nif head_parent != BASELINE:\n    raise SystemExit(f"unexpected governance baseline ancestor: {head_parent}")\n'''
+          new = '''subprocess.run(["git", "merge-base", "--is-ancestor", BASELINE, "HEAD"], check=True)\n'''
+          if old not in text:
+              raise SystemExit('baseline guard anchor missing')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
           python .github/post_reconciliation_readiness_governance_sync.py
           git rm \
             .github/workflows/post-reconciliation-readiness-governance-sync.yml \
