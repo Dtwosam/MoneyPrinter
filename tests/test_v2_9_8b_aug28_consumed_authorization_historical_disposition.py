@@ -106,7 +106,7 @@ class Aug28ConsumedAuthorizationHistoricalDispositionTests(unittest.TestCase):
             self.document,
             now=datetime(2026, 8, 28, 22, 0, tzinfo=timezone.utc),
         )
-        self.assertTrue(validity.valid)
+        self.assertEqual(validity["status"], "TEMPORALLY_VALID")
         self.assertEqual(
             hashlib.sha256(self.history.marker_path.read_bytes()).hexdigest(),
             self.marker_sha_before,
