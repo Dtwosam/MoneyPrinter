@@ -105,9 +105,20 @@ jobs:
           # below targets the dedicated implementation branch.
           git reset --hard "$BASE"
           git apply "$PATCH"
-          git diff --check
 
-          changed="$(git diff --name-only "$BASE")"
+          # All three proved deliverables are newly introduced files, so stage
+          # them before scope validation. Plain `git diff` intentionally ignores
+          # untracked files and was the packaging-only failure in the prior run.
+          git add \
+            docs/printer-v1-v2-9-8b-interrupted-four-token-704f53472011-exact-residue-reconciliation-implementation-closeout.md \
+            src/printer_v1/operator_cli/interrupted_four_token_704f53472011_residue_reconciliation.py \
+            tests/test_v2_9_8b_interrupted_four_token_704f53472011_residue_reconciliation.py
+          git diff --cached --check
+
+          changed="$(git diff --cached --name-only "$BASE")"
+          expected=$'docs/printer-v1-v2-9-8b-interrupted-four-token-704f53472011-exact-residue-reconciliation-implementation-closeout.md\nsrc/printer_v1/operator_cli/interrupted_four_token_704f53472011_residue_reconciliation.py\ntests/test_v2_9_8b_interrupted_four-token-704f53472011-residue-reconciliation.py'
+          # Keep the expected scope exact; normalize only the test path spelling
+          # used above so this comparison cannot admit extra files.
           expected=$'docs/printer-v1-v2-9-8b-interrupted-four-token-704f53472011-exact-residue-reconciliation-implementation-closeout.md\nsrc/printer_v1/operator_cli/interrupted_four_token_704f53472011_residue_reconciliation.py\ntests/test_v2_9_8b_interrupted_four_token_704f53472011_residue_reconciliation.py'
           test "$changed" = "$expected" || {
             echo "STOP: unexpected implementation commit scope"
@@ -117,10 +128,6 @@ jobs:
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add \
-            docs/printer-v1-v2-9-8b-interrupted-four-token-704f53472011-exact-residue-reconciliation-implementation-closeout.md \
-            src/printer_v1/operator_cli/interrupted_four_token_704f53472011_residue_reconciliation.py \
-            tests/test_v2_9_8b_interrupted_four_token_704f53472011_residue_reconciliation.py
           git commit -m "Implement exact interrupted four-token residue recovery"
           NEW_SHA="$(git rev-parse HEAD)"
           git push origin "HEAD:refs/heads/$TARGET"
