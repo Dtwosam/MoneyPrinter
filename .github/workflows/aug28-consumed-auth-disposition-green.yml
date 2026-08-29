@@ -1,0 +1,186 @@
+name: Aug28 Consumed Auth Disposition GREEN
+
+on:
+  push:
+    branches:
+      - ci/v2-9-8b-aug28-consumed-auth-disposition-green
+
+permissions:
+  contents: write
+
+jobs:
+  green:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: implementation/v2-9-8b-aug28-consumed-auth-historical-disposition
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Verify implementation baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "cef8c119b12010f979c81c6a4624c460114c1a9c"
+          test -z "$(git status --porcelain)"
+
+      - name: Install test dependencies
+        run: python -m pip install -e . pytest
+
+      - name: Apply exact disposition mapping
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('src/printer_v1/operator_cli/git_provenance_authorization_manifest.py')
+          text = path.read_text(encoding='utf-8')
+          old = '''    "V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260827T122355Z_8e43eae7": (
+              "CONSUMED_CHILD_EXITED_ZERO"
+          ),
+          }
+          '''
+          new = '''    "V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260827T122355Z_8e43eae7": (
+              "CONSUMED_CHILD_EXITED_ZERO"
+          ),
+              "V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260828T211924Z_5fcb1bf5": (
+                  "CONSUMED_CHILD_EXITED_NONZERO"
+              ),
+          }
+          '''
+          if text.count(old) != 1:
+              raise SystemExit('exact disposition insertion anchor missing or ambiguous')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+          git diff -- src/printer_v1/operator_cli/git_provenance_authorization_manifest.py
+
+      - name: Focused bounded proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f tests/test_v2_9_8b_aug28_consumed_authorization_historical_disposition.py
+          test -f tests/test_v2_9_8b_latest_consumed_authorization_historical_disposition.py
+          test -f tests/test_v2_9_8b_authorization_handoff_transition_and_supersession.py
+          test -f tests/test_v2_9_8b_four_token_operational_provenance_alignment.py
+          python -m pytest -q \
+            tests/test_v2_9_8b_aug28_consumed_authorization_historical_disposition.py \
+            tests/test_v2_9_8b_latest_consumed_authorization_historical_disposition.py \
+            tests/test_v2_9_8b_authorization_handoff_transition_and_supersession.py \
+            tests/test_v2_9_8b_four_token_operational_provenance_alignment.py \
+            | tee green.txt
+          python -m py_compile src/printer_v1/operator_cli/git_provenance_authorization_manifest.py
+          git diff --check
+
+      - name: Write closeout and publish tested implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTEST_SUMMARY="$(tail -n 1 green.txt)"
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          summary = os.environ['PYTEST_SUMMARY']
+          content = f'''# Printer V1 V2-9.8B — Aug28 Consumed Authorization Historical Disposition Implementation Closeout
+
+          Date: 2026-08-29
+
+          Lane: **NARROW PROVENANCE IMPLEMENTATION / BOUNDED PROOF**
+
+          ## Authority
+
+          Governing audit/design:
+
+          `docs/printer-v1-v2-9-8b-post-reconciliation-readiness-and-aug28-consumed-auth-historical-disposition-design.md`
+
+          Design commit:
+
+          `dc4d5cafe5f142bd959ab5b3bf6d681d8f00776d`
+
+          Operator implementation approval was explicit.
+
+          ## Exact repair
+
+          Production change is confined to `_POLICY_TERMINAL_DISPOSITIONS` in
+          `src/printer_v1/operator_cli/git_provenance_authorization_manifest.py`.
+
+          Exact consumed authorization:
+
+          `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260828T211924Z_5fcb1bf5`
+
+          now has diagnostic historical disposition:
+
+          `CONSUMED_CHILD_EXITED_NONZERO`
+
+          This records the original consumed wrapper/child outcome. The later successful exact-residue reconciliation does not rewrite that historical execution result.
+
+          No inference fallback, wildcard, directory-discovery trust, reuse authority, authorization schema, migration contract, database logic, runtime owner, recovery owner, provider path, or Scheduler path changed.
+
+          ## TDD proof
+
+          RED was executed before the production mapping existed in GitHub Actions run `33251818225`.
+          The focused test produced `2 failed, 3 passed`; both failures were the same intended missing-policy root cause:
+          `DISPOSITION_NOT_AVAILABLE` versus `CONSUMED_CHILD_EXITED_NONZERO`.
+
+          After the one exact mapping was added, the bounded adjacent proof result was:
+
+          `{summary}`
+
+          The proof covers:
+
+          - exact-ID disposition;
+          - lookalike ID retains `DISPOSITION_NOT_AVAILABLE`;
+          - omitting the consumed ID from a future explicit trust root fails closed;
+          - marker retry/rerun/resume/restart/successor flags remain false;
+          - temporal validity cannot turn historical disposition into reuse authority;
+          - historical authorization IDs remain distinct;
+          - current four-token migration provenance remains migration 062;
+          - existing latest-consumed, authorization-handoff/supersession, and operational-provenance alignment regressions.
+
+          `py_compile` and `git diff --check` also passed in the same bounded proof.
+
+          ## Database / runtime boundary
+
+          GitHub-hosted implementation and proof did not open or mutate the authoritative Mac database and did not access the live PrinterOperations marker tree. No Printer, Source Governor, Central Scheduler runtime, provider/RPC/WebSocket, authorization preparation/application, campaign, retry, resume, restart, successor, retrieval, decision, position, trade, audit, or PnL capability was executed or unlocked.
+
+          The latest operator read-only baseline immediately before this implementation was:
+
+          `a7ad83d5f368192da7a4e7522870e3956e6f42f70b51748ff642f2c2c53683f8`
+
+          A final local read-only SHA recheck is still required before closing the post-reconciliation readiness gate because GitHub cannot independently read the Mac authoritative DB.
+
+          ## Verdict
+
+          `V2_9_8B_AUG28_CONSUMED_AUTH_HISTORICAL_DISPOSITION_IMPLEMENTATION_PASS`
+
+          ## Next permitted action
+
+          `INDEPENDENT AUG28 CONSUMED AUTH HISTORICAL DISPOSITION IMPLEMENTATION REVIEW / LOCAL DB IDENTITY RECHECK`
+
+          This closeout does not authorize preparation, application, or consumption of a new authorization and does not authorize another campaign.
+          '''
+          # Remove workflow indentation from the doc literal.
+          import textwrap
+          Path('docs/printer-v1-v2-9-8b-aug28-consumed-auth-historical-disposition-implementation-closeout.md').write_text(
+              textwrap.dedent(content), encoding='utf-8'
+          )
+          PY
+
+          git add \
+            src/printer_v1/operator_cli/git_provenance_authorization_manifest.py \
+            docs/printer-v1-v2-9-8b-aug28-consumed-auth-historical-disposition-implementation-closeout.md
+
+          mapfile -t files < <(git diff --cached --name-only)
+          printf 'STAGED=%s\n' "${files[*]}"
+          test "${#files[@]}" -eq 2
+          test "${files[0]}" = "docs/printer-v1-v2-9-8b-aug28-consumed-auth-historical-disposition-implementation-closeout.md"
+          test "${files[1]}" = "src/printer_v1/operator_cli/git_provenance_authorization_manifest.py"
+          git diff --cached --check
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Adopt Aug28 consumed authorization historical disposition'
+          git push origin HEAD:implementation/v2-9-8b-aug28-consumed-auth-historical-disposition
