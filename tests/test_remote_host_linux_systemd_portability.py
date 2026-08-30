@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 import signal
 import sqlite3
@@ -20,6 +21,12 @@ from printer_v1.operator_cli.linux_remote_host_portability import (
 EXT4_MOUNTINFO = r'''36 25 0:32 / / rw,relatime - ext4 /dev/vda1 rw
 41 36 0:40 /srv/printer /srv/printer rw,relatime - ext4 /dev/vdb1 rw
 '''
+MANIFEST_SHA = "1" * 64
+APPLICATION_MARKER_SHA = "2" * 64
+BOUND_ENV = {
+    "PRINTER_V1_GIT_PROVENANCE_MANIFEST_SHA256": MANIFEST_SHA,
+    "PRINTER_V1_APPLICATION_MARKER_SHA256": APPLICATION_MARKER_SHA,
+}
 
 
 class LinuxFilesystemPreflightTests(unittest.TestCase):
@@ -94,6 +101,11 @@ class ExactSupervisionTests(unittest.TestCase):
                 cancellation_reason TEXT,
                 created_at TEXT NOT NULL
             );
+            CREATE TABLE printer_memory_factory_campaign_configurations (
+                configuration_id TEXT PRIMARY KEY,
+                campaign_id TEXT NOT NULL,
+                configuration_json TEXT NOT NULL
+            );
             '''
         )
         conn.commit()
@@ -101,7 +113,49 @@ class ExactSupervisionTests(unittest.TestCase):
         return path
 
     def _insert_active(self, path: Path, *, suffix: str = "1") -> None:
+        campaign_id = f"camp-{suffix}"
+        configuration_id = f"cfg-{suffix}"
+        run_id = f"run-{suffix}"
+        execution_id = f"exec-{suffix}"
+        configuration = {
+            "authorization_marker": {
+                "marker_id": f"{execution_id}-authorization-marker",
+                "execution_id": execution_id,
+                "campaign_id": campaign_id,
+                "configuration_id": configuration_id,
+                "run_id": run_id,
+            },
+            "operational_database_target_expectation": {
+                "expectation_version": "OPERATIONAL_DATABASE_TARGET_EXPECTATION_V1",
+                "authorization_id": f"auth-{suffix}",
+                "authorization_marker_sha256": MANIFEST_SHA,
+                "application_marker_sha256": APPLICATION_MARKER_SHA,
+                "execution_id": execution_id,
+                "campaign_id": campaign_id,
+                "campaign_run_id": run_id,
+                "cycle_id": f"cycle-{suffix}",
+                "configuration_id": configuration_id,
+                "authorization_consumed_once": True,
+                "invocation_count": 1,
+                "allowed_invocation_count": 1,
+                "automatic_retry_allowed": False,
+                "manual_rerun_allowed": False,
+                "resume_allowed": False,
+                "restart_allowed": False,
+                "successor_allowed": False,
+            },
+        }
         conn = sqlite3.connect(path)
+        conn.execute(
+            '''INSERT INTO printer_memory_factory_campaign_configurations(
+                configuration_id,campaign_id,configuration_json
+            ) VALUES (?,?,?)''',
+            (
+                configuration_id,
+                campaign_id,
+                json.dumps(configuration, sort_keys=True),
+            ),
+        )
         conn.execute(
             '''INSERT INTO printer_memory_factory_campaign_supervision(
                 supervision_id,campaign_id,configuration_id,run_id,owner_id,
@@ -109,9 +163,9 @@ class ExactSupervisionTests(unittest.TestCase):
             ) VALUES (?,?,?,?,?,'ACTIVE',?)''',
             (
                 f"sup-{suffix}",
-                f"camp-{suffix}",
-                f"cfg-{suffix}",
-                f"run-{suffix}",
+                campaign_id,
+                configuration_id,
+                run_id,
                 f"owner-{suffix}",
                 "2999-01-01T00:00:00+00:00",
             ),
@@ -119,19 +173,22 @@ class ExactSupervisionTests(unittest.TestCase):
         conn.commit()
         conn.close()
 
+    def _resolve(self, path: Path):
+        return resolve_exact_active_supervision(
+            path,
+            child_started_at="2026-08-27T18:00:00+00:00",
+            expected_manifest_sha256=MANIFEST_SHA,
+            expected_application_marker_sha256=APPLICATION_MARKER_SHA,
+        )
+
     def test_zero_rows_is_not_ready_and_unique_current_row_resolves(self):
         with tempfile.TemporaryDirectory() as td:
             path = self._database(Path(td))
-            self.assertIsNone(
-                resolve_exact_active_supervision(
-                    path, child_started_at="2026-08-27T18:00:00+00:00"
-                )
-            )
+            self.assertIsNone(self._resolve(path))
             self._insert_active(path)
-            row = resolve_exact_active_supervision(
-                path, child_started_at="2026-08-27T18:00:00+00:00"
-            )
+            row = self._resolve(path)
             self.assertEqual(row["supervision_id"], "sup-1")
+            self.assertEqual(row["execution_id"], "exec-1")
 
     def test_multiple_active_rows_fail_closed(self):
         with tempfile.TemporaryDirectory() as td:
@@ -139,9 +196,7 @@ class ExactSupervisionTests(unittest.TestCase):
             self._insert_active(path, suffix="1")
             self._insert_active(path, suffix="2")
             with self.assertRaises(LinuxPortabilityError):
-                resolve_exact_active_supervision(
-                    path, child_started_at="2026-08-27T18:00:00+00:00"
-                )
+                self._resolve(path)
 
 
 class CooperativeStopBridgeTests(ExactSupervisionTests):
@@ -161,12 +216,16 @@ class CooperativeStopBridgeTests(ExactSupervisionTests):
                 path,
                 stop_state=state,
                 child_started_at="2026-08-27T18:00:00+00:00",
+                expected_manifest_sha256=MANIFEST_SHA,
+                expected_application_marker_sha256=APPLICATION_MARKER_SHA,
                 requester=requester,
             )
             second = attempt_exact_active_cancellation(
                 path,
                 stop_state=state,
                 child_started_at="2026-08-27T18:00:00+00:00",
+                expected_manifest_sha256=MANIFEST_SHA,
+                expected_application_marker_sha256=APPLICATION_MARKER_SHA,
                 requester=requester,
             )
             self.assertTrue(first)
@@ -210,7 +269,7 @@ class CooperativeStopBridgeTests(ExactSupervisionTests):
             launched = launch_child_foreground(
                 command=["child"],
                 cwd=root,
-                env={},
+                env=BOUND_ENV,
                 stdout_path=stdout,
                 stderr_path=stderr,
                 authoritative_db_path=path,
