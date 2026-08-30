@@ -7,11 +7,11 @@ import unittest
 
 from printer_v1.operator_cli.four_token_standard_four_hour_linux_service import (
     build_filesystem_preflight_paths,
+    run_linux_service,
 )
 from printer_v1.operator_cli.linux_remote_host_portability import (
     LinuxPortabilityError,
     StopSignalState,
-    assert_local_ext4_paths,
     attempt_exact_active_cancellation,
     fsync_directory_required,
     resolve_exact_active_supervision,
@@ -40,23 +40,44 @@ class FullPathDurabilityIdentityTests(unittest.TestCase):
             with self.assertRaises(LinuxPortabilityError):
                 fsync_directory_required(alias / "nested")
 
-    def test_ext4_preflight_rejects_parent_symlink_before_realpath(self):
+    def test_service_rejects_lexical_alias_before_host_preflight_or_consumption(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             real = root / "real"
-            target = real / "nested"
-            target.mkdir(parents=True)
+            real.mkdir()
             alias = root / "alias"
             try:
                 alias.symlink_to(real, target_is_directory=True)
             except (OSError, NotImplementedError):
                 self.skipTest("symlink creation unsupported")
-            mountinfo = f"36 25 0:32 / {root} rw,relatime - ext4 /dev/vda1 rw\n"
+            db = real / "printer.sqlite3"
+            db.write_bytes(b"db")
+            calls = []
+
+            def filesystem_preflight(_paths, **_kwargs):
+                calls.append("filesystem")
+                return {}
+
+            def apply_authorization(**_kwargs):
+                calls.append("apply")
+                return {"terminal_classification": "fixture"}
+
             with self.assertRaises(LinuxPortabilityError):
-                assert_local_ext4_paths(
-                    {"application_root": alias / "nested"},
-                    mountinfo_text=mountinfo,
+                run_linux_service(
+                    authorization_file=root / "authorization.json",
+                    authorization_sha256="a" * 64,
+                    operator_approved=True,
+                    repository_root=root,
+                    application_root=alias / "applications",
+                    authoritative_db_path=db,
+                    artifact_root=real / "artifacts",
+                    filesystem_preflight=filesystem_preflight,
+                    disk_space_preflight=lambda **_kwargs: {},
+                    time_sync_preflight=lambda **_kwargs: {},
+                    storage_growth_ceiling_bytes=100,
+                    apply_authorization=apply_authorization,
                 )
+            self.assertEqual(calls, [])
 
     def test_service_preflight_paths_preserve_lexical_alias_for_rejection(self):
         with tempfile.TemporaryDirectory() as td:
