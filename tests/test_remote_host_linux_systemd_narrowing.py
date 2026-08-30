@@ -5,9 +5,13 @@ import sqlite3
 import tempfile
 import unittest
 
+from printer_v1.operator_cli.four_token_standard_four_hour_linux_service import (
+    build_filesystem_preflight_paths,
+)
 from printer_v1.operator_cli.linux_remote_host_portability import (
     LinuxPortabilityError,
     StopSignalState,
+    assert_local_ext4_paths,
     attempt_exact_active_cancellation,
     fsync_directory_required,
     resolve_exact_active_supervision,
@@ -33,10 +37,56 @@ class FullPathDurabilityIdentityTests(unittest.TestCase):
             except (OSError, NotImplementedError):
                 self.skipTest("symlink creation unsupported")
 
-            # The final component is a real directory. The alias exists only in
-            # a parent component, which must still fail closed.
             with self.assertRaises(LinuxPortabilityError):
                 fsync_directory_required(alias / "nested")
+
+    def test_ext4_preflight_rejects_parent_symlink_before_realpath(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            real = root / "real"
+            target = real / "nested"
+            target.mkdir(parents=True)
+            alias = root / "alias"
+            try:
+                alias.symlink_to(real, target_is_directory=True)
+            except (OSError, NotImplementedError):
+                self.skipTest("symlink creation unsupported")
+            mountinfo = f"36 25 0:32 / {root} rw,relatime - ext4 /dev/vda1 rw\n"
+            with self.assertRaises(LinuxPortabilityError):
+                assert_local_ext4_paths(
+                    {"application_root": alias / "nested"},
+                    mountinfo_text=mountinfo,
+                )
+
+    def test_service_preflight_paths_preserve_lexical_alias_for_rejection(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            real = root / "real"
+            real.mkdir()
+            alias = root / "alias"
+            try:
+                alias.symlink_to(real, target_is_directory=True)
+            except (OSError, NotImplementedError):
+                self.skipTest("symlink creation unsupported")
+            db = real / "printer.sqlite3"
+            db.write_bytes(b"db")
+            paths = build_filesystem_preflight_paths(
+                authoritative_db_path=db,
+                application_root=alias / "applications",
+                artifact_root=alias / "artifacts",
+            )
+            self.assertEqual(
+                paths["application_root"],
+                Path.absolute(alias / "applications"),
+            )
+            self.assertEqual(
+                paths["operational_artifact_root"],
+                Path.absolute(alias / "artifacts"),
+            )
+            self.assertNotEqual(
+                paths["application_root"],
+                (alias / "applications").resolve(),
+            )
 
 
 class ExactWrapperInvocationBindingTests(unittest.TestCase):
