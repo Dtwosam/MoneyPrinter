@@ -9,8 +9,10 @@ single process-launcher boundary.
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 import signal
+import stat
 import sys
 from typing import Any, Callable, Mapping
 
@@ -25,18 +27,46 @@ from printer_v1.operator_cli.linux_remote_host_portability import (
 )
 
 
+def _lexical_absolute(path: str | Path) -> Path:
+    candidate = Path(path).expanduser()
+    return candidate if candidate.is_absolute() else Path(os.path.abspath(candidate))
+
+
+def _assert_no_symlink_components_before_consumption(path: Path) -> None:
+    """Reject any existing symlink component before canonical path resolution."""
+    absolute = _lexical_absolute(path)
+    current = Path(absolute.anchor)
+    parts = absolute.parts[1:] if absolute.anchor else absolute.parts
+    for part in parts:
+        current = current / part
+        try:
+            mode = os.lstat(current).st_mode
+        except FileNotFoundError:
+            # Trailing application/artifact directories may be created later by
+            # the canonical one-shot owner. No deeper component can yet exist.
+            return
+        except OSError as exc:
+            raise LinuxPortabilityError(
+                f"remote path identity is uninspectable before consumption: {current}"
+            ) from exc
+        if stat.S_ISLNK(mode):
+            raise LinuxPortabilityError(
+                f"remote path contains a symlink before consumption: {current}"
+            )
+
+
 def build_filesystem_preflight_paths(
     *,
     authoritative_db_path: str | Path,
     application_root: str | Path,
     artifact_root: str | Path,
 ) -> dict[str, Path]:
-    database = Path(authoritative_db_path).expanduser().resolve()
+    database = _lexical_absolute(authoritative_db_path)
     return {
         "authoritative_db": database,
         "authoritative_db_parent": database.parent,
-        "application_root": Path(application_root).expanduser().resolve(),
-        "operational_artifact_root": Path(artifact_root).expanduser().resolve(),
+        "application_root": _lexical_absolute(application_root),
+        "operational_artifact_root": _lexical_absolute(artifact_root),
     }
 
 
@@ -90,9 +120,9 @@ def run_linux_service(
         if storage_growth_ceiling_bytes is None:
             storage_growth_ceiling_bytes = command.STORAGE_BYTE_CEILING
 
-    database = Path(authoritative_db_path).resolve()
-    app_root = Path(application_root).expanduser().resolve()
-    artifacts = Path(artifact_root).expanduser().resolve()
+    database = _lexical_absolute(authoritative_db_path)
+    app_root = _lexical_absolute(application_root)
+    artifacts = _lexical_absolute(artifact_root)
     state = stop_state or StopSignalState()
     previous_handlers: dict[int, Any] = {}
     for signum in (signal.SIGTERM, signal.SIGINT):
@@ -113,6 +143,8 @@ def run_linux_service(
         )
 
     try:
+        for path in preflight_paths.values():
+            _assert_no_symlink_components_before_consumption(path)
         filesystem_evidence = dict(filesystem_preflight(preflight_paths))
         if state.requested:
             raise LinuxPortabilityError(
