@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import json
 import os
 from pathlib import Path
 import shutil
@@ -20,6 +21,16 @@ from typing import Any, Callable, Mapping
 APPROVED_REMOTE_FILESYSTEM = "ext4"
 DEFAULT_WAIT_POLL_SECONDS = 0.25
 STOP_REASON = "REMOTE_HOST_OPERATOR_STOP"
+_MANIFEST_SHA_ENV = "PRINTER_V1_GIT_PROVENANCE_MANIFEST_SHA256"
+_APPLICATION_MARKER_SHA_ENV = "PRINTER_V1_APPLICATION_MARKER_SHA256"
+_EXPECTATION_VERSION = "OPERATIONAL_DATABASE_TARGET_EXPECTATION_V1"
+_REUSE_FLAGS = (
+    "automatic_retry_allowed",
+    "manual_rerun_allowed",
+    "resume_allowed",
+    "restart_allowed",
+    "successor_allowed",
+)
 
 
 class LinuxPortabilityError(RuntimeError):
@@ -293,13 +304,31 @@ def assert_system_time_synchronized(
     }
 
 
+def _assert_no_symlink_components(path: Path) -> None:
+    """Reject a symlink at any existing component of one absolute path."""
+    absolute = path if path.is_absolute() else Path(os.path.abspath(path))
+    current = Path(absolute.anchor)
+    parts = absolute.parts[1:] if absolute.anchor else absolute.parts
+    for part in parts:
+        current = current / part
+        try:
+            mode = os.lstat(current).st_mode
+        except OSError as exc:
+            raise LinuxPortabilityError(
+                f"directory durability path component is unavailable: {current}"
+            ) from exc
+        if stat.S_ISLNK(mode):
+            raise LinuxPortabilityError(
+                f"directory durability path contains a symlink: {current}"
+            )
+
+
 def fsync_directory_required(path: str | Path) -> None:
-    """Fail closed unless one exact non-symlink directory is durably synced."""
+    """Fail closed unless one exact non-aliased directory is durably synced."""
     directory = Path(path)
     if not directory.is_absolute():
         directory = Path(os.path.abspath(directory))
-    if os.path.islink(directory):
-        raise LinuxPortabilityError("directory durability path is a symlink")
+    _assert_no_symlink_components(directory)
     flags = os.O_RDONLY
     if hasattr(os, "O_DIRECTORY"):
         flags |= os.O_DIRECTORY
@@ -399,13 +428,96 @@ def _parse_instant(value: str, *, label: str) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
+def _exact_sha256(value: Any, *, label: str) -> str:
+    text = str(value or "")
+    if len(text) != 64 or any(character not in "0123456789abcdef" for character in text):
+        raise LinuxPortabilityError(f"{label} must be lowercase SHA-256")
+    return text
+
+
+def _load_configuration(raw: Any) -> dict[str, Any]:
+    try:
+        value = json.loads(str(raw))
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise LinuxPortabilityError("campaign configuration binding is malformed") from exc
+    if not isinstance(value, dict):
+        raise LinuxPortabilityError("campaign configuration binding is malformed")
+    return value
+
+
+def _bound_supervision_candidate(
+    row: sqlite3.Row,
+    *,
+    expected_manifest_sha256: str,
+    expected_application_marker_sha256: str,
+) -> dict[str, Any] | None:
+    configuration = _load_configuration(row["configuration_json"])
+    expectation = configuration.get("operational_database_target_expectation")
+    if not isinstance(expectation, Mapping):
+        return None
+    if expectation.get("expectation_version") != _EXPECTATION_VERSION:
+        return None
+    exact_ownership = (
+        ("campaign_id", str(row["campaign_id"])),
+        ("campaign_run_id", str(row["run_id"])),
+        ("configuration_id", str(row["configuration_id"])),
+    )
+    if any(str(expectation.get(field) or "") != expected for field, expected in exact_ownership):
+        return None
+    if str(expectation.get("authorization_marker_sha256") or "") != expected_manifest_sha256:
+        return None
+    if str(expectation.get("application_marker_sha256") or "") != expected_application_marker_sha256:
+        return None
+    if expectation.get("authorization_consumed_once") is not True:
+        return None
+    if expectation.get("invocation_count") != 1 or expectation.get("allowed_invocation_count") != 1:
+        return None
+    if any(expectation.get(flag) is not False for flag in _REUSE_FLAGS):
+        return None
+    execution_id = str(expectation.get("execution_id") or "").strip()
+    authorization_id = str(expectation.get("authorization_id") or "").strip()
+    cycle_id = str(expectation.get("cycle_id") or "").strip()
+    if not execution_id or not authorization_id or not cycle_id:
+        return None
+    internal_marker = configuration.get("authorization_marker")
+    if not isinstance(internal_marker, Mapping):
+        return None
+    internal_expected = {
+        "marker_id": f"{execution_id}-authorization-marker",
+        "execution_id": execution_id,
+        "campaign_id": str(row["campaign_id"]),
+        "configuration_id": str(row["configuration_id"]),
+        "run_id": str(row["run_id"]),
+    }
+    if any(str(internal_marker.get(field) or "") != expected for field, expected in internal_expected.items()):
+        return None
+    result = dict(row)
+    result.update(
+        {
+            "authorization_id": authorization_id,
+            "execution_id": execution_id,
+            "cycle_id": cycle_id,
+            "manifest_sha256": expected_manifest_sha256,
+            "application_marker_sha256": expected_application_marker_sha256,
+        }
+    )
+    return result
+
+
 def resolve_exact_active_supervision(
     db_path: str | Path,
     *,
     child_started_at: str,
+    expected_manifest_sha256: str,
+    expected_application_marker_sha256: str,
 ) -> dict[str, Any] | None:
-    """Resolve one current ACTIVE/STOPPING row attributable to this child start."""
+    """Resolve the one active supervision positively bound to this wrapper child."""
     started = _parse_instant(child_started_at, label="child start")
+    manifest_sha = _exact_sha256(expected_manifest_sha256, label="manifest SHA-256")
+    application_marker_sha = _exact_sha256(
+        expected_application_marker_sha256,
+        label="application marker SHA-256",
+    )
     database = Path(db_path).resolve()
     if not database.is_file():
         raise LinuxPortabilityError("authoritative database is unavailable")
@@ -416,33 +528,59 @@ def resolve_exact_active_supervision(
         )
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA query_only=ON")
-        exists = connection.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' "
-            "AND name='printer_memory_factory_campaign_supervision'"
-        ).fetchone()
-        if exists is None:
-            raise LinuxPortabilityError("campaign supervision schema is unavailable")
+        for table in (
+            "printer_memory_factory_campaign_supervision",
+            "printer_memory_factory_campaign_configurations",
+        ):
+            exists = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                (table,),
+            ).fetchone()
+            if exists is None:
+                raise LinuxPortabilityError(
+                    "campaign supervision binding schema is unavailable"
+                )
         rows = connection.execute(
-            "SELECT supervision_id,campaign_id,configuration_id,run_id,owner_id,"
-            "supervision_state,cancellation_requested_at,cancellation_reason,created_at "
-            "FROM printer_memory_factory_campaign_supervision "
-            "WHERE supervision_state IN ('ACTIVE','STOPPING')"
+            """SELECT s.supervision_id,s.campaign_id,s.configuration_id,s.run_id,
+                      s.owner_id,s.supervision_state,s.cancellation_requested_at,
+                      s.cancellation_reason,s.created_at,cfg.configuration_json
+                 FROM printer_memory_factory_campaign_supervision AS s
+                 JOIN printer_memory_factory_campaign_configurations AS cfg
+                   ON cfg.campaign_id=s.campaign_id
+                  AND cfg.configuration_id=s.configuration_id
+                WHERE s.supervision_state IN ('ACTIVE','STOPPING')"""
         ).fetchall()
     except sqlite3.Error as exc:
         raise LinuxPortabilityError("campaign supervision inspection failed") from exc
     finally:
         if connection is not None:
             connection.close()
-    current: list[dict[str, Any]] = []
+
+    temporal_rows: list[sqlite3.Row] = []
+    exact_rows: list[dict[str, Any]] = []
     for row in rows:
         created = _parse_instant(str(row["created_at"]), label="supervision created_at")
-        if created >= started:
-            current.append(dict(row))
-    if not current:
+        if created < started:
+            continue
+        temporal_rows.append(row)
+        candidate = _bound_supervision_candidate(
+            row,
+            expected_manifest_sha256=manifest_sha,
+            expected_application_marker_sha256=application_marker_sha,
+        )
+        if candidate is not None:
+            exact_rows.append(candidate)
+    if not temporal_rows:
         return None
-    if len(current) != 1:
-        raise LinuxPortabilityError("exact active campaign supervision is ambiguous")
-    return current[0]
+    if len(exact_rows) != 1:
+        raise LinuxPortabilityError(
+            "active campaign supervision is not uniquely bound to this wrapper invocation"
+        )
+    if len(temporal_rows) != 1:
+        raise LinuxPortabilityError(
+            "active campaign supervision is ambiguous under the one-shot boundary"
+        )
+    return exact_rows[0]
 
 
 def attempt_exact_active_cancellation(
@@ -450,12 +588,19 @@ def attempt_exact_active_cancellation(
     *,
     stop_state: StopSignalState,
     child_started_at: str,
+    expected_manifest_sha256: str,
+    expected_application_marker_sha256: str,
     requester: Callable[..., Mapping[str, Any]] | None = None,
 ) -> bool:
     """Request canonical campaign cancellation at most once after exact ownership."""
     if not stop_state.requested or stop_state.cancellation_attempted:
         return False
-    row = resolve_exact_active_supervision(db_path, child_started_at=child_started_at)
+    row = resolve_exact_active_supervision(
+        db_path,
+        child_started_at=child_started_at,
+        expected_manifest_sha256=expected_manifest_sha256,
+        expected_application_marker_sha256=expected_application_marker_sha256,
+    )
     if row is None:
         return False
     if requester is None:
@@ -495,9 +640,16 @@ def launch_child_foreground(
     wait_timeout_seconds: float = DEFAULT_WAIT_POLL_SECONDS,
     directory_sync: Callable[[str | Path], None] = fsync_directory_required,
 ) -> dict[str, Any]:
-    """Supervise one child in foreground; never directly signal the child."""
+    """Supervise one wrapper-bound child in foreground; never directly signal it."""
     if wait_timeout_seconds <= 0:
         raise LinuxPortabilityError("foreground wait timeout must be positive")
+    expected_manifest_sha256 = _exact_sha256(
+        env.get(_MANIFEST_SHA_ENV), label="wrapper manifest SHA-256"
+    )
+    expected_application_marker_sha256 = _exact_sha256(
+        env.get(_APPLICATION_MARKER_SHA_ENV),
+        label="wrapper application marker SHA-256",
+    )
     stdout_path.parent.mkdir(parents=True, exist_ok=True)
     stderr_path.parent.mkdir(parents=True, exist_ok=True)
     directory_sync(stdout_path.parent)
@@ -517,6 +669,10 @@ def launch_child_foreground(
                     authoritative_db_path,
                     stop_state=stop_state,
                     child_started_at=child_started_at,
+                    expected_manifest_sha256=expected_manifest_sha256,
+                    expected_application_marker_sha256=(
+                        expected_application_marker_sha256
+                    ),
                     requester=cancellation_requester,
                 )
             try:
