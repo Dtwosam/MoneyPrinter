@@ -54,47 +54,58 @@ For current Printer V1 lane, repository identity, authoritative DB identity,
 latest completed work, blockers, and next permitted action, use the active
 authority stack plus `CURRENT_HANDOFF.md`.
 
-Current post-package-review anchors:
+Current post-stale-authorization-closeout anchors:
 
-- preparation-bound / frozen repository HEAD:
-  `abdd210d2d1e0788d241d8a26f09b9a60a105912`
+- current repository HEAD before this closeout:
+  `2913c03f4e8cf8246b8ca759721799a92cddf39c`
 
-- frozen authoritative DB SHA-256:
+- authoritative DB SHA-256:
   `859f3712d19ffdf9e8d87d967649864935098058996d988f607faf9eb7cc6552`
 
-- frozen authorization ID:
+- stale authorization ID:
   `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260831T150842Z_b6d7ab46`
 
-- frozen authorization SHA-256:
+- frozen authorization SHA-256 (byte-identical; do not alter):
   `5cd5ca47761458023061e4627999df13fb1ac9b80c80bc836b7e4ba012de290f`
 
-- independent package review:
-  `PASS`
+- stale frozen HEAD binding:
+  `abdd210d2d1e0788d241d8a26f09b9a60a105912`
 
-- package state:
-  `PREPARED / UNCONSUMED / UNAPPLIED`
+- preapplication verdict:
+  `V2_9_8B_FROZEN_STD4H_PREAPPLICATION_APPROVAL_BLOCKED`
 
-- immutable expiration:
-  `2026-09-01T03:08:42.498484+00:00`
+- blocker:
+  `AUTHORIZATION_EXACT_HEAD_BINDING_DRIFT`
 
-- current lane after this package-review closeout is committed:
-  `FRESH FROZEN STANDARD-4H ONE-SHOT APPLICATION / EXECUTION APPROVAL — NO APPLICATION YET`
+- classification:
+  governance/state-binding blocker; NOT a committed-code defect
+
+- stale authorization final state:
+  `STALE / UNCONSUMED / UNAPPLIED / PERMANENTLY INELIGIBLE FOR APPLICATION`
+
+- current lane after this stale-closeout package is committed:
+  `FRESH EXACT-HEAD / EXACT-DB ONE-SHOT STANDARD-4H AUTHORIZATION PREPARATION — STALE PRIOR AUTHORIZATION SEALED NON-REUSABLE`
 
 - exact next permitted action:
-  Perform the final pre-application approval/readiness check for the exact
-  frozen authorization package
-  `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260831T150842Z_b6d7ab46` and decide whether
-  its one permitted `apply_authorization_once` invocation may be explicitly
-  approved.
+  Prepare exactly one fresh exact-HEAD / exact-DB one-shot Standard-4H
+  authorization package using the existing canonical authorization owners,
+  including `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260831T150842Z_b6d7ab46` in the
+  complete prior non-reuse trust root, and stop unconsumed for independent
+  package review.
 
-Canonical validator PASS, `_resolve_authorization` PASS, exact 53-ID prior
-non-reuse trust validated, no application marker/directory. Do not extend,
-rewrite, renew, retry, or replace this frozen authorization.
+DB binding/health, temporal validity at audit time, runtime zero-state,
+authorization SHA/integrity, and Standard-4H envelope passed. No application or
+consumption occurred. Do not describe the stale package as consumed. Do not
+alter, rebind, renew, delete, rename, move, or apply it. From this closeout
+forward, `...b6d7ab46` is governance-required prior non-reusable for every
+future Standard-4H package.
 
-This package-review closeout becomes active only when the documentation package
-is committed. Until that commit exists, do not begin the application/execution
-approval lane. Do not invent the future closeout commit SHA.
+This stale-authorization closeout and fresh-preparation re-entry become active
+only when this six-doc package is committed. Until that commit exists, do not
+prepare another authorization. Do not invent the future closeout commit SHA.
+The later preparation must bind the actual HEAD produced by that commit.
 
+Fresh preparation is separately approved, not an automatic successor/retry.
 Application/consumption/execution remain blocked. Preserve:
 
 ```text
@@ -1694,45 +1705,75 @@ That pointer is historical after package preparation and independent review PASS
 <!-- V2_9_8B_AUTH_BOUNDARY_DESIGN_CLOSEOUT_CURRENT_STATE_END -->
 
 <!-- V2_9_8B_AUTH_PACKAGE_REVIEW_CLOSEOUT_CURRENT_STATE_START -->
-## V2-9.8B Next Standard-4H Authorization Package Review — Current Authority
+## V2-9.8B Next Standard-4H Authorization Package Review — Historical Authority
 
-This block supersedes older current-looking design, readiness, and
-authorization-preparation pointers appended to this audit for current-lane
-selection. Historical text remains evidence only.
+This block is historical after the later stale exact-HEAD-drift closeout.
+Historical text remains evidence only. The package-review closeout document
+remains historically correct for the state when written.
 
 - independent package review: `PASS`
 - authorization ID:
   `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260831T150842Z_b6d7ab46`
 - frozen SHA-256:
   `5cd5ca47761458023061e4627999df13fb1ac9b80c80bc836b7e4ba012de290f`
-- package state: `PREPARED / UNCONSUMED / UNAPPLIED`
+- package state at review time: `PREPARED / UNCONSUMED / UNAPPLIED`
 - frozen HEAD: `abdd210d2d1e0788d241d8a26f09b9a60a105912`
 - frozen DB SHA-256:
   `859f3712d19ffdf9e8d87d967649864935098058996d988f607faf9eb7cc6552`
-- immutable expiration: `2026-09-01T03:08:42.498484+00:00`
-- exact 53-ID prior non-reuse trust validated
-- canonical validator PASS; `_resolve_authorization` PASS
-- no application marker/directory
-- no retry/replacement/reissue if this package expires
 
-This package-review closeout becomes active only when the documentation package
-is committed. Until that commit exists, do not begin the application/execution
-approval lane.
+At package-review closeout time, the next permitted lane was application /
+execution approval. That pointer is historical after pre-application
+`AUTHORIZATION_EXACT_HEAD_BINDING_DRIFT`.
+<!-- V2_9_8B_AUTH_PACKAGE_REVIEW_CLOSEOUT_CURRENT_STATE_END -->
+
+<!-- V2_9_8B_STALE_AUTH_HEAD_DRIFT_CLOSEOUT_CURRENT_STATE_START -->
+## V2-9.8B Stale Standard-4H Authorization Exact-HEAD-Drift Closeout — Current Authority
+
+This block supersedes older current-looking package-review, design, readiness,
+and authorization-preparation pointers appended to this audit for current-lane
+selection. Historical text remains evidence only.
+
+- preapplication verdict:
+  `V2_9_8B_FROZEN_STD4H_PREAPPLICATION_APPROVAL_BLOCKED`
+- blocker: `AUTHORIZATION_EXACT_HEAD_BINDING_DRIFT`
+- classification: governance/state-binding blocker; NOT a committed-code defect
+- stale authorization ID:
+  `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260831T150842Z_b6d7ab46`
+- frozen SHA-256:
+  `5cd5ca47761458023061e4627999df13fb1ac9b80c80bc836b7e4ba012de290f`
+- stale final state:
+  `STALE / UNCONSUMED / UNAPPLIED / PERMANENTLY INELIGIBLE FOR APPLICATION`
+- current HEAD before closeout:
+  `2913c03f4e8cf8246b8ca759721799a92cddf39c`
+- stale frozen HEAD binding:
+  `abdd210d2d1e0788d241d8a26f09b9a60a105912`
+- authoritative DB SHA-256:
+  `859f3712d19ffdf9e8d87d967649864935098058996d988f607faf9eb7cc6552`
+- DB binding/health, temporal validity at audit time, runtime zero-state,
+  authorization SHA/integrity, and Standard-4H envelope passed
+- no application/consumption occurred; do not describe as consumed
+- stale ID is now governance-required prior non-reusable for future packages
+- closeout:
+  `docs/printer-v1-v2-9-8b-stale-standard-4h-authorization-head-drift-closeout.md`
+
+This stale-authorization closeout and fresh-preparation re-entry become active
+only when this six-doc package is committed. Until that commit exists, do not
+prepare another authorization.
 
 After closeout commit, the exact current permitted lane is:
 
-`FRESH FROZEN STANDARD-4H ONE-SHOT APPLICATION / EXECUTION APPROVAL — NO APPLICATION YET`
+`FRESH EXACT-HEAD / EXACT-DB ONE-SHOT STANDARD-4H AUTHORIZATION PREPARATION — STALE PRIOR AUTHORIZATION SEALED NON-REUSABLE`
 
 Exact currently permitted action:
 
-`Perform the final pre-application approval/readiness check for the exact frozen authorization package V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260831T150842Z_b6d7ab46 and decide whether its one permitted apply_authorization_once invocation may be explicitly approved.`
+`Prepare exactly one fresh exact-HEAD / exact-DB one-shot Standard-4H authorization package using the existing canonical authorization owners, including V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260831T150842Z_b6d7ab46 in the complete prior non-reuse trust root, and stop unconsumed for independent package review.`
 
-Approval/readiness only. Application/consumption/execution remain blocked.
-Preserve:
+Separately approved fresh preparation only. NOT automatic successor/retry.
+Application/consumption/execution remain blocked. Preserve:
 
 ```text
 readiness -> design/specification -> preparation -> independent package review -> explicit application/execution approval -> one-shot bounded execution/proof -> closeout
 ```
 
 All permanent V1 locks remain unchanged.
-<!-- V2_9_8B_AUTH_PACKAGE_REVIEW_CLOSEOUT_CURRENT_STATE_END -->
+<!-- V2_9_8B_STALE_AUTH_HEAD_DRIFT_CLOSEOUT_CURRENT_STATE_END -->

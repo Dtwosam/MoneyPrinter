@@ -2,129 +2,142 @@
 
 ## Current lane
 
-`FRESH FROZEN STANDARD-4H ONE-SHOT APPLICATION / EXECUTION APPROVAL — NO APPLICATION YET`
+`FRESH EXACT-HEAD / EXACT-DB ONE-SHOT STANDARD-4H AUTHORIZATION PREPARATION — STALE PRIOR AUTHORIZATION SEALED NON-REUSABLE`
 
-Independent authorization package review result:
+This stale-authorization closeout and fresh-preparation re-entry become active
+only when this six-doc package is committed. Until that commit exists, do not
+prepare another authorization. Do not invent the future closeout commit SHA.
+The later preparation must bind the actual HEAD produced by that commit.
 
-`PASS`
+## Baseline before this closeout
 
-Authorization package state:
+Current repository HEAD before closeout:
 
-`PREPARED / UNCONSUMED / UNAPPLIED`
+`2913c03f4e8cf8246b8ca759721799a92cddf39c`
 
-This package-review closeout becomes active only when the documentation package
-is committed. Until that commit exists, do not begin the application/execution
-approval lane. Do not invent the future closeout commit SHA.
+Authoritative DB SHA-256:
 
-## Frozen authorization under review
+`859f3712d19ffdf9e8d87d967649864935098058996d988f607faf9eb7cc6552`
+
+Authoritative DB path:
+
+`data/printer_v1.sqlite3`
+
+## Stale frozen authorization
 
 Authorization ID:
 
 `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260831T150842Z_b6d7ab46`
 
-Frozen SHA-256:
+Frozen SHA-256 (byte-identical; do not alter):
 
 `5cd5ca47761458023061e4627999df13fb1ac9b80c80bc836b7e4ba012de290f`
+
+Frozen repository HEAD binding:
+
+`abdd210d2d1e0788d241d8a26f09b9a60a105912`
 
 Package path:
 
 `operator-runs/v2-9-8b-four-token-standard-four-hour-final-authorization/V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260831T150842Z_b6d7ab46/final_authorization.json`
 
-Repository binding:
+Final pre-application verdict:
 
-`abdd210d2d1e0788d241d8a26f09b9a60a105912`
+`V2_9_8B_FROZEN_STD4H_PREAPPLICATION_APPROVAL_BLOCKED`
 
-Authoritative DB SHA:
+Blocker:
 
-`859f3712d19ffdf9e8d87d967649864935098058996d988f607faf9eb7cc6552`
+`AUTHORIZATION_EXACT_HEAD_BINDING_DRIFT`
 
-Expiration (immutable):
+Stale authorization final state:
 
-`2026-09-01T03:08:42.498484+00:00`
+`STALE / UNCONSUMED / UNAPPLIED / PERMANENTLY INELIGIBLE FOR APPLICATION`
 
-Do not extend, rewrite, renew, retry, or replace this authorization. If it
-expires before application approval, it becomes unusable; return to the
-separately approved readiness/preparation sequence rather than minting a
-successor automatically.
+Classification:
 
-## Current repository state
+- governance / state-binding blocker;
+- NOT a committed-code defect;
+- DB binding passed;
+- DB health passed;
+- temporal validity passed at audit time;
+- runtime / ownership zero-state passed;
+- authorization SHA / integrity passed;
+- Standard-4H / governance envelope passed;
+- authorization remained unconsumed and unapplied.
 
-Design/source-stack commit that bound preparation:
+No application or consumption occurred. Do not describe this package as
+consumed. Do not alter, rebind, renew, delete, rename, move, or apply it.
 
-`abdd210d2d1e0788d241d8a26f09b9a60a105912`
+From this closeout forward, `...b6d7ab46` is an active-governance-required prior
+non-reusable authorization ID for every future Standard-4H package. That does
+not mean it was consumed; it means it may never be applied, renewed, rebound,
+reissued, or have its ID reused. Future complete
+`prior_authorizations_non_reusable` trust roots must include it.
 
-Readiness closeout / design baseline:
+Governing closeout:
 
-`7d5c3a631091af7e07f941fe56647d6ffc596d46`
+`docs/printer-v1-v2-9-8b-stale-standard-4h-authorization-head-drift-closeout.md`
 
-Implementation repair:
-
-`27964ebc050bfd263a2db275f092f3ebca7dbe46`
-
-Governing package-review closeout:
+Prior package-review closeout remains historically correct as written:
 
 `docs/printer-v1-v2-9-8b-next-standard-4h-authorization-package-review-closeout.md`
 
-Governing design:
+Governing design (do not redo):
 
 `docs/printer-v1-v2-9-8b-next-standard-4h-authorization-preparation-boundary-design.md`
 
-Canonical validation evidence recorded by independent review:
-
-- `validate_four_token_standard_four_hour_authorization_document` PASS
-- `_resolve_authorization` PASS
-- exact 53-ID prior non-reuse trust root validated
-- no application marker/directory
-- no `apply_authorization_once`
-- no Printer / Scheduler / provider / campaign / DB mutation
-
-## Authoritative database
-
-Path: `data/printer_v1.sqlite3`
-
-Exact SHA-256 bound by the frozen package:
-
-`859f3712d19ffdf9e8d87d967649864935098058996d988f607faf9eb7cc6552`
-
-Any later approval/application check must freshly re-measure live DB identity.
-Do not silently rebind the frozen package to a different DB.
-
 ## Exact next permitted action
 
-`Perform the final pre-application approval/readiness check for the exact frozen authorization package V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260831T150842Z_b6d7ab46 and decide whether its one permitted apply_authorization_once invocation may be explicitly approved.`
+`Prepare exactly one fresh exact-HEAD / exact-DB one-shot Standard-4H authorization package using the existing canonical authorization owners, including V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260831T150842Z_b6d7ab46 in the complete prior non-reuse trust root, and stop unconsumed for independent package review.`
 
-This lane is approval/readiness only.
+This is a separately approved fresh preparation lane.
 
-It must freshly re-check before any application:
+It is NOT an automatic successor or retry.
 
-- exact authorization file SHA;
-- temporal validity;
-- repository HEAD/branch;
-- tracked-tree cleanliness;
-- exact authoritative DB identity;
-- integrity/FKs/migration state;
-- zero active ownership/runtime;
-- no application directory/marker;
-- complete non-reuse trust;
-- exact Standard-4H envelope;
-- Source Governor / Central Scheduler authority;
-- permanent V1 locks.
+It is NOT application approval and NOT execution.
 
-If HEAD, DB, package bytes, temporal validity, ownership, or governance state
-has drifted, fail closed.
+Do not redo the completed authorization-boundary design. Do not reopen the
+Aug-30 repair. Do not require another broad readiness audit solely because this
+package became stale. The approved preparation boundary already requires fresh
+exact-HEAD / exact-DB / readiness rebinding before creating any future package.
 
-It does **not** itself authorize:
+## Fresh preparation must bind
+
+The later preparation must bind the actual HEAD produced by this stale-package
+closeout commit and must freshly re-read:
+
+- actual HEAD;
+- branch;
+- tracked-clean state;
+- authoritative DB SHA / path / size / inode / mtime;
+- migration count / head;
+- integrity / FKs / sidecars;
+- campaign / run / supervision / lease / Scheduler / factory / progression /
+  pre-admission quiescence.
+
+If anything other than the expected documentation HEAD transition has drifted,
+fail closed. Do not manufacture a package.
+
+Any new package must again stop:
+
+`PREPARED / UNCONSUMED / UNAPPLIED`
+
+for independent package review.
+
+## Application / execution remain blocked
+
+This lane does **not** authorize:
 
 - `apply_authorization_once`
 - application-marker creation
 - Printer execution
 - child launch
 - campaign creation
-- provider/RPC/WebSocket calls
+- provider / RPC / WebSocket calls
 - Central Scheduler runtime
 - authoritative DB mutation
-- retry/rerun/resume/restart/successor
-- retrieval / BUY/SELL/HOLD / positions / trades / audits / PnL
+- retry / rerun / resume / restart / successor
+- retrieval / BUY / SELL / HOLD / positions / trades / audits / PnL
 - `WINDOW_12H` / `WINDOW_24H`
 
 ## Builder sequence
