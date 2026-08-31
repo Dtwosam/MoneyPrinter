@@ -54,49 +54,51 @@ For current Printer V1 lane, repository identity, authoritative DB identity,
 latest completed work, blockers, and next permitted action, use the active
 authority stack plus `CURRENT_HANDOFF.md`.
 
-Current post-design anchors:
+Current post-package-review anchors:
 
-- implementation repair commit:
-  `27964ebc050bfd263a2db275f092f3ebca7dbe46`
+- preparation-bound / frozen repository HEAD:
+  `abdd210d2d1e0788d241d8a26f09b9a60a105912`
 
-- readiness closeout / design baseline commit:
-  `7d5c3a631091af7e07f941fe56647d6ffc596d46`
-
-- design-time authoritative DB SHA-256:
+- frozen authoritative DB SHA-256:
   `859f3712d19ffdf9e8d87d967649864935098058996d988f607faf9eb7cc6552`
 
-- design:
-  `NEXT STANDARD-4H AUTHORIZATION-PREPARATION BOUNDARY DESIGN`
+- frozen authorization ID:
+  `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260831T150842Z_b6d7ab46`
 
-- independent design operator review:
+- frozen authorization SHA-256:
+  `5cd5ca47761458023061e4627999df13fb1ac9b80c80bc836b7e4ba012de290f`
+
+- independent package review:
   `PASS`
 
-- implementation-boundary classification:
-  `EXISTING_OWNER_ALREADY_SUFFICIENT`
+- package state:
+  `PREPARED / UNCONSUMED / UNAPPLIED`
 
-- current lane after this design-closeout package is committed:
-  `FRESH EXACT-HEAD / EXACT-DB ONE-SHOT STANDARD-4H AUTHORIZATION PREPARATION`
+- immutable expiration:
+  `2026-09-01T03:08:42.498484+00:00`
+
+- current lane after this package-review closeout is committed:
+  `FRESH FROZEN STANDARD-4H ONE-SHOT APPLICATION / EXECUTION APPROVAL — NO APPLICATION YET`
 
 - exact next permitted action:
-  Prepare one fresh exact-HEAD / exact-DB one-shot Standard-4H authorization
-  package using the existing canonical authorization owners, freeze/hash the
-  exact package bytes, and stop unconsumed for independent package review.
+  Perform the final pre-application approval/readiness check for the exact
+  frozen authorization package
+  `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260831T150842Z_b6d7ab46` and decide whether
+  its one permitted `apply_authorization_once` invocation may be explicitly
+  approved.
 
-No code change is required. Existing canonical owners remain authoritative.
-The design baseline HEAD is NOT the future package binding after this docs
-package is committed.
+Canonical validator PASS, `_resolve_authorization` PASS, exact 53-ID prior
+non-reuse trust validated, no application marker/directory. Do not extend,
+rewrite, renew, retry, or replace this frozen authorization.
 
-This reviewed design and preparation-lane state becomes active only when this
-six-doc package is committed. Until that commit exists, do not begin
-authorization preparation. Do not invent the future design-closeout commit SHA.
-The later preparation task must inspect the actual resulting HEAD and rebind
-preparation-time identities.
+This package-review closeout becomes active only when the documentation package
+is committed. Until that commit exists, do not begin the application/execution
+approval lane. Do not invent the future closeout commit SHA.
 
-No authorization currently exists for the next campaign. Package preparation is
-creation-only. Application/consumption/execution remain blocked. Preserve:
+Application/consumption/execution remain blocked. Preserve:
 
 ```text
-readiness -> authorization-boundary design/specification -> authorization preparation -> independent package review -> later explicit application/execution approval -> bounded execution/proof -> closeout
+readiness -> design/specification -> preparation -> independent package review -> explicit application/execution approval -> one-shot bounded execution/proof -> closeout
 ```
 
 Cycle-2 Aug-30 `SELECTED` slot rows remain historical residue under
@@ -1677,46 +1679,60 @@ design / specification. That pointer is historical after design review PASS.
 <!-- V2_9_8B_POST_REPAIR_READINESS_CLOSEOUT_CURRENT_STATE_END -->
 
 <!-- V2_9_8B_AUTH_BOUNDARY_DESIGN_CLOSEOUT_CURRENT_STATE_START -->
-## V2-9.8B Next Standard-4H Authorization-Preparation Boundary Design — Current Authority
+## V2-9.8B Next Standard-4H Authorization-Preparation Boundary Design — Historical Authority
 
-This block supersedes older current-looking readiness, Aug-30 repair-closeout,
-migration-062, and authorization-preparation pointers appended to this audit for
-current-lane selection. Historical text remains evidence only.
+This block is historical after the later independent package review PASS.
+Preparation-bound HEAD remains `abdd210d2d1e0788d241d8a26f09b9a60a105912`.
+Historical text remains evidence only.
 
 - design: `NEXT STANDARD-4H AUTHORIZATION-PREPARATION BOUNDARY DESIGN`
 - independent design operator review: `PASS`
 - implementation-boundary classification: `EXISTING_OWNER_ALREADY_SUFFICIENT`
-- design baseline: `7d5c3a631091af7e07f941fe56647d6ffc596d46`
-- design-time authoritative DB SHA-256:
+
+At design-closeout time, the next permitted lane was authorization preparation.
+That pointer is historical after package preparation and independent review PASS.
+<!-- V2_9_8B_AUTH_BOUNDARY_DESIGN_CLOSEOUT_CURRENT_STATE_END -->
+
+<!-- V2_9_8B_AUTH_PACKAGE_REVIEW_CLOSEOUT_CURRENT_STATE_START -->
+## V2-9.8B Next Standard-4H Authorization Package Review — Current Authority
+
+This block supersedes older current-looking design, readiness, and
+authorization-preparation pointers appended to this audit for current-lane
+selection. Historical text remains evidence only.
+
+- independent package review: `PASS`
+- authorization ID:
+  `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260831T150842Z_b6d7ab46`
+- frozen SHA-256:
+  `5cd5ca47761458023061e4627999df13fb1ac9b80c80bc836b7e4ba012de290f`
+- package state: `PREPARED / UNCONSUMED / UNAPPLIED`
+- frozen HEAD: `abdd210d2d1e0788d241d8a26f09b9a60a105912`
+- frozen DB SHA-256:
   `859f3712d19ffdf9e8d87d967649864935098058996d988f607faf9eb7cc6552`
-- no code change is required; existing canonical owners remain authoritative
-- design baseline HEAD is NOT the future package binding after this docs package
-  is committed
-- Aug-30 authorization
-  `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260830T113652Z_a89ed6bc`
-  remains permanently consumed and non-reusable
-- no authorization currently exists for the next campaign
-- Cycle-2 Aug-30 `SELECTED` slot rows remain historical residue and must not be
-  mutated
+- immutable expiration: `2026-09-01T03:08:42.498484+00:00`
+- exact 53-ID prior non-reuse trust validated
+- canonical validator PASS; `_resolve_authorization` PASS
+- no application marker/directory
+- no retry/replacement/reissue if this package expires
 
-This reviewed design and preparation-lane state becomes active only when this
-six-doc package is committed. Until that commit exists, do not begin
-authorization preparation. Do not invent the future design-closeout commit SHA.
+This package-review closeout becomes active only when the documentation package
+is committed. Until that commit exists, do not begin the application/execution
+approval lane.
 
-After design-closeout commit, the exact current permitted lane is:
+After closeout commit, the exact current permitted lane is:
 
-`FRESH EXACT-HEAD / EXACT-DB ONE-SHOT STANDARD-4H AUTHORIZATION PREPARATION`
+`FRESH FROZEN STANDARD-4H ONE-SHOT APPLICATION / EXECUTION APPROVAL — NO APPLICATION YET`
 
 Exact currently permitted action:
 
-`Prepare one fresh exact-HEAD / exact-DB one-shot Standard-4H authorization package using the existing canonical authorization owners, freeze/hash the exact package bytes, and stop unconsumed for independent package review.`
+`Perform the final pre-application approval/readiness check for the exact frozen authorization package V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260831T150842Z_b6d7ab46 and decide whether its one permitted apply_authorization_once invocation may be explicitly approved.`
 
-Package creation only. Application/consumption/execution remain blocked.
+Approval/readiness only. Application/consumption/execution remain blocked.
 Preserve:
 
 ```text
-readiness -> authorization-boundary design/specification -> authorization preparation -> independent package review -> later explicit application/execution approval -> bounded execution/proof -> closeout
+readiness -> design/specification -> preparation -> independent package review -> explicit application/execution approval -> one-shot bounded execution/proof -> closeout
 ```
 
 All permanent V1 locks remain unchanged.
-<!-- V2_9_8B_AUTH_BOUNDARY_DESIGN_CLOSEOUT_CURRENT_STATE_END -->
+<!-- V2_9_8B_AUTH_PACKAGE_REVIEW_CLOSEOUT_CURRENT_STATE_END -->

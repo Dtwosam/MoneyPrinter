@@ -2,87 +2,119 @@
 
 ## Current lane
 
-`FRESH EXACT-HEAD / EXACT-DB ONE-SHOT STANDARD-4H AUTHORIZATION PREPARATION`
+`FRESH FROZEN STANDARD-4H ONE-SHOT APPLICATION / EXECUTION APPROVAL — NO APPLICATION YET`
 
-Independent authorization-boundary design review result:
+Independent authorization package review result:
 
 `PASS`
 
-Design classification:
+Authorization package state:
 
-`EXISTING_OWNER_ALREADY_SUFFICIENT`
+`PREPARED / UNCONSUMED / UNAPPLIED`
 
-This reviewed design and preparation-lane state becomes active only when this
-six-doc package is committed. Until that commit exists, do not begin
-authorization preparation. Do not invent the future design-closeout commit SHA.
-The later preparation task must inspect the actual HEAD produced by this
-commit.
+This package-review closeout becomes active only when the documentation package
+is committed. Until that commit exists, do not begin the application/execution
+approval lane. Do not invent the future closeout commit SHA.
+
+## Frozen authorization under review
+
+Authorization ID:
+
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260831T150842Z_b6d7ab46`
+
+Frozen SHA-256:
+
+`5cd5ca47761458023061e4627999df13fb1ac9b80c80bc836b7e4ba012de290f`
+
+Package path:
+
+`operator-runs/v2-9-8b-four-token-standard-four-hour-final-authorization/V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260831T150842Z_b6d7ab46/final_authorization.json`
+
+Repository binding:
+
+`abdd210d2d1e0788d241d8a26f09b9a60a105912`
+
+Authoritative DB SHA:
+
+`859f3712d19ffdf9e8d87d967649864935098058996d988f607faf9eb7cc6552`
+
+Expiration (immutable):
+
+`2026-09-01T03:08:42.498484+00:00`
+
+Do not extend, rewrite, renew, retry, or replace this authorization. If it
+expires before application approval, it becomes unusable; return to the
+separately approved readiness/preparation sequence rather than minting a
+successor automatically.
 
 ## Current repository state
+
+Design/source-stack commit that bound preparation:
+
+`abdd210d2d1e0788d241d8a26f09b9a60a105912`
+
+Readiness closeout / design baseline:
+
+`7d5c3a631091af7e07f941fe56647d6ffc596d46`
 
 Implementation repair:
 
 `27964ebc050bfd263a2db275f092f3ebca7dbe46`
 
-Aug-30 repair closeout commit:
+Governing package-review closeout:
 
-`e79c80d872e6694fce564dbd683567e0c02622f2`
+`docs/printer-v1-v2-9-8b-next-standard-4h-authorization-package-review-closeout.md`
 
-Readiness closeout / design baseline commit:
-
-`7d5c3a631091af7e07f941fe56647d6ffc596d46`
-
-Design:
-
-`NEXT STANDARD-4H AUTHORIZATION-PREPARATION BOUNDARY DESIGN`
-
-Governing design document:
+Governing design:
 
 `docs/printer-v1-v2-9-8b-next-standard-4h-authorization-preparation-boundary-design.md`
 
-No code change is required. Existing canonical wrapper/profile/policy/
-non-reuse/zero-state owners remain authoritative. The design baseline HEAD
-`7d5c3a631091af7e07f941fe56647d6ffc596d46` is NOT the future package binding
-after this docs package is committed.
+Canonical validation evidence recorded by independent review:
+
+- `validate_four_token_standard_four_hour_authorization_document` PASS
+- `_resolve_authorization` PASS
+- exact 53-ID prior non-reuse trust root validated
+- no application marker/directory
+- no `apply_authorization_once`
+- no Printer / Scheduler / provider / campaign / DB mutation
 
 ## Authoritative database
 
 Path: `data/printer_v1.sqlite3`
 
-Design-time / last verified authoritative DB SHA-256:
+Exact SHA-256 bound by the frozen package:
 
 `859f3712d19ffdf9e8d87d967649864935098058996d988f607faf9eb7cc6552`
 
-Preparation must recompute the live DB SHA and full identity fields at
-preparation time. Do not treat a remembered design-time SHA as a substitute for
-live measurement.
-
-## Latest completed work
-
-- readiness verdict:
-  `V2_9_8B_POST_REPAIR_NEXT_BOUNDED_CAMPAIGN_READINESS_PASS`
-- readiness independent review: `PASS`
-- authorization-boundary design independent review: `PASS`
-- design classification: `EXISTING_OWNER_ALREADY_SUFFICIENT`
-- Aug-30 authorization
-  `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260830T113652Z_a89ed6bc`
-  remains permanently consumed and non-reusable
-- earlier consumed authorization
-  `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260828T211924Z_5fcb1bf5`
-  remains permanently consumed and non-reusable
-  (`CONSUMED_CHILD_EXITED_NONZERO`)
-
-No authorization currently exists for the next campaign.
+Any later approval/application check must freshly re-measure live DB identity.
+Do not silently rebind the frozen package to a different DB.
 
 ## Exact next permitted action
 
-`Prepare one fresh exact-HEAD / exact-DB one-shot Standard-4H authorization package using the existing canonical authorization owners, freeze/hash the exact package bytes, and stop unconsumed for independent package review.`
+`Perform the final pre-application approval/readiness check for the exact frozen authorization package V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260831T150842Z_b6d7ab46 and decide whether its one permitted apply_authorization_once invocation may be explicitly approved.`
 
-This lane permits PACKAGE CREATION ONLY.
+This lane is approval/readiness only.
 
-It does **not** authorize:
+It must freshly re-check before any application:
 
-- application/consumption
+- exact authorization file SHA;
+- temporal validity;
+- repository HEAD/branch;
+- tracked-tree cleanliness;
+- exact authoritative DB identity;
+- integrity/FKs/migration state;
+- zero active ownership/runtime;
+- no application directory/marker;
+- complete non-reuse trust;
+- exact Standard-4H envelope;
+- Source Governor / Central Scheduler authority;
+- permanent V1 locks.
+
+If HEAD, DB, package bytes, temporal validity, ownership, or governance state
+has drifted, fail closed.
+
+It does **not** itself authorize:
+
 - `apply_authorization_once`
 - application-marker creation
 - Printer execution
@@ -92,72 +124,14 @@ It does **not** authorize:
 - Central Scheduler runtime
 - authoritative DB mutation
 - retry/rerun/resume/restart/successor
-- retrieval
-- BUY/SELL/HOLD
-- paper positions/trades/audits/PnL
+- retrieval / BUY/SELL/HOLD / positions / trades / audits / PnL
 - `WINDOW_12H` / `WINDOW_24H`
 
-Application/consumption/execution remain blocked after this package is
-committed. Independent package review remains mandatory. A further explicit
-operator approval remains mandatory before `apply_authorization_once`.
+## Builder sequence
 
-## Preparation-time rebinding rule
-
-The future preparation task MUST re-read the actual HEAD produced by this
-source-stack/design commit. Do not bind a package to
-`7d5c3a631091af7e07f941fe56647d6ffc596d46` merely because that was the design
-baseline.
-
-After commit, preparation must freshly establish:
-
-- actual Git HEAD;
-- actual branch;
-- tracked-clean tree;
-- authoritative DB path;
-- DB SHA-256;
-- DB size/inode/mtime_ns;
-- migration count/head;
-- integrity/FKs/sidecars;
-- canonical campaign/run/supervision/lease/Scheduler/factory/progression/
-  pre-admission quiescence.
-
-The future package binds those preparation-time identities. Any mismatch from
-the independently approved preparation baseline must fail closed.
-
-## Canonical owners
-
-Preserve these exact existing owners:
-
-- document validator:
-  `validate_four_token_standard_four_hour_authorization_document`
-  in `src/printer_v1/operator_cli/four_token_standard_four_hour_one_shot_wrapper.py`
-- application/consumption owner:
-  `apply_authorization_once` in the same module
-- operational policy: `exact_operational_policy()`
-- authorization profile: `FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE`
-- zero-state owner: `assert_four_token_standard_four_hour_zero_state`
-- prior non-reuse validation: `validate_prior_authorizations_non_reusable`
-
-No parallel authorization schema/runner/application path is permitted.
-
-## Authorization profile
-
-- schema: `PRINTER_V1_FOUR_TOKEN_STANDARD_4H_FINAL_AUTHORIZATION_V1`
-- wrapper: `PRINTER_V1_FOUR_TOKEN_STANDARD_4H_ONE_SHOT_WRAPPER_V1`
-- Git manifest: `PRINTER_V1_GIT_PROVENANCE_MANIFEST_FOUR_TOKEN_STANDARD_4H_V1`
-- policy: `V2-9.8B-FOUR-TOKEN-STANDARD-4H-OPERATIONAL-V1`
-- mode: `four-token-standard-four-hour-run`
-- current migration evidence: migration 062
-- prior migrations remain historical evidence
-
-## Non-reuse trust
-
-Future preparation derives the complete prior non-reuse root from authoritative
-durable/committed evidence. Minimum required IDs include
-`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260830T113652Z_a89ed6bc` and
-`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260828T211924Z_5fcb1bf5`, but those are not
-assumed to be the complete set. Directory discovery never creates authorization
-trust. Every consumed authorization remains permanently non-reusable.
+```text
+readiness -> design/specification -> preparation -> independent package review -> explicit application/execution approval -> one-shot bounded execution/proof -> closeout
+```
 
 ## Active-work governance
 
@@ -165,23 +139,7 @@ trust. Every consumed authorization remains permanently non-reusable.
 Raw historical slot state alone must not establish active execution authority.
 ```
 
-Canonical campaign/run/supervision/lease/Scheduler/factory/progression/
-pre-admission ownership truth governs active-work readiness. Do not mutate the
-historical Aug-30 Cycle-2 `SELECTED` rows.
-
-## Standard-4H envelope
-
-Preserve exactly: Solana-only; Solana memecoin-only; paper-only; two cycles;
-exactly 2 concurrent active token slots; up to 4 distinct identities
-campaign-wide; Cycle 2 fresh/disjoint; `WINDOW_15M`; hard-gated `WINDOW_1H`;
-hard-gated `WINDOW_4H`; stop at 4h; `WINDOW_5M` support-only; `WINDOW_12H` /
-`WINDOW_24H` locked; no automatic retry/rerun/resume/restart/successor.
-
-## Builder sequence
-
-```text
-readiness -> authorization-boundary design/specification -> authorization preparation -> independent package review -> later explicit application/execution approval -> bounded execution/proof -> closeout
-```
+Do not mutate historical Aug-30 Cycle-2 `SELECTED` rows.
 
 ## Permanent locks
 
