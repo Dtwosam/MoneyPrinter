@@ -7325,6 +7325,38 @@ def _scheduler_ceiling_for_run_config(config: Mapping[str, Any]) -> int:
     )
 
 
+def _request_ceiling_for_run_config(config: Mapping[str, Any]) -> int:
+    """Select the applicable governed-request run ceiling for this factory config.
+
+    Four-token Standard-4H must not inherit the standalone selective-1h proof
+    ceiling merely because ``selective_1h_continuation`` enables WINDOW_1H.
+    Mirror the Scheduler scope selector: ``four_token_proof`` consumes the
+    scaled Standard-4H request envelope; standalone selective-1h keeps 102.
+    """
+    if bool(config.get("four_token_proof")):
+        from printer_v1.operator_cli.multi_cycle_memory_growth import (
+            scaled_standard_four_hour_capacity_contract,
+        )
+
+        return int(
+            scaled_standard_four_hour_capacity_contract(4)[
+                "lifecycle_request_outer_ceiling"
+            ]
+        )
+    continuous = bool(config.get("continuous_first_hour"))
+    selective_1h = _selective_1h_lifecycle(config)
+    compressed_two_token = _two_token_lifecycle(config)
+    return (
+        _SELECTIVE_1H_MAX_REQUESTS_RUN
+        if selective_1h
+        else _COMPRESSED_TWO_TOKEN_MAX_REQUESTS_RUN
+        if compressed_two_token
+        else _CONTINUOUS_MAX_REQUESTS_RUN
+        if continuous
+        else _MAX_GOVERNED_REQUESTS_RUN
+    )
+
+
 def _run_step_job_count(conn: sqlite3.Connection, run_id: str) -> int:
     return int(conn.execute(
         "SELECT COUNT(*) FROM printer_scheduler_jobs WHERE job_name LIKE ?",
@@ -7577,17 +7609,7 @@ def _enforce_budgets_before_step(
             ) from exc
         return
     continuous = bool(config.get("continuous_first_hour"))
-    selective_1h = _selective_1h_lifecycle(config)
-    compressed_two_token = _two_token_lifecycle(config)
-    run_ceiling = (
-        _SELECTIVE_1H_MAX_REQUESTS_RUN
-        if selective_1h
-        else _COMPRESSED_TWO_TOKEN_MAX_REQUESTS_RUN
-        if compressed_two_token
-        else _CONTINUOUS_MAX_REQUESTS_RUN
-        if continuous
-        else _MAX_GOVERNED_REQUESTS_RUN
-    )
+    run_ceiling = _request_ceiling_for_run_config(config)
     token_ceiling = (
         _CONTINUOUS_MAX_REQUESTS_PER_TOKEN
         if continuous else _MAX_GOVERNED_REQUESTS_PER_TOKEN
@@ -8134,15 +8156,7 @@ def _run_budgets(
     per_token = {p: _token_request_count(conn, run_id, p) for p in prefixes}
     selective_1h = _selective_1h_lifecycle(config)
     compressed_two_token = _two_token_lifecycle(config)
-    run_ceiling = (
-        _SELECTIVE_1H_MAX_REQUESTS_RUN
-        if selective_1h
-        else _COMPRESSED_TWO_TOKEN_MAX_REQUESTS_RUN
-        if compressed_two_token
-        else _CONTINUOUS_MAX_REQUESTS_RUN
-        if continuous
-        else _MAX_GOVERNED_REQUESTS_RUN
-    )
+    run_ceiling = _request_ceiling_for_run_config(config)
     token_ceiling = (
         _CONTINUOUS_MAX_REQUESTS_PER_TOKEN
         if continuous else _MAX_GOVERNED_REQUESTS_PER_TOKEN
