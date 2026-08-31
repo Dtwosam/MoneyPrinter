@@ -1861,23 +1861,60 @@ explicit source-stack lane reactivates them.
 Implemented capability ≠ previously exercised capability ≠ authorization to run
 now. This adoption creates no authorization and unlocks no campaign.
 
-The exact current next permitted lane is:
+V2-9.8B remains the active operational memory-growth lane.
+
+Aug-30 token-local Standard-4H lifecycle-isolation repair:
+implementation committed at
+`27964ebc050bfd263a2db275f092f3ebca7dbe46`
+
+Repair closeout/source-stack synchronization:
+`INDEPENDENT OPERATOR REVIEW PASS`
+
+Closeout verdict:
+`V2_9_8B_AUG30_TOKEN_LOCAL_STANDARD_4H_LIFECYCLE_ISOLATION_REPAIR_CLOSEOUT_PASS`
+
+Current authoritative DB SHA:
+`859f3712d19ffdf9e8d87d967649864935098058996d988f607faf9eb7cc6552`
+
+No authorization or campaign is currently authorized.
+
+This reviewed closeout package becomes the active committed source-stack state
+when the six-doc package is committed. Until that commit is created, do not
+begin the readiness audit.
+
+The exact current next permitted lane after closeout commit is:
 
 ```text
-POST-REPAIR FRESH NEXT-BOUNDED-CAMPAIGN AUTHORIZATION
-READINESS / GOVERNANCE ONLY
+FRESH POST-REPAIR EXACT-HEAD / EXACT-DB NEXT-BOUNDED-CAMPAIGN READINESS / GOVERNANCE AUDIT
 ```
+
+Exact currently permitted action:
+
+```text
+Perform a fresh read-only exact-HEAD / exact-DB next-bounded-campaign readiness / governance audit.
+```
+
+Authorization preparation remains blocked until this fresh post-repair
+readiness/governance audit independently passes and a later lane explicitly
+permits preparation. Do not treat older pre-Aug-30 authorization-preparation,
+migration-062 readiness, or older exact DB identities as current authority.
 
 Historical at the time of the 2026-08-26 source-stack synchronization:
 `POST-SYNCHRONIZATION FRESH NEXT-BOUNDED-CAMPAIGN AUTHORIZATION READINESS /
-GOVERNANCE ONLY`. That pointer is superseded by the later Cycle-1
-historical-disjointness repair closeout and `CURRENT_HANDOFF.md`.
+GOVERNANCE ONLY`. Later retained-evidence, remote-host, migration-062, and
+authorization-preparation current-state blocks appended below this section
+remain historical evidence only and do not override `AGENTS.md`,
+`CURRENT_HANDOFF.md`, or this active next-lane pointer.
 
 A future operational campaign still requires separate fresh exact-HEAD
 authorization, explicit operator approval, exact DB binding, Source Governor,
 Central Scheduler, one-shot semantics, consumed-authorization non-reuse, and no
 automatic retry/resume/restart/successor. Source scarcity and honest evidence
 blockers remain valid terminals. The profile does not promise 4/2/2 success.
+
+Standard-4H envelope remains: exactly 2 concurrent active token slots; up to 4
+distinct identities campaign-wide; `WINDOW_15M` → hard-gated `WINDOW_1H` →
+hard-gated `WINDOW_4H` → stop; `WINDOW_12H` / `WINDOW_24H` locked.
 
 Retrieval, paper decisions, BUY/SELL/HOLD, positions, trades, audits, and PnL
 remain locked.
@@ -2013,15 +2050,17 @@ Closeout:
 
 `docs/printer-v1-remote-host-readiness-audit-closeout.md`
 
-The exact current next permitted infrastructure sub-lane is:
+At 8e43eae7 / remote-host readiness closeout time, the next permitted
+infrastructure sub-lane was:
 
 `REMOTE HOST DESIGN / SPECIFICATION — NATIVE LINUX / SYSTEMD ONE-SHOT PORTABILITY`
 
-This remains infrastructure support only. It does not reorder or advance the
-active memory-growth capability sequence and does not authorize deployment,
+That remained infrastructure support only. It did not reorder or advance the
+active memory-growth capability sequence and did not authorize deployment,
 migration/cutover, authorization issuance/application, provider/RPC/WebSocket
 calls, Scheduler execution, another campaign, retrieval, financial capabilities,
-or 12h/24h windows.
+or 12h/24h windows. This infrastructure pointer is historical after the later
+remote-host pause and Aug-30 repair closeout synchronization.
 
 The required infrastructure sequence remains:
 
@@ -2032,7 +2071,7 @@ support-only. The consumed authorization remains permanently non-reusable.
 <!-- V2_9_8B_AUTH_8E43EAE7_CAMPAIGN_CLOSEOUT_CURRENT_STATE_END -->
 
 <!-- V2_9_8B_REMOTE_HOST_PAUSE_MEMORY_GROWTH_RETURN_CURRENT_STATE_START -->
-## V2-9.8B Remote-Host Pause / Memory-Growth Return — Current Authority
+## V2-9.8B Remote-Host Pause / Memory-Growth Return — Historical Authority
 
 Operator decision: remote-host / VPS work is paused while Printer continues the
 local Mac V2-9.8B bounded memory-growth path.
@@ -2059,34 +2098,30 @@ Current preserved campaign/data baseline:
 - retrieval, financial capability, `WINDOW_12H`, and `WINDOW_24H` remain locked
 - `WINDOW_5M_MICRO_EVENT` remains support-only
 
-The exact current permitted lane is:
+At remote-host-pause synchronization time, the next permitted lane was:
 
 `POST-CAMPAIGN FRESH NEXT-BOUNDED-CAMPAIGN READINESS / GOVERNANCE ONLY`
 
-This lane is read-only readiness/governance. It may establish exact final Git
-identity, authoritative DB identity/health, tracked-tree cleanliness, runtime
-quiescence, evidence continuity, and permanent-lock continuity.
+That lane was read-only readiness/governance. It did not create or apply an
+authorization, run Printer, contact providers/RPC/WebSocket, run Central
+Scheduler, mutate the authoritative DB, activate retrieval, activate financial
+capability, or unlock longer windows.
 
-It does not create or apply an authorization. It does not run Printer, contact
-providers/RPC/WebSocket, run Central Scheduler, mutate the authoritative DB,
-activate retrieval, activate financial capability, or unlock longer windows.
-
-Only after a fresh exact-HEAD/exact-DB readiness PASS may the next separate lane
-be considered:
+Only after a fresh exact-HEAD/exact-DB readiness PASS could the next separate
+lane be considered:
 
 `FRESH EXACT-HEAD / EXACT-DB ONE-SHOT AUTHORIZATION PREPARATION / INDEPENDENT REVIEW`
 
-Separate operator approval remains required before any later one-shot execution.
-
-Permanent V1 locks remain unchanged.
+This remote-host-pause pointer is historical after later migration-062 and
+Aug-30 repair closeout synchronization. Permanent V1 locks remain unchanged.
 <!-- V2_9_8B_REMOTE_HOST_PAUSE_MEMORY_GROWTH_RETURN_CURRENT_STATE_END -->
 
 <!-- V2_9_8B_POST_MIGRATION_062_READINESS_CURRENT_STATE_START -->
-## V2-9.8B Post-Migration 062 Fresh Next-Bounded-Campaign Readiness — Current Authority
+## V2-9.8B Post-Migration 062 Fresh Next-Bounded-Campaign Readiness — Historical Authority
 
-This block supersedes older current-looking migration, post-campaign,
-remote-host, and next-bounded-campaign readiness pointers for current-lane
-selection. Historical text remains evidence only.
+This block preserves migration/post-campaign readiness history. Historical text
+remains evidence only and is not current authority after the Aug-30 repair
+closeout synchronization.
 
 - migration application verdict:
   `V2_9_8B_MIGRATION_062_CONTROLLED_APPLICATION_PASS`
@@ -2111,22 +2146,22 @@ Governing closeout:
 
 `docs/printer-v1-v2-9-8b-post-migration-062-fresh-next-bounded-campaign-readiness-governance-closeout.md`
 
-The exact current permitted lane is:
+At post-migration-062 readiness time, the next permitted lane was:
 
 `FRESH EXACT-HEAD / EXACT-DB ONE-SHOT AUTHORIZATION PREPARATION / INDEPENDENT REVIEW`
 
-Any fresh authorization must bind the final committed readiness HEAD and the
-exact DB SHA above. Preparation/review does not execute Printer, and later
-consumption/execution requires separate explicit operator approval. All
-permanent V1 locks remain unchanged.
+Any fresh authorization at that time had to bind the then-final committed
+readiness HEAD and the exact DB SHA above. That pointer is historical after
+later provenance and Aug-30 repair closeout synchronization. All permanent V1
+locks remain unchanged.
 <!-- V2_9_8B_POST_MIGRATION_062_READINESS_CURRENT_STATE_END -->
 
 <!-- V2_9_8B_MIGRATION_062_AUTHORIZATION_PROVENANCE_CURRENT_STATE_START -->
-## V2-9.8B Migration-062 Authorization-Provenance — Current Authority
+## V2-9.8B Migration-062 Authorization-Provenance — Historical Authority
 
-This block supersedes older current-looking authorization-preparation and
-migration-provenance pointers for current-lane selection. Historical text
-remains evidence only.
+This block preserves authorization-provenance / migration-evidence history.
+Historical text remains evidence only and is not current authority after the
+Aug-30 repair closeout synchronization.
 
 Fresh authorization preparation is blocked by
 `EVIDENCE_CONTROL_BLOCKER__CURRENT_MIGRATION_PROVENANCE_PIN_STILL_061`.
@@ -2140,23 +2175,25 @@ Governing design:
 
 `docs/printer-v1-v2-9-8b-migration-062-authorization-provenance-evidence-control-design.md`
 
-The exact current permitted lane is:
+At provenance-design closeout time, the next permitted lane was:
 
 `MIGRATION-062 AUTHORIZATION-PROVENANCE EVIDENCE-CONTROL IMPLEMENTATION / BOUNDED PROOF ONLY`
 
-That later lane requires explicit operator approval. It may not create, apply,
+That later lane required explicit operator approval. It may not create, apply,
 or consume an authorization; mutate the authoritative DB; run Printer,
 providers/RPC/WebSocket, or Central Scheduler; start a campaign; or resume
 remote-host work. Migration 061 and consumed authorization
 `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260827T122355Z_8e43eae7` remain permanently
-historical/non-reusable. All permanent V1 locks remain unchanged.
+historical/non-reusable. This pointer is historical after later provenance
+implementation and Aug-30 repair closeout synchronization. All permanent V1
+locks remain unchanged.
 <!-- V2_9_8B_MIGRATION_062_AUTHORIZATION_PROVENANCE_CURRENT_STATE_END -->
 
 <!-- V2_9_8B_MIGRATION_062_PROVENANCE_IMPLEMENTATION_CURRENT_STATE_START -->
-## V2-9.8B Migration-062 Provenance Implementation — Current Authority
+## V2-9.8B Migration-062 Provenance Implementation — Historical Authority
 
-This block supersedes older current-looking provenance implementation and
-authorization-preparation pointers for current-lane selection.
+This block preserves provenance-implementation history. It is not current
+authority after the Aug-30 repair closeout synchronization.
 
 Implementation and independent closeout verdicts:
 
@@ -2169,13 +2206,64 @@ Governing closeout:
 `docs/printer-v1-v2-9-8b-migration-062-authorization-provenance-evidence-control-implementation-closeout.md`
 
 Both four-token profiles now bind exact migration-062 current provenance;
-migration 061 remains immutable historical evidence. The exact current lane is:
+migration 061 remains immutable historical evidence. At provenance-
+implementation closeout time, the next permitted lane was:
 
 `FRESH EXACT-HEAD / EXACT-DB ONE-SHOT AUTHORIZATION PREPARATION / INDEPENDENT REVIEW`
 
-One fresh authorization may be prepared and independently reviewed only against
-the exact post-repair commit HEAD, unchanged authoritative DB, and exact
-migration-062 current provenance. No authorization application/consumption,
-database mutation, Printer/provider/Scheduler/campaign, or remote-host work is
-authorized. All permanent V1 locks remain unchanged.
+One fresh authorization could then be prepared and independently reviewed only
+against the then-current post-repair commit HEAD, unchanged authoritative DB,
+and exact migration-062 current provenance. That pointer is historical after
+the Aug-30 repair closeout synchronization. No authorization
+application/consumption, database mutation, Printer/provider/Scheduler/campaign,
+or remote-host work is authorized by this historical block. All permanent V1
+locks remain unchanged.
 <!-- V2_9_8B_MIGRATION_062_PROVENANCE_IMPLEMENTATION_CURRENT_STATE_END -->
+
+<!-- V2_9_8B_AUG30_REPAIR_CLOSEOUT_SOURCE_STACK_SYNC_CURRENT_STATE_START -->
+## V2-9.8B Aug-30 Lifecycle Isolation Repair Closeout — Current Authority
+
+This block supersedes older current-looking post-migration-062,
+authorization-preparation, remote-host-pause, and pre-Aug-30 readiness pointers
+in this file for current-lane selection. Historical text remains evidence only.
+
+- V2-9.8B remains the active operational memory-growth lane
+- Aug-30 token-local Standard-4H lifecycle-isolation repair implementation:
+  `27964ebc050bfd263a2db275f092f3ebca7dbe46`
+- repair closeout / active source-stack synchronization:
+  `INDEPENDENT OPERATOR REVIEW PASS`
+- closeout verdict:
+  `V2_9_8B_AUG30_TOKEN_LOCAL_STANDARD_4H_LIFECYCLE_ISOLATION_REPAIR_CLOSEOUT_PASS`
+- authoritative DB: `data/printer_v1.sqlite3`
+- authoritative DB SHA-256:
+  `859f3712d19ffdf9e8d87d967649864935098058996d988f607faf9eb7cc6552`
+- Aug-30 authorization
+  `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260830T113652Z_a89ed6bc`
+  remains permanently consumed and non-reusable
+- no authorization or campaign is currently authorized
+- Standard-4H envelope preserved: exactly 2 concurrent active token slots; up
+  to 4 distinct identities campaign-wide; `WINDOW_15M` → hard-gated
+  `WINDOW_1H` → hard-gated `WINDOW_4H` → stop
+- `WINDOW_12H` / `WINDOW_24H` locked; no retry/rerun/resume/restart
+- retrieval and all financial capability remain locked
+
+This reviewed closeout package becomes the active committed source-stack state
+when the six-doc package is committed. Until that commit is created, do not
+begin the readiness audit.
+
+After closeout commit, the exact current permitted lane is:
+
+```text
+FRESH POST-REPAIR EXACT-HEAD / EXACT-DB NEXT-BOUNDED-CAMPAIGN READINESS / GOVERNANCE AUDIT
+```
+
+Exact currently permitted action:
+
+```text
+Perform a fresh read-only exact-HEAD / exact-DB next-bounded-campaign readiness / governance audit.
+```
+
+Authorization preparation remains blocked until this fresh post-repair
+readiness/governance audit independently passes and a later lane explicitly
+permits preparation. All permanent V1 locks remain unchanged.
+<!-- V2_9_8B_AUG30_REPAIR_CLOSEOUT_SOURCE_STACK_SYNC_CURRENT_STATE_END -->

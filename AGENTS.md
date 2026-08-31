@@ -45,52 +45,89 @@ Every major capability must preserve:
 Use minimum sufficient risk-based verification. Do not request broad regression
 suites unless the change risk or lane closeout requires them.
 
-### Current V2-9.8B post-reconciliation governance state — 2026-08-29
+### Current V2-9.8B post-Aug-30 repair closeout governance state — 2026-08-31
 
-The interrupted consumed four-token execution has completed production repair,
-exact-residue recovery, separately approved authoritative reconciliation, and
-post-reconciliation readiness review.
+The Aug-30 token-local Standard-4H lifecycle-isolation repair implementation is
+committed and independently reviewed PASS. Documentation closeout and active
+source-stack synchronization for that repair have completed independent
+operator review:
 
-Authoritative DB identity remains:
+`INDEPENDENT OPERATOR REVIEW PASS`
 
+Closeout verdict:
+
+`V2_9_8B_AUG30_TOKEN_LOCAL_STANDARD_4H_LIFECYCLE_ISOLATION_REPAIR_CLOSEOUT_PASS`
+
+This reviewed closeout package becomes the active committed source-stack state
+when the six-doc package is committed. Until that commit is created, do not
+begin the readiness audit. Do not invent the future documentation closeout
+commit SHA. The readiness audit must bind/reconfirm the actual HEAD produced by
+that closeout commit.
+
+Reviewed implementation commit:
+
+`27964ebc050bfd263a2db275f092f3ebca7dbe46`
+
+Authoritative DB path: `data/printer_v1.sqlite3`
+
+Current authoritative DB SHA-256:
+
+`859f3712d19ffdf9e8d87d967649864935098058996d988f607faf9eb7cc6552`
+
+Read-only closeout evidence reports integrity `ok`, FK violations `0`,
+migration `62 / 062_pre_admission_attempt_evidence.sql`, active Scheduler jobs
+`0`, active factory runs `0`, active campaign-owned work `0`, non-terminal
+campaigns `0`, active/stopping supervision `0`, unreleased leases `0`, active
+pre-admission attempts `0`, no SQLite WAL/SHM/journal sidecars, and no
+Printer/Governor/Central Scheduler processes observed.
+
+The Aug-30 authorization
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260830T113652Z_a89ed6bc`
+remains permanently consumed and non-reusable. The earlier consumed
+authorization `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260828T211924Z_5fcb1bf5`
+also remains permanently consumed and non-reusable, with exact diagnostic
+historical disposition `CONSUMED_CHILD_EXITED_NONZERO`. Any future authorization
+must explicitly carry these exact IDs, and all other previously recorded
+non-reusable authorization IDs, in its approved
+`prior_authorizations_non_reusable` trust root. No historical consumed
+authorization may be revived or reused.
+
+Historical post-reconciliation readiness
+`V2_9_8B_POST_RECONCILIATION_NEXT_BOUNDED_CAMPAIGN_READINESS_PASS` and its older
+authoritative DB SHA
 `a7ad83d5f368192da7a4e7522870e3956e6f42f70b51748ff642f2c2c53683f8`
-
-Fresh local read-only evidence reports `RECOVERED`, integrity/FKs `ok / 0`,
-migration `62 / 062_pre_admission_attempt_evidence.sql`, zero active Scheduler
-jobs, zero active pre-admission attempts, zero active factory runs, no campaign
-lease, no Printer/Governor/Central Scheduler process, and no SQLite sidecars.
-A final post-implementation local re-hash returned the same authoritative DB
-SHA above.
-
-The consumed authorization
-`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260828T211924Z_5fcb1bf5`
-remains permanently consumed and non-reusable. Its exact diagnostic historical
-disposition is now `CONSUMED_CHILD_EXITED_NONZERO`; this records the original
-wrapper/child result and does not grant reuse authority. Any future authorization
-must explicitly carry this exact ID in its approved
-`prior_authorizations_non_reusable` trust root.
-
-Post-reconciliation readiness verdict:
-
-`V2_9_8B_POST_RECONCILIATION_NEXT_BOUNDED_CAMPAIGN_READINESS_PASS`
-
-The exact current permitted lane is:
-
+remain historical evidence only. Do not treat that older SHA or the older
 `FRESH EXACT-HEAD / EXACT-DB ONE-SHOT STANDARD-4H AUTHORIZATION PREPARATION + INDEPENDENT REVIEW`
+lane phrase as current authority.
 
-That lane may prepare and independently review one brand-new authorization
-package only. The package must bind the then-current reviewed Git HEAD and exact
-authoritative DB SHA, preserve migration-062 provenance and all historical
-non-reuse trust, and remain unusable until its own independent review and later
-separate operator execution approval. This lane does **not** authorize applying
-or consuming an authorization, Printer execution, provider/RPC/WebSocket calls,
-Central Scheduler runtime, another campaign, retry/resume/restart of the
-consumed campaign, remote/VPS work, retrieval, paper decisions, positions,
-trades, audits, PnL, or longer-window activation.
+After this closeout package is committed, the exact current permitted lane is:
 
-Governing readiness closeout:
+```text
+FRESH POST-REPAIR EXACT-HEAD / EXACT-DB NEXT-BOUNDED-CAMPAIGN READINESS / GOVERNANCE AUDIT
+```
 
-`docs/printer-v1-v2-9-8b-post-reconciliation-next-bounded-campaign-readiness-closeout.md`
+Exact currently permitted action:
+
+```text
+Perform a fresh read-only exact-HEAD / exact-DB next-bounded-campaign readiness / governance audit.
+```
+
+That audit may inspect repository identity, authoritative DB identity/health,
+runtime quiescence, Source Governor/Central Scheduler ownership,
+migration/evidence provenance, consumed-authorization non-reuse, and permanent
+locks. It does **not** authorize authorization preparation, authorization
+creation/application/consumption, Printer execution, another campaign,
+provider/RPC/WebSocket calls, Central Scheduler runtime, authoritative DB
+mutation, retry/rerun/resume/restart/successor, retrieval, BUY/SELL/HOLD,
+positions/trades/audits/PnL, or `WINDOW_12H` / `WINDOW_24H`.
+
+Governing repair closeout:
+
+`docs/printer-v1-v2-9-8b-aug30-token-local-standard-4h-lifecycle-isolation-repair-closeout.md`
+
+Authorization preparation remains blocked until this fresh post-repair
+readiness/governance audit independently passes and a later lane explicitly
+permits preparation. No authorization or campaign is currently authorized.
 
 Any future approved remote-host implementation must preserve the existing
 one-shot wrapper as the operational application boundary, `Restart=no`, no
@@ -107,7 +144,7 @@ weighted decision logic; no embeddings/vectors unless explicitly approved; no
 Source Governor or Central Scheduler bypass; no dirty memory for retrieval or
 decisions; no retrieval or financial capability before its explicit approved
 lane. `WINDOW_5M_MICRO_EVENT` remains support-only. `WINDOW_12H` and
-`WINDOW_24H` remain locked.
+`WINDOW_24H` remain locked. No automatic retry/rerun/resume/restart.
 
 Printer V1 is a Solana-only memecoin memory and paper-trading machine.
 

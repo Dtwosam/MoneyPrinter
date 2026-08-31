@@ -1167,17 +1167,51 @@ Current adopted operational envelope (2026-08-26):
 - Cycle-2 fresh slots must be campaign-history disjoint;
 - adoption creates no authorization and unlocks no campaign.
 
-The exact current next permitted lane is:
+V2-9.8B remains the active bounded operational Memory Factory lane. The Aug-30
+token-local Standard-4H lifecycle-isolation repair implementation is committed
+at `27964ebc050bfd263a2db275f092f3ebca7dbe46`. Documentation closeout / active
+source-stack synchronization completed independent operator review:
+
+`INDEPENDENT OPERATOR REVIEW PASS`
+
+Closeout verdict:
+
+`V2_9_8B_AUG30_TOKEN_LOCAL_STANDARD_4H_LIFECYCLE_ISOLATION_REPAIR_CLOSEOUT_PASS`
+
+Current authoritative DB SHA is
+`859f3712d19ffdf9e8d87d967649864935098058996d988f607faf9eb7cc6552`.
+Aug-30 authorization
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260830T113652Z_a89ed6bc` remains permanently
+consumed and non-reusable. No authorization or campaign is currently
+authorized.
+
+This reviewed closeout package becomes the active committed source-stack state
+when the six-doc package is committed. Until that commit is created, do not
+begin the readiness audit.
+
+The exact current next permitted lane after closeout commit is:
 
 ```text
-POST-REPAIR FRESH NEXT-BOUNDED-CAMPAIGN AUTHORIZATION
-READINESS / GOVERNANCE ONLY
+FRESH POST-REPAIR EXACT-HEAD / EXACT-DB NEXT-BOUNDED-CAMPAIGN READINESS / GOVERNANCE AUDIT
 ```
+
+Exact currently permitted action:
+
+```text
+Perform a fresh read-only exact-HEAD / exact-DB next-bounded-campaign readiness / governance audit.
+```
+
+Authorization preparation remains blocked until this fresh post-repair
+readiness/governance audit independently passes and a later lane explicitly
+permits preparation. Do not prepare a new authorization package from this guide
+alone.
 
 Historical at the time of the 2026-08-26 source-stack synchronization:
 `POST-SYNCHRONIZATION FRESH NEXT-BOUNDED-CAMPAIGN AUTHORIZATION READINESS /
-GOVERNANCE ONLY`. That pointer is superseded by the later Cycle-1
-historical-disjointness repair closeout and `CURRENT_HANDOFF.md`.
+GOVERNANCE ONLY`. Later retained-evidence, remote-host, migration-062, and
+authorization-preparation current-state blocks appended below this section
+remain historical evidence only and do not override `CURRENT_HANDOFF.md` or
+this Roadmap Placement for current-lane selection.
 
 Do not treat this guide, a prior run, or a consumed authorization as current
 execution authority. Do not start an operational campaign, invoke providers/RPC,
