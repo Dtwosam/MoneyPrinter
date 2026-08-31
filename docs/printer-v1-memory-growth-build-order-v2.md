@@ -1867,55 +1867,57 @@ Aug-30 token-local Standard-4H lifecycle-isolation repair:
 implementation committed at
 `27964ebc050bfd263a2db275f092f3ebca7dbe46`
 
-Aug-30 repair closeout / audited repository baseline:
-`e79c80d872e6694fce564dbd683567e0c02622f2`
+Readiness closeout / design baseline commit:
+`7d5c3a631091af7e07f941fe56647d6ffc596d46`
 
-Post-repair readiness / governance audit verdict:
-`V2_9_8B_POST_REPAIR_NEXT_BOUNDED_CAMPAIGN_READINESS_PASS`
+Design:
+`NEXT STANDARD-4H AUTHORIZATION-PREPARATION BOUNDARY DESIGN`
 
-Independent readiness operator review:
+Independent design operator review:
 `PASS`
 
-Current authoritative DB SHA:
+Implementation-boundary classification:
+`EXISTING_OWNER_ALREADY_SUFFICIENT`
+
+Design-time authoritative DB SHA:
 `859f3712d19ffdf9e8d87d967649864935098058996d988f607faf9eb7cc6552`
 
-No authorization currently exists for the next campaign.
+No code change is required. Existing canonical owners remain authoritative.
+The design baseline HEAD is NOT the future package binding after this docs
+package is committed. No authorization currently exists for the next campaign.
 
 Cycle-2 Aug-30 `SELECTED` slot rows remain historical residue under
 terminal/drained canonical ownership and must not be mutated. Raw historical
 slot state alone must not establish active execution authority.
 
-Providers were not contacted. Readiness PASS is structural/governance only and
-must not be converted into provider-readiness claims.
+This reviewed design and preparation-lane state becomes active only when this
+six-doc package is committed. Until that commit exists, do not begin
+authorization preparation. Do not invent the future design-closeout commit SHA.
+The later preparation task must inspect the actual resulting HEAD and rebind
+preparation-time identities.
 
-This reviewed readiness-closeout state becomes active when this six-doc package
-is committed. Until that commit exists, do not begin the authorization-boundary
-design lane. Do not invent the future readiness-closeout commit SHA. The later
-design must inspect/bind the actual HEAD produced by this readiness-closeout
-commit.
-
-The exact current next permitted lane after readiness-closeout commit is:
+The exact current next permitted lane after design-closeout commit is:
 
 ```text
-FRESH EXACT-HEAD / EXACT-DB ONE-SHOT STANDARD-4H AUTHORIZATION-PREPARATION BOUNDARY DESIGN / SPECIFICATION — NO AUTHORIZATION CREATION
+FRESH EXACT-HEAD / EXACT-DB ONE-SHOT STANDARD-4H AUTHORIZATION PREPARATION
 ```
 
 Exact currently permitted action:
 
 ```text
-Design/specify the fresh exact-HEAD / exact-DB one-shot Standard-4H authorization-preparation boundary for the next bounded campaign.
+Prepare one fresh exact-HEAD / exact-DB one-shot Standard-4H authorization package using the existing canonical authorization owners, freeze/hash the exact package bytes, and stop unconsumed for independent package review.
 ```
 
-That lane is DESIGN / SPECIFICATION ONLY. Authorization preparation/creation
-remains blocked during this design lane. Preserve:
+That lane permits PACKAGE CREATION ONLY. Application/consumption/execution
+remain blocked. Preserve:
 
 ```text
-readiness -> authorization-boundary design/specification -> authorization preparation/implementation only if separately approved -> independent package review -> later explicit execution approval -> bounded execution/proof -> closeout
+readiness -> authorization-boundary design/specification -> authorization preparation -> independent package review -> later explicit application/execution approval -> bounded execution/proof -> closeout
 ```
 
 Do not treat older pre-Aug-30 authorization-preparation, migration-062
-readiness, older exact DB identities, or readiness-audit-only pointers as
-current authority.
+readiness, older exact DB identities, readiness-audit-only pointers, or
+design-baseline HEAD as the future package binding.
 
 Historical at the time of the 2026-08-26 source-stack synchronization:
 `POST-SYNCHRONIZATION FRESH NEXT-BOUNDED-CAMPAIGN AUTHORIZATION READINESS /
@@ -2271,57 +2273,74 @@ governance audit. That pointer is historical after readiness PASS.
 <!-- V2_9_8B_AUG30_REPAIR_CLOSEOUT_SOURCE_STACK_SYNC_CURRENT_STATE_END -->
 
 <!-- V2_9_8B_POST_REPAIR_READINESS_CLOSEOUT_CURRENT_STATE_START -->
-## V2-9.8B Post-Repair Next-Bounded-Campaign Readiness — Current Authority
+## V2-9.8B Post-Repair Next-Bounded-Campaign Readiness — Historical Authority
 
-This block supersedes older current-looking Aug-30 repair-closeout,
-post-migration-062, authorization-preparation, remote-host-pause, and
-pre-Aug-30 readiness pointers in this file for current-lane selection.
+This block is historical after the later authorization-boundary design PASS.
+Readiness closeout commit remains `7d5c3a631091af7e07f941fe56647d6ffc596d46`.
 Historical text remains evidence only.
 
 - readiness verdict:
   `V2_9_8B_POST_REPAIR_NEXT_BOUNDED_CAMPAIGN_READINESS_PASS`
 - independent readiness operator review: `PASS`
-- audited repository baseline:
-  `e79c80d872e6694fce564dbd683567e0c02622f2`
-- implementation repair:
-  `27964ebc050bfd263a2db275f092f3ebca7dbe46`
+- readiness closeout / design baseline:
+  `7d5c3a631091af7e07f941fe56647d6ffc596d46`
 - authoritative DB SHA-256:
   `859f3712d19ffdf9e8d87d967649864935098058996d988f607faf9eb7cc6552`
+
+At readiness-closeout time, the next permitted lane was authorization-boundary
+design / specification. That pointer is historical after design review PASS.
+<!-- V2_9_8B_POST_REPAIR_READINESS_CLOSEOUT_CURRENT_STATE_END -->
+
+<!-- V2_9_8B_AUTH_BOUNDARY_DESIGN_CLOSEOUT_CURRENT_STATE_START -->
+## V2-9.8B Next Standard-4H Authorization-Preparation Boundary Design — Current Authority
+
+This block supersedes older current-looking readiness, Aug-30 repair-closeout,
+post-migration-062, and authorization-preparation pointers in this file for
+current-lane selection. Historical text remains evidence only.
+
+- design: `NEXT STANDARD-4H AUTHORIZATION-PREPARATION BOUNDARY DESIGN`
+- independent design operator review: `PASS`
+- implementation-boundary classification: `EXISTING_OWNER_ALREADY_SUFFICIENT`
+- design baseline: `7d5c3a631091af7e07f941fe56647d6ffc596d46`
+- design-time authoritative DB SHA-256:
+  `859f3712d19ffdf9e8d87d967649864935098058996d988f607faf9eb7cc6552`
+- no code change is required; existing canonical owners remain authoritative
+- design baseline HEAD is NOT the future package binding after this docs package
+  is committed
 - Aug-30 authorization
   `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260830T113652Z_a89ed6bc`
   remains permanently consumed and non-reusable
 - no authorization currently exists for the next campaign
-- Cycle-2 Aug-30 `SELECTED` slot rows remain historical residue under
-  terminal/drained canonical ownership and must not be mutated
-- providers were not contacted; readiness PASS is structural/governance only
+- Cycle-2 Aug-30 `SELECTED` slot rows remain historical residue and must not be
+  mutated
 - Standard-4H envelope preserved: exactly 2 concurrent active token slots; up
   to 4 distinct identities campaign-wide; `WINDOW_15M` → hard-gated
   `WINDOW_1H` → hard-gated `WINDOW_4H` → stop
 - `WINDOW_12H` / `WINDOW_24H` locked; no retry/rerun/resume/restart
 - retrieval and all financial capability remain locked
 
-This reviewed readiness-closeout state becomes active when this six-doc package
-is committed. Until that commit exists, do not begin the authorization-boundary
-design lane. Do not invent the future readiness-closeout commit SHA.
+This reviewed design and preparation-lane state becomes active only when this
+six-doc package is committed. Until that commit exists, do not begin
+authorization preparation. Do not invent the future design-closeout commit SHA.
 
-After readiness-closeout commit, the exact current permitted lane is:
+After design-closeout commit, the exact current permitted lane is:
 
 ```text
-FRESH EXACT-HEAD / EXACT-DB ONE-SHOT STANDARD-4H AUTHORIZATION-PREPARATION BOUNDARY DESIGN / SPECIFICATION — NO AUTHORIZATION CREATION
+FRESH EXACT-HEAD / EXACT-DB ONE-SHOT STANDARD-4H AUTHORIZATION PREPARATION
 ```
 
 Exact currently permitted action:
 
 ```text
-Design/specify the fresh exact-HEAD / exact-DB one-shot Standard-4H authorization-preparation boundary for the next bounded campaign.
+Prepare one fresh exact-HEAD / exact-DB one-shot Standard-4H authorization package using the existing canonical authorization owners, freeze/hash the exact package bytes, and stop unconsumed for independent package review.
 ```
 
-Authorization preparation/creation remains blocked during this design lane.
+Package creation only. Application/consumption/execution remain blocked.
 Preserve:
 
 ```text
-readiness -> authorization-boundary design/specification -> authorization preparation/implementation only if separately approved -> independent package review -> later explicit execution approval -> bounded execution/proof -> closeout
+readiness -> authorization-boundary design/specification -> authorization preparation -> independent package review -> later explicit application/execution approval -> bounded execution/proof -> closeout
 ```
 
 All permanent V1 locks remain unchanged.
-<!-- V2_9_8B_POST_REPAIR_READINESS_CLOSEOUT_CURRENT_STATE_END -->
+<!-- V2_9_8B_AUTH_BOUNDARY_DESIGN_CLOSEOUT_CURRENT_STATE_END -->

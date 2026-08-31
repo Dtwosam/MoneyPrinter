@@ -45,132 +45,121 @@ Every major capability must preserve:
 Use minimum sufficient risk-based verification. Do not request broad regression
 suites unless the change risk or lane closeout requires them.
 
-### Current V2-9.8B post-repair readiness closeout governance state — 2026-08-31
+### Current V2-9.8B authorization-boundary design closeout governance state — 2026-08-31
 
-Post-repair next-bounded-campaign readiness / governance audit verdict:
+Design:
 
-`V2_9_8B_POST_REPAIR_NEXT_BOUNDED_CAMPAIGN_READINESS_PASS`
+`NEXT STANDARD-4H AUTHORIZATION-PREPARATION BOUNDARY DESIGN`
 
 Independent operator review:
 
 `PASS`
 
-Audited repository baseline:
+Implementation-boundary classification:
 
-`e79c80d872e6694fce564dbd683567e0c02622f2`
+`EXISTING_OWNER_ALREADY_SUFFICIENT`
 
-Implementation repair parent:
+Design baseline:
 
-`27964ebc050bfd263a2db275f092f3ebca7dbe46`
+`7d5c3a631091af7e07f941fe56647d6ffc596d46`
 
-Audited authoritative DB SHA-256:
+Design-time authoritative DB SHA-256:
 
 `859f3712d19ffdf9e8d87d967649864935098058996d988f607faf9eb7cc6552`
 
 Authoritative DB path: `data/printer_v1.sqlite3`
 
+Governing design document:
+
+`docs/printer-v1-v2-9-8b-next-standard-4h-authorization-preparation-boundary-design.md`
+
 Governing readiness audit:
 
 `docs/printer-v1-v2-9-8b-post-repair-next-bounded-campaign-readiness-audit.md`
 
-Governing repair closeout:
+No code change is required. Existing canonical wrapper/profile/policy/
+non-reuse/zero-state owners remain authoritative:
 
-`docs/printer-v1-v2-9-8b-aug30-token-local-standard-4h-lifecycle-isolation-repair-closeout.md`
+- document validator:
+  `validate_four_token_standard_four_hour_authorization_document`
+- application/consumption owner: `apply_authorization_once`
+- operational policy: `exact_operational_policy()`
+- profile: `FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE`
+- zero-state: `assert_four_token_standard_four_hour_zero_state`
+- prior non-reuse: `validate_prior_authorizations_non_reusable`
 
-Read-only readiness evidence reconfirmed integrity `ok`, FK violations `0`,
-migration `62 / 062_pre_admission_attempt_evidence.sql`, active Scheduler jobs
-`0`, active factory runs `0`, active campaign-owned work `0`, non-terminal
-campaigns `0`, active/stopping supervision `0`, unreleased leases `0`, active
-pre-admission attempts `0`, no SQLite WAL/SHM/journal sidecars, and no
-Printer/Governor/Central Scheduler processes observed.
+Schema/profile/mode remain:
+`PRINTER_V1_FOUR_TOKEN_STANDARD_4H_FINAL_AUTHORIZATION_V1` /
+`PRINTER_V1_FOUR_TOKEN_STANDARD_4H_ONE_SHOT_WRAPPER_V1` /
+`PRINTER_V1_GIT_PROVENANCE_MANIFEST_FOUR_TOKEN_STANDARD_4H_V1` /
+`V2-9.8B-FOUR-TOKEN-STANDARD-4H-OPERATIONAL-V1` /
+`four-token-standard-four-hour-run`; current migration evidence is migration
+062.
+
+The design baseline HEAD is NOT the future package binding after this docs
+package is committed. Later preparation must re-read the actual HEAD produced by
+this source-stack/design commit and bind preparation-time HEAD/DB/ownership
+identities. Do not invent the future design-closeout commit SHA.
 
 The Aug-30 authorization
 `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260830T113652Z_a89ed6bc`
 remains permanently consumed and non-reusable. The earlier consumed
 authorization `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260828T211924Z_5fcb1bf5`
 also remains permanently consumed and non-reusable, with exact diagnostic
-historical disposition `CONSUMED_CHILD_EXITED_NONZERO`. Any future authorization
-must explicitly carry these exact IDs, and all other previously recorded
-non-reusable authorization IDs, in its approved
-`prior_authorizations_non_reusable` trust root. No historical consumed
-authorization may be revived or reused. No authorization currently exists for
-the next campaign.
-
-Historical Aug-30 repair-closeout transitional wording that pointed at the
-readiness audit, historical post-reconciliation readiness
-`V2_9_8B_POST_RECONCILIATION_NEXT_BOUNDED_CAMPAIGN_READINESS_PASS`, and older
-DB SHA `a7ad83d5f368192da7a4e7522870e3956e6f42f70b51748ff642f2c2c53683f8`
-remain historical evidence only. Do not treat those older pointers, SHA
-values, or older
-`FRESH EXACT-HEAD / EXACT-DB ONE-SHOT STANDARD-4H AUTHORIZATION PREPARATION + INDEPENDENT REVIEW`
-lane phrases as current authority.
-
-Cycle-2 slot rows from the Aug-30 failed campaign remain historical `SELECTED`
-rows with null slot-level terminal timestamps. This is NOT active ownership
-because canonical campaign/run/supervision/lease/Scheduler/progression truth is
-terminal/drained. Do not repair or mutate those rows. For the next
-authorization-boundary design, require:
+historical disposition `CONSUMED_CHILD_EXITED_NONZERO`. Future preparation must
+derive the complete prior non-reuse trust root from authoritative durable/
+committed evidence; those two IDs are required minima, not the assumed complete
+set. Directory discovery never creates authorization trust. No authorization
+currently exists for the next campaign.
 
 ```text
 Raw historical slot state alone must not establish active execution authority.
-Canonical campaign/run/supervision/lease/Scheduler/progression ownership truth governs active-work readiness.
+Canonical campaign/run/supervision/lease/Scheduler/factory/progression/pre-admission ownership truth governs active-work readiness.
 ```
 
-A future design may specify a fail-closed preflight check around this rule. Do
-not implement such a check in this documentation transition.
+Do not mutate the historical Aug-30 Cycle-2 `SELECTED` rows.
 
-Providers were not contacted. Readiness PASS is structural/governance only.
-Current provider availability remains execution-time operational evidence. The
-historical DexScreener transport failure is not a current committed-code
-blocker. Source Governor honest safe-stop behavior remains authoritative. Do
-not convert readiness PASS into provider-readiness claims.
+Standard-4H envelope remains exactly: Solana-only; Solana memecoin-only;
+paper-only; two cycles; exactly 2 concurrent active token slots; up to 4
+distinct identities campaign-wide; Cycle 2 fresh/disjoint; `WINDOW_15M` →
+hard-gated `WINDOW_1H` → hard-gated `WINDOW_4H` → stop; `WINDOW_5M`
+support-only; `WINDOW_12H` / `WINDOW_24H` locked; no automatic
+retry/rerun/resume/restart/successor.
 
-This reviewed readiness-closeout state becomes active when this six-doc package
-is committed. Until that commit exists, do not begin the authorization-boundary
-design lane. Do not invent the future readiness-closeout commit SHA. The later
-design must inspect/bind the actual HEAD produced by this readiness-closeout
-commit.
+This reviewed design and preparation-lane state becomes active only when this
+six-doc package is committed. Until that commit exists, do not begin
+authorization preparation.
 
-After this readiness-closeout package is committed, the exact current permitted
-lane is:
+After this package is committed, the exact current permitted lane is:
 
 ```text
-FRESH EXACT-HEAD / EXACT-DB ONE-SHOT STANDARD-4H AUTHORIZATION-PREPARATION BOUNDARY DESIGN / SPECIFICATION — NO AUTHORIZATION CREATION
+FRESH EXACT-HEAD / EXACT-DB ONE-SHOT STANDARD-4H AUTHORIZATION PREPARATION
 ```
 
 Exact currently permitted action:
 
 ```text
-Design/specify the fresh exact-HEAD / exact-DB one-shot Standard-4H authorization-preparation boundary for the next bounded campaign.
+Prepare one fresh exact-HEAD / exact-DB one-shot Standard-4H authorization package using the existing canonical authorization owners, freeze/hash the exact package bytes, and stop unconsumed for independent package review.
 ```
 
-That lane is DESIGN / SPECIFICATION ONLY. It may define exact future
-authorization binding requirements, repository HEAD identity semantics,
-authoritative DB SHA binding semantics, the already-approved V2-9.8B
-authorization schema/profile, historical authorization non-reuse trust root,
-one-shot invocation constraints, Source Governor / Central Scheduler ownership
-requirements, the Standard-4H 2-concurrent / <=4 campaign-wide / two-cycle
-envelope, `WINDOW_15M` → hard-gated `WINDOW_1H` → hard-gated `WINDOW_4H` →
-stop, no retry/rerun/resume/restart/successor, required independent
-authorization-package review before any application, and later explicit
-operator approval before any execution.
+That lane permits PACKAGE CREATION ONLY. It does **not** authorize
+application/consumption, `apply_authorization_once`, application-marker
+creation, Printer execution, child launch, another campaign,
+provider/RPC/WebSocket calls, Central Scheduler runtime, authoritative DB
+mutation, retry/rerun/resume/restart/successor, retrieval, BUY/SELL/HOLD,
+positions/trades/audits/PnL, or `WINDOW_12H` / `WINDOW_24H`.
 
-It does **not** authorize authorization package creation, authorization ID
-minting, `final_authorization.json` writing, hashing/signing/finalization,
-application-marker creation, authorization application/consumption, Printer
-execution, another campaign, provider/RPC/WebSocket calls, Central Scheduler
-runtime, authoritative DB mutation, retry/rerun/resume/restart/successor,
-retrieval, BUY/SELL/HOLD, positions/trades/audits/PnL, or `WINDOW_12H` /
-`WINDOW_24H`.
+Application/consumption/execution remain blocked after commit. Independent
+package review remains mandatory. A further explicit operator approval remains
+mandatory before `apply_authorization_once`.
 
-Authorization preparation/creation remains blocked during this design lane.
 Preserve the builder sequence:
 
 ```text
-readiness -> authorization-boundary design/specification -> authorization preparation/implementation only if separately approved -> independent package review -> later explicit execution approval -> bounded execution/proof -> closeout
+readiness -> authorization-boundary design/specification -> authorization preparation -> independent package review -> later explicit application/execution approval -> bounded execution/proof -> closeout
 ```
 
-Do not collapse design/specification into package creation.
+Do not collapse preparation, review, application, and execution into one action.
 
 Any future approved remote-host implementation must preserve the existing
 one-shot wrapper as the operational application boundary, `Restart=no`, no
@@ -1128,19 +1117,20 @@ authority. Current adopted envelope:
 The exact current next permitted lane is:
 
 ```text
-FRESH EXACT-HEAD / EXACT-DB ONE-SHOT STANDARD-4H AUTHORIZATION-PREPARATION BOUNDARY DESIGN / SPECIFICATION — NO AUTHORIZATION CREATION
+FRESH EXACT-HEAD / EXACT-DB ONE-SHOT STANDARD-4H AUTHORIZATION PREPARATION
 ```
 
 Historical at the time of the 2026-08-26 source-stack synchronization:
 `POST-SYNCHRONIZATION FRESH NEXT-BOUNDED-CAMPAIGN AUTHORIZATION READINESS /
-GOVERNANCE ONLY`. Later post-repair readiness
-`V2_9_8B_POST_REPAIR_NEXT_BOUNDED_CAMPAIGN_READINESS_PASS` supersedes older
-readiness-only pointers for current-lane selection; use the Active Authority
-Stack and `CURRENT_HANDOFF.md`.
+GOVERNANCE ONLY`. Later post-repair readiness and authorization-boundary design
+PASS supersede older readiness/design-only pointers for current-lane selection;
+use the Active Authority Stack and `CURRENT_HANDOFF.md`.
 
 No automatic run, retry, recovery, successor, cursor reset, N7, provider/RPC
-work, operational campaign, or authorization package creation is authorized by
-this anchor text alone.
+work, operational campaign, authorization application/consumption, or Printer
+execution is authorized by this anchor text alone. Package preparation remains
+creation-only and blocked until the design-closeout six-doc package is
+committed.
 
 ## Printer V1 Python Builder Guide
 
@@ -1197,22 +1187,20 @@ Current adopted operational envelope:
 The exact current next permitted lane is:
 
 ```text
-FRESH EXACT-HEAD / EXACT-DB ONE-SHOT STANDARD-4H AUTHORIZATION-PREPARATION BOUNDARY DESIGN / SPECIFICATION — NO AUTHORIZATION CREATION
+FRESH EXACT-HEAD / EXACT-DB ONE-SHOT STANDARD-4H AUTHORIZATION PREPARATION
 ```
 
 Historical at the time of this adoption closeout:
 `POST-SYNCHRONIZATION FRESH NEXT-BOUNDED-CAMPAIGN AUTHORIZATION READINESS /
-GOVERNANCE ONLY`. Later post-repair readiness
-`V2_9_8B_POST_REPAIR_NEXT_BOUNDED_CAMPAIGN_READINESS_PASS` supersedes older
-readiness-only pointers for current-lane selection; use the Active Authority
-Stack and `CURRENT_HANDOFF.md`.
+GOVERNANCE ONLY`. Later post-repair readiness and authorization-boundary design
+PASS supersede older readiness/design-only pointers for current-lane selection;
+use the Active Authority Stack and `CURRENT_HANDOFF.md`.
 
 This adoption creates no authorization, automatically authorizes no campaign,
-unlocks no live runtime, and leaves fresh exact-HEAD authorization-boundary
-design as a separate later lane. No existing consumed authorization,
+and unlocks no live runtime. No existing consumed authorization,
 `application_started.json`, campaign exit, terminal evidence, or historical
-artifact may be reused as execution authority. Authorization
-preparation/creation remains blocked during the design/specification lane.
+artifact may be reused as execution authority. Package preparation is
+creation-only; application/consumption/execution remain blocked.
 
 <!-- V2_9_8B_RETAINED_EVIDENCE_REPAIR_CLOSEOUT_CURRENT_STATE_START -->
 ## V2-9.8B Retained-Evidence Repair Closeout — Historical Authority
