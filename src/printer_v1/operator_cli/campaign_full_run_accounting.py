@@ -1935,6 +1935,187 @@ def _load_terminal_scheduler_correspondence(
     }
 
 
+_PRE_15M_TOKEN_LOCAL_TERMINAL_FAILURE = (
+    "PRE_15M_TOKEN_LOCAL_TERMINAL_FAILURE"
+)
+
+
+def _load_pre_15m_terminal_exclusions(
+    connection: sqlite3.Connection,
+    *,
+    context: OperationalLifecycleOwnershipContext,
+) -> tuple[dict[str, dict[str, Any]], tuple[str, ...]]:
+    """Validate immutable exclusion rows; never infer them from missing data."""
+    rows = connection.execute(
+        """SELECT p.token_slot_id,p.slot_ordinal,p.token_row_id,p.pair_row_id,
+                  p.mint_identity,p.pair_identity,p.lifecycle_identity,
+                  p.tracking_queue_id,p.tracking_lane,p.token_disposition,
+                  p.predecessor_window_1h_id,p.predecessor_memory_window_id,
+                  p.successor_window_4h_id,p.first_terminal_cause,
+                  p.disposition_reasons_json,p.eligibility_evidence_json,
+                  s.token_state,s.first_terminal_cause AS slot_terminal_cause,
+                  s.terminal_at
+           FROM printer_memory_factory_standard_4h_progression_tokens AS p
+           JOIN printer_memory_factory_standard_4h_progression_attempts AS a
+             ON a.progression_attempt_id=p.progression_attempt_id
+           JOIN printer_memory_factory_campaign_token_slots AS s
+             ON s.token_slot_id=p.token_slot_id
+            AND s.campaign_id=p.campaign_id
+            AND s.run_id=p.campaign_run_id
+            AND s.cycle_id=p.cycle_id
+           WHERE p.campaign_id=? AND p.campaign_run_id=? AND p.cycle_id=?
+             AND p.factory_run_id=?""",
+        (
+            context.campaign_id,
+            context.campaign_run_id,
+            context.cycle_id,
+            context.factory_run_id,
+        ),
+    ).fetchall()
+    exclusions: dict[str, dict[str, Any]] = {}
+    invalid: list[str] = []
+    for row in rows:
+        try:
+            reasons = json.loads(str(row["disposition_reasons_json"]))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            reasons = None
+        if reasons != [_PRE_15M_TOKEN_LOCAL_TERMINAL_FAILURE]:
+            continue
+        slot_id = str(row["token_slot_id"])
+        try:
+            evidence = json.loads(str(row["eligibility_evidence_json"]))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            invalid.append(f"PRE_15M_TERMINAL_EXCLUSION_INVALID:{slot_id}")
+            continue
+        try:
+            identity_matches = bool(
+                isinstance(evidence, dict)
+                and evidence.get("boundary_kind")
+                == "PRE_15M_TOKEN_LOCAL_TERMINAL_EXCLUSION"
+                and str(evidence.get("campaign_id")) == context.campaign_id
+                and str(evidence.get("campaign_run_id"))
+                == context.campaign_run_id
+                and str(evidence.get("cycle_id")) == context.cycle_id
+                and str(evidence.get("token_slot_id")) == slot_id
+                and int(evidence.get("slot_ordinal"))
+                == int(row["slot_ordinal"])
+                and int(evidence.get("token_row_id"))
+                == int(row["token_row_id"])
+                and int(evidence.get("pair_row_id"))
+                == int(row["pair_row_id"])
+                and str(evidence.get("mint_identity"))
+                == str(row["mint_identity"])
+                and str(evidence.get("pair_identity"))
+                == str(row["pair_identity"])
+                and str(evidence.get("lifecycle_identity"))
+                == str(row["lifecycle_identity"])
+                and int(evidence.get("tracking_queue_id"))
+                == int(row["tracking_queue_id"])
+                and str(evidence.get("tracking_lane"))
+                == str(row["tracking_lane"])
+                and evidence.get("terminal_cause")
+                == "TOKEN_LOCAL_TERMINAL_FAILURE"
+                and evidence.get("exclusion_reason")
+                == _PRE_15M_TOKEN_LOCAL_TERMINAL_FAILURE
+                and str(evidence.get("terminal_at"))
+                == str(row["terminal_at"])
+                and evidence.get(
+                    "no_valid_successful_memory_backed_window_15m"
+                )
+                is True
+            )
+        except (TypeError, ValueError):
+            identity_matches = False
+        row_shape_valid = bool(
+            str(row["token_disposition"]) == "INELIGIBLE"
+            and row["predecessor_window_1h_id"] is None
+            and row["predecessor_memory_window_id"] is None
+            and row["successor_window_4h_id"] is None
+            and row["first_terminal_cause"] is None
+            and str(row["token_state"]) == "FAILED"
+            and str(row["slot_terminal_cause"] or "")
+            == "TOKEN_LOCAL_TERMINAL_FAILURE"
+        )
+        failed_step = None
+        if identity_matches:
+            try:
+                failed_step_id = int(evidence.get("failed_factory_step_id"))
+            except (TypeError, ValueError):
+                failed_step_id = None
+            if failed_step_id is not None:
+                failed_step = connection.execute(
+                    """SELECT id,step_kind,step_status,token_id,pair_id,
+                              source_failure_id,memory_window_id
+                       FROM printer_memory_factory_run_steps
+                       WHERE id=? AND run_id=?""",
+                    (failed_step_id, context.factory_run_id),
+                ).fetchone()
+        failed_step_valid = bool(
+            failed_step is not None
+            and str(failed_step["step_kind"])
+            == str(evidence.get("failed_step_kind"))
+            and str(failed_step["step_status"]) == "FAILED"
+            and int(failed_step["token_id"]) == int(row["token_row_id"])
+            and int(failed_step["pair_id"]) == int(row["pair_row_id"])
+            and not str(failed_step["step_kind"]).startswith("CONTINUATION_")
+            and not str(failed_step["step_kind"]).startswith(
+                "LONG_CONTINUATION_"
+            )
+            and failed_step["memory_window_id"] is None
+        )
+        source_valid = False
+        if failed_step_valid:
+            source_failure_id = failed_step["source_failure_id"]
+            evidence_source_id = evidence.get("source_failure_id")
+            source_valid = bool(
+                (source_failure_id is None and evidence_source_id is None)
+                or (
+                    source_failure_id is not None
+                    and evidence_source_id is not None
+                    and int(source_failure_id) == int(evidence_source_id)
+                    and connection.execute(
+                        "SELECT 1 FROM printer_source_failures WHERE id=?",
+                        (int(source_failure_id),),
+                    ).fetchone()
+                    is not None
+                )
+            )
+        valid_15m_count = int(
+            connection.execute(
+                """SELECT COUNT(*)
+                   FROM printer_memory_factory_campaign_windows AS w
+                   JOIN printer_memory_factory_run_steps AS s
+                     ON s.run_id=?
+                    AND s.token_id=w.token_row_id
+                    AND s.pair_id=w.pair_row_id
+                    AND s.memory_window_id=w.memory_window_row_id
+                    AND s.step_kind IN ('WINDOW_CLOSE','WINDOW_CLOSE_AUDIT')
+                    AND s.step_status='SUCCEEDED'
+                   WHERE w.campaign_id=? AND w.run_id=? AND w.cycle_id=?
+                     AND w.token_slot_id=? AND w.window_kind='WINDOW_15M'
+                     AND w.memory_window_row_id IS NOT NULL""",
+                (
+                    context.factory_run_id,
+                    context.campaign_id,
+                    context.campaign_run_id,
+                    context.cycle_id,
+                    slot_id,
+                ),
+            ).fetchone()[0]
+        )
+        if not (
+            identity_matches
+            and row_shape_valid
+            and failed_step_valid
+            and source_valid
+            and valid_15m_count == 0
+        ):
+            invalid.append(f"PRE_15M_TERMINAL_EXCLUSION_INVALID:{slot_id}")
+            continue
+        exclusions[slot_id] = dict(evidence)
+    return exclusions, tuple(invalid)
+
+
 def project_cycle_lifecycle_accounting_completeness(
     connection: sqlite3.Connection,
     *,
@@ -2004,6 +2185,10 @@ def project_cycle_lifecycle_accounting_completeness(
         str(row["token_slot_id"]) for row in slots
     }:
         reasons.append("STANDARD_FOUR_HOUR_PROGRESSION_ACCOUNTING_INCOMPLETE")
+    pre_15m_exclusions, invalid_exclusion_reasons = (
+        _load_pre_15m_terminal_exclusions(connection, context=context)
+    )
+    reasons.extend(invalid_exclusion_reasons)
     window_evidence: list[dict[str, Any]] = []
     quality_results: list[dict[str, Any]] = []
     slot_dispositions: list[dict[str, Any]] = []
@@ -2069,8 +2254,59 @@ def project_cycle_lifecycle_accounting_completeness(
             by_kind.setdefault(str(row["window_kind"]), []).append(row)
         progression_token = progression_by_slot.get(slot_id, {})
         eligible_4h = str(progression_token.get("disposition")) == "HANDOFF_CREATED"
+        ordinary_15m_stop = bool(
+            str(progression_token.get("disposition")) == "INELIGIBLE"
+            and list(progression_token.get("reasons") or ())
+            == ["NO_WINDOW_1H_PLANNED"]
+            and progression_token.get("predecessor_window_1h_id") is None
+        )
+        requires_1h = not ordinary_15m_stop
+        pre_15m_excluded = slot_id in pre_15m_exclusions
         for kind in ("WINDOW_15M", "WINDOW_1H"):
             owned = by_kind.get(kind, [])
+            if pre_15m_excluded:
+                if kind == "WINDOW_1H":
+                    if owned:
+                        reasons.append(
+                            f"PRE_15M_EXCLUSION_HAS_WINDOW_1H:{slot_id}"
+                        )
+                    continue
+                if len(owned) > 1:
+                    reasons.append(f"WINDOW_15M_OWNERSHIP_INCOMPLETE:{slot_id}")
+                    continue
+                if len(owned) == 1:
+                    window = owned[0]
+                    valid = str(window["window_state"]) in {
+                        "BLOCKED",
+                        "CANCELLED",
+                    }
+                    if not valid:
+                        reasons.append(
+                            f"PRE_15M_EXCLUSION_WINDOW_CONFLICT:{slot_id}"
+                        )
+                    window_evidence.append(
+                        {
+                            "token_slot_id": slot_id,
+                            "window_kind": kind,
+                            "window_id": str(window["window_id"]),
+                            "window_state": str(window["window_state"]),
+                            "memory_window_row_id": window[
+                                "memory_window_row_id"
+                            ],
+                            "first_terminal_cause": window[
+                                "first_terminal_cause"
+                            ],
+                            "terminal_complete": valid,
+                            "pre_15m_terminal_exclusion": True,
+                        }
+                    )
+                continue
+            if kind == "WINDOW_1H" and not requires_1h:
+                if owned:
+                    reasons.append(
+                        f"UNPLANNED_WINDOW_1H_OWNERSHIP_PRESENT:{slot_id}"
+                    )
+                continue
             if len(owned) != 1:
                 reasons.append(f"{kind}_OWNERSHIP_INCOMPLETE:{slot_id}")
                 continue
@@ -2107,6 +2343,9 @@ def project_cycle_lifecycle_accounting_completeness(
                 )
 
         owned_4h = by_kind.get("WINDOW_4H", [])
+        if pre_15m_excluded and owned_4h:
+            reasons.append(f"PRE_15M_EXCLUSION_HAS_WINDOW_4H:{slot_id}")
+            owned_4h = []
         if eligible_4h:
             if len(owned_4h) != 1:
                 reasons.append(f"WINDOW_4H_OWNERSHIP_INCOMPLETE:{slot_id}")
@@ -2158,14 +2397,19 @@ def project_cycle_lifecycle_accounting_completeness(
         )
         # Through-4h closure is the pre-terminal campaign-slot disposition.  A
         # later Phase-A terminal transition may move it to COOLDOWN/ARCHIVED.
-        through_4h_closed = str(slot["token_state"]) in (
-            {"WINDOW_4H_CLOSED", "COOLDOWN", "ARCHIVED"}
-            if eligible_4h
-            else {
+        if eligible_4h:
+            terminal_slot_states = {"WINDOW_4H_CLOSED", "COOLDOWN", "ARCHIVED"}
+        elif requires_1h:
+            terminal_slot_states = {
                 "WINDOW_1H_CLOSED", "FAILED", "MANUAL_REVIEW",
                 "COOLDOWN", "ARCHIVED",
             }
-        )
+        else:
+            terminal_slot_states = {
+                "WINDOW_15M_CLOSED", "FAILED", "MANUAL_REVIEW",
+                "COOLDOWN", "ARCHIVED",
+            }
+        through_4h_closed = str(slot["token_state"]) in terminal_slot_states
         slot_dispositions.append(
             {
                 "token_slot_id": slot_id,
@@ -2205,6 +2449,10 @@ def project_cycle_lifecycle_accounting_completeness(
                 ),
             ),
         ):
+            if pre_15m_excluded:
+                continue
+            if kind == "WINDOW_1H" and not requires_1h:
+                continue
             if kind == "WINDOW_4H" and not eligible_4h:
                 continue
             kind_placeholders = ",".join("?" for _ in step_kinds)
@@ -2252,19 +2500,33 @@ def project_cycle_lifecycle_accounting_completeness(
     # every applicable main window terminal, and exact slot disposition.  A
     # caller cannot manufacture this readiness with a cycle-state flag.
     terminal_reconciliation_ready = not reasons
+    slot_1_15m_sealed = bool(
+        len(slot_ids) >= 1
+        and (
+            slot_ids[0] in pre_15m_exclusions
+            or any(
+                item["window_kind"] == "WINDOW_15M"
+                and item["token_slot_id"] == slot_ids[0]
+                and item["terminal_complete"]
+                for item in window_evidence
+            )
+        )
+    )
+    slot_2_15m_sealed = bool(
+        len(slot_ids) == 2
+        and (
+            slot_ids[1] in pre_15m_exclusions
+            or any(
+                item["window_kind"] == "WINDOW_15M"
+                and item["token_slot_id"] == slot_ids[1]
+                and item["terminal_complete"]
+                for item in window_evidence
+            )
+        )
+    )
     sealed_stage_kinds = {
-        "WINDOW_15M_SLOT_1" if len(slot_ids) >= 1 and any(
-            item["window_kind"] == "WINDOW_15M"
-            and item["token_slot_id"] == slot_ids[0]
-            and item["terminal_complete"]
-            for item in window_evidence
-        ) else "",
-        "WINDOW_15M_SLOT_2" if len(slot_ids) == 2 and any(
-            item["window_kind"] == "WINDOW_15M"
-            and item["token_slot_id"] == slot_ids[1]
-            and item["terminal_complete"]
-            for item in window_evidence
-        ) else "",
+        "WINDOW_15M_SLOT_1" if slot_1_15m_sealed else "",
+        "WINDOW_15M_SLOT_2" if slot_2_15m_sealed else "",
         (
             "CAMPAIGN_TERMINAL_RECONCILIATION"
             if terminal_reconciliation_ready
@@ -2290,6 +2552,9 @@ def project_cycle_lifecycle_accounting_completeness(
         "quality_results": tuple(quality_results),
         "slot_dispositions": tuple(slot_dispositions),
         "standard_four_hour_terminal": four_hour,
+        "pre_15m_terminal_exclusions": tuple(
+            pre_15m_exclusions[key] for key in sorted(pre_15m_exclusions)
+        ),
         "cycle_state": cycle_state,
         "terminal_reconciliation_ready": terminal_reconciliation_ready,
     }
@@ -2532,9 +2797,50 @@ def derive_cycle_terminal_accounting_result(
         )
         or ""
     )
+    progression_faults = dict(
+        projection.get("standard_four_hour_terminal", {}).get("fault_details")
+        or {}
+    )
+    progression_primary_present = isinstance(
+        progression_faults.get("primary"), Mapping
+    ) and bool(str(progression_faults["primary"].get("cause") or "").strip())
+    pre_15m_exclusions = tuple(
+        item
+        for item in (projection.get("pre_15m_terminal_exclusions") or ())
+        if isinstance(item, Mapping)
+    )
+    supervision_global = connection.execute(
+        """SELECT supervision_state,terminal_status,first_terminal_cause
+           FROM printer_memory_factory_campaign_supervision
+           WHERE campaign_id=? AND configuration_id=? AND run_id=?""",
+        (
+            context.campaign_id,
+            context.configuration_id,
+            context.campaign_run_id,
+        ),
+    ).fetchone()
+    campaign_global_terminal_present = bool(
+        supervision_global is not None
+        and str(supervision_global["supervision_state"] or "") == "TERMINAL"
+        and str(supervision_global["terminal_status"] or "")
+        in {"FAILED", "CANCELLED", "LEASE_RENEWAL_UNCONFIRMED"}
+    )
+    pre_15m_terminal_cycle = bool(
+        pre_15m_exclusions
+        and progression_state == "HANDOFF_COMMITTED"
+        and projection.get("complete") is True
+        and activity_state != "ACTIVE_INCOMPLETE"
+        and not progression_primary_present
+        and not campaign_global_terminal_present
+    )
     if cycle_state == "TERMINAL_FAILED" or progression_state == "TERMINAL_FAILED":
         execution_outcome = "CYCLE_FAILED"
     elif cycle_state == "TERMINAL_STOPPED" or progression_state == "TERMINAL_CANCELLED":
+        execution_outcome = "CANCELLED_STOPPED"
+    elif pre_15m_terminal_cycle:
+        # Phase A persists CANCELLED_STOPPED as the existing TERMINAL_BLOCKED
+        # cycle state. The exact exclusion aggregate remains the stronger
+        # semantic owner on subsequent read-side reconciliation.
         execution_outcome = "CANCELLED_STOPPED"
     elif cycle_state == "TERMINAL_BLOCKED" or progression_state in {
         "INTERRUPTED_REVIEW",
@@ -2548,10 +2854,6 @@ def derive_cycle_terminal_accounting_result(
     else:
         execution_outcome = "INTERRUPTED_AMBIGUOUS"
 
-    progression_faults = dict(
-        projection.get("standard_four_hour_terminal", {}).get("fault_details")
-        or {}
-    )
     primary_fault = (
         None
         if cycle_state == "TERMINAL_COMPLETED"
@@ -2687,6 +2989,32 @@ def derive_cycle_terminal_accounting_result(
                 or {}
             ),
         } or None
+    if pre_15m_terminal_cycle and not campaign_global_terminal_present:
+        exclusion_slot_ids = sorted(
+            str(item.get("token_slot_id") or "")
+            for item in pre_15m_exclusions
+            if str(item.get("token_slot_id") or "")
+        )
+        primary_fault = _fault_envelope(
+            cause="TOKEN_LOCAL_TERMINAL_FAILURE",
+            origin_scope="TOKEN",
+            effect_scope="CYCLE",
+            cycle_id=context.cycle_id,
+            token_slot_id=(
+                exclusion_slot_ids[0]
+                if len(exclusion_slot_ids) == 1
+                else None
+            ),
+            source_reference=(
+                "standard_4h_progression_attempt:"
+                + str(
+                    projection.get("standard_four_hour_terminal", {}).get(
+                        "progression_attempt_id"
+                    )
+                    or "UNKNOWN"
+                )
+            ),
+        )
     tokens: list[dict[str, Any]] = []
     progression_by_slot = {
         str(item.get("token_slot_id")): item

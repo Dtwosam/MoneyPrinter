@@ -12,6 +12,7 @@ import hashlib
 import json
 from pathlib import Path
 import sqlite3
+from typing import Mapping
 
 import pytest
 
@@ -574,7 +575,13 @@ class Lane4ProofDB:
         )
         self.connection.commit()
 
-    def _seed_ineligible_progression(self, cycle_id: str, slots: list[dict]) -> None:
+    def _seed_ineligible_progression(
+        self,
+        cycle_id: str,
+        slots: list[dict],
+        *,
+        reason: str = "NO_WINDOW_1H_ELIGIBLE_CONTINUATION",
+    ) -> None:
         attempt_id = f"progression-{cycle_id}"
         self.connection.execute(
             """INSERT INTO printer_memory_factory_standard_4h_progression_attempts(
@@ -636,7 +643,7 @@ class Lane4ProofDB:
                     None,
                     None,
                     "INELIGIBLE",
-                    json.dumps(["NO_WINDOW_1H_ELIGIBLE_CONTINUATION"]),
+                    json.dumps([reason]),
                     _EMPTY_OBJECT,
                     None,
                     None,
@@ -1497,3 +1504,197 @@ def test_single_summary_writer_and_cycle_three_remain_locked() -> None:
     assert "REQUIRED_MULTI_CYCLE_ORDINALS = (1, 2)" in Path(
         "src/printer_v1/operator_cli/campaign_full_run_accounting.py"
     ).read_text(encoding="utf-8")
+
+
+def test_d_token_local_drained_does_not_erase_independent_progression_ambiguity(
+    proof_db: Lane4ProofDB,
+) -> None:
+    """Ambiguity must remain ambiguous: Fix 1 must not elevate to CANCELLED_STOPPED."""
+    from printer_v1.operator_cli.standard_4h_progression import (
+        persist_progression_primary_fault,
+    )
+
+    slots = proof_db.seed_complete_cycle(
+        CYCLE_1, 1, clean=True, token_local_failure_slot=1
+    )
+    peer_slot_id = str(slots[1]["token_slot_id"])
+    # Keep activity ACTIVE_INCOMPLETE so a pre-Fix-1 gate that admitted
+    # INTERRUPTED_AMBIGUOUS would still attempt the drained token-local projection.
+    proof_db.connection.execute(
+        """UPDATE printer_memory_factory_campaign_token_slots
+           SET token_state='SELECTED',
+               first_terminal_cause=NULL,
+               terminal_at=NULL,
+               updated_at=?
+           WHERE token_slot_id=?""",
+        (NOW, peer_slot_id),
+    )
+    proof_db.connection.execute(
+        """UPDATE printer_memory_factory_campaign_cycles
+           SET cycle_state='PLANNED',
+               first_terminal_cause=NULL,
+               terminal_at=NULL,
+               updated_at=?
+           WHERE cycle_id=?""",
+        (NOW, CYCLE_1),
+    )
+    # Terminal progression rows are immutable on UPDATE; replace the seeded
+    # HANDOFF_COMMITTED attempt with a fresh WAITING row so the progression
+    # owner can persist INTERRUPTED_REVIEW.
+    attempt_id = f"progression-{CYCLE_1}"
+    proof_db.connection.execute(
+        "DELETE FROM printer_memory_factory_standard_4h_progression_tokens "
+        "WHERE progression_attempt_id=?",
+        (attempt_id,),
+    )
+    proof_db.connection.execute(
+        "DELETE FROM printer_memory_factory_standard_4h_progression_attempts "
+        "WHERE progression_attempt_id=?",
+        (attempt_id,),
+    )
+    proof_db.connection.execute(
+        """INSERT INTO printer_memory_factory_standard_4h_progression_attempts(
+               progression_attempt_id,campaign_id,configuration_id,
+               campaign_run_id,factory_run_id,cycle_id,policy_version,
+               attempt_state,authority_evidence_json,first_terminal_cause,
+               fault_details_json,created_at,updated_at
+           ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            attempt_id,
+            CAMPAIGN,
+            CONFIGURATION,
+            CAMPAIGN_RUN,
+            FACTORY_RUN,
+            CYCLE_1,
+            "STANDARD_4H_PROGRESSION_V1",
+            "WAITING_FOR_PREDECESSORS",
+            _EMPTY_OBJECT,
+            None,
+            _EMPTY_FAULTS,
+            NOW,
+            NOW,
+        ),
+    )
+    for slot in slots:
+        proof_db.connection.execute(
+            """INSERT INTO printer_memory_factory_standard_4h_progression_tokens(
+                   progression_token_id,progression_attempt_id,campaign_id,
+                   campaign_run_id,factory_run_id,cycle_id,slot_ordinal,
+                   token_slot_id,token_identity,token_row_id,mint_identity,
+                   pair_identity,pair_row_id,lifecycle_identity,
+                   tracking_queue_id,tracking_lane,predecessor_window_1h_id,
+                   predecessor_memory_window_id,token_disposition,
+                   disposition_reasons_json,eligibility_evidence_json,
+                   successor_window_4h_id,first_terminal_cause,
+                   fault_details_json,evaluated_at,created_at,updated_at
+               ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                f"progression-token-{slot['token_slot_id']}",
+                attempt_id,
+                CAMPAIGN,
+                CAMPAIGN_RUN,
+                FACTORY_RUN,
+                CYCLE_1,
+                int(slot["slot_ordinal"]),
+                slot["token_slot_id"],
+                slot["token_identity"],
+                int(slot["token_row_id"]),
+                slot["mint_identity"],
+                slot["pair_identity"],
+                int(slot["pair_row_id"]),
+                slot["lifecycle_identity"],
+                int(slot["tracking_queue_id"]),
+                "TRACK_NORMAL",
+                None,
+                None,
+                "WAITING_FOR_PREDECESSOR",
+                json.dumps(["WAITING_FOR_INDEPENDENT_AMBIGUITY_FIXTURE"]),
+                _EMPTY_OBJECT,
+                None,
+                None,
+                _EMPTY_FAULTS,
+                None,
+                NOW,
+                NOW,
+            ),
+        )
+    proof_db.connection.commit()
+    persist_progression_primary_fault(
+        proof_db.connection,
+        progression_attempt_id=attempt_id,
+        cause="TEST_INDEPENDENT_AMBIGUITY",
+        state="INTERRUPTED_REVIEW",
+        now=NOW,
+    )
+    proof_db.connection.commit()
+
+    result = proof_db.derive_cycle(CYCLE_1)
+
+    assert result["execution_outcome"] == "INTERRUPTED_AMBIGUOUS"
+    assert result["requires_review"] is True
+    assert result["execution_outcome"] != "CANCELLED_STOPPED"
+    primary = result.get("primary_fault") or {}
+    assert str(primary.get("cause") or "") == "TEST_INDEPENDENT_AMBIGUITY"
+    assert str(primary.get("cause") or "") != "TOKEN_LOCAL_TERMINAL_FAILURE"
+    progression = result.get("standard_four_hour_terminal") or {}
+    progression_faults = progression.get("fault_details") or {}
+    progression_primary = progression_faults.get("primary") or {}
+    assert str(progression_primary.get("cause") or "") == "TEST_INDEPENDENT_AMBIGUITY"
+    assert any(
+        item.get("token_outcome") == "TOKEN_LOCAL_FAILURE"
+        for item in result.get("tokens") or ()
+    )
+
+
+def test_e_token_local_failure_plus_genuine_global_fault_global_wins(
+    proof_db: Lane4ProofDB,
+) -> None:
+    """Coexistence: durable campaign-global terminal blocks token-local projection."""
+    global_cause = "SUPERVISION_LEASE_RENEWAL_UNCONFIRMED"
+    slots = proof_db.admit_cycle(CYCLE_1, 1, token_base=100)
+    failed_slot_id = str(slots[0]["token_slot_id"])
+    transition_state(
+        proof_db.connection,
+        record_kind="token_slot",
+        identity=failed_slot_id,
+        expected_state="SELECTED",
+        new_state="FAILED",
+        terminal_cause="TOKEN_LOCAL_TERMINAL_FAILURE",
+        now=NOW,
+    )
+    # Peer remains SELECTED → ACTIVE_INCOMPLETE; work/steps absent → drained.
+    proof_db.seed_complete_cycle(CYCLE_2, 2, clean=True)
+    proof_db.set_campaign_shared_supervision(global_cause)
+
+    cycle_one = proof_db.derive_cycle(CYCLE_1)
+    cycle_two = proof_db.derive_cycle(CYCLE_2)
+    aggregate = proof_db.derive_campaign()
+
+    assert any(
+        item.get("token_outcome") == "TOKEN_LOCAL_FAILURE"
+        for item in cycle_one.get("tokens") or ()
+    )
+    assert cycle_one["execution_outcome"] == "ACTIVE_INCOMPLETE"
+    assert cycle_one["execution_outcome"] != "CANCELLED_STOPPED"
+    assert cycle_one["execution_outcome"] != "TERMINAL_SUCCESS"
+    assert cycle_two["execution_outcome"] == "TERMINAL_SUCCESS"
+
+    assert aggregate["execution_outcome"] == "CAMPAIGN_FAILED"
+    assert aggregate["execution_outcome"] != "TERMINAL_SUCCESS"
+    first_cause = aggregate.get("first_cause") or {}
+    assert str(first_cause.get("origin_scope") or "") == "CAMPAIGN"
+    assert str(first_cause.get("effect_scope") or "") == "CAMPAIGN"
+    assert str(first_cause.get("cause") or "") == global_cause
+    assert str(first_cause.get("cause") or "") != "TOKEN_LOCAL_TERMINAL_FAILURE"
+    assert "SAFE_STOP_SOURCE_FAILURE" not in str(first_cause.get("cause") or "")
+    assert aggregate["campaign_pass_eligible"] is False
+    secondary_causes = {
+        str(item.get("cause") or "")
+        for item in (aggregate.get("secondary_faults") or ())
+        if isinstance(item, Mapping)
+    }
+    assert "CAMPAIGN_STOPPED_AFTER_PEER_CYCLE_TERMINAL" not in secondary_causes
+    assert "COMPLETED_CLEAN_OR_DIRTY_RESULTS_REPORTED" not in {
+        str(first_cause.get("cause") or ""),
+        *(secondary_causes),
+    }

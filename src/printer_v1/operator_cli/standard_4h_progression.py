@@ -125,12 +125,13 @@ def create_standard_4h_progression_aggregate(
     campaign_run_id: str,
     cycle_id: str,
     candidates: Sequence[Mapping[str, Any]],
+    terminal_exclusions: Sequence[Mapping[str, Any]] = (),
     now: str | None = None,
 ) -> str | None:
     """Create the exact attempt/two-row aggregate inside the 1h handoff txn."""
-    if len(candidates) != 2:
+    if len(candidates) + len(terminal_exclusions) != 2:
         raise StandardFourHourProgressionError(
-            "standard 4h progression requires exactly two candidates"
+            "standard 4h progression requires exactly two normal/excluded slots"
         )
     run = connection.execute(
         """SELECT r.authoritative_run_id,f.config_json
@@ -151,7 +152,7 @@ def create_standard_4h_progression_aggregate(
     slots = connection.execute(
         """SELECT token_slot_id,slot_ordinal,token_identity,token_row_id,
                   mint_identity,pair_identity,pair_row_id,lifecycle_identity,
-                  tracking_queue_id
+                  tracking_queue_id,token_state,first_terminal_cause,terminal_at
            FROM printer_memory_factory_campaign_token_slots
            WHERE campaign_id=? AND run_id=? AND cycle_id=?
            ORDER BY slot_ordinal""",
@@ -164,9 +165,21 @@ def create_standard_4h_progression_aggregate(
     candidate_by_slot = {
         str(item["info"]["token_slot_id"]): item for item in candidates
     }
-    if set(candidate_by_slot) != {str(row[0]) for row in slots}:
+    exclusion_by_slot: dict[str, Mapping[str, Any]] = {}
+    for exclusion in terminal_exclusions:
+        slot_id = str(exclusion.get("token_slot_id") or "")
+        if not slot_id or slot_id in exclusion_by_slot:
+            raise StandardFourHourProgressionError(
+                "standard 4h progression exclusion-slot identity is ambiguous"
+            )
+        exclusion_by_slot[slot_id] = exclusion
+    owned_slot_ids = {str(row[0]) for row in slots}
+    if (
+        set(candidate_by_slot) & set(exclusion_by_slot)
+        or set(candidate_by_slot) | set(exclusion_by_slot) != owned_slot_ids
+    ):
         raise StandardFourHourProgressionError(
-            "standard 4h progression candidate-slot identity mismatch"
+            "standard 4h progression normal/excluded slot identity mismatch"
         )
 
     attempt_id = progression_attempt_id_for(
@@ -195,6 +208,14 @@ def create_standard_4h_progression_aggregate(
                     "campaign_ownership.persist_standard_first_hour_handoff_set"
                 ),
                 "standard_four_hour_campaign": True,
+                "boundary_categories": {
+                    slot_id: (
+                        "PRE_15M_TOKEN_LOCAL_TERMINAL_EXCLUSION"
+                        if slot_id in exclusion_by_slot
+                        else "REAL_15M_TERMINAL_PREDECESSOR"
+                    )
+                    for slot_id in sorted(owned_slot_ids)
+                },
             }),
             _json(EMPTY_FAULTS),
             timestamp,
@@ -204,52 +225,200 @@ def create_standard_4h_progression_aggregate(
     immediately_ineligible = 0
     for slot in slots:
         slot_id = str(slot[0])
-        candidate = candidate_by_slot[slot_id]
-        payload = dict(candidate["payload"])
-        predecessor_window_id = payload.get("campaign_window_1h_id")
-        if predecessor_window_id is None and bool(candidate.get("continue_ok")):
-            raise StandardFourHourProgressionError(
-                f"continuing slot lacks WINDOW_1H identity: {slot_id}"
+        if slot_id in exclusion_by_slot:
+            exclusion = exclusion_by_slot[slot_id]
+            if (
+                str(exclusion.get("kind") or "")
+                != "PRE_15M_TOKEN_LOCAL_TERMINAL_EXCLUSION"
+                or str(slot[9]) != "FAILED"
+                or str(slot[10] or "") != "TOKEN_LOCAL_TERMINAL_FAILURE"
+            ):
+                raise StandardFourHourProgressionError(
+                    f"pre-15m exclusion state/cause invalid for {slot_id}"
+                )
+            identity_contract = (
+                ("token_row_id", int(slot[3])),
+                ("pair_row_id", int(slot[6])),
+                ("mint_identity", str(slot[4])),
+                ("pair_identity", str(slot[5])),
+                ("lifecycle_identity", str(slot[7])),
+                ("tracking_queue_id", int(slot[8])),
             )
-        if predecessor_window_id is None:
-            # A non-continuing 15m predecessor is already terminally ineligible.
-            resolution_window_id = str(candidate["info"]["campaign_window_15m_id"])
+            for key, expected in identity_contract:
+                actual = exclusion.get(key)
+                matches = (
+                    int(actual) == expected
+                    if isinstance(expected, int)
+                    else str(actual) == expected
+                )
+                if not matches:
+                    raise StandardFourHourProgressionError(
+                        f"pre-15m exclusion identity mismatch for {slot_id}: {key}"
+                    )
+            queue = connection.execute(
+                """SELECT token_id,pair_id,tracking_lane
+                   FROM printer_tracking_queue WHERE id=?""",
+                (int(slot[8]),),
+            ).fetchone()
+            if (
+                queue is None
+                or int(queue[0]) != int(slot[3])
+                or queue[1] is None
+                or int(queue[1]) != int(slot[6])
+                or str(queue[2]) not in {"TRACK_FAST", "TRACK_NORMAL"}
+            ):
+                raise StandardFourHourProgressionError(
+                    f"pre-15m exclusion historical tracking authority invalid for {slot_id}"
+                )
+            failed_step_id = int(exclusion.get("failed_factory_step_id"))
+            failed_step = connection.execute(
+                """SELECT id,step_kind,step_status,token_id,pair_id,
+                          source_failure_id,memory_window_id
+                   FROM printer_memory_factory_run_steps
+                   WHERE id=? AND run_id=?""",
+                (failed_step_id, factory_run_id),
+            ).fetchone()
+            if (
+                failed_step is None
+                or str(failed_step[1]) != str(exclusion.get("failed_step_kind"))
+                or str(failed_step[2]) != "FAILED"
+                or int(failed_step[3]) != int(slot[3])
+                or int(failed_step[4]) != int(slot[6])
+                or str(failed_step[1]).startswith("CONTINUATION_")
+                or str(failed_step[1]).startswith("LONG_CONTINUATION_")
+                or failed_step[6] is not None
+            ):
+                raise StandardFourHourProgressionError(
+                    f"pre-15m exclusion failed-step evidence invalid for {slot_id}"
+                )
+            source_failure_id = failed_step[5]
+            claimed_source_failure_id = exclusion.get("source_failure_id")
+            if (
+                (source_failure_id is None) != (claimed_source_failure_id is None)
+                or (
+                    source_failure_id is not None
+                    and int(source_failure_id) != int(claimed_source_failure_id)
+                )
+            ):
+                raise StandardFourHourProgressionError(
+                    f"pre-15m exclusion source-failure reference mismatch for {slot_id}"
+                )
+            if source_failure_id is not None and connection.execute(
+                "SELECT 1 FROM printer_source_failures WHERE id=?",
+                (int(source_failure_id),),
+            ).fetchone() is None:
+                raise StandardFourHourProgressionError(
+                    f"pre-15m exclusion source failure missing for {slot_id}"
+                )
+            valid_15m = int(
+                connection.execute(
+                    """SELECT COUNT(*)
+                       FROM printer_memory_factory_campaign_windows AS w
+                       JOIN printer_memory_factory_run_steps AS s
+                         ON s.run_id=?
+                        AND s.token_id=w.token_row_id
+                        AND s.pair_id=w.pair_row_id
+                        AND s.memory_window_id=w.memory_window_row_id
+                        AND s.step_kind IN ('WINDOW_CLOSE','WINDOW_CLOSE_AUDIT')
+                        AND s.step_status='SUCCEEDED'
+                       WHERE w.campaign_id=? AND w.run_id=? AND w.cycle_id=?
+                         AND w.token_slot_id=? AND w.window_kind='WINDOW_15M'
+                         AND w.memory_window_row_id IS NOT NULL""",
+                    (
+                        factory_run_id,
+                        campaign_id,
+                        campaign_run_id,
+                        cycle_id,
+                        slot_id,
+                    ),
+                ).fetchone()[0]
+            )
+            if valid_15m != 0:
+                raise StandardFourHourProgressionError(
+                    f"pre-15m exclusion conflicts with valid WINDOW_15M for {slot_id}"
+                )
+            predecessor_window_id = None
             token_disposition = "INELIGIBLE"
-            disposition_reasons = ["NO_WINDOW_1H_PLANNED"]
+            disposition_reasons = ["PRE_15M_TOKEN_LOCAL_TERMINAL_FAILURE"]
             eligibility_evidence = {
                 "producer": (
                     "campaign_ownership.persist_standard_first_hour_handoff_set"
                 ),
-                "predecessor_state": "NOT_PLANNED",
-                "predecessor_reason": "NO_WINDOW_1H_PLANNED",
-                "continuation_reasons": list(payload.get("reasons") or []),
+                "boundary_kind": "PRE_15M_TOKEN_LOCAL_TERMINAL_EXCLUSION",
+                "campaign_id": campaign_id,
+                "campaign_run_id": campaign_run_id,
+                "cycle_id": cycle_id,
+                "slot_ordinal": int(slot[1]),
+                "token_slot_id": slot_id,
+                "token_row_id": int(slot[3]),
+                "mint_identity": str(slot[4]),
+                "pair_row_id": int(slot[6]),
+                "pair_identity": str(slot[5]),
+                "lifecycle_identity": str(slot[7]),
+                "tracking_queue_id": int(slot[8]),
+                "tracking_lane": str(queue[2]),
+                "failed_factory_step_id": failed_step_id,
+                "failed_step_kind": str(failed_step[1]),
+                "source_failure_id": (
+                    None if source_failure_id is None else int(source_failure_id)
+                ),
+                "terminal_cause": "TOKEN_LOCAL_TERMINAL_FAILURE",
+                "exclusion_reason": "PRE_15M_TOKEN_LOCAL_TERMINAL_FAILURE",
+                "terminal_at": str(slot[11]),
+                "no_valid_successful_memory_backed_window_15m": True,
             }
             evaluated_at = timestamp
             immediately_ineligible += 1
+            tracking_lane = str(queue[2])
         else:
-            resolution_window_id = str(predecessor_window_id)
-            token_disposition = "WAITING_FOR_PREDECESSOR"
-            disposition_reasons = []
-            eligibility_evidence = {}
-            evaluated_at = None
-        cadence = resolve_campaign_slot_cadence_authority(
-            connection,
-            campaign_window_id=resolution_window_id,
-            campaign_id=campaign_id,
-            campaign_run_id=campaign_run_id,
-            cycle_id=cycle_id,
-            token_slot_id=slot_id,
-        )
-        if (
-            cadence.status != CADENCE_AUTHORITY_RESOLVED
-            or cadence.tracking_lane not in {"TRACK_FAST", "TRACK_NORMAL"}
-            or cadence.tracking_queue_id is None
-            or int(cadence.tracking_queue_id) != int(slot[8])
-        ):
-            raise StandardFourHourProgressionError(
-                f"tracking cadence authority unresolved for {slot_id}: "
-                f"{cadence.reason_code}"
+            candidate = candidate_by_slot[slot_id]
+            payload = dict(candidate["payload"])
+            predecessor_window_id = payload.get("campaign_window_1h_id")
+            if predecessor_window_id is None and bool(candidate.get("continue_ok")):
+                raise StandardFourHourProgressionError(
+                    f"continuing slot lacks WINDOW_1H identity: {slot_id}"
+                )
+            if predecessor_window_id is None:
+                resolution_window_id = str(
+                    candidate["info"]["campaign_window_15m_id"]
+                )
+                token_disposition = "INELIGIBLE"
+                disposition_reasons = ["NO_WINDOW_1H_PLANNED"]
+                eligibility_evidence = {
+                    "producer": (
+                        "campaign_ownership.persist_standard_first_hour_handoff_set"
+                    ),
+                    "predecessor_state": "NOT_PLANNED",
+                    "predecessor_reason": "NO_WINDOW_1H_PLANNED",
+                    "continuation_reasons": list(payload.get("reasons") or []),
+                }
+                evaluated_at = timestamp
+                immediately_ineligible += 1
+            else:
+                resolution_window_id = str(predecessor_window_id)
+                token_disposition = "WAITING_FOR_PREDECESSOR"
+                disposition_reasons = []
+                eligibility_evidence = {}
+                evaluated_at = None
+            cadence = resolve_campaign_slot_cadence_authority(
+                connection,
+                campaign_window_id=resolution_window_id,
+                campaign_id=campaign_id,
+                campaign_run_id=campaign_run_id,
+                cycle_id=cycle_id,
+                token_slot_id=slot_id,
             )
+            if (
+                cadence.status != CADENCE_AUTHORITY_RESOLVED
+                or cadence.tracking_lane not in {"TRACK_FAST", "TRACK_NORMAL"}
+                or cadence.tracking_queue_id is None
+                or int(cadence.tracking_queue_id) != int(slot[8])
+            ):
+                raise StandardFourHourProgressionError(
+                    f"tracking cadence authority unresolved for {slot_id}: "
+                    f"{cadence.reason_code}"
+                )
+            tracking_lane = str(cadence.tracking_lane)
         connection.execute(
             f"""INSERT INTO {TOKEN_TABLE}(
                    progression_token_id,progression_attempt_id,campaign_id,
@@ -278,7 +447,7 @@ def create_standard_4h_progression_aggregate(
                 int(slot[6]),
                 str(slot[7]),
                 int(slot[8]),
-                str(cadence.tracking_lane),
+                tracking_lane,
                 predecessor_window_id,
                 token_disposition,
                 _json(disposition_reasons),
@@ -1809,6 +1978,7 @@ def derive_standard_4h_progression_status(
                 "outcome": outcome,
                 "reasons": list(token["disposition_reasons"]),
                 "first_terminal_cause": token["first_terminal_cause"],
+                "predecessor_window_1h_id": token["predecessor_window_1h_id"],
                 "successor_window_4h_id": token["successor_window_4h_id"],
             }
         )

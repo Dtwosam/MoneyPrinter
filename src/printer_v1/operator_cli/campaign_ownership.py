@@ -725,6 +725,7 @@ def persist_standard_first_hour_handoff_set(
     cycle_id: str,
     object_kind: str,
     candidates: Sequence[Mapping[str, Any]],
+    terminal_exclusions: Sequence[Mapping[str, Any]] = (),
     now: str | None = None,
 ) -> dict[str, Any]:
     """Atomically persist one complete two-slot standard-first-hour handoff.
@@ -733,9 +734,9 @@ def persist_standard_first_hour_handoff_set(
     and token-slot advancement to WINDOW_1H_CONTINUING are one transaction. Any
     ownership conflict rolls the whole handoff set back.
     """
-    if len(candidates) != 2:
+    if len(candidates) + len(terminal_exclusions) != 2:
         raise CampaignOwnershipError(
-            f"standard first-hour handoff requires exactly two candidates; found {len(candidates)}"
+            "standard first-hour handoff requires exactly two normal/excluded slots"
         )
     campaign = _required(campaign_id, "campaign_id")
     configuration = _required(configuration_id, "configuration_id")
@@ -748,7 +749,8 @@ def persist_standard_first_hour_handoff_set(
         with connection:
             slot_rows = connection.execute(
                 """SELECT token_slot_id, token_row_id, pair_row_id, mint_identity,
-                          pair_identity, lifecycle_identity, token_state
+                          pair_identity, lifecycle_identity, token_state,
+                          first_terminal_cause
                    FROM printer_memory_factory_campaign_token_slots
                    WHERE campaign_id=? AND run_id=? AND cycle_id=?
                    ORDER BY slot_ordinal""",
@@ -761,6 +763,7 @@ def persist_standard_first_hour_handoff_set(
             slot_by_id = {str(row[0]): row for row in slot_rows}
             prepared: list[dict[str, Any]] = []
             candidate_slot_ids: set[str] = set()
+            exclusion_slot_ids: set[str] = set()
 
             for candidate in candidates:
                 object_id = _required(candidate.get("object_id"), "object_id")
@@ -865,8 +868,63 @@ def persist_standard_first_hour_handoff_set(
                     }
                 )
 
-            if candidate_slot_ids != set(slot_by_id):
-                raise CampaignOwnershipError("handoff candidates do not cover both token slots")
+            prepared_exclusions: list[dict[str, Any]] = []
+            for exclusion_raw in terminal_exclusions:
+                if not isinstance(exclusion_raw, Mapping):
+                    raise CampaignOwnershipError(
+                        "terminal exclusion must be a mapping"
+                    )
+                exclusion = dict(exclusion_raw)
+                slot_id = _required(
+                    exclusion.get("token_slot_id"), "token_slot_id"
+                )
+                if (
+                    slot_id in exclusion_slot_ids
+                    or slot_id in candidate_slot_ids
+                    or slot_id not in slot_by_id
+                ):
+                    raise CampaignOwnershipError(
+                        "handoff terminal-exclusion token-slot set mismatch"
+                    )
+                slot = slot_by_id[slot_id]
+                if (
+                    str(exclusion.get("kind") or "")
+                    != "PRE_15M_TOKEN_LOCAL_TERMINAL_EXCLUSION"
+                ):
+                    raise CampaignOwnershipError(
+                        "unsupported first-hour terminal exclusion kind"
+                    )
+                if (
+                    str(slot[6]) != "FAILED"
+                    or str(slot[7] or "") != "TOKEN_LOCAL_TERMINAL_FAILURE"
+                ):
+                    raise CampaignOwnershipError(
+                        f"terminal exclusion state/cause mismatch for {slot_id}"
+                    )
+                for key, index in (
+                    ("token_row_id", 1),
+                    ("pair_row_id", 2),
+                    ("mint_identity", 3),
+                    ("pair_identity", 4),
+                    ("lifecycle_identity", 5),
+                ):
+                    expected = slot[index]
+                    actual = exclusion.get(key)
+                    if key in {"token_row_id", "pair_row_id"}:
+                        matches = int(actual) == int(expected)
+                    else:
+                        matches = str(actual) == str(expected)
+                    if not matches:
+                        raise CampaignOwnershipError(
+                            f"terminal exclusion identity mismatch for {slot_id}"
+                        )
+                exclusion_slot_ids.add(slot_id)
+                prepared_exclusions.append(exclusion)
+
+            if candidate_slot_ids | exclusion_slot_ids != set(slot_by_id):
+                raise CampaignOwnershipError(
+                    "handoff normal/excluded slots do not cover both token slots"
+                )
 
             # Persist the complete immutable decision set only after every identity
             # and state preflight passes.
@@ -888,27 +946,31 @@ def persist_standard_first_hour_handoff_set(
                 )
 
             for item in prepared:
-                if not item["continue_ok"]:
-                    continue
                 info = item["info"]
-                successor_id = str(item["successor_id"])
-                _write(
-                    connection,
-                    """INSERT INTO printer_memory_factory_campaign_windows(
-                        window_id,campaign_id,run_id,cycle_id,token_slot_id,token_row_id,
-                        pair_row_id,window_kind,window_state,root_15m_lifecycle_identity,
-                        predecessor_window_id,containing_main_window_id,memory_window_row_id,
-                        checkpoint_cutoff,support_only,created_at,updated_at
-                    ) VALUES (?,?,?,?,?,?,?,'WINDOW_1H','PLANNED',?,?,NULL,NULL,?,0,?,?)""",
-                    (
-                        successor_id, campaign, run, cycle, info["token_slot_id"],
-                        int(info["token_row_id"]), int(info["pair_row_id"]),
-                        info["lifecycle_identity"], info["campaign_window_15m_id"],
-                        timestamp, timestamp, timestamp,
-                    ),
-                )
+                if item["continue_ok"]:
+                    successor_id = str(item["successor_id"])
+                    _write(
+                        connection,
+                        """INSERT INTO printer_memory_factory_campaign_windows(
+                            window_id,campaign_id,run_id,cycle_id,token_slot_id,token_row_id,
+                            pair_row_id,window_kind,window_state,root_15m_lifecycle_identity,
+                            predecessor_window_id,containing_main_window_id,memory_window_row_id,
+                            checkpoint_cutoff,support_only,created_at,updated_at
+                        ) VALUES (?,?,?,?,?,?,?,'WINDOW_1H','PLANNED',?,?,NULL,NULL,?,0,?,?)""",
+                        (
+                            successor_id, campaign, run, cycle, info["token_slot_id"],
+                            int(info["token_row_id"]), int(info["pair_row_id"]),
+                            info["lifecycle_identity"], info["campaign_window_15m_id"],
+                            timestamp, timestamp, timestamp,
+                        ),
+                    )
                 current = str(item["initial_state"])
-                while current != "WINDOW_1H_CONTINUING":
+                target_state = (
+                    "WINDOW_1H_CONTINUING"
+                    if item["continue_ok"]
+                    else "WINDOW_15M_CLOSED"
+                )
+                while current != target_state:
                     next_state = _PRE_1H_HANDOFF_NEXT_STATE.get(current)
                     if next_state is None:
                         raise CampaignOwnershipError(
@@ -961,6 +1023,7 @@ def persist_standard_first_hour_handoff_set(
                 campaign_run_id=run,
                 cycle_id=cycle,
                 candidates=candidates,
+                terminal_exclusions=prepared_exclusions,
                 now=timestamp,
             )
 
@@ -1013,6 +1076,7 @@ def persist_standard_first_hour_handoff_set(
                 "persisted": True,
                 "object_ids": sorted(expected_ids),
                 "continuation_count": sum(1 for item in prepared if item["continue_ok"]),
+                "terminal_exclusion_count": len(prepared_exclusions),
             }
     except sqlite3.Error as exc:
         raise CampaignOwnershipError(str(exc)) from exc

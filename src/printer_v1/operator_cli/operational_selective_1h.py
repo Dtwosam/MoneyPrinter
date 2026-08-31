@@ -710,6 +710,7 @@ def evaluate_selective_1h_for_cycle(
     shared_db_healthy: bool = True,
     shared_lease_healthy: bool = True,
     shared_integrity_healthy: bool = True,
+    terminal_exclusions: Sequence[Mapping[str, Any]] = (),
     now: str | None = None,
 ) -> dict[str, Any]:
     """Evaluate exactly the cycle's token slots for selective 15m→1h.
@@ -723,6 +724,18 @@ def evaluate_selective_1h_for_cycle(
         raise Selective1hError(
             f"selective 1h requires exactly two token slots; found {len(slots)}"
         )
+    exclusion_by_slot: dict[str, dict[str, Any]] = {}
+    for exclusion_raw in terminal_exclusions:
+        if not isinstance(exclusion_raw, Mapping):
+            raise Selective1hError("terminal exclusion must be a mapping")
+        exclusion = dict(exclusion_raw)
+        slot_id = str(exclusion.get("token_slot_id") or "").strip()
+        if not slot_id or slot_id in exclusion_by_slot:
+            raise Selective1hError("terminal exclusion slot identity is ambiguous")
+        exclusion_by_slot[slot_id] = exclusion
+    owned_slot_ids = {str(slot["token_slot_id"]) for slot in slots}
+    if not set(exclusion_by_slot).issubset(owned_slot_ids):
+        raise Selective1hError("terminal exclusion contains a foreign token slot")
 
     campaign_ctx = CampaignContinuationContext(
         campaign_id=campaign_id,
@@ -740,6 +753,8 @@ def evaluate_selective_1h_for_cycle(
 
     for slot in slots:
         token_slot_id = str(slot["token_slot_id"])
+        if token_slot_id in exclusion_by_slot:
+            continue
         window_row = connection.execute(
             """
             SELECT * FROM printer_memory_factory_campaign_windows
@@ -861,9 +876,36 @@ def evaluate_selective_1h_for_cycle(
             }
         )
 
-    results = evaluate_token_local_continuations(
-        campaign=campaign_ctx, tokens=token_inputs
-    )
+    if len(token_inputs) == 2:
+        results = evaluate_token_local_continuations(
+            campaign=campaign_ctx, tokens=token_inputs
+        )
+    elif len(token_inputs) == 1:
+        # The approved mixed boundary removes the terminal exclusion before
+        # ordinary evaluation. Reuse the exact existing token-local policy for
+        # the sole real predecessor; do not manufacture a second policy input.
+        if not all(
+            (
+                campaign_ctx.campaign_state == "RUNNING",
+                campaign_ctx.campaign_eligible,
+                campaign_ctx.shared_db_healthy,
+                campaign_ctx.shared_lease_healthy,
+                campaign_ctx.shared_integrity_healthy,
+                campaign_ctx.campaign_budget_available,
+            )
+        ):
+            raise Selective1hError(
+                "shared continuation authority is not healthy"
+            )
+        from printer_v1.scheduler.token_local_continuation import _evaluate_token
+
+        results = (_evaluate_token(campaign_ctx, token_inputs[0]),)
+    elif terminal_exclusions and not token_inputs:
+        results = ()
+    else:
+        raise Selective1hError(
+            "selective 1h requires real predecessors or exact exclusions"
+        )
     candidates: list[dict[str, Any]] = []
     for result, info in zip(results, meta, strict=True):
         continue_ok = result.verdict == ContinuationVerdict.CONTINUE_TO_WINDOW_1H
@@ -962,6 +1004,7 @@ def evaluate_selective_1h_for_cycle(
                 cycle_id=cycle_id,
                 object_kind=CONTINUATION_OBJECT_KIND,
                 candidates=candidates,
+                terminal_exclusions=tuple(exclusion_by_slot.values()),
                 now=stamp,
             )
         except CampaignOwnershipError as exc:
@@ -1013,6 +1056,9 @@ def evaluate_selective_1h_for_cycle(
             for p in plans
         ],
         "continuation_objects": objects,
+        "terminal_exclusions": [
+            exclusion_by_slot[key] for key in sorted(exclusion_by_slot)
+        ],
         "continue_count": continue_count,
         "stop_count": sum(
             1

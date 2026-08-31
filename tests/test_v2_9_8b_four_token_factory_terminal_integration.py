@@ -246,9 +246,12 @@ def test_real_factory_terminal_path_runs_cycle_phase_then_shared_owner_once(
         # This fixture merely pre-creates Cycle 2; it never runs Cycle-2
         # lifecycle work.  A campaign completion cause must therefore not be
         # projected onto that incomplete cycle.
+        # Post-repair: drained-loop STOP_COMPLETED is withheld, so an incomplete
+        # Cycle-2 fails closed on missing canonical terminal effect rather than
+        # consuming a false completion sentinel.
         with pytest.raises(
             FourTokenFactoryAdapterError,
-            match="incomplete cycle cannot consume a completion stop cause",
+            match="active/incomplete cycle has no canonical terminal effect",
         ):
             factory.run_one_command_15m_factory(db, backup, **run_kwargs)
         connection = sqlite3.connect(db)

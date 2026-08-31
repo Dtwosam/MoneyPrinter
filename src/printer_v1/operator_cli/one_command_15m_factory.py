@@ -12,7 +12,7 @@ import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 from printer_v1.discovery.scheduler_parity import reconcile_discovery_work_jobs
 from printer_v1.operator_cli.campaign_active_work import campaign_active_work_report
@@ -93,6 +93,12 @@ STOP_TWO_TOKEN_PROOF = "SAFE_STOP_TWO_TOKEN_CONTINUOUS_PROOF_INCOMPLETE"
 # V2-5: token-local terminal markers (never a run-wide stop).
 TOKEN_LOCAL_FAILED = "TOKEN_LOCAL_TERMINAL_FAILURE"
 TOKEN_LOCAL_CANCELLED = "TOKEN_LOCAL_CANCELLED_AFTER_FAILURE"
+
+
+class FirstHourBoundaryError(ValueError):
+    """Fail-closed post-close boundary fault that cannot rewrite peer truth."""
+
+    post_handoff_proof_fault = True
 
 # V2-9.7E.47 A4: the committed 15m close owner (`e2o_memory_window_close`) writes
 # `WINDOW_CLOSED`, and the audit path writes `WINDOW_AUDIT_ONLY`. The terminal
@@ -4733,6 +4739,145 @@ def _authoritative_terminal_15m_closes(
     ).fetchall()
 
 
+def _classify_standard_first_hour_boundary(
+    conn: sqlite3.Connection,
+    *,
+    factory_run_id: str,
+    campaign_id: str,
+    campaign_run_id: str,
+    cycle_id: str,
+) -> dict[str, Any]:
+    """Classify the exact two slots without fabricating predecessor truth."""
+    slots = conn.execute(
+        """SELECT token_slot_id,slot_ordinal,token_row_id,pair_row_id,
+                  mint_identity,pair_identity,lifecycle_identity,
+                  tracking_queue_id,token_state,first_terminal_cause,terminal_at
+           FROM printer_memory_factory_campaign_token_slots
+           WHERE campaign_id=? AND run_id=? AND cycle_id=?
+           ORDER BY slot_ordinal""",
+        (campaign_id, campaign_run_id, cycle_id),
+    ).fetchall()
+    if (
+        len(slots) != 2
+        or tuple(int(row["slot_ordinal"]) for row in slots) != (1, 2)
+        or len({str(row["token_slot_id"]) for row in slots}) != 2
+    ):
+        raise FirstHourBoundaryError(
+            "first-hour boundary requires the exact two-slot ownership set"
+        )
+
+    normal_slot_ids: list[str] = []
+    exclusions: list[dict[str, Any]] = []
+    pending_slot_ids: list[str] = []
+    for slot in slots:
+        slot_id = str(slot["token_slot_id"])
+        successful_predecessors = conn.execute(
+            """SELECT w.window_id,w.memory_window_row_id
+               FROM printer_memory_factory_campaign_windows AS w
+               JOIN printer_memory_factory_run_steps AS s
+                 ON s.run_id=?
+                AND s.token_id=w.token_row_id
+                AND s.pair_id=w.pair_row_id
+                AND s.memory_window_id=w.memory_window_row_id
+                AND s.step_kind IN ('WINDOW_CLOSE','WINDOW_CLOSE_AUDIT')
+                AND s.step_status='SUCCEEDED'
+               WHERE w.campaign_id=? AND w.run_id=? AND w.cycle_id=?
+                 AND w.token_slot_id=? AND w.window_kind='WINDOW_15M'
+                 AND w.memory_window_row_id IS NOT NULL""",
+            (
+                factory_run_id,
+                campaign_id,
+                campaign_run_id,
+                cycle_id,
+                slot_id,
+            ),
+        ).fetchall()
+        if len(successful_predecessors) > 1:
+            raise FirstHourBoundaryError(
+                f"ambiguous successful WINDOW_15M predecessor for {slot_id}"
+            )
+        state = str(slot["token_state"])
+        cause = str(slot["first_terminal_cause"] or "")
+        if successful_predecessors:
+            if state == "FAILED":
+                raise FirstHourBoundaryError(
+                    f"failed slot conflicts with successful WINDOW_15M predecessor: {slot_id}"
+                )
+            normal_slot_ids.append(slot_id)
+            continue
+        if state == "FAILED" and cause == TOKEN_LOCAL_FAILED:
+            failed_steps = conn.execute(
+                """SELECT id,step_kind,source_failure_id,memory_window_id
+                   FROM printer_memory_factory_run_steps
+                   WHERE run_id=? AND token_id=? AND pair_id=?
+                     AND step_status='FAILED'
+                     AND step_kind NOT LIKE 'CONTINUATION_%'
+                     AND step_kind NOT LIKE 'LONG_CONTINUATION_%'
+                   ORDER BY id""",
+                (
+                    factory_run_id,
+                    int(slot["token_row_id"]),
+                    int(slot["pair_row_id"]),
+                ),
+            ).fetchall()
+            if len(failed_steps) != 1 or failed_steps[0]["memory_window_id"] is not None:
+                raise FirstHourBoundaryError(
+                    f"pre-15m failed factory-step evidence is ambiguous for {slot_id}"
+                )
+            failed_step = failed_steps[0]
+            source_failure_id = failed_step["source_failure_id"]
+            if source_failure_id is not None and conn.execute(
+                "SELECT 1 FROM printer_source_failures WHERE id=?",
+                (int(source_failure_id),),
+            ).fetchone() is None:
+                raise FirstHourBoundaryError(
+                    f"pre-15m source-failure evidence is missing for {slot_id}"
+                )
+            exclusions.append(
+                {
+                    "kind": "PRE_15M_TOKEN_LOCAL_TERMINAL_EXCLUSION",
+                    "token_slot_id": slot_id,
+                    "slot_ordinal": int(slot["slot_ordinal"]),
+                    "token_row_id": int(slot["token_row_id"]),
+                    "pair_row_id": int(slot["pair_row_id"]),
+                    "mint_identity": str(slot["mint_identity"]),
+                    "pair_identity": str(slot["pair_identity"]),
+                    "lifecycle_identity": str(slot["lifecycle_identity"]),
+                    "tracking_queue_id": int(slot["tracking_queue_id"]),
+                    "failed_factory_step_id": int(failed_step["id"]),
+                    "failed_step_kind": str(failed_step["step_kind"]),
+                    "source_failure_id": (
+                        None
+                        if source_failure_id is None
+                        else int(source_failure_id)
+                    ),
+                    "terminal_cause": TOKEN_LOCAL_FAILED,
+                    "terminal_at": str(slot["terminal_at"]),
+                }
+            )
+            continue
+        if state in {"FAILED", "MANUAL_REVIEW", "COOLDOWN", "ARCHIVED"}:
+            raise FirstHourBoundaryError(
+                f"first-hour boundary terminal state/cause conflict for {slot_id}"
+            )
+        pending_slot_ids.append(slot_id)
+
+    classified = set(normal_slot_ids) | {
+        str(item["token_slot_id"]) for item in exclusions
+    }
+    owned = {str(row["token_slot_id"]) for row in slots}
+    if classified & set(pending_slot_ids):
+        raise FirstHourBoundaryError("first-hour boundary duplicate classification")
+    if not pending_slot_ids and classified != owned:
+        raise FirstHourBoundaryError("first-hour boundary slot-set mismatch")
+    return {
+        "ready": not pending_slot_ids,
+        "normal_slot_ids": normal_slot_ids,
+        "terminal_exclusions": exclusions,
+        "pending_slot_ids": pending_slot_ids,
+    }
+
+
 def _run_selective_1h_campaign_barrier(
     conn: sqlite3.Connection,
     *,
@@ -4744,21 +4889,15 @@ def _run_selective_1h_campaign_barrier(
 ) -> dict[str, Any]:
     """Evaluate once after every activated 15m close is authoritative."""
     owned_cycle = cycle_id or str(config.get("cycle_id") or "")
-    expected = _operational_activated_token_count(
-        conn, run_id, cycle_id=(owned_cycle if cycle_id is not None else None)
-    )
     closes = _authoritative_terminal_15m_closes(
         conn, run_id, cycle_id=(owned_cycle if cycle_id is not None else None)
     )
-    if len(closes) < expected:
-        return {
-            "evaluation_reached": False,
-            "reason": "AWAITING_AUTHORITATIVE_15M_CLOSES",
-            "expected_close_count": expected,
-            "authoritative_close_count": len(closes),
-        }
-    if expected not in {1, 2} or len(closes) != expected:
-        raise ValueError("selective 1h authoritative close set is ambiguous")
+    if len(closes) > 2 or len(
+        {(int(row["token_id"]), int(row["pair_id"])) for row in closes}
+    ) != len(closes):
+        raise FirstHourBoundaryError(
+            "selective 1h authoritative close set is ambiguous"
+        )
 
     from printer_v1.operator_cli.campaign_authority_adapters import (
         load_authoritative_promotion_outcome,
@@ -4811,16 +4950,41 @@ def _run_selective_1h_campaign_barrier(
         )
         graph.append((close_row, slot, str(persisted["window_id"])))
 
-    evaluation = evaluate_selective_1h_for_cycle(
+    boundary = _classify_standard_first_hour_boundary(
         conn,
-        db_path=db_path,
+        factory_run_id=run_id,
         campaign_id=str(config["campaign_id"]),
-        configuration_id=str(
-            config.get("configuration_id") or config["campaign_id"]
-        ),
-        run_id=str(config["campaign_run_id"]),
+        campaign_run_id=str(config["campaign_run_id"]),
         cycle_id=owned_cycle,
     )
+    if boundary["ready"] is not True:
+        return {
+            "evaluation_reached": False,
+            "reason": "AWAITING_EXACT_TWO_SLOT_FIRST_HOUR_BOUNDARY",
+            "authoritative_close_count": len(closes),
+            "pending_token_slot_ids": list(boundary["pending_slot_ids"]),
+        }
+    if len(boundary["normal_slot_ids"]) != len(closes):
+        raise FirstHourBoundaryError(
+            "real predecessor and authoritative close sets do not match"
+        )
+
+    try:
+        evaluation = evaluate_selective_1h_for_cycle(
+            conn,
+            db_path=db_path,
+            campaign_id=str(config["campaign_id"]),
+            configuration_id=str(
+                config.get("configuration_id") or config["campaign_id"]
+            ),
+            run_id=str(config["campaign_run_id"]),
+            cycle_id=owned_cycle,
+            terminal_exclusions=tuple(boundary["terminal_exclusions"]),
+        )
+    except Exception as exc:
+        if isinstance(exc, FirstHourBoundaryError):
+            raise
+        raise FirstHourBoundaryError(str(exc)) from exc
     if evaluation.get("evaluation_created"):
         for close_row, _, _ in graph:
             support, continuation_plan = _selective_1h_schedule_for_close(
@@ -4846,6 +5010,69 @@ def _run_selective_1h_campaign_barrier(
         "evaluation_created": bool(evaluation.get("evaluation_created")),
         "evaluation": evaluation,
     }
+
+
+def _run_first_hour_boundary_and_immediate_standard_handoff(
+    conn: sqlite3.Connection,
+    *,
+    db_path: str,
+    run_id: str,
+    config: Mapping[str, Any],
+    continuation_seconds: float,
+    cycle_id: str,
+    standard_four_hour_campaign: bool,
+    operational_db_binding: Any,
+    canonical_authoritative_db_path: str,
+    cancellation_probe: Callable[[], str | None] | None,
+) -> dict[str, Any]:
+    """Run the exact first-hour barrier and commit an immediate 0-token handoff."""
+    result = _run_selective_1h_campaign_barrier(
+        conn,
+        db_path=db_path,
+        run_id=run_id,
+        config=config,
+        continuation_seconds=continuation_seconds,
+        cycle_id=cycle_id,
+    )
+    if (
+        not standard_four_hour_campaign
+        or result.get("evaluation_created") is not True
+    ):
+        return result
+    attempt = conn.execute(
+        """SELECT attempt_state
+           FROM printer_memory_factory_standard_4h_progression_attempts
+           WHERE campaign_id=? AND campaign_run_id=? AND cycle_id=?""",
+        (
+            str(config["campaign_id"]),
+            str(config["campaign_run_id"]),
+            str(cycle_id),
+        ),
+    ).fetchone()
+    if attempt is None or str(attempt[0]) != "ELIGIBILITY_COMPLETE":
+        return result
+    from printer_v1.operator_cli.operational_standard_4h import (
+        run_standard_four_hour_campaign_barrier,
+    )
+
+    try:
+        standard = run_standard_four_hour_campaign_barrier(
+            conn,
+            db_path=db_path,
+            campaign_id=str(config["campaign_id"]),
+            configuration_id=str(
+                config.get("configuration_id") or config["campaign_id"]
+            ),
+            run_id=str(config["campaign_run_id"]),
+            cycle_id=str(cycle_id),
+            factory_run_id=str(run_id),
+            operational_db_binding=operational_db_binding,
+            canonical_authoritative_db_path=canonical_authoritative_db_path,
+            cancellation_probe=cancellation_probe,
+        )
+    except Exception as exc:
+        raise FirstHourBoundaryError(str(exc)) from exc
+    return {**result, "immediate_standard_4h_handoff": standard}
 
 
 def _selective_1h_schedule_for_close(
@@ -6793,6 +7020,185 @@ def _cancel_pending_for_token(
             (reason, _iso(), _iso(), int(row["id"])),
         )
     return len(rows)
+
+
+def _mark_campaign_slot_token_local_failed(
+    conn: sqlite3.Connection,
+    *,
+    campaign_id: str | None,
+    campaign_run_id: str | None,
+    cycle_id: str | None,
+    token_id: int,
+) -> None:
+    """Persist exact token-local failure on the campaign slot only.
+
+    Uses campaign_ownership.transition_state as the sole slot-state owner.
+    Does not rewrite peer slots. Cause is TOKEN_LOCAL_TERMINAL_FAILURE only.
+    """
+    if not campaign_id or not campaign_run_id or not cycle_id:
+        return
+    from printer_v1.operator_cli.campaign_ownership import (
+        CampaignOwnershipError,
+        transition_state,
+    )
+
+    row = conn.execute(
+        """SELECT token_slot_id,token_state,first_terminal_cause
+           FROM printer_memory_factory_campaign_token_slots
+           WHERE campaign_id=? AND run_id=? AND cycle_id=? AND token_row_id=?""",
+        (str(campaign_id), str(campaign_run_id), str(cycle_id), int(token_id)),
+    ).fetchone()
+    if row is None:
+        return
+    current = str(row["token_state"])
+    current_cause = str(row["first_terminal_cause"] or "")
+    if current == "FAILED" and current_cause == TOKEN_LOCAL_FAILED:
+        return
+    if current in {"FAILED", "COOLDOWN", "ARCHIVED", "MANUAL_REVIEW"}:
+        raise CampaignOwnershipError(
+            "terminal state and first cause conflict with token-local failure"
+        )
+    token_slot_id = str(row["token_slot_id"])
+    try:
+        transition_state(
+            conn,
+            record_kind="token_slot",
+            identity=token_slot_id,
+            expected_state=current,
+            new_state="FAILED",
+            terminal_cause=TOKEN_LOCAL_FAILED,
+            now=_iso(),
+        )
+    except CampaignOwnershipError:
+        # Idempotent only when durable state is already the exact token-local
+        # terminal we intended. Anything else propagates — no retry, no raw
+        # UPDATE fallback, no second transition_state call.
+        durable = conn.execute(
+            """
+            SELECT token_state, first_terminal_cause
+            FROM printer_memory_factory_campaign_token_slots
+            WHERE token_slot_id=?
+              AND campaign_id=?
+              AND run_id=?
+              AND cycle_id=?
+            """,
+            (
+                token_slot_id,
+                str(campaign_id),
+                str(campaign_run_id),
+                str(cycle_id),
+            ),
+        ).fetchone()
+        if (
+            durable is not None
+            and str(durable["token_state"] or "") == "FAILED"
+            and str(durable["first_terminal_cause"] or "") == TOKEN_LOCAL_FAILED
+        ):
+            return
+        raise
+
+
+def _terminalize_pre_15m_campaign_window_for_failed_slot(
+    conn: sqlite3.Connection,
+    *,
+    campaign_id: str | None,
+    campaign_run_id: str | None,
+    cycle_id: str | None,
+    token_id: int,
+) -> None:
+    """Terminalize an existing physical 15m owner without inventing memory."""
+    if not campaign_id or not campaign_run_id or not cycle_id:
+        return
+    from printer_v1.operator_cli.campaign_ownership import (
+        CampaignOwnershipError,
+        transition_state,
+    )
+
+    rows = conn.execute(
+        """SELECT w.window_id,w.window_state,w.first_terminal_cause
+           FROM printer_memory_factory_campaign_windows AS w
+           JOIN printer_memory_factory_campaign_token_slots AS s
+             ON s.token_slot_id=w.token_slot_id AND s.campaign_id=w.campaign_id
+            AND s.run_id=w.run_id AND s.cycle_id=w.cycle_id
+           WHERE w.campaign_id=? AND w.run_id=? AND w.cycle_id=?
+             AND w.window_kind='WINDOW_15M' AND s.token_row_id=?""",
+        (
+            str(campaign_id),
+            str(campaign_run_id),
+            str(cycle_id),
+            int(token_id),
+        ),
+    ).fetchall()
+    if not rows:
+        return
+    if len(rows) != 1:
+        raise CampaignOwnershipError(
+            "pre-15m failed slot has ambiguous campaign WINDOW_15M ownership"
+        )
+    row = rows[0]
+    state = str(row["window_state"])
+    cause = str(row["first_terminal_cause"] or "")
+    if state == "BLOCKED" and cause == TOKEN_LOCAL_FAILED:
+        return
+    if state in {
+        "CLEAN_PROMOTED", "DIRTY", "BLOCKED", "NO_PROMOTION",
+        "ALREADY_EXISTS_IDEMPOTENT", "CANCELLED",
+    }:
+        raise CampaignOwnershipError(
+            "pre-15m failed slot conflicts with terminal WINDOW_15M truth"
+        )
+    transition_state(
+        conn,
+        record_kind="window",
+        identity=str(row["window_id"]),
+        expected_state=state,
+        new_state="BLOCKED",
+        terminal_cause=TOKEN_LOCAL_FAILED,
+        now=_iso(),
+    )
+
+
+def _should_persist_four_token_shared_stop_reason(
+    conn: sqlite3.Connection,
+    *,
+    stop_reason: str,
+    campaign_id: str,
+    campaign_run_id: str,
+    configuration_id: str,
+    factory_run_id: str,
+    admitted_cycles: Sequence[Any],
+) -> bool:
+    """Return whether factory_runs.stop_reason may receive this loop stop.
+
+    Genuine campaign-global stops always persist. The drained-loop completion
+    sentinel persists only when every admitted cycle's canonical accounting
+    already proves completion.
+    """
+    if stop_reason != STOP_COMPLETED:
+        return True
+    from printer_v1.operator_cli.campaign_full_run_accounting import (
+        OperationalLifecycleOwnershipContext,
+        derive_cycle_terminal_accounting_result,
+    )
+
+    required_outcome = "".join(("TERMINAL_", "SUCCESS"))
+    return all(
+        str(
+            derive_cycle_terminal_accounting_result(
+                conn,
+                context=OperationalLifecycleOwnershipContext(
+                    campaign_id=campaign_id,
+                    campaign_run_id=campaign_run_id,
+                    cycle_id=str(admitted[0]),
+                    configuration_id=configuration_id,
+                    factory_run_id=factory_run_id,
+                ),
+            ).get("execution_outcome")
+            or ""
+        )
+        == required_outcome
+        for admitted in admitted_cycles
+    )
 
 
 def _cancel_campaign_discovery_jobs(
@@ -10693,13 +11099,33 @@ def run_one_command_15m_factory(
                         }
                         and bool(config.get("selective_1h_continuation"))
                     ):
-                        _run_selective_1h_campaign_barrier(
+                        def _first_hour_cancellation_reason() -> str | None:
+                            external = (
+                                None
+                                if cancellation_probe is None
+                                else cancellation_probe()
+                            )
+                            if external:
+                                return str(external)
+                            return (
+                                None
+                                if stop_reason == STOP_COMPLETED
+                                else str(stop_reason)
+                            )
+
+                        _run_first_hour_boundary_and_immediate_standard_handoff(
                             conn,
                             db_path=str(path),
                             run_id=run_id,
                             config=config,
                             continuation_seconds=_continuation_seconds,
                             cycle_id=owned_proof_cycle_id,
+                            standard_four_hour_campaign=standard_four_hour_campaign,
+                            operational_db_binding=(
+                                operational_database_target_binding
+                            ),
+                            canonical_authoritative_db_path=str(canonical),
+                            cancellation_probe=_first_hour_cancellation_reason,
                         )
                 else:
                     # V2-5 token-local terminal failure: isolate this token,
@@ -10734,7 +11160,69 @@ def run_one_command_15m_factory(
                             terminal_state="BLOCKED",
                             terminal_cause=error,
                         )
+                    elif four_token_proof_controller is not None:
+                        _mark_campaign_slot_token_local_failed(
+                            conn,
+                            campaign_id=str(campaign_id) if campaign_id else None,
+                            campaign_run_id=(
+                                str(campaign_run_id) if campaign_run_id else None
+                            ),
+                            cycle_id=owned_proof_cycle_id,
+                            token_id=int(token_id),
+                        )
+                        _terminalize_pre_15m_campaign_window_for_failed_slot(
+                            conn,
+                            campaign_id=str(campaign_id) if campaign_id else None,
+                            campaign_run_id=(
+                                str(campaign_run_id) if campaign_run_id else None
+                            ),
+                            cycle_id=owned_proof_cycle_id,
+                            token_id=int(token_id),
+                        )
                     conn.commit()
+                    if (
+                        bool(config.get("selective_1h_continuation"))
+                        and str(pending["step_kind"])
+                        not in {
+                            "CONTINUATION_SNAPSHOT", "CONTINUATION_CLOSE",
+                            "CONTINUATION_CLOSE_EVIDENCE",
+                            "CONTINUATION_CLOSE_CONTEXT",
+                            "CONTINUATION_CLOSE_AUDIT",
+                        }
+                        and not str(pending["step_kind"]).startswith(
+                            "LONG_CONTINUATION_"
+                        )
+                    ):
+                        def _failed_predecessor_cancellation_reason() -> str | None:
+                            external = (
+                                None
+                                if cancellation_probe is None
+                                else cancellation_probe()
+                            )
+                            if external:
+                                return str(external)
+                            return (
+                                None
+                                if stop_reason == STOP_COMPLETED
+                                else str(stop_reason)
+                            )
+
+                        _run_first_hour_boundary_and_immediate_standard_handoff(
+                            conn,
+                            db_path=str(path),
+                            run_id=run_id,
+                            config=config,
+                            continuation_seconds=_continuation_seconds,
+                            cycle_id=owned_proof_cycle_id,
+                            standard_four_hour_campaign=standard_four_hour_campaign,
+                            operational_db_binding=(
+                                operational_database_target_binding
+                            ),
+                            canonical_authoritative_db_path=str(canonical),
+                            cancellation_probe=(
+                                _failed_predecessor_cancellation_reason
+                            ),
+                        )
                     if (
                         _post_handoff_scope_recorder is not None
                         and str(pending["step_kind"]) in {
@@ -10820,7 +11308,67 @@ def run_one_command_15m_factory(
                         terminal_state="BLOCKED",
                         terminal_cause=result["exception"],
                     )
+                elif four_token_proof_controller is not None:
+                    _mark_campaign_slot_token_local_failed(
+                        conn,
+                        campaign_id=str(campaign_id) if campaign_id else None,
+                        campaign_run_id=(
+                            str(campaign_run_id) if campaign_run_id else None
+                        ),
+                        cycle_id=owned_proof_cycle_id,
+                        token_id=int(token_id),
+                    )
+                    _terminalize_pre_15m_campaign_window_for_failed_slot(
+                        conn,
+                        campaign_id=str(campaign_id) if campaign_id else None,
+                        campaign_run_id=(
+                            str(campaign_run_id) if campaign_run_id else None
+                        ),
+                        cycle_id=owned_proof_cycle_id,
+                        token_id=int(token_id),
+                    )
                 conn.commit()
+                if (
+                    bool(config.get("selective_1h_continuation"))
+                    and str(pending["step_kind"])
+                    not in {
+                        "CONTINUATION_SNAPSHOT", "CONTINUATION_CLOSE",
+                        "CONTINUATION_CLOSE_EVIDENCE",
+                        "CONTINUATION_CLOSE_CONTEXT",
+                        "CONTINUATION_CLOSE_AUDIT",
+                    }
+                    and not str(pending["step_kind"]).startswith(
+                        "LONG_CONTINUATION_"
+                    )
+                ):
+                    def _exception_predecessor_cancellation_reason() -> str | None:
+                        external = (
+                            None
+                            if cancellation_probe is None
+                            else cancellation_probe()
+                        )
+                        if external:
+                            return str(external)
+                        return (
+                            None
+                            if stop_reason == STOP_COMPLETED
+                            else str(stop_reason)
+                        )
+
+                    _run_first_hour_boundary_and_immediate_standard_handoff(
+                        conn,
+                        db_path=str(path),
+                        run_id=run_id,
+                        config=config,
+                        continuation_seconds=_continuation_seconds,
+                        cycle_id=owned_proof_cycle_id,
+                        standard_four_hour_campaign=standard_four_hour_campaign,
+                        operational_db_binding=operational_database_target_binding,
+                        canonical_authoritative_db_path=str(canonical),
+                        cancellation_probe=(
+                            _exception_predecessor_cancellation_reason
+                        ),
+                    )
                 if (
                     _post_handoff_scope_recorder is not None
                     and str(pending["step_kind"]) in {
@@ -10957,26 +11505,53 @@ def run_one_command_15m_factory(
                    ORDER BY cycle_id""",
                 (str(campaign_id), str(campaign_run_id)),
             ).fetchall()
-            for progression_cycle in progression_cycles:
-                if str(progression_cycle[0]) in progression_primary_write_failed_cycles:
-                    continue
-                try:
-                    with conn:
-                        terminalize_stopped_standard_4h_progression(
-                            conn,
-                            campaign_id=str(campaign_id),
-                            campaign_run_id=str(campaign_run_id),
-                            cycle_id=str(progression_cycle[0]),
-                            stop_cause=str(
-                                progression_secondary_stop_fact or stop_reason
-                            ),
-                            now=_now(),
-                        )
-                except sqlite3.Error:
-                    # Canonical progression persistence is the only fault owner.
-                    # Preserve the prior row; read-side accounting derives review.
-                    if conn.in_transaction:
-                        conn.rollback()
+            progression_stop_cause = str(
+                progression_secondary_stop_fact or stop_reason
+            )
+            # A withheld four-token completion sentinel must not be written into
+            # progression attempts as FACTORY_TERMINAL_OWNERSHIP / INTERRUPTED_REVIEW.
+            skip_completion_progression_stamp = False
+            if (
+                four_token_proof_controller is not None
+                and configuration_id is not None
+                and progression_stop_cause == STOP_COMPLETED
+            ):
+                admitted_for_progression = conn.execute(
+                    "SELECT cycle_id,cycle_ordinal FROM "
+                    "printer_memory_factory_campaign_cycles "
+                    "WHERE campaign_id=? AND run_id=? ORDER BY cycle_ordinal",
+                    (str(campaign_id), str(campaign_run_id)),
+                ).fetchall()
+                skip_completion_progression_stamp = (
+                    not _should_persist_four_token_shared_stop_reason(
+                        conn,
+                        stop_reason=str(stop_reason),
+                        campaign_id=str(campaign_id),
+                        campaign_run_id=str(campaign_run_id),
+                        configuration_id=str(configuration_id),
+                        factory_run_id=run_id,
+                        admitted_cycles=admitted_for_progression,
+                    )
+                )
+            if not skip_completion_progression_stamp:
+                for progression_cycle in progression_cycles:
+                    if str(progression_cycle[0]) in progression_primary_write_failed_cycles:
+                        continue
+                    try:
+                        with conn:
+                            terminalize_stopped_standard_4h_progression(
+                                conn,
+                                campaign_id=str(campaign_id),
+                                campaign_run_id=str(campaign_run_id),
+                                cycle_id=str(progression_cycle[0]),
+                                stop_cause=progression_stop_cause,
+                                now=_now(),
+                            )
+                    except sqlite3.Error:
+                        # Canonical progression persistence is the only fault owner.
+                        # Preserve the prior row; read-side accounting derives review.
+                        if conn.in_transaction:
+                            conn.rollback()
         four_token_terminal: dict[str, Any] | None = None
         if four_token_proof_controller is not None:
             from printer_v1.operator_cli.four_token_factory_adapter import (
@@ -10999,13 +11574,37 @@ def run_one_command_15m_factory(
             # The factory row is the real producer for a genuinely shared stop
             # cause. Preserve its first stop reason before any cycle consumer
             # evaluates a campaign-shared effect.
-            conn.execute(
-                "UPDATE printer_memory_factory_runs "
-                "SET stop_reason=COALESCE(stop_reason,?),updated_at=? "
-                "WHERE run_id=?",
-                (str(stop_reason), _iso(), run_id),
-            )
-            conn.commit()
+            #
+            # Loop-local STOP_COMPLETED only means "no global stop fired while
+            # draining work". It is not shared completion truth. Token-local
+            # source failures must not be rewritten into SAFE_STOP_SOURCE_FAILURE
+            # here: the adapter treats any non-completion factory stop_reason
+            # consumed by an incomplete cycle as CAMPAIGN/CAMPAIGN. Publish
+            # STOP_COMPLETED only when every admitted cycle's canonical
+            # accounting already proves completion. Otherwise withhold the
+            # sentinel and leave cycle terminal truth to canonical accounting.
+            if _should_persist_four_token_shared_stop_reason(
+                conn,
+                stop_reason=str(stop_reason),
+                campaign_id=str(campaign_id),
+                campaign_run_id=str(campaign_run_id),
+                configuration_id=str(configuration_id),
+                factory_run_id=run_id,
+                admitted_cycles=admitted_cycles,
+            ):
+                conn.execute(
+                    "UPDATE printer_memory_factory_runs "
+                    "SET stop_reason=COALESCE(stop_reason,?),updated_at=? "
+                    "WHERE run_id=?",
+                    (str(stop_reason), _iso(), run_id),
+                )
+                conn.commit()
+            else:
+                conn.execute(
+                    "UPDATE printer_memory_factory_runs SET updated_at=? WHERE run_id=?",
+                    (_iso(), run_id),
+                )
+                conn.commit()
             admitted_cycle_ids = tuple(str(item[0]) for item in admitted_cycles)
             phase_a = []
             for admitted in admitted_cycles:
