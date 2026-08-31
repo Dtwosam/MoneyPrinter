@@ -54,35 +54,51 @@ For current Printer V1 lane, repository identity, authoritative DB identity,
 latest completed work, blockers, and next permitted action, use the active
 authority stack plus `CURRENT_HANDOFF.md`.
 
-Current post-Aug-30 anchors:
+Current post-repair readiness anchors:
 
 - implementation repair commit:
   `27964ebc050bfd263a2db275f092f3ebca7dbe46`
 
+- Aug-30 repair closeout / audited repository baseline:
+  `e79c80d872e6694fce564dbd683567e0c02622f2`
+
 - authoritative DB SHA-256:
   `859f3712d19ffdf9e8d87d967649864935098058996d988f607faf9eb7cc6552`
 
-- repair closeout verdict:
-  `V2_9_8B_AUG30_TOKEN_LOCAL_STANDARD_4H_LIFECYCLE_ISOLATION_REPAIR_CLOSEOUT_PASS`
+- readiness verdict:
+  `V2_9_8B_POST_REPAIR_NEXT_BOUNDED_CAMPAIGN_READINESS_PASS`
 
-- independent documentation / source-stack review:
-  `INDEPENDENT OPERATOR REVIEW PASS`
+- independent readiness operator review:
+  `PASS`
 
-- current lane after closeout commit:
-  `FRESH POST-REPAIR EXACT-HEAD / EXACT-DB NEXT-BOUNDED-CAMPAIGN READINESS / GOVERNANCE AUDIT`
+- current lane after this readiness-closeout package is committed:
+  `FRESH EXACT-HEAD / EXACT-DB ONE-SHOT STANDARD-4H AUTHORIZATION-PREPARATION BOUNDARY DESIGN / SPECIFICATION — NO AUTHORIZATION CREATION`
 
 - exact next permitted action:
-  Perform a fresh read-only exact-HEAD / exact-DB next-bounded-campaign
-  readiness / governance audit.
+  Design/specify the fresh exact-HEAD / exact-DB one-shot Standard-4H
+  authorization-preparation boundary for the next bounded campaign.
 
-This reviewed closeout package becomes the active committed source-stack state
-when the six-doc package is committed. Until that commit is created, do not
-begin the readiness audit.
+This reviewed readiness-closeout state becomes active when this six-doc package
+is committed. Until that commit exists, do not begin the authorization-boundary
+design lane. Do not invent the future readiness-closeout commit SHA. The later
+design must inspect/bind the actual HEAD produced by this readiness-closeout
+commit.
 
-No authorization package may currently be prepared, applied, or consumed.
-No Printer execution or new campaign is currently authorized. Authorization
-preparation remains blocked until this fresh post-repair readiness/governance
-audit independently passes and a later lane explicitly permits preparation.
+No authorization currently exists for the next campaign. Authorization
+preparation/creation remains blocked during the design/specification lane. Do
+not create, mint, hash/sign, apply, or consume an authorization package from
+this synchronization. Preserve:
+
+```text
+readiness -> authorization-boundary design/specification -> authorization preparation/implementation only if separately approved -> independent package review -> later explicit execution approval -> bounded execution/proof -> closeout
+```
+
+Cycle-2 Aug-30 `SELECTED` slot rows remain historical residue under
+terminal/drained canonical ownership and must not be mutated. Raw historical
+slot state alone must not establish active execution authority.
+
+Providers were not contacted. Readiness PASS is structural/governance only and
+must not be converted into provider-readiness claims.
 
 Aug-30 authorization
 `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260830T113652Z_a89ed6bc` remains permanently
@@ -1613,16 +1629,17 @@ locks remain unchanged.
 <!-- V2_9_8B_MIGRATION_062_PROVENANCE_IMPLEMENTATION_CURRENT_STATE_END -->
 
 <!-- V2_9_8B_AUG30_REPAIR_CLOSEOUT_SOURCE_STACK_SYNC_CURRENT_STATE_START -->
-## V2-9.8B Aug-30 Lifecycle Isolation Repair Closeout — Current Authority
+## V2-9.8B Aug-30 Lifecycle Isolation Repair Closeout — Historical Authority
 
-This block supersedes older current-looking migration-062,
-authorization-preparation, remote-host-pause, and pre-Aug-30 readiness pointers
-appended to this audit for current-lane selection. Historical text remains
-evidence only. The original V2-0 audit body above remains unchanged historical
-audit evidence.
+This block is historical after the later post-repair readiness PASS. It
+superseded older migration-062 / authorization-preparation pointers only at
+repair-closeout time. Historical text remains evidence only. The original V2-0
+audit body above remains unchanged historical audit evidence.
 
 - implementation repair commit:
   `27964ebc050bfd263a2db275f092f3ebca7dbe46`
+- repair closeout commit / audited repository baseline:
+  `e79c80d872e6694fce564dbd683567e0c02622f2`
 - authoritative DB SHA-256:
   `859f3712d19ffdf9e8d87d967649864935098058996d988f607faf9eb7cc6552`
 - repair closeout verdict:
@@ -1632,23 +1649,54 @@ audit evidence.
 - Aug-30 authorization
   `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260830T113652Z_a89ed6bc`
   remains permanently consumed and non-reusable
-- no authorization or campaign is currently authorized
 
-This reviewed closeout package becomes the active committed source-stack state
-when the six-doc package is committed. Until that commit is created, do not
-begin the readiness audit.
+At repair-closeout time, the next permitted lane was the post-repair readiness /
+governance audit. That pointer is historical after readiness PASS.
+<!-- V2_9_8B_AUG30_REPAIR_CLOSEOUT_SOURCE_STACK_SYNC_CURRENT_STATE_END -->
 
-After closeout commit, the exact current permitted lane is:
+<!-- V2_9_8B_POST_REPAIR_READINESS_CLOSEOUT_CURRENT_STATE_START -->
+## V2-9.8B Post-Repair Next-Bounded-Campaign Readiness — Current Authority
 
-`FRESH POST-REPAIR EXACT-HEAD / EXACT-DB NEXT-BOUNDED-CAMPAIGN READINESS / GOVERNANCE AUDIT`
+This block supersedes older current-looking Aug-30 repair-closeout,
+migration-062, authorization-preparation, remote-host-pause, and pre-Aug-30
+readiness pointers appended to this audit for current-lane selection.
+Historical text remains evidence only.
+
+- readiness verdict:
+  `V2_9_8B_POST_REPAIR_NEXT_BOUNDED_CAMPAIGN_READINESS_PASS`
+- independent readiness operator review: `PASS`
+- audited repository baseline:
+  `e79c80d872e6694fce564dbd683567e0c02622f2`
+- implementation repair:
+  `27964ebc050bfd263a2db275f092f3ebca7dbe46`
+- authoritative DB SHA-256:
+  `859f3712d19ffdf9e8d87d967649864935098058996d988f607faf9eb7cc6552`
+- Aug-30 authorization
+  `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260830T113652Z_a89ed6bc`
+  remains permanently consumed and non-reusable
+- no authorization currently exists for the next campaign
+- Cycle-2 Aug-30 `SELECTED` slot rows remain historical residue under
+  terminal/drained canonical ownership and must not be mutated
+- providers were not contacted; readiness PASS is structural/governance only
+
+This reviewed readiness-closeout state becomes active when this six-doc package
+is committed. Until that commit exists, do not begin the authorization-boundary
+design lane. Do not invent the future readiness-closeout commit SHA.
+
+After readiness-closeout commit, the exact current permitted lane is:
+
+`FRESH EXACT-HEAD / EXACT-DB ONE-SHOT STANDARD-4H AUTHORIZATION-PREPARATION BOUNDARY DESIGN / SPECIFICATION — NO AUTHORIZATION CREATION`
 
 Exact currently permitted action:
 
-`Perform a fresh read-only exact-HEAD / exact-DB next-bounded-campaign readiness / governance audit.`
+`Design/specify the fresh exact-HEAD / exact-DB one-shot Standard-4H authorization-preparation boundary for the next bounded campaign.`
 
-Authorization preparation remains blocked until this fresh post-repair
-readiness/governance audit independently passes and a later lane explicitly
-permits preparation. No authorization package may currently be prepared,
-applied, or consumed. No Printer execution or new campaign is currently
-authorized. All permanent V1 locks remain unchanged.
-<!-- V2_9_8B_AUG30_REPAIR_CLOSEOUT_SOURCE_STACK_SYNC_CURRENT_STATE_END -->
+Authorization preparation/creation remains blocked during this design lane.
+Preserve:
+
+```text
+readiness -> authorization-boundary design/specification -> authorization preparation/implementation only if separately approved -> independent package review -> later explicit execution approval -> bounded execution/proof -> closeout
+```
+
+All permanent V1 locks remain unchanged.
+<!-- V2_9_8B_POST_REPAIR_READINESS_CLOSEOUT_CURRENT_STATE_END -->

@@ -1169,49 +1169,72 @@ Current adopted operational envelope (2026-08-26):
 
 V2-9.8B remains the active bounded operational Memory Factory lane. The Aug-30
 token-local Standard-4H lifecycle-isolation repair implementation is committed
-at `27964ebc050bfd263a2db275f092f3ebca7dbe46`. Documentation closeout / active
-source-stack synchronization completed independent operator review:
+at `27964ebc050bfd263a2db275f092f3ebca7dbe46`. Aug-30 repair closeout commit is
+`e79c80d872e6694fce564dbd683567e0c02622f2`.
 
-`INDEPENDENT OPERATOR REVIEW PASS`
+Post-repair readiness / governance audit verdict:
 
-Closeout verdict:
+`V2_9_8B_POST_REPAIR_NEXT_BOUNDED_CAMPAIGN_READINESS_PASS`
 
-`V2_9_8B_AUG30_TOKEN_LOCAL_STANDARD_4H_LIFECYCLE_ISOLATION_REPAIR_CLOSEOUT_PASS`
+Independent readiness operator review:
+
+`PASS`
+
+Audited repository baseline:
+`e79c80d872e6694fce564dbd683567e0c02622f2`
 
 Current authoritative DB SHA is
 `859f3712d19ffdf9e8d87d967649864935098058996d988f607faf9eb7cc6552`.
 Aug-30 authorization
 `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260830T113652Z_a89ed6bc` remains permanently
-consumed and non-reusable. No authorization or campaign is currently
-authorized.
+consumed and non-reusable. No authorization currently exists for the next
+campaign.
 
-This reviewed closeout package becomes the active committed source-stack state
-when the six-doc package is committed. Until that commit is created, do not
-begin the readiness audit.
+Cycle-2 Aug-30 `SELECTED` slot rows remain historical residue under
+terminal/drained canonical ownership and must not be mutated. Raw historical
+slot state alone must not establish active execution authority.
 
-The exact current next permitted lane after closeout commit is:
+Providers were not contacted. Readiness PASS is structural/governance only and
+must not be converted into provider-readiness claims.
+
+This reviewed readiness-closeout state becomes active when this six-doc package
+is committed. Until that commit exists, do not begin the authorization-boundary
+design lane. Do not invent the future readiness-closeout commit SHA. The later
+design must inspect/bind the actual HEAD produced by this readiness-closeout
+commit.
+
+The exact current next permitted lane after readiness-closeout commit is:
 
 ```text
-FRESH POST-REPAIR EXACT-HEAD / EXACT-DB NEXT-BOUNDED-CAMPAIGN READINESS / GOVERNANCE AUDIT
+FRESH EXACT-HEAD / EXACT-DB ONE-SHOT STANDARD-4H AUTHORIZATION-PREPARATION BOUNDARY DESIGN / SPECIFICATION — NO AUTHORIZATION CREATION
 ```
 
 Exact currently permitted action:
 
 ```text
-Perform a fresh read-only exact-HEAD / exact-DB next-bounded-campaign readiness / governance audit.
+Design/specify the fresh exact-HEAD / exact-DB one-shot Standard-4H authorization-preparation boundary for the next bounded campaign.
 ```
 
-Authorization preparation remains blocked until this fresh post-repair
-readiness/governance audit independently passes and a later lane explicitly
-permits preparation. Do not prepare a new authorization package from this guide
-alone.
+That lane is DESIGN / SPECIFICATION ONLY. Authorization preparation/creation
+remains blocked during this design lane. Preserve:
+
+```text
+readiness -> authorization-boundary design/specification -> authorization preparation/implementation only if separately approved -> independent package review -> later explicit execution approval -> bounded execution/proof -> closeout
+```
+
+Do not prepare, create, apply, or consume a new authorization package from this
+guide alone.
 
 Historical at the time of the 2026-08-26 source-stack synchronization:
 `POST-SYNCHRONIZATION FRESH NEXT-BOUNDED-CAMPAIGN AUTHORIZATION READINESS /
-GOVERNANCE ONLY`. Later retained-evidence, remote-host, migration-062, and
-authorization-preparation current-state blocks appended below this section
-remain historical evidence only and do not override `CURRENT_HANDOFF.md` or
-this Roadmap Placement for current-lane selection.
+GOVERNANCE ONLY`. Later retained-evidence, remote-host, migration-062,
+authorization-preparation, and Aug-30 repair-closeout current-state blocks
+appended below this section remain historical evidence only and do not override
+`CURRENT_HANDOFF.md`, `AGENTS.md`, or this Roadmap Placement for current-lane
+selection. Post-repair readiness
+`V2_9_8B_POST_REPAIR_NEXT_BOUNDED_CAMPAIGN_READINESS_PASS` is the current
+readiness authority; the next lane is authorization-boundary design /
+specification only, with authorization preparation/creation still blocked.
 
 Do not treat this guide, a prior run, or a consumed authorization as current
 execution authority. Do not start an operational campaign, invoke providers/RPC,
@@ -1601,13 +1624,60 @@ Governing closeout:
 `docs/printer-v1-v2-9-8b-migration-062-authorization-provenance-evidence-control-implementation-closeout.md`
 
 Both four-token profiles now bind exact migration-062 current provenance;
-migration 061 remains immutable historical evidence. The exact current lane is:
+migration 061 remains immutable historical evidence. At that historical
+checkpoint the exact lane was:
 
 `FRESH EXACT-HEAD / EXACT-DB ONE-SHOT AUTHORIZATION PREPARATION / INDEPENDENT REVIEW`
 
-One fresh authorization may be prepared and independently reviewed only against
-the exact post-repair commit HEAD, unchanged authoritative DB, and exact
-migration-062 current provenance. No authorization application/consumption,
-database mutation, Printer/provider/Scheduler/campaign, or remote-host work is
-authorized. All permanent V1 locks remain unchanged.
+That pointer is historical after later Aug-30 repair closeout and post-repair
+readiness PASS. No authorization application/consumption, database mutation,
+Printer/provider/Scheduler/campaign, or remote-host work is authorized by this
+historical block. All permanent V1 locks remain unchanged.
 <!-- V2_9_8B_MIGRATION_062_PROVENANCE_IMPLEMENTATION_CURRENT_STATE_END -->
+
+<!-- V2_9_8B_POST_REPAIR_READINESS_CLOSEOUT_CURRENT_STATE_START -->
+## V2-9.8B Post-Repair Next-Bounded-Campaign Readiness — Current Authority
+
+This block supersedes older current-looking Aug-30 repair-closeout,
+migration-062, authorization-preparation, remote-host-pause, and pre-Aug-30
+readiness pointers in this guide for current-lane selection. Historical text
+remains evidence only.
+
+- readiness verdict:
+  `V2_9_8B_POST_REPAIR_NEXT_BOUNDED_CAMPAIGN_READINESS_PASS`
+- independent readiness operator review: `PASS`
+- audited repository baseline:
+  `e79c80d872e6694fce564dbd683567e0c02622f2`
+- implementation repair:
+  `27964ebc050bfd263a2db275f092f3ebca7dbe46`
+- authoritative DB SHA-256:
+  `859f3712d19ffdf9e8d87d967649864935098058996d988f607faf9eb7cc6552`
+- Aug-30 authorization
+  `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260830T113652Z_a89ed6bc`
+  remains permanently consumed and non-reusable
+- no authorization currently exists for the next campaign
+- Cycle-2 Aug-30 `SELECTED` slot rows remain historical residue under
+  terminal/drained canonical ownership and must not be mutated
+- providers were not contacted; readiness PASS is structural/governance only
+
+This reviewed readiness-closeout state becomes active when this six-doc package
+is committed. Until that commit exists, do not begin the authorization-boundary
+design lane. Do not invent the future readiness-closeout commit SHA.
+
+After readiness-closeout commit, the exact current permitted lane is:
+
+`FRESH EXACT-HEAD / EXACT-DB ONE-SHOT STANDARD-4H AUTHORIZATION-PREPARATION BOUNDARY DESIGN / SPECIFICATION — NO AUTHORIZATION CREATION`
+
+Exact currently permitted action:
+
+`Design/specify the fresh exact-HEAD / exact-DB one-shot Standard-4H authorization-preparation boundary for the next bounded campaign.`
+
+Authorization preparation/creation remains blocked during this design lane.
+Preserve:
+
+```text
+readiness -> authorization-boundary design/specification -> authorization preparation/implementation only if separately approved -> independent package review -> later explicit execution approval -> bounded execution/proof -> closeout
+```
+
+All permanent V1 locks remain unchanged.
+<!-- V2_9_8B_POST_REPAIR_READINESS_CLOSEOUT_CURRENT_STATE_END -->

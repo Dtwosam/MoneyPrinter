@@ -2,44 +2,55 @@
 
 ## Current lane
 
-`FRESH POST-REPAIR EXACT-HEAD / EXACT-DB NEXT-BOUNDED-CAMPAIGN READINESS / GOVERNANCE AUDIT`
+`FRESH EXACT-HEAD / EXACT-DB ONE-SHOT STANDARD-4H AUTHORIZATION-PREPARATION BOUNDARY DESIGN / SPECIFICATION — NO AUTHORIZATION CREATION`
 
-Independent documentation / active source-stack review result:
+Independent post-repair readiness review result:
 
-`INDEPENDENT OPERATOR REVIEW PASS`
+`PASS`
 
-This reviewed closeout package becomes the active committed source-stack state
-when the six-doc package is committed. Until that commit is created, do not
-begin the readiness audit. Do not invent the future documentation closeout
-commit SHA. The readiness audit must bind/reconfirm the actual HEAD produced by
-that closeout commit.
+Readiness verdict:
+
+`V2_9_8B_POST_REPAIR_NEXT_BOUNDED_CAMPAIGN_READINESS_PASS`
+
+This reviewed readiness-closeout state becomes active when this six-doc package
+is committed. Until that commit exists, do not begin the authorization-boundary
+design lane. Do not invent the future readiness-closeout commit SHA. The later
+design must inspect/bind the actual HEAD produced by this readiness-closeout
+commit.
 
 ## Current repository state
 
-Implementation baseline:
+Implementation repair:
 
 `27964ebc050bfd263a2db275f092f3ebca7dbe46`
 
-Parent baseline:
+Aug-30 repair closeout commit:
 
-`ba75c76b16cf1b5a2b44ec27822733e161b10abc`
+`e79c80d872e6694fce564dbd683567e0c02622f2`
+
+Audited repository baseline for readiness:
+
+`e79c80d872e6694fce564dbd683567e0c02622f2`
 
 Implementation commit message:
 
 `Repair token-local Standard-4H lifecycle isolation`
 
-The repair implementation is independently reviewed PASS
-(`OPERATOR REVIEW PASS — APPROVED AND COMMITTED`).
+Closeout commit message:
+
+`Close Aug-30 lifecycle isolation repair`
+
+The repair implementation and readiness audit are independently reviewed PASS.
 
 ## Authoritative database
 
 Path: `data/printer_v1.sqlite3`
 
-Exact SHA-256 measured read-only during the Aug-30 repair closeout:
+Exact SHA-256 audited during post-repair readiness:
 
 `859f3712d19ffdf9e8d87d967649864935098058996d988f607faf9eb7cc6552`
 
-Read-only health facts observed during closeout:
+Read-only health facts reconfirmed during readiness:
 
 - `PRAGMA integrity_check`: `ok`
 - `PRAGMA foreign_key_check`: `0` violations
@@ -55,46 +66,62 @@ Read-only health facts observed during closeout:
 - SQLite WAL/SHM/journal sidecars: absent
 - Printer/Governor/Central Scheduler matching processes: none observed
 
-Do not reuse any older pre-Aug-30 DB SHA. The Aug-30 campaign already mutated
-the authoritative DB before this repair.
+Do not reuse any older pre-readiness DB SHA as current authority.
 
 ## Latest completed work
 
-`V2_9_8B_AUG30_TOKEN_LOCAL_STANDARD_4H_LIFECYCLE_ISOLATION_REPAIR_CLOSEOUT_PASS`
+`V2_9_8B_POST_REPAIR_NEXT_BOUNDED_CAMPAIGN_READINESS_PASS`
 
-Independent documentation / source-stack review: `PASS`
+Independent readiness operator review: `PASS`
 
 Also:
 
-- implementation commit `27964ebc050bfd263a2db275f092f3ebca7dbe46`
-- 101 focused tests PASS
-- `py_compile` PASS
-- `git diff --check` PASS
-- independent implementation review PASS
-- no migration
-- `four_token_factory_adapter.py` unchanged
-- `cadence_authority.py` unchanged
+- implementation repair commit `27964ebc050bfd263a2db275f092f3ebca7dbe46`
+- Aug-30 closeout commit `e79c80d872e6694fce564dbd683567e0c02622f2`
+- readiness audit:
+  `docs/printer-v1-v2-9-8b-post-repair-next-bounded-campaign-readiness-audit.md`
 - Aug-30 authorization
   `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260830T113652Z_a89ed6bc`
   remains permanently consumed and non-reusable
+- earlier consumed authorization
+  `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260828T211924Z_5fcb1bf5`
+  remains permanently consumed and non-reusable
+  (`CONSUMED_CHILD_EXITED_NONZERO`)
 
-Governing closeout document:
+No authorization currently exists for the next campaign.
+
+Governing readiness audit:
+
+`docs/printer-v1-v2-9-8b-post-repair-next-bounded-campaign-readiness-audit.md`
+
+Governing repair closeout:
 
 `docs/printer-v1-v2-9-8b-aug30-token-local-standard-4h-lifecycle-isolation-repair-closeout.md`
 
 ## Exact next permitted action
 
-`Perform a fresh read-only exact-HEAD / exact-DB next-bounded-campaign readiness / governance audit.`
+`Design/specify the fresh exact-HEAD / exact-DB one-shot Standard-4H authorization-preparation boundary for the next bounded campaign.`
 
-That audit may inspect repository identity, authoritative DB identity/health,
-runtime quiescence, Source Governor/Central Scheduler ownership,
-migration/evidence provenance, consumed-authorization non-reuse, and permanent
-locks.
+This is DESIGN / SPECIFICATION ONLY.
+
+It may define exact future authorization binding requirements, repository HEAD
+identity semantics, authoritative DB SHA binding semantics, the already-approved
+V2-9.8B authorization schema/profile, historical authorization non-reuse trust
+root, one-shot invocation constraints, Source Governor / Central Scheduler
+ownership requirements, the Standard-4H 2-concurrent / <=4 campaign-wide /
+two-cycle envelope, `WINDOW_15M` → hard-gated `WINDOW_1H` → hard-gated
+`WINDOW_4H` → stop, no retry/rerun/resume/restart/successor, required
+independent authorization-package review before any application, and later
+explicit operator approval before any execution.
 
 It does **not** authorize:
 
-- authorization preparation
-- authorization creation/application/consumption
+- authorization package creation
+- authorization ID minting
+- `final_authorization.json` writing
+- authorization hashing/signing/finalization
+- application-marker creation
+- authorization application/consumption
 - Printer execution
 - another campaign
 - provider/RPC/WebSocket calls
@@ -106,9 +133,39 @@ It does **not** authorize:
 - positions/trades/audits/PnL
 - `WINDOW_12H` / `WINDOW_24H`
 
-Authorization preparation remains blocked until this fresh post-repair
-readiness/governance audit independently passes and a later lane explicitly
-permits preparation.
+Authorization preparation/creation remains blocked during this design lane.
+Preserve the builder sequence:
+
+```text
+readiness -> authorization-boundary design/specification -> authorization preparation/implementation only if separately approved -> independent package review -> later explicit execution approval -> bounded execution/proof -> closeout
+```
+
+Do not collapse design/specification into package creation.
+
+## Cycle-2 SELECTED residue governance
+
+Cycle-2 slot rows from the Aug-30 failed campaign remain historical `SELECTED`
+rows with null slot-level terminal timestamps. This is NOT active ownership
+because canonical campaign/run/supervision/lease/Scheduler/progression truth is
+terminal/drained. Do not repair or mutate those rows.
+
+For the next authorization-boundary design, require:
+
+```text
+Raw historical slot state alone must not establish active execution authority.
+Canonical campaign/run/supervision/lease/Scheduler/progression ownership truth governs active-work readiness.
+```
+
+A future design may specify a fail-closed preflight check around this rule. Do
+not implement such a check in this documentation transition.
+
+## Provider classification
+
+Providers were not contacted. Readiness PASS is structural/governance only.
+Current provider availability remains execution-time operational evidence. The
+historical DexScreener transport failure is not a current committed-code
+blocker. Source Governor honest safe-stop behavior remains authoritative. Do
+not convert readiness PASS into provider-readiness claims.
 
 ## Permanent locks
 
