@@ -114,17 +114,19 @@ def apply_patch() -> None:
         '''                universe_state=str(last_stop_reason),\n''',
     )
 
-    reliability_path = Path(
+    reliability_path = (
         "tests/test_v2_9_8b_freeze_ready_candidate_supply_reliability.py"
     )
-    reliability = reliability_path.read_text()
-    stale_runtime_args = '''        supervision_active=True,\n        cancellation_requested=False,\n        pending_refresh_exists=False,\n'''
-    count = reliability.count(stale_runtime_args)
-    if count != 4:
-        raise SystemExit(
-            f"reliability tests: expected four stale runtime-arg blocks, found {count}"
-        )
-    reliability_path.write_text(reliability.replace(stale_runtime_args, ""))
+    replace_once(
+        reliability_path,
+        '''        acquisition_deadline_at="2026-09-01T12:16:19+00:00",\n        now=NOW,\n        universe_state="ALL_REACHABLE_CANDIDATES_EVALUATED",\n        supervision_active=True,\n        cancellation_requested=False,\n        pending_refresh_exists=False,\n        refresh_interval_seconds=600,\n''',
+        '''        acquisition_deadline_at="2026-09-01T12:16:19+00:00",\n        now=NOW,\n        universe_state="ALL_REACHABLE_CANDIDATES_EVALUATED",\n        refresh_interval_seconds=600,\n''',
+    )
+    replace_once(
+        reliability_path,
+        '''        acquisition_deadline_at="2026-09-01T11:40:00+00:00",\n        now="2026-09-01T11:39:30+00:00",\n        universe_state="ALL_REACHABLE_CANDIDATES_EVALUATED",\n        supervision_active=True,\n        cancellation_requested=False,\n        pending_refresh_exists=False,\n        refresh_interval_seconds=600,\n''',
+        '''        acquisition_deadline_at="2026-09-01T11:40:00+00:00",\n        now="2026-09-01T11:39:30+00:00",\n        universe_state="ALL_REACHABLE_CANDIDATES_EVALUATED",\n        refresh_interval_seconds=600,\n''',
+    )
 
 
 if __name__ == "__main__":
