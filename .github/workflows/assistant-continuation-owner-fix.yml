@@ -34,7 +34,10 @@ jobs:
             exit 1
           fi
       - name: Apply narrow production patch
-        run: python .github/assistant_continuation_owner_fix.py patch
+        shell: bash
+        run: |
+          set -o pipefail
+          python .github/assistant_continuation_owner_fix.py patch 2>&1 | tee proof-logs/patch.log
       - name: GREEN focused verification
         shell: bash
         run: |
