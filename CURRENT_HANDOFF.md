@@ -2,39 +2,70 @@
 
 ## Current lane
 
-`FRESH EXACT-HEAD / EXACT-DB ONE-SHOT STANDARD-4H AUTHORIZATION PREPARATION — PREPARATION-ENTRY REBIND REQUIRED AFTER CANDIDATE-SUPPLY REPAIR`
+`FRESH EXACT-HEAD / EXACT-DB ONE-SHOT STANDARD-4H AUTHORIZATION PREPARATION — AUTHORITATIVE-HOST PREPARATION-ENTRY REBIND BLOCKED PENDING HOST-LOCAL EVIDENCE`
 
 The V2-9.8B freeze-ready candidate-supply reliability repair is closed PASS.
-This handoff does not itself approve a new authorization package and does not
-authorize application or execution.
+The repository-side preparation-entry attempt after that closeout failed closed
+because the authoritative host-local DB/runtime evidence is unavailable from a
+GitHub runner.
 
-The existing reviewed authorization-preparation boundary remains governing, but
-its mandatory preparation-time identity/readiness rebind must run against the
-actual post-closeout HEAD and authoritative DB before any package bytes are
-created or finalized.
+This handoff does not approve a new authorization package and does not authorize
+application or execution.
 
 ## Latest completed work
 
-Closeout verdict:
+Candidate-supply closeout verdict:
 
 `V2_9_8B_FREEZE_READY_CANDIDATE_SUPPLY_RELIABILITY_CLOSEOUT_PASS`
 
-Governing closeout:
+Closeout:
 
 `docs/printer-v1-v2-9-8b-freeze-ready-candidate-supply-reliability-closeout.md`
+
+Preparation-entry report:
+
+`docs/printer-v1-v2-9-8b-post-candidate-supply-preparation-entry-rebind.md`
+
+Preparation-entry verdict:
+
+`V2_9_8B_POST_CANDIDATE_SUPPLY_PREPARATION_ENTRY_REBIND_BLOCKED`
+
+Code-defect verdict for that rebind:
+
+`NO_CODE_DEFECT_PROVEN_BY_THIS_REBIND`
+
+Package state:
+
+`NOT_CREATED / NOT_PREPARED / UNCONSUMED / UNAPPLIED`
 
 Candidate-supply branch:
 
 `assistant/freeze-ready-candidate-supply`
 
-Reviewed/squashed repair HEAD immediately before the closeout commit:
+Last exact target HEAD evaluated by the remote rebind:
+
+`2e398087c279375d527cc7172eaa8a84fac5affb`
+
+The remote verifier proved that exact checked-out HEAD and a clean committed
+tracked checkout. It then failed at the first authoritative DB gate with:
+
+`BLOCKER: authoritative DB missing`
+
+`data/printer_v1.sqlite3` is not in the GitHub checkout. Therefore GitHub cannot
+prove the authoritative host's DB filesystem identity/health/zero-state or its
+live Printer/process quiescence.
+
+The report/handoff commit changes HEAD after the evaluated `2e398...` state.
+Every future preparation attempt must resolve and bind the actual live HEAD at
+that time; do not reuse `2e398...` as a remembered authorization binding.
+
+## Candidate-supply repair evidence
+
+Reviewed/squashed repair commit before closeout:
 
 `3ac80cbb2ffa424667dd98d3c35c89bd00d883da`
 
-That repair preserved the final verified tree while collapsing post-review
-repair/proof churn.
-
-Final focused verification on that repaired tree:
+Final focused verification on the repaired production tree reported:
 
 - 22 focused tests passed;
 - changed Python compiled;
@@ -57,19 +88,20 @@ financial, or longer-window lock was widened.
 
 ## Authoritative DB identity
 
-Authoritative DB path:
+Required authoritative DB path:
 
 `data/printer_v1.sqlite3`
 
-Last previously approved DB SHA-256 carried by the stale-authorization handoff:
+Last historically approved DB SHA-256 carried by the stale-authorization
+handoff:
 
 `859f3712d19ffdf9e8d87d967649864935098058996d988f607faf9eb7cc6552`
 
-That hash is historical input only now. The candidate-supply lane did not mutate
-the authoritative DB, but no future authorization package may reuse a remembered
-DB identity. Preparation must recompute and independently accept the live DB
-path/hash/size/inode/mtime, migration count/head, integrity/FKs, sidecars, and
-ownership quiescence.
+That hash is historical evidence only. It must not be reused as current truth.
+The candidate-supply lane did not mutate the authoritative DB, but a future
+package requires a fresh host-local read-only rebind of path/hash/size/inode/
+mtime, migration count/head, integrity/FKs, sidecars, durable zero-state, and
+ownership/runtime quiescence.
 
 ## Stale frozen authorization
 
@@ -77,7 +109,7 @@ Authorization ID:
 
 `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260831T150842Z_b6d7ab46`
 
-Frozen SHA-256 (byte-identical; do not alter):
+Frozen SHA-256:
 
 `5cd5ca47761458023061e4627999df13fb1ac9b80c80bc836b7e4ba012de290f`
 
@@ -97,19 +129,17 @@ Blocker:
 
 `AUTHORIZATION_EXACT_HEAD_BINDING_DRIFT`
 
-Stale authorization final state:
+Final state:
 
 `STALE / UNCONSUMED / UNAPPLIED / PERMANENTLY INELIGIBLE FOR APPLICATION`
 
-No application or consumption occurred. Do not describe this package as
-consumed. Do not alter, rebind, renew, delete, rename, move, or apply it.
-
-`...b6d7ab46` remains required in the complete prior non-reuse trust root for
-every future Standard-4H package.
+No application or consumption occurred. Do not alter, rebind, renew, delete,
+rename, move, or apply it. `...b6d7ab46` remains required in the complete prior
+non-reuse trust root for every future Standard-4H package.
 
 ## Governing authorization design
 
-Do not redo the completed authorization-boundary design:
+Do not redesign the completed preparation boundary:
 
 `docs/printer-v1-v2-9-8b-next-standard-4h-authorization-preparation-boundary-design.md`
 
@@ -123,16 +153,21 @@ Canonical owners remain authoritative:
 - zero-state: `assert_four_token_standard_four_hour_zero_state`;
 - prior non-reuse: `validate_prior_authorizations_non_reusable`.
 
+No new CLI, replacement owner, or bypass is justified by the missing host-local
+evidence.
+
 ## Exact next permitted action
 
-Run the read-only preparation-entry rebind required by the governing design
-against the actual HEAD containing this closeout/handoff and the authoritative
-DB.
+Run the existing canonical **read-only preparation-entry rebind on the
+authoritative operator host** against:
+
+1. the actual live Git HEAD containing this report/handoff; and
+2. the actual host-local `data/printer_v1.sqlite3`.
 
 Freshly establish, without authoritative DB mutation:
 
 - exact live Git HEAD and branch;
-- tracked-clean state;
+- live tracked-clean state;
 - exact authoritative DB path/hash/size/inode/mtime;
 - migration count/head;
 - integrity/FKs and absence of SQLite WAL/SHM/journal sidecars;
@@ -142,6 +177,7 @@ Freshly establish, without authoritative DB mutation:
 - zero active Scheduler jobs;
 - zero active factory runs/steps/campaign work;
 - zero active pre-admission attempts outside terminal dispositions;
+- live Printer/process quiescence;
 - canonical Standard-4H schema/profile/policy/command mode;
 - exact 4/2/2 envelope and lifecycle locks;
 - complete permanent prior-authorization non-reuse trust root, including
@@ -149,21 +185,19 @@ Freshly establish, without authoritative DB mutation:
 - no retrieval/financial/12h/24h unlock;
 - no Source Governor or Central Scheduler bypass.
 
-The prior preparation approval must not be treated as automatically approving a
-package against the repaired production HEAD. If the current preparation-time
-HEAD/DB identity is not independently accepted, or any required gate fails,
-stop without creating/finalizing a package and record the exact blocker.
+If any gate is missing, unprovable, or failing, stop without package creation
+and record the exact blocker.
 
 If and only if every preparation-entry gate passes and the exact current
-HEAD/DB are accepted for preparation, exactly one fresh Standard-4H
-authorization package may be prepared using the existing canonical owners. It
-must stop:
+HEAD/DB are independently accepted for preparation, exactly one fresh
+Standard-4H authorization package may be prepared using the existing canonical
+owners. It must stop:
 
 `PREPARED / UNCONSUMED / UNAPPLIED`
 
 for independent package review.
 
-This is not application approval and not execution approval.
+That is not application approval and not execution approval.
 
 ## Application / execution remain blocked
 
