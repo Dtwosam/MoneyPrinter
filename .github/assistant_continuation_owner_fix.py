@@ -114,6 +114,18 @@ def apply_patch() -> None:
         '''                universe_state=str(last_stop_reason),\n''',
     )
 
+    reliability_path = Path(
+        "tests/test_v2_9_8b_freeze_ready_candidate_supply_reliability.py"
+    )
+    reliability = reliability_path.read_text()
+    stale_runtime_args = '''        supervision_active=True,\n        cancellation_requested=False,\n        pending_refresh_exists=False,\n'''
+    count = reliability.count(stale_runtime_args)
+    if count != 2:
+        raise SystemExit(
+            f"reliability tests: expected two stale runtime-arg blocks, found {count}"
+        )
+    reliability_path.write_text(reliability.replace(stale_runtime_args, ""))
+
 
 if __name__ == "__main__":
     mode = sys.argv[1] if len(sys.argv) > 1 else ""
