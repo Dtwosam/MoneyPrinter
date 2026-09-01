@@ -120,9 +120,9 @@ def apply_patch() -> None:
     reliability = reliability_path.read_text()
     stale_runtime_args = '''        supervision_active=True,\n        cancellation_requested=False,\n        pending_refresh_exists=False,\n'''
     count = reliability.count(stale_runtime_args)
-    if count != 2:
+    if count != 4:
         raise SystemExit(
-            f"reliability tests: expected two stale runtime-arg blocks, found {count}"
+            f"reliability tests: expected four stale runtime-arg blocks, found {count}"
         )
     reliability_path.write_text(reliability.replace(stale_runtime_args, ""))
 
