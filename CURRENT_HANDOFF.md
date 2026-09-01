@@ -2,119 +2,134 @@
 
 ## Current lane
 
-`POST-REPAIR FRESH EXACT-HEAD / EXACT-DB READINESS / GOVERNANCE ONLY`
+`FRESH EXACT-HEAD / EXACT-DB ONE-SHOT STANDARD-4H AUTHORIZATION PREPARATION — POST-SCOPE-PROPAGATION-REPAIR READINESS PASS; PACKAGE PREPARATION PERMITTED AGAINST THIS COMMIT HEAD`
 
-The consumed Sep-1 Standard-4H failure is closed as a committed-code defect and
-narrow scope-propagation repair. This handoff does **not** authorize application
-or execution.
+The V2-9.8B campaign-source-request-scope propagation repair remains closed
+PASS. The post-repair fresh exact-HEAD / exact-DB readiness/governance audit is
+closed PASS.
+
+This handoff does **not** authorize application or execution.
 
 ## Latest completed work
 
-Consumed authorization:
+Repair closeout:
+
+`V2_9_8B_CAMPAIGN_SOURCE_REQUEST_SCOPE_PROPAGATION_REPAIR_PASS`
+
+Readiness verdict:
+
+`V2_9_8B_POST_SCOPE_PROPAGATION_REPAIR_FRESH_READINESS_PASS`
+
+Readiness report:
+
+`docs/printer-v1-v2-9-8b-post-scope-propagation-repair-fresh-readiness.md`
+
+Repair-closeout HEAD evaluated during this readiness audit:
+
+`952960452999379abaaf99fb579f58ae00b3ab9a`
+
+The commit that lands this handoff and readiness report becomes the exact live
+HEAD that any immediately following package preparation must bind. Do not reuse
+`95296045...` or any remembered SHA as the package binding after this commit
+exists.
+
+Consumed authorization remains:
 
 `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260901T181024Z_ab6c68fe`
 
-Authorization state:
-
 `CONSUMED / CHILD_EXITED_NONZERO / PERMANENTLY NON-REUSABLE`
 
-Authorized HEAD for that one-shot:
+Do not retry or reuse it.
 
-`eefd909fe40b14a6459154c71ba56ace8be08b4f`
+## Fresh host-local DB identity at readiness
 
-Execution:
+Required authoritative DB path:
 
-`20260901T191450Z-520d6a348621`
+`data/printer_v1.sqlite3`
 
-Terminal cause:
+Fresh identity:
 
-`ValueError:CAMPAIGN_SOURCE_REQUEST_SCOPE_REQUIRED`
-
-Classification:
-
-`COMMITTED_CODE_DEFECT` / `CAMPAIGN_SOURCE_REQUEST_SCOPE_PROPAGATION_LOSS`
-
-Repair closeout:
-
-`docs/printer-v1-v2-9-8b-campaign-source-request-scope-propagation-repair-closeout.md`
-
-Forensic audit:
-
-`docs/printer-v1-v2-9-8b-campaign-source-request-scope-propagation-forensic-audit.md`
-
-Design:
-
-`docs/printer-v1-v2-9-8b-campaign-source-request-scope-propagation-repair-design.md`
-
-Repair branch:
-
-`assistant/v2-9-8b-campaign-source-request-scope-propagation-repair`
-
-The commit that lands this handoff and closeout becomes the exact live HEAD that
-any later readiness package must bind. Do not reuse `eefd909f...` as a future
-package binding after this commit exists.
-
-## Consumed-run zero-state
-
-The failed run cleaned up. Do not mutate its historical rows.
-
-- campaign/run/cycle: `TERMINAL_FAILED`
-- supervision: `TERMINAL`; lease released; cleanup completed
-- no active Printer process
-- no active/stopping campaign ownership
-- no unreleased campaign or candidate-acquisition lease
-- no scheduler/factory work attributable to this run
-- DB integrity `ok`; foreign-key violations `0`; no unexpected SQLite sidecars
-
-Post-run authoritative DB identity at investigation time:
-
-- path: `data/printer_v1.sqlite3`
 - SHA-256: `ca4c678b6164ad2aad36ed6140a06d96dc409d1cd3b64c40b17bce78a42b01dc`
+- size: `146505728`
+- inode: `1230526`
+- mtime_ns: `1788290102639046545`
+- migration count/head: `62` / `062_pre_admission_attempt_evidence.sql`
+- integrity: `ok`
+- foreign-key violations: `0`
+- journal mode: `delete`
+- sidecars: none
 
-Any later readiness/preparation must re-read live DB identity and fail closed on
-drift. Do not reuse a remembered hash.
+Preparation must re-read these facts at package-creation time and fail closed
+on drift.
+
+## Durable zero-state / quiescence at readiness
+
+All canonical ownership domains were zero. Campaign and candidate-acquisition
+leases were released/terminal. `active_printer_runtime_processes` was empty.
+Historical terminal rows, including the consumed Sep-1 campaign, remain
+historical residue and must not be mutated.
+
+## Governing authorization design
+
+Do not redesign the completed preparation boundary:
+
+`docs/printer-v1-v2-9-8b-next-standard-4h-authorization-preparation-boundary-design.md`
+
+Canonical owners remain authoritative:
+
+- document validator:
+  `validate_four_token_standard_four_hour_authorization_document`;
+- application/consumption owner: `apply_authorization_once`;
+- operational policy: `exact_operational_policy()`;
+- profile: `FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE`;
+- zero-state: `assert_four_token_standard_four_hour_zero_state`;
+- prior non-reuse: `validate_prior_authorizations_non_reusable`.
 
 ## Exact next permitted action
 
-`Perform a fresh exact-HEAD / exact-DB read-only readiness / governance audit against the live repair-closeout HEAD and the freshly re-read authoritative DB. Stop. Do not prepare an authorization in the same lane as this repair.`
+`Prepare exactly one fresh exact-HEAD / exact-DB one-shot Standard-4H authorization package using the existing canonical authorization owners, binding the actual HEAD of this readiness commit and the freshly re-read authoritative DB identity, including the complete prior non-reuse trust root with V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260901T181024Z_ab6c68fe, and stop unconsumed for independent package review.`
 
-After that readiness PASS, a later separate lane may prepare exactly one fresh
-exact-HEAD / exact-DB one-shot Standard-4H authorization, including this consumed
-ID in the complete prior non-reuse trust root, and must stop unconsumed for
-independent package review.
+After that package is published:
+
+- final package state must be exactly `PREPARED / UNCONSUMED / UNAPPLIED`;
+- do not create an application marker;
+- do not call `apply_authorization_once`;
+- do not add a later tracked commit that would recreate exact-HEAD binding drift;
+- record package ID/path/SHA-256 in the operator response / package bytes only.
+
+Independent package review is the next lane after preparation. Review PASS still
+does not authorize application or execution.
 
 ## Application / execution remain blocked
 
 This handoff does **not** authorize:
 
-- `apply_authorization_once`
-- application-marker creation
-- Printer execution or child launch
-- campaign creation
-- provider / RPC / WebSocket calls
-- Central Scheduler runtime
-- authoritative DB mutation
-- retry / rerun / resume / restart / successor
-- retrieval / BUY / SELL / HOLD / positions / trades / audits / PnL
-- `WINDOW_12H` / `WINDOW_24H`
-
-Do not reuse `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260901T181024Z_ab6c68fe`.
+- `apply_authorization_once`;
+- application-marker creation;
+- Printer execution or child launch;
+- campaign creation;
+- provider / RPC / WebSocket calls;
+- Central Scheduler runtime;
+- authoritative DB mutation;
+- retry / rerun / resume / restart / successor;
+- retrieval / BUY / SELL / HOLD / positions / trades / audits / PnL;
+- `WINDOW_12H` / `WINDOW_24H`.
 
 ## Standard-4H envelope
 
 Preserve exactly:
 
-- Solana-only
-- Solana memecoin-only
-- paper-only
-- two cycles
-- exactly 2 concurrently active token slots
-- up to 4 distinct identities campaign-wide
-- Cycle 2 fresh/disjoint from prior admitted campaign identities
-- `WINDOW_15M -> hard-gated WINDOW_1H -> hard-gated WINDOW_4H -> stop`
-- `WINDOW_5M_MICRO_EVENT` support-only
-- `WINDOW_12H` / `WINDOW_24H` locked
-- no automatic retry/rerun/resume/restart/successor
+- Solana-only;
+- Solana memecoin-only;
+- paper-only;
+- two cycles;
+- exactly 2 concurrently active token slots;
+- up to 4 distinct identities campaign-wide;
+- Cycle 2 fresh/disjoint from prior admitted campaign identities;
+- `WINDOW_15M -> hard-gated WINDOW_1H -> hard-gated WINDOW_4H -> stop`;
+- `WINDOW_5M_MICRO_EVENT` support-only;
+- `WINDOW_12H` / `WINDOW_24H` locked;
+- no automatic retry/rerun/resume/restart/successor.
 
 ## Builder sequence
 
@@ -122,8 +137,9 @@ Preserve exactly:
 readiness -> design/specification -> preparation -> independent package review -> explicit application/execution approval -> one-shot bounded execution/proof -> closeout
 ```
 
-Do not collapse readiness, preparation, review, application approval, and
-execution into one action.
+Do not collapse preparation, review, application approval, and execution into
+one action. The authorization-boundary design is already complete; do not redo
+it.
 
 ## Active-work governance
 

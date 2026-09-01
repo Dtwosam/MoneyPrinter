@@ -75,6 +75,18 @@ Governing closeout:
 
 `docs/printer-v1-v2-9-8b-campaign-source-request-scope-propagation-repair-closeout.md`
 
+Post-repair readiness verdict:
+
+`V2_9_8B_POST_SCOPE_PROPAGATION_REPAIR_FRESH_READINESS_PASS`
+
+Readiness report:
+
+`docs/printer-v1-v2-9-8b-post-scope-propagation-repair-fresh-readiness.md`
+
+Repair-closeout HEAD evaluated during that readiness audit:
+
+`952960452999379abaaf99fb579f58ae00b3ab9a`
+
 This block supersedes older current-looking Standard-4H next-lane pointers later
 in this file for current-lane selection only. Historical consumed/stale
 authorization text remains evidence. The consumed Sep-1 authorization must remain
@@ -84,11 +96,12 @@ resume, restart, or create a successor from that run.
 The exact current permitted lane is:
 
 ```text
-POST-REPAIR FRESH EXACT-HEAD / EXACT-DB READINESS / GOVERNANCE ONLY
+FRESH EXACT-HEAD / EXACT-DB ONE-SHOT STANDARD-4H AUTHORIZATION PREPARATION
 ```
 
-Use `CURRENT_HANDOFF.md` for the live HEAD after this closeout commit, latest
-completed work, and next permitted action.
+Use `CURRENT_HANDOFF.md` for the live HEAD after the readiness documentation
+commit, latest completed work, and next permitted action. The completed
+authorization-boundary design remains authoritative and must not be redone.
 
 This does **not** authorize `apply_authorization_once`, application-marker
 creation, Printer execution, child launch, another campaign, provider/RPC/

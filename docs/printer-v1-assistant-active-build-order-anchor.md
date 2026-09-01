@@ -69,24 +69,31 @@ The remote-host work is infrastructure support only. It does not reorder or adva
 The exact current lane is:
 
 ```text
-POST-REPAIR FRESH EXACT-HEAD / EXACT-DB READINESS / GOVERNANCE ONLY
+FRESH EXACT-HEAD / EXACT-DB ONE-SHOT STANDARD-4H AUTHORIZATION PREPARATION
 ```
 
 The consumed Sep-1 authorization
 `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260901T181024Z_ab6c68fe` is
 `CONSUMED / CHILD_EXITED_NONZERO / PERMANENTLY NON-REUSABLE`. The freeze-ready
-scope-propagation repair is closed PASS. Use `CURRENT_HANDOFF.md` for the live
-HEAD after that closeout commit.
+scope-propagation repair is closed PASS. Post-repair readiness is closed
+`V2_9_8B_POST_SCOPE_PROPAGATION_REPAIR_FRESH_READINESS_PASS`. Use
+`CURRENT_HANDOFF.md` for the live HEAD after that readiness documentation
+commit.
 
 Allowed now:
 
-- fresh exact-HEAD / exact-DB read-only readiness / governance against the repair
-  closeout HEAD and the freshly re-read authoritative DB;
-- stop again before any authorization preparation.
+- prepare exactly one fresh exact-HEAD / exact-DB one-shot Standard-4H
+  authorization package using the existing canonical owners;
+- bind the actual HEAD of the readiness commit and the freshly re-read
+  authoritative DB identity;
+- include the complete prior non-reuse trust root plus the consumed Sep-1 ID;
+- stop unconsumed for independent package review.
 
+Do not redo the completed authorization-boundary design.
 Do not reuse the consumed Sep-1 authorization.
 Do not retry, rerun, resume, restart, or create a successor from that run.
-Do not prepare or apply an authorization in the same lane as the repair.
+Do not create an application marker.
+Do not call `apply_authorization_once`.
 Do not run Printer.
 Do not contact providers/RPC/WebSocket.
 Do not run Central Scheduler.
