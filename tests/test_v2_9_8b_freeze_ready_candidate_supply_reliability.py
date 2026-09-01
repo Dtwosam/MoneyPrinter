@@ -357,9 +357,6 @@ def test_02_depth_below_four_with_horizon_continues_not_terminal() -> None:
         acquisition_deadline_at="2026-09-01T12:16:19+00:00",
         now=NOW,
         universe_state="ALL_REACHABLE_CANDIDATES_EVALUATED",
-        supervision_active=True,
-        cancellation_requested=False,
-        pending_refresh_exists=False,
         refresh_interval_seconds=600,
     )
     assert decision.status == WAITING_FOR_ELIGIBLE_SUPPLY
@@ -508,9 +505,6 @@ def test_06_honest_exhaustion_terminals_coverage_insufficient() -> None:
         acquisition_deadline_at="2026-09-01T11:40:00+00:00",
         now="2026-09-01T11:39:30+00:00",
         universe_state="ALL_REACHABLE_CANDIDATES_EVALUATED",
-        supervision_active=True,
-        cancellation_requested=False,
-        pending_refresh_exists=False,
         refresh_interval_seconds=600,
     )
     assert decision.status == "PRE_LIFECYCLE_DISCOVERY_SELECTION_COVERAGE_INSUFFICIENT"

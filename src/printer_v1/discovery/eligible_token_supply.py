@@ -139,9 +139,6 @@ def decide_pre_lifecycle_supply_continuation(
     acquisition_deadline_at: str,
     now: str,
     universe_state: str,
-    supervision_active: bool,
-    cancellation_requested: bool,
-    pending_refresh_exists: bool,
     refresh_interval_seconds: int = 600,
     minimum_freeze_depth: int | None = None,
 ) -> PreLifecycleSupplyContinuationDecision:
@@ -150,7 +147,6 @@ def decide_pre_lifecycle_supply_continuation(
         MINIMUM_FREEZE_DEPTH,
     )
     from printer_v1.discovery.pre_lifecycle_temporal_acquisition import (
-        evaluate_wait_eligibility,
         refresh_window_fits,
     )
 
@@ -172,28 +168,22 @@ def decide_pre_lifecycle_supply_continuation(
             status="CONTINUE_PRE_FREEZE_ENRICHMENT",
             final_terminal_cause=None,
         )
-    if refresh_window_fits(
-        now=now,
-        acquisition_deadline_at=acquisition_deadline_at,
-        refresh_interval_seconds=int(refresh_interval_seconds),
-    ):
-        eligibility = evaluate_wait_eligibility(
-            reserve_depth=int(freeze_ready_depth),
-            required_capacity=threshold,
-            universe_state=str(universe_state),
+    if (
+        str(universe_state) in CURRENT_UNIVERSE_EXHAUSTION_REASONS
+        and int(source_operations_remaining) > 0
+        and refresh_window_fits(
             now=now,
             acquisition_deadline_at=acquisition_deadline_at,
-            source_operations_remaining=int(source_operations_remaining),
-            provider_terminal_failure=False,
-            supervision_active=bool(supervision_active),
-            cancellation_requested=bool(cancellation_requested),
-            pending_refresh_exists=bool(pending_refresh_exists),
+            refresh_interval_seconds=int(refresh_interval_seconds),
         )
-        if eligibility.eligible:
-            return PreLifecycleSupplyContinuationDecision(
-                status=WAITING_FOR_ELIGIBLE_SUPPLY,
-                final_terminal_cause=None,
-            )
+    ):
+        # Runtime supervision, cancellation, and pending-refresh truth belongs
+        # exclusively to the temporal owner. This helper only establishes that
+        # another refresh is statically possible under capacity/horizon/budget.
+        return PreLifecycleSupplyContinuationDecision(
+            status=WAITING_FOR_ELIGIBLE_SUPPLY,
+            final_terminal_cause=None,
+        )
     return PreLifecycleSupplyContinuationDecision(
         status=PRE_LIFECYCLE_DISCOVERY_SELECTION_COVERAGE_INSUFFICIENT,
         final_terminal_cause=PRE_LIFECYCLE_DISCOVERY_SELECTION_COVERAGE_INSUFFICIENT,
@@ -3266,6 +3256,7 @@ def run_persistent_eligible_token_supply(
             and temporal_refresh_owner is not None
             and acquisition_ledger is not None
             and deadline_dt is not None
+            and last_stop_reason in CURRENT_UNIVERSE_EXHAUSTION_REASONS
         ):
             continuation = decide_pre_lifecycle_supply_continuation(
                 freeze_ready_depth=capacity_depth,
@@ -3273,18 +3264,7 @@ def run_persistent_eligible_token_supply(
                 source_operations_remaining=_ops_remaining(),
                 acquisition_deadline_at=deadline_dt.isoformat(),
                 now=_utc_now_iso(),
-                universe_state=(
-                    last_stop_reason
-                    if last_stop_reason
-                    in {
-                        "ALL_REACHABLE_CANDIDATES_EVALUATED",
-                        "NO_ADDITIONAL_UNIQUE_CANDIDATES_REACHABLE",
-                    }
-                    else "ALL_REACHABLE_CANDIDATES_EVALUATED"
-                ),
-                supervision_active=True,
-                cancellation_requested=False,
-                pending_refresh_exists=False,
+                universe_state=str(last_stop_reason),
                 refresh_interval_seconds=int(
                     getattr(temporal_refresh_owner, "refresh_interval_seconds", 600)
                 ),
