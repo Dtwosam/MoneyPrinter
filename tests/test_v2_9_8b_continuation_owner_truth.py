@@ -64,3 +64,17 @@ def test_production_supply_delegates_temporal_runtime_truth_to_owner():
     block = source[start:end]
     assert "_request_temporal_refresh(" in block
     assert "CURRENT_UNIVERSE_EXHAUSTION_REASONS" in source[:start]
+
+
+def test_authoritative_campaign_does_not_invent_temporal_runtime_truth():
+    from printer_v1.operator_cli.authoritative_live_operational_campaign import (
+        AuthoritativeLiveOperationalCampaignOwner,
+    )
+
+    source = inspect.getsource(AuthoritativeLiveOperationalCampaignOwner.run_operational)
+    for forbidden in (
+        "supervision_active=True",
+        "cancellation_requested=False",
+        "pending_refresh_exists=False",
+    ):
+        assert forbidden not in source

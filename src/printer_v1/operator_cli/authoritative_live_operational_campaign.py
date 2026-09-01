@@ -3520,6 +3520,9 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 from printer_v1.operator_cli.later_cycle_graduated_supply import (
                     build_later_cycle_graduated_supply,
                 )
+                from printer_v1.operator_cli.four_token_proof_integration import (
+                    LaterCycleCandidateSupply,
+                )
 
                 later_supply_kwargs = dict(graduated_supply_kwargs or {})
                 for locally_owned in (
@@ -3939,8 +3942,8 @@ class AuthoritativeLiveOperationalCampaignOwner:
                             ),
                             "reserve_depth": int(
                                 diagnostics.get("freeze_ready_depth")
-                                or diagnostics.get("eligible_reserve_count")
-                                or 0
+                                if diagnostics.get("freeze_ready_depth") is not None
+                                else 0
                             ),
                             "waiting_for_refresh": (
                                 result.terminal_cause
@@ -5101,9 +5104,6 @@ class AuthoritativeLiveOperationalCampaignOwner:
                         acquisition_deadline_at=str(acquisition_deadline),
                         now=datetime.now(timezone.utc).isoformat(),
                         universe_state="ALL_REACHABLE_CANDIDATES_EVALUATED",
-                        supervision_active=True,
-                        cancellation_requested=False,
-                        pending_refresh_exists=False,
                         refresh_interval_seconds=refresh_interval,
                         minimum_freeze_depth=int(MINIMUM_FREEZE_DEPTH),
                     )
