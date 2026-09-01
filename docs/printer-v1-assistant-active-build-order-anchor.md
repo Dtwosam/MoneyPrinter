@@ -69,19 +69,24 @@ The remote-host work is infrastructure support only. It does not reorder or adva
 The exact current lane is:
 
 ```text
-REMOTE HOST DESIGN / SPECIFICATION — OPERATOR REVIEW / IMPLEMENTATION APPROVAL GATE
+POST-REPAIR FRESH EXACT-HEAD / EXACT-DB READINESS / GOVERNANCE ONLY
 ```
+
+The consumed Sep-1 authorization
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260901T181024Z_ab6c68fe` is
+`CONSUMED / CHILD_EXITED_NONZERO / PERMANENTLY NON-REUSABLE`. The freeze-ready
+scope-propagation repair is closed PASS. Use `CURRENT_HANDOFF.md` for the live
+HEAD after that closeout commit.
 
 Allowed now:
 
-- review the native Linux/systemd portability design against the active authority stack;
-- accept, reject, or narrow the design;
-- if accepted, explicitly authorize the narrow implementation slice.
+- fresh exact-HEAD / exact-DB read-only readiness / governance against the repair
+  closeout HEAD and the freshly re-read authoritative DB;
+- stop again before any authorization preparation.
 
-Do not implement yet.
-Do not provision a server.
-Do not transfer the DB.
-Do not create or apply an authorization.
+Do not reuse the consumed Sep-1 authorization.
+Do not retry, rerun, resume, restart, or create a successor from that run.
+Do not prepare or apply an authorization in the same lane as the repair.
 Do not run Printer.
 Do not contact providers/RPC/WebSocket.
 Do not run Central Scheduler.

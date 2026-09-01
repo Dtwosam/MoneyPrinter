@@ -1150,6 +1150,7 @@ def run_persistent_eligible_token_supply(
     execution_id: str | None = None,
     run_id: str | None = None,
     cycle_id: str | None = None,
+    campaign_source_request_scope: Any | None = None,
     locator_runner: Callable[..., Mapping[str, Any]] | None = None,
     tracking_precheck: bool = False,
     stage_evidence_sink: Callable[[Mapping[str, Any]], None] | None = None,
@@ -2135,14 +2136,35 @@ def run_persistent_eligible_token_supply(
             )
 
             coverage = _current_source_request_coverage()
+            diagnostics: dict[str, Any] = {
+                "campaign_source_request_coverage": coverage,
+            }
+            if campaign_source_request_scope is not None:
+                if hasattr(campaign_source_request_scope, "as_dict"):
+                    diagnostics["campaign_source_request_scope"] = (
+                        campaign_source_request_scope.as_dict()
+                    )
+                    diagnostics["request_key_root"] = str(
+                        campaign_source_request_scope.request_key_root
+                    )
+                elif isinstance(campaign_source_request_scope, Mapping):
+                    diagnostics["campaign_source_request_scope"] = dict(
+                        campaign_source_request_scope
+                    )
+                    scoped_root = str(
+                        campaign_source_request_scope.get("request_key_root") or ""
+                    ).strip()
+                    if scoped_root:
+                        diagnostics["request_key_root"] = scoped_root
             reconciliation = assemble_and_reconcile_campaign_source_requests(
                 connection,
-                diagnostics={"campaign_source_request_coverage": coverage},
+                diagnostics=diagnostics,
                 request_key_prefixes=(
                     str(discovery_request_key_prefix),
                     str(front_door_request_key_prefix),
                 ),
                 request_key_root=str(discovery_request_key_prefix),
+                campaign_source_request_scope=campaign_source_request_scope,
             )
             if str(reconciliation.get("status") or "") != "OK":
                 freeze_ready_depth_measured = 0
@@ -3842,6 +3864,24 @@ def run_persistent_eligible_token_supply(
             "permanent_market_reports": list(permanent_market_reports),
             "campaign_source_request_coverage": _current_source_request_coverage(),
             "discovery_request_key_prefix": discovery_request_key_prefix,
+            **(
+                {
+                    "campaign_source_request_scope": (
+                        campaign_source_request_scope.as_dict()
+                        if hasattr(campaign_source_request_scope, "as_dict")
+                        else dict(campaign_source_request_scope)
+                    ),
+                    "request_key_root": (
+                        str(campaign_source_request_scope.request_key_root)
+                        if hasattr(campaign_source_request_scope, "request_key_root")
+                        else str(
+                            campaign_source_request_scope.get("request_key_root") or ""
+                        )
+                    ),
+                }
+                if campaign_source_request_scope is not None
+                else {}
+            ),
             "memory_observation_eligible_count": sum(
                 1
                 for item in eligible_list

@@ -45,6 +45,57 @@ Every major capability must preserve:
 Use minimum sufficient risk-based verification. Do not request broad regression
 suites unless the change risk or lane closeout requires them.
 
+### Current V2-9.8B consumed Sep-1 Standard-4H scope-propagation repair — 2026-09-01
+
+Consumed authorization:
+
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260901T181024Z_ab6c68fe`
+
+Final state:
+
+`CONSUMED / CHILD_EXITED_NONZERO / PERMANENTLY NON-REUSABLE`
+
+Authorized HEAD for that one-shot:
+
+`eefd909fe40b14a6459154c71ba56ace8be08b4f`
+
+Execution:
+
+`20260901T191450Z-520d6a348621`
+
+Terminal cause:
+
+`ValueError:CAMPAIGN_SOURCE_REQUEST_SCOPE_REQUIRED`
+
+Classification:
+
+`COMMITTED_CODE_DEFECT` / `CAMPAIGN_SOURCE_REQUEST_SCOPE_PROPAGATION_LOSS`
+
+Governing closeout:
+
+`docs/printer-v1-v2-9-8b-campaign-source-request-scope-propagation-repair-closeout.md`
+
+This block supersedes older current-looking Standard-4H next-lane pointers later
+in this file for current-lane selection only. Historical consumed/stale
+authorization text remains evidence. The consumed Sep-1 authorization must remain
+in every future Standard-4H prior non-reuse trust root. Do not retry, rerun,
+resume, restart, or create a successor from that run.
+
+The exact current permitted lane is:
+
+```text
+POST-REPAIR FRESH EXACT-HEAD / EXACT-DB READINESS / GOVERNANCE ONLY
+```
+
+Use `CURRENT_HANDOFF.md` for the live HEAD after this closeout commit, latest
+completed work, and next permitted action.
+
+This does **not** authorize `apply_authorization_once`, application-marker
+creation, Printer execution, child launch, another campaign, provider/RPC/
+WebSocket calls, Central Scheduler runtime, authoritative DB mutation,
+retry/rerun/resume/restart/successor, retrieval, BUY/SELL/HOLD, positions,
+trades, audits, PnL, or `WINDOW_12H` / `WINDOW_24H`.
+
 ### Current V2-9.8B stale Standard-4H authorization exact-HEAD-drift closeout — 2026-08-31
 
 Final pre-application approval verdict:

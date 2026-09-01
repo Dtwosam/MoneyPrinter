@@ -117,7 +117,9 @@ def test_persistent_supply_wires_cumulative_coverage_into_canonical_depth_before
     assert refresh_def < measurement_call < owner_call
     assert "measure_freeze_ready_candidates" in source
     assert "assemble_and_reconcile_campaign_source_requests" in source
+    assert "campaign_source_request_scope=campaign_source_request_scope" in source
     assert '"campaign_source_request_coverage": _current_source_request_coverage()' in source
+    assert "campaign_source_request_scope" in signature.parameters
 
 
 def test_composition_and_coordinator_forward_cumulative_coverage():

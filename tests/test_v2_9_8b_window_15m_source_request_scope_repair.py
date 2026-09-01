@@ -344,6 +344,7 @@ class TestPermanentOperationalScopeGates:
             )
         assert captured["discovery_request_key_prefix"] == scope.request_key_root
         assert captured["front_door_request_key_prefix"] == scope.request_key_root
+        assert captured["campaign_source_request_scope"] == scope
         assert supply.diagnostics["request_key_root"] == scope.request_key_root
         assert (
             supply.diagnostics["discovery_request_key_prefix"]
