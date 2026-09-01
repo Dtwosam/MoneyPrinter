@@ -19,7 +19,19 @@ jobs:
       - name: Install pytest
         run: python -m pip install -q pytest
       - name: Write RED tests
-        run: python .github/assistant_refresh_coverage_patch.py tests
+        shell: bash
+        run: |
+          python .github/assistant_refresh_coverage_patch.py tests
+          python - <<'PY'
+          from pathlib import Path
+          path = Path("tests/test_v2_9_8b_refresh_coverage_carry.py")
+          text = path.read_text()
+          old = '        "transport_identity_count": 1,\n        "transport_identity_keys":'
+          new = '        "transport_identity_count": 1,\n        "normalized_member_count": 1,\n        "transport_identity_keys":'
+          if text.count(old) != 1:
+              raise SystemExit("coverage fixture anchor mismatch")
+          path.write_text(text.replace(old, new, 1))
+          PY
       - name: Prove RED
         shell: bash
         run: |
