@@ -161,6 +161,21 @@ def _resolve_current_cycle_ordinal_for_historical_disjointness(
     return raw_ordinal
 
 
+def _merge_later_cycle_refresh_source_request_coverage(
+    progress: Mapping[str, Any],
+    completed: Sequence[Mapping[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Merge exact refresh coverage into the existing cooperative carrier."""
+    from printer_v1.discovery.eligible_token_supply import (
+        merge_cumulative_source_request_coverage,
+    )
+
+    return merge_cumulative_source_request_coverage(
+        progress.get("source_request_coverage") or (),
+        completed or (),
+    )
+
+
 def _persist_completed_later_cycle_refresh_progress(
     progress_by_cycle: dict[str, dict[str, Any]],
     *,
@@ -168,6 +183,7 @@ def _persist_completed_later_cycle_refresh_progress(
     progress: Mapping[str, Any],
     refresh_owner: Any,
     completed_source_operations: int,
+    completed_source_request_coverage: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Commit the cooperative refresh transition before yielding its claim."""
     prior_operations = int(progress.get("source_operations_used") or 0)
@@ -178,6 +194,9 @@ def _persist_completed_later_cycle_refresh_progress(
         **dict(progress),
         "refresh_owner": refresh_owner,
         "source_operations_used": prior_operations + completed_operations,
+        "source_request_coverage": _merge_later_cycle_refresh_source_request_coverage(
+            progress, completed_source_request_coverage
+        ),
         # The refresh owner reports the pre-revalidation reserve depth. Preserve
         # that truthful value until the resumed canonical market traversal owns
         # and persists a new one.
@@ -3760,6 +3779,11 @@ class AuthoritativeLiveOperationalCampaignOwner:
                                 prior_operations = int(
                                     progress["source_operations_used"]
                                 )
+                            progress["source_request_coverage"] = (
+                                _merge_later_cycle_refresh_source_request_coverage(
+                                    progress, outcome.source_request_coverage
+                                )
+                            )
                             progress["next_governed_request_worst_case_seconds"] = (
                                 outcome.next_governed_request_worst_case_seconds
                             )
@@ -3801,6 +3825,9 @@ class AuthoritativeLiveOperationalCampaignOwner:
                                 refresh_owner=later_cycle_refresh_owner,
                                 completed_source_operations=int(
                                     outcome.source_operations
+                                ),
+                                completed_source_request_coverage=(
+                                    outcome.source_request_coverage
                                 ),
                             )
                         )

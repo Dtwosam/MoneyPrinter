@@ -139,6 +139,7 @@ class TemporalRefreshOutcome:
     channels_skipped: tuple[Mapping[str, Any], ...] = ()
     newly_observed_exact_identities: tuple[Mapping[str, Any], ...] = ()
     promoted_observation_eligible: tuple[Mapping[str, Any], ...] = ()
+    source_request_coverage: tuple[Mapping[str, Any], ...] = ()
     reserve_depth_before: int = 0
     reserve_depth_after: int = 0
     detail: str = ""
@@ -176,6 +177,9 @@ class TemporalRefreshOutcome:
             "promoted_observation_eligible_count": len(
                 self.promoted_observation_eligible
             ),
+            "source_request_coverage": [
+                dict(item) for item in self.source_request_coverage
+            ],
             "reserve_depth_before": self.reserve_depth_before,
             "reserve_depth_after": self.reserve_depth_after,
             "detail": self.detail,
