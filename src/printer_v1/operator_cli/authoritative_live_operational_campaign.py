@@ -3847,6 +3847,9 @@ class AuthoritativeLiveOperationalCampaignOwner:
                         graduated_supply_kwargs={
                             **later_supply_kwargs,
                             "persist_terminal_certificate": False,
+                            "prior_source_request_coverage": list(
+                                (progress or {}).get("source_request_coverage") or ()
+                            ),
                         },
                         holder_evidence_owner=holder_evidence_owner,
                         deadline_at=later_cycle_deadline,
@@ -3902,8 +3905,15 @@ class AuthoritativeLiveOperationalCampaignOwner:
                             "source_operations_used": int(
                                 diagnostics.get("stage_local_source_requests") or 0
                             ),
+                            "source_request_coverage": list(
+                                diagnostics.get("campaign_source_request_coverage")
+                                or (progress or {}).get("source_request_coverage")
+                                or ()
+                            ),
                             "reserve_depth": int(
-                                diagnostics.get("eligible_reserve_count") or 0
+                                diagnostics.get("freeze_ready_depth")
+                                or diagnostics.get("eligible_reserve_count")
+                                or 0
                             ),
                             "waiting_for_refresh": (
                                 result.terminal_cause

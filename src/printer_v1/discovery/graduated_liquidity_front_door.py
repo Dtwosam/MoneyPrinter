@@ -215,6 +215,7 @@ class FrontDoorCandidate:
     direct_pump_evidence: Mapping[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        current_direct = self.provenance == LATEST_GRADUATED_CHANNEL
         result = {
             "mint": self.mint,
             "pool": self.pumpswap_pool,
@@ -225,12 +226,22 @@ class FrontDoorCandidate:
             "liquidity": self.liquidity.to_dict(),
             "eligible": self.eligible,
             "rejection": self.rejection,
-            "admission_authority": "DIRECT_PUMP_PUMPSWAP",
-            "nomination_source": "direct_pump_migration",
-            "lineage_state": "PUMP_GRADUATION_CONFIRMED",
+            "admission_authority": (
+                "DIRECT_PUMP_PUMPSWAP" if current_direct else "MARKET_PRESENT_POOL"
+            ),
+            "nomination_source": (
+                "direct_pump_migration" if current_direct else "dexscreener"
+            ),
+            "lineage_state": (
+                "PUMP_GRADUATION_CONFIRMED" if current_direct else "UNKNOWN_ORIGIN"
+            ),
             "exact_present_pool_confirmed": True,
         }
-        if self.direct_pump_evidence is not None:
+        if current_direct:
+            if self.direct_pump_evidence is None:
+                raise GraduatedFrontDoorError(
+                    "CURRENT_DIRECT_PUMP_EVIDENCE_MISSING", self.mint
+                )
             result["direct_pump_evidence"] = dict(self.direct_pump_evidence)
         return result
 

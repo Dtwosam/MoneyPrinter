@@ -272,6 +272,42 @@ def enrich_pre_freeze_retained_evidence(
         "enrichment_runner_required": True,
     }
 
+def merge_cumulative_source_request_coverage(
+    prior: Sequence[Mapping[str, Any]] | None,
+    current: Sequence[Mapping[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Merge exact stage-produced request coverage across cooperative claims."""
+    by_request: dict[int, tuple[str, dict[str, Any]]] = {}
+    for collection in (prior or (), current or ()):
+        if isinstance(collection, (str, bytes)):
+            raise EligibleTokenSupplyError("INVALID_PRIOR_SOURCE_REQUEST_COVERAGE")
+        for raw in collection:
+            if not isinstance(raw, Mapping):
+                raise EligibleTokenSupplyError("INVALID_PRIOR_SOURCE_REQUEST_COVERAGE")
+            item = dict(raw)
+            raw_id = item.get("source_request_id")
+            if isinstance(raw_id, bool) or raw_id is None:
+                raise EligibleTokenSupplyError("INVALID_PRIOR_SOURCE_REQUEST_COVERAGE")
+            try:
+                request_id = int(raw_id)
+            except (TypeError, ValueError) as exc:
+                raise EligibleTokenSupplyError(
+                    "INVALID_PRIOR_SOURCE_REQUEST_COVERAGE"
+                ) from exc
+            if request_id <= 0:
+                raise EligibleTokenSupplyError("INVALID_PRIOR_SOURCE_REQUEST_COVERAGE")
+            canonical = json.dumps(
+                item, sort_keys=True, separators=(",", ":"), default=str
+            )
+            existing = by_request.get(request_id)
+            if existing is not None and existing[0] != canonical:
+                raise EligibleTokenSupplyError(
+                    "CUMULATIVE_SOURCE_REQUEST_COVERAGE_CONFLICT"
+                )
+            by_request[request_id] = (canonical, item)
+    return [by_request[key][1] for key in sorted(by_request)]
+
+
 ACQUISITION_QUANTUM_YIELDED = "ACQUISITION_QUANTUM_YIELDED"
 COOPERATIVE_QUANTUM_MAX_DIRECT_CANDIDATES = 5
 
@@ -1136,6 +1172,7 @@ def run_persistent_eligible_token_supply(
     protocol_account_batch_transport_factory: Any | None = None,
     cooperative_resume: bool = False,
     prior_source_operations_used: int = 0,
+    prior_source_request_coverage: Sequence[Mapping[str, Any]] | None = None,
     cooperative_quantum: bool = False,
     cooperative_phase: str | None = None,
     cooperative_stage_budget: StageBudget | None = None,
@@ -1179,6 +1216,19 @@ def run_persistent_eligible_token_supply(
             raise EligibleTokenSupplyError("COOPERATIVE_STAGE_BUDGET_REQUIRED")
         if not isinstance(cooperative_stage_budget, StageBudget):
             raise EligibleTokenSupplyError("COOPERATIVE_STAGE_BUDGET_INVALID")
+    if prior_source_request_coverage is None:
+        prior_source_request_coverage_rows: list[dict[str, Any]] = []
+    else:
+        if isinstance(prior_source_request_coverage, (str, bytes)) or not isinstance(
+            prior_source_request_coverage, Sequence
+        ):
+            raise EligibleTokenSupplyError("INVALID_PRIOR_SOURCE_REQUEST_COVERAGE")
+        prior_source_request_coverage_rows = []
+        for entry in prior_source_request_coverage:
+            if not isinstance(entry, Mapping):
+                raise EligibleTokenSupplyError("INVALID_PRIOR_SOURCE_REQUEST_COVERAGE")
+            prior_source_request_coverage_rows.append(dict(entry))
+
     direct_acquisition_mode = str(cooperative_direct_mode or LIVE_TAIL_MODE)
     if direct_acquisition_mode not in DIRECT_ACQUISITION_MODES:
         raise EligibleTokenSupplyError("DIRECT_ACQUISITION_MODE_INVALID")
@@ -2026,6 +2076,159 @@ def run_persistent_eligible_token_supply(
         # --- bounded pre-lifecycle temporal acquisition (design §§2,6,7) ----
         # Permanent-mode capacity is freeze-ready depth, not raw MOE count.
         freeze_ready_depth_measured = 0
+        freeze_ready_measurement_diagnostics: dict[str, Any] = {
+            "status": "NOT_MEASURED",
+            "freeze_ready_depth": 0,
+        }
+
+        def _current_source_request_coverage() -> list[dict[str, Any]]:
+            discovery_coverage = list(
+                discovery.get("source_request_coverage")
+                or (discovery.get("source_operation_ledger") or {}).get(
+                    "source_request_coverage"
+                )
+                or ()
+            )
+            current_coverage = (
+                list(locator.get("source_request_coverage") or ())
+                + discovery_coverage
+                + list(
+                    geckoterminal_nomination_report.get("source_request_coverage")
+                    or ()
+                )
+                + list(
+                    liquidity_backup_report.get("source_request_coverage") or ()
+                )
+                + list((protocol_report or {}).get("source_request_coverage") or ())
+                + [
+                    entry
+                    for report in permanent_market_reports
+                    for entry in (report.get("source_request_coverage") or ())
+                ]
+            )
+            return merge_cumulative_source_request_coverage(
+                prior_source_request_coverage_rows,
+                current_coverage,
+            )
+
+        def _refresh_freeze_ready_depth() -> int:
+            nonlocal freeze_ready_depth_measured, freeze_ready_measurement_diagnostics
+            if not permanent_availability:
+                freeze_ready_depth_measured = len(campaign_eligible)
+                freeze_ready_measurement_diagnostics = {
+                    "status": "NON_PERMANENT_COMPATIBILITY",
+                    "freeze_ready_depth": freeze_ready_depth_measured,
+                }
+                return freeze_ready_depth_measured
+            if not all(
+                str(value or "").strip() for value in (campaign_id, run_id, cycle_id)
+            ):
+                freeze_ready_depth_measured = 0
+                freeze_ready_measurement_diagnostics = {
+                    "status": "BLOCKED",
+                    "blocker": "RETAINED_CURRENT_RUN_PROVENANCE_UNAVAILABLE",
+                    "freeze_ready_depth": 0,
+                }
+                return 0
+
+            from printer_v1.discovery.later_cycle_fresh_inventory import (
+                load_campaign_fresh_moe_candidates,
+            )
+            from printer_v1.discovery.memory_observation_activation import (
+                measure_freeze_ready_candidates,
+            )
+            from printer_v1.discovery.permanent_discovery_availability import (
+                assemble_and_reconcile_campaign_source_requests,
+            )
+            from printer_v1.lifecycle.tracking_queue import (
+                assess_possible_tracking_claim_by_identity,
+            )
+
+            coverage = _current_source_request_coverage()
+            reconciliation = assemble_and_reconcile_campaign_source_requests(
+                connection,
+                diagnostics={"campaign_source_request_coverage": coverage},
+                request_key_prefixes=(
+                    str(discovery_request_key_prefix),
+                    str(front_door_request_key_prefix),
+                ),
+                request_key_root=str(discovery_request_key_prefix),
+            )
+            if str(reconciliation.get("status") or "") != "OK":
+                freeze_ready_depth_measured = 0
+                freeze_ready_measurement_diagnostics = {
+                    "status": "BLOCKED",
+                    "blocker": str(
+                        reconciliation.get("blocker")
+                        or "CAMPAIGN_SOURCE_REQUEST_RECONCILIATION_MISMATCH"
+                    ),
+                    "freeze_ready_depth": 0,
+                    "campaign_source_request_reconciliation": reconciliation,
+                }
+                return 0
+
+            rows = [
+                dict(item)
+                for item in load_campaign_fresh_moe_candidates(
+                    connection, campaign_id=str(campaign_id), at=now
+                )
+            ]
+            for item in rows:
+                mint = str(item.get("mint") or "")
+                pool = str(item.get("pumpswap_pool") or item.get("pool") or "")
+                assessment = assess_possible_tracking_claim_by_identity(
+                    connection,
+                    token_mint=mint,
+                    pair_address=pool,
+                    assessed_at=started_at,
+                )
+                item["tracking_handoff_eligible"] = bool(assessment.eligible)
+                item["tracking_requalification_required"] = bool(
+                    assessment.requalification_eligible
+                )
+                item["tracking_handoff"] = {
+                    "category": assessment.category,
+                    "eligible_for_evidence": assessment.eligible,
+                    "tracking_queue_id": assessment.queue_id,
+                    "tracking_queue_status": assessment.queue_status,
+                    "requalification_required": assessment.requalification_eligible,
+                    "cooldown_until": assessment.cooldown_until,
+                }
+                tracking_dispositions[mint] = dict(item["tracking_handoff"])
+
+            manifest = list(
+                reconciliation.get("campaign_source_request_manifest")
+                or reconciliation.get("manifest")
+                or ()
+            )
+            measured_keys = [
+                list(key)
+                for entry in manifest
+                for key in (entry.get("transport_identity_keys") or ())
+            ]
+            measurement = measure_freeze_ready_candidates(
+                connection,
+                rows,
+                now=now,
+                request_key_root=str(discovery_request_key_prefix),
+                campaign_id=str(campaign_id),
+                run_id=str(run_id),
+                cycle_id=str(cycle_id),
+                campaign_source_request_manifest=manifest,
+                measured_transport_identity_keys=measured_keys,
+                require_current_run_provenance=True,
+            )
+            freeze_ready_depth_measured = int(measurement.freeze_ready_depth)
+            freeze_ready_measurement_diagnostics = {
+                "status": "MEASURED",
+                "freeze_ready_depth": freeze_ready_depth_measured,
+                "input_count": int(measurement.input_count),
+                "capacity_stop_reason": measurement.capacity_stop_reason,
+                "exclusions": [dict(item) for item in measurement.exclusions],
+                "campaign_source_request_reconciliation": reconciliation,
+            }
+            return freeze_ready_depth_measured
+
         acquisition_ledger: AcquisitionLedger | None = None
         if temporal_refresh_owner is not None:
             acquisition_ledger = AcquisitionLedger(
@@ -2049,6 +2252,8 @@ def run_persistent_eligible_token_supply(
                     getattr(temporal_refresh_owner, "refresh_interval_seconds", 600)
                 ),
             )
+
+        _refresh_freeze_ready_depth()
 
         def _temporal_stop_reason(status: str) -> str:
             """Map one owner outcome onto the fail-closed terminal precedence."""
@@ -2088,6 +2293,9 @@ def run_persistent_eligible_token_supply(
             if temporal_refresh_owner is None or acquisition_ledger is None:
                 last_stop_reason = universe_state
                 return False
+            # Reconcile cumulative current-run evidence immediately before
+            # asking the temporal owner. Capacity met here stops before enqueue.
+            _refresh_freeze_ready_depth()
             # Permanent mode refresh eligibility must use freeze-ready depth, never
             # raw MOE / campaign_eligible length. Unknown depth fails closed at 0.
             if permanent_availability:
@@ -2966,6 +3174,8 @@ def run_persistent_eligible_token_supply(
                 ):
                     stage_budget.seal("protocol_confirmation")
 
+        _refresh_freeze_ready_depth()
+
         # Before certifying a shortage in cooperative later-cycle mode,
         # give the durable temporal owner one chance to own the next lawful
         # 600-second refresh. This is a Scheduler yield, not a retry.
@@ -3550,6 +3760,7 @@ def run_persistent_eligible_token_supply(
             ),
             "required_token_capacity": required_token_capacity,
             "freeze_ready_depth": int(freeze_ready_depth_measured),
+            "freeze_ready_measurement": dict(freeze_ready_measurement_diagnostics),
             "eligible_reserve_count": len(eligible_list),
             "cooldown_skips": cooldown_skips,
             "tracking_precheck_enabled": bool(tracking_precheck),
@@ -3649,31 +3860,7 @@ def run_persistent_eligible_token_supply(
             },
             "geckoterminal_nomination": dict(geckoterminal_nomination_report),
             "permanent_market_reports": list(permanent_market_reports),
-            "campaign_source_request_coverage": list(
-                list(locator.get("source_request_coverage") or ())
-                + list(
-                    discovery.get("source_request_coverage")
-                    or (discovery.get("source_operation_ledger") or {}).get(
-                        "source_request_coverage"
-                    )
-                    or ()
-                )
-                + list(
-                    geckoterminal_nomination_report.get("source_request_coverage")
-                    or ()
-                )
-                + list(
-                    liquidity_backup_report.get("source_request_coverage") or ()
-                )
-                + list(
-                    (protocol_report or {}).get("source_request_coverage") or ()
-                )
-                + [
-                    entry
-                    for report in permanent_market_reports
-                    for entry in (report.get("source_request_coverage") or ())
-                ]
-            ),
+            "campaign_source_request_coverage": _current_source_request_coverage(),
             "discovery_request_key_prefix": discovery_request_key_prefix,
             "memory_observation_eligible_count": sum(
                 1
