@@ -73,6 +73,7 @@ from printer_v1.discovery.pre_lifecycle_temporal_acquisition import (
 )
 from printer_v1.discovery.permanent_discovery_availability import (
     MAX_DEXSCREENER_MARKET_BATCH_MINTS,
+    MINIMUM_FREEZE_DEPTH,
     StageBudget,
     order_canonical_inventory_fairly,
     record_fresh_pool_nominations,
@@ -98,6 +99,179 @@ EVALUATION_BATCH_SIZE = 6
 DEFAULT_DISCOVERY_OPERATION_BUDGET = 30
 LIFECYCLE_OPERATION_CEILING = 45
 CERTIFICATE_VERSION = "V2_9_8B_LIQUIDITY_EVIDENCE_EXHAUSTION_V2"
+PRE_LIFECYCLE_DISCOVERY_SELECTION_COVERAGE_INSUFFICIENT = (
+    "PRE_LIFECYCLE_DISCOVERY_SELECTION_COVERAGE_INSUFFICIENT"
+)
+
+
+def acquisition_capacity_met(
+    *,
+    freeze_ready_depth: int,
+    minimum_freeze_depth: int | None = None,
+) -> bool:
+    """Final acquisition capacity uses freeze-ready depth only."""
+    from printer_v1.discovery.permanent_discovery_availability import (
+        MINIMUM_FREEZE_DEPTH,
+    )
+
+    threshold = (
+        int(MINIMUM_FREEZE_DEPTH)
+        if minimum_freeze_depth is None
+        else int(minimum_freeze_depth)
+    )
+    return int(freeze_ready_depth) >= threshold
+
+
+@dataclass(frozen=True)
+class PreLifecycleSupplyContinuationDecision:
+    status: str
+    final_terminal_cause: str | None
+    restart_created: bool = False
+    successor_created: bool = False
+    automatic_retry_created: bool = False
+
+
+def decide_pre_lifecycle_supply_continuation(
+    *,
+    freeze_ready_depth: int,
+    enrichment_work_remaining: bool,
+    source_operations_remaining: int,
+    acquisition_deadline_at: str,
+    now: str,
+    universe_state: str,
+    supervision_active: bool,
+    cancellation_requested: bool,
+    pending_refresh_exists: bool,
+    refresh_interval_seconds: int = 600,
+    minimum_freeze_depth: int | None = None,
+) -> PreLifecycleSupplyContinuationDecision:
+    """Decide continue/wait/terminal from freeze-ready depth and horizon law."""
+    from printer_v1.discovery.permanent_discovery_availability import (
+        MINIMUM_FREEZE_DEPTH,
+    )
+    from printer_v1.discovery.pre_lifecycle_temporal_acquisition import (
+        evaluate_wait_eligibility,
+        refresh_window_fits,
+    )
+
+    threshold = (
+        int(MINIMUM_FREEZE_DEPTH)
+        if minimum_freeze_depth is None
+        else int(minimum_freeze_depth)
+    )
+    if acquisition_capacity_met(
+        freeze_ready_depth=freeze_ready_depth,
+        minimum_freeze_depth=threshold,
+    ):
+        return PreLifecycleSupplyContinuationDecision(
+            status="ELIGIBLE_CAPACITY_MET",
+            final_terminal_cause=None,
+        )
+    if enrichment_work_remaining and int(source_operations_remaining) > 0:
+        return PreLifecycleSupplyContinuationDecision(
+            status="CONTINUE_PRE_FREEZE_ENRICHMENT",
+            final_terminal_cause=None,
+        )
+    if refresh_window_fits(
+        now=now,
+        acquisition_deadline_at=acquisition_deadline_at,
+        refresh_interval_seconds=int(refresh_interval_seconds),
+    ):
+        eligibility = evaluate_wait_eligibility(
+            reserve_depth=int(freeze_ready_depth),
+            required_capacity=threshold,
+            universe_state=str(universe_state),
+            now=now,
+            acquisition_deadline_at=acquisition_deadline_at,
+            source_operations_remaining=int(source_operations_remaining),
+            provider_terminal_failure=False,
+            supervision_active=bool(supervision_active),
+            cancellation_requested=bool(cancellation_requested),
+            pending_refresh_exists=bool(pending_refresh_exists),
+        )
+        if eligibility.eligible:
+            return PreLifecycleSupplyContinuationDecision(
+                status=WAITING_FOR_ELIGIBLE_SUPPLY,
+                final_terminal_cause=None,
+            )
+    return PreLifecycleSupplyContinuationDecision(
+        status=PRE_LIFECYCLE_DISCOVERY_SELECTION_COVERAGE_INSUFFICIENT,
+        final_terminal_cause=PRE_LIFECYCLE_DISCOVERY_SELECTION_COVERAGE_INSUFFICIENT,
+        restart_created=False,
+        successor_created=False,
+        automatic_retry_created=False,
+    )
+
+
+def enrich_pre_freeze_retained_evidence(
+    connection: sqlite3.Connection,
+    candidates: Sequence[Mapping[str, Any]],
+    *,
+    now: str,
+    provenance_bag: Any,
+    enrichment_runner: Callable[..., Mapping[str, Any]],
+    source_operations_remaining: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Bounded pre-freeze retained-evidence enrichment via injectable SG runner.
+
+    The runner must create Source-Governed durable request/response rows. This
+    owner never opens a direct provider transport or sleep/retry loop.
+    """
+    from printer_v1.discovery.memory_observation_activation import (
+        AdmissionAuthority,
+        admission_authority_from_item,
+        required_evidence_roles_for_admission_authority,
+        role_ids_from_candidate,
+    )
+
+    remaining = int(source_operations_remaining)
+    attempted = 0
+    enriched: list[dict[str, Any]] = []
+    for raw in candidates:
+        item = dict(raw)
+        try:
+            authority = admission_authority_from_item(item)
+        except ValueError:
+            enriched.append(item)
+            continue
+        if authority is not AdmissionAuthority.DIRECT_PUMP_PUMPSWAP:
+            enriched.append(item)
+            continue
+        liquidity = dict(item.get("liquidity") or {})
+        missing: list[str] = []
+        for role in required_evidence_roles_for_admission_authority(authority):
+            request_id, response_id, failure_id = role_ids_from_candidate(
+                item, liquidity, role.value
+            )
+            if request_id is None or response_id is None or failure_id is not None:
+                missing.append(role.value)
+        if not missing:
+            enriched.append(item)
+            continue
+        if remaining <= 0:
+            enriched.append(item)
+            continue
+        attempted += 1
+        updated = dict(
+            enrichment_runner(
+                connection,
+                item,
+                missing_roles=tuple(missing),
+                provenance_bag=provenance_bag,
+                now=now,
+            )
+        )
+        # One bounded enrichment attempt consumes at least one governed op slot.
+        remaining = max(0, remaining - max(1, len(missing)))
+        enriched.append(updated)
+    return enriched, {
+        "attempted_candidates": attempted,
+        "source_operations_remaining_after": remaining,
+        "direct_provider_calls": 0,
+        "independent_retry_loop": False,
+        "enrichment_runner_required": True,
+    }
+
 ACQUISITION_QUANTUM_YIELDED = "ACQUISITION_QUANTUM_YIELDED"
 COOPERATIVE_QUANTUM_MAX_DIRECT_CANDIDATES = 5
 
@@ -1850,6 +2024,8 @@ def run_persistent_eligible_token_supply(
         )
 
         # --- bounded pre-lifecycle temporal acquisition (design §§2,6,7) ----
+        # Permanent-mode capacity is freeze-ready depth, not raw MOE count.
+        freeze_ready_depth_measured = 0
         acquisition_ledger: AcquisitionLedger | None = None
         if temporal_refresh_owner is not None:
             acquisition_ledger = AcquisitionLedger(
@@ -1912,7 +2088,12 @@ def run_persistent_eligible_token_supply(
             if temporal_refresh_owner is None or acquisition_ledger is None:
                 last_stop_reason = universe_state
                 return False
-            depth_before = len(campaign_eligible)
+            # Permanent mode refresh eligibility must use freeze-ready depth, never
+            # raw MOE / campaign_eligible length. Unknown depth fails closed at 0.
+            if permanent_availability:
+                depth_before = int(freeze_ready_depth_measured)
+            else:
+                depth_before = len(campaign_eligible)
             # Settle the prior completed refresh after its newly reachable
             # registry rows have traversed the canonical front door. This keeps
             # per-round reserve transitions honest without a second admission
@@ -1926,9 +2107,14 @@ def run_persistent_eligible_token_supply(
                     acquisition_ledger.reserve_depth_transitions[-1][
                         "reserve_depth_after"
                     ] = depth_before
+            refresh_required_capacity = (
+                int(required_token_capacity)
+                if not permanent_availability
+                else int(MINIMUM_FREEZE_DEPTH)
+            )
             outcome = temporal_refresh_owner.request_temporal_refresh(
                 reserve_depth=depth_before,
-                required_capacity=int(required_token_capacity),
+                required_capacity=refresh_required_capacity,
                 universe_state=universe_state,
                 source_operations_remaining=_ops_remaining(),
                 provider_terminal_failure=False,
@@ -2162,7 +2348,16 @@ def run_persistent_eligible_token_supply(
             last_stop_reason = ACQUISITION_QUANTUM_YIELDED
 
         while (
-            len(campaign_eligible) < required_token_capacity
+            (
+                (
+                    not permanent_availability
+                    and len(campaign_eligible) < required_token_capacity
+                )
+                or (
+                    permanent_availability
+                    and freeze_ready_depth_measured < int(MINIMUM_FREEZE_DEPTH)
+                )
+            )
             and not cooperative_startup_only
         ):
             if cooperative_quantum and not cooperative_resume and quantum_rounds == 0:
@@ -2529,7 +2724,11 @@ def run_persistent_eligible_token_supply(
                 last_stop_reason = ACQUISITION_QUANTUM_YIELDED
                 break
 
-            if len(campaign_eligible) >= required_token_capacity:
+            if permanent_availability:
+                # Never declare final capacity from raw MOE / campaign_eligible
+                # length. Freeze-ready depth is measured only after enrichment.
+                pass
+            elif len(campaign_eligible) >= required_token_capacity:
                 last_stop_reason = "ELIGIBLE_CAPACITY_MET"
                 break
 
@@ -2552,7 +2751,11 @@ def run_persistent_eligible_token_supply(
             and acquisition_ledger.outcomes
             and acquisition_ledger.outcomes[-1].get("status") == REFRESH_COMPLETED
         ):
-            final_refresh_depth = len(campaign_eligible)
+            final_refresh_depth = (
+                int(freeze_ready_depth_measured)
+                if permanent_availability
+                else len(campaign_eligible)
+            )
             acquisition_ledger.outcomes[-1]["reserve_depth_after"] = final_refresh_depth
             if acquisition_ledger.reserve_depth_transitions:
                 acquisition_ledger.reserve_depth_transitions[-1][
@@ -2771,7 +2974,16 @@ def run_persistent_eligible_token_supply(
             cooperative_quantum
             and temporal_refresh_owner is not None
             and acquisition_ledger is not None
-            and len(campaign_eligible) < required_token_capacity
+            and (
+                (
+                    permanent_availability
+                    and freeze_ready_depth_measured < int(MINIMUM_FREEZE_DEPTH)
+                )
+                or (
+                    not permanent_availability
+                    and len(campaign_eligible) < required_token_capacity
+                )
+            )
             and last_stop_reason not in {
                 WAITING_FOR_ELIGIBLE_SUPPLY,
                 ACQUISITION_QUANTUM_YIELDED,
@@ -2808,18 +3020,79 @@ def run_persistent_eligible_token_supply(
                 for mint in sorted(inventory_mints - evaluated_mints)
             ]
 
-        ready = (
-            len(eligible_list) >= required_token_capacity
-            and not (
+        # Permanent mode: raw eligible_list length is never final capacity.
+        # Freeze-ready depth must be proven; unknown depth fails closed at 0.
+        if permanent_availability:
+            capacity_depth = int(freeze_ready_depth_measured)
+            ready = acquisition_capacity_met(
+                freeze_ready_depth=capacity_depth
+            ) and not (
                 cooperative_quantum
                 and last_stop_reason == ACQUISITION_QUANTUM_YIELDED
             )
-        )
+        else:
+            capacity_depth = len(eligible_list)
+            ready = (
+                capacity_depth >= required_token_capacity
+                and not (
+                    cooperative_quantum
+                    and last_stop_reason == ACQUISITION_QUANTUM_YIELDED
+                )
+            )
         certificate: ExhaustionCertificate | None = None
         shortage: str | None = None
 
         duration_used = (_parse_iso(now) - started_at).total_seconds()
         duration_remaining = _duration_remaining()
+
+        if (
+            permanent_availability
+            and not ready
+            and last_stop_reason
+            not in {
+                WAITING_FOR_ELIGIBLE_SUPPLY,
+                ACQUISITION_QUANTUM_YIELDED,
+            }
+            and temporal_refresh_owner is not None
+            and acquisition_ledger is not None
+            and deadline_dt is not None
+        ):
+            continuation = decide_pre_lifecycle_supply_continuation(
+                freeze_ready_depth=capacity_depth,
+                enrichment_work_remaining=False,
+                source_operations_remaining=_ops_remaining(),
+                acquisition_deadline_at=deadline_dt.isoformat(),
+                now=_utc_now_iso(),
+                universe_state=(
+                    last_stop_reason
+                    if last_stop_reason
+                    in {
+                        "ALL_REACHABLE_CANDIDATES_EVALUATED",
+                        "NO_ADDITIONAL_UNIQUE_CANDIDATES_REACHABLE",
+                    }
+                    else "ALL_REACHABLE_CANDIDATES_EVALUATED"
+                ),
+                supervision_active=True,
+                cancellation_requested=False,
+                pending_refresh_exists=False,
+                refresh_interval_seconds=int(
+                    getattr(temporal_refresh_owner, "refresh_interval_seconds", 600)
+                ),
+            )
+            if continuation.status == WAITING_FOR_ELIGIBLE_SUPPLY:
+                if _request_temporal_refresh(
+                    "ALL_REACHABLE_CANDIDATES_EVALUATED"
+                ):
+                    pass
+                # Whether claimed refresh completed or wait was published, the
+                # temporal owner outcome is authoritative in last_stop_reason.
+            elif (
+                continuation.status
+                == PRE_LIFECYCLE_DISCOVERY_SELECTION_COVERAGE_INSUFFICIENT
+            ):
+                last_stop_reason = (
+                    PRE_LIFECYCLE_DISCOVERY_SELECTION_COVERAGE_INSUFFICIENT
+                )
 
         if ready:
             terminal = GRADUATED_SUPPLY_READY
@@ -2833,6 +3106,8 @@ def run_persistent_eligible_token_supply(
             # shortage classification and no exhaustion certificate is emitted,
             # because no shortage has been proven.
             terminal = last_stop_reason
+        elif last_stop_reason == PRE_LIFECYCLE_DISCOVERY_SELECTION_COVERAGE_INSUFFICIENT:
+            terminal = BLOCKED_INSUFFICIENT_ELIGIBLE_GRADUATED_POOL
         else:
             terminal = BLOCKED_INSUFFICIENT_ELIGIBLE_GRADUATED_POOL
             all_channels_exhausted = (
@@ -3274,6 +3549,7 @@ def run_persistent_eligible_token_supply(
                 else acquisition_ledger.to_dict(now=_utc_now_iso())
             ),
             "required_token_capacity": required_token_capacity,
+            "freeze_ready_depth": int(freeze_ready_depth_measured),
             "eligible_reserve_count": len(eligible_list),
             "cooldown_skips": cooldown_skips,
             "tracking_precheck_enabled": bool(tracking_precheck),
@@ -3535,10 +3811,15 @@ __all__ = [
     "DEFAULT_DISCOVERY_OPERATION_BUDGET",
     "LIFECYCLE_OPERATION_CEILING",
     "ACQUISITION_QUANTUM_YIELDED",
+    "PRE_LIFECYCLE_DISCOVERY_SELECTION_COVERAGE_INSUFFICIENT",
     "AcquisitionQuantumKind",
     "AcquisitionQuantumComponent",
     "AcquisitionQuantumBound",
+    "PreLifecycleSupplyContinuationDecision",
+    "acquisition_capacity_met",
     "acquisition_quantum_bound",
+    "decide_pre_lifecycle_supply_continuation",
+    "enrich_pre_freeze_retained_evidence",
     "COOPERATIVE_QUANTUM_MAX_DIRECT_CANDIDATES",
     "COOPERATIVE_QUANTUM_MAX_SOURCE_OPERATIONS",
     "ELIGIBLE_FRESH",

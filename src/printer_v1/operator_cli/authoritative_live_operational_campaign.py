@@ -1383,74 +1383,21 @@ def _role_ids_from_candidate(
     liquidity: Mapping[str, Any],
     role: str,
 ) -> tuple[object, object, object]:
-    """Extract request/response/failure IDs for one evidence role from a candidate."""
-    role_blob = item.get("retained_evidence") or {}
-    if isinstance(role_blob, Mapping):
-        role_entry = role_blob.get(role) or {}
-        if isinstance(role_entry, Mapping) and role_entry.get("source_request_id") is not None:
-            return (
-                role_entry.get("source_request_id"),
-                role_entry.get("source_response_id"),
-                role_entry.get("source_failure_id"),
-            )
-    if role == "MARKET_OBSERVATION":
-        return (
-            liquidity.get("source_request_id"),
-            liquidity.get("source_response_id"),
-            liquidity.get("source_failure_id"),
-        )
-    if role == "PUMPSWAP_CONFIRMATION":
-        pumpswap = item.get("pumpswap_confirmation") or {}
-        if not isinstance(pumpswap, Mapping):
-            pumpswap = {}
-        provenance = item.get("source_provenance") or liquidity.get("source_provenance") or {}
-        if not isinstance(provenance, Mapping):
-            provenance = {}
-        request_id = (
-            pumpswap.get("source_request_id")
-            or item.get("pumpswap_source_request_id")
-            or item.get("protocol_request_id")
-            or provenance.get("protocol_request_id")
-        )
-        if request_id is None and str(provenance.get("stage") or "") in {
-            "protocol_confirmation",
-            "protocol_confirmation_direct_promotion",
-        }:
-            request_id = provenance.get("request_id")
-        response_id = (
-            pumpswap.get("source_response_id")
-            or item.get("pumpswap_source_response_id")
-            or provenance.get("response_id")
-        )
-        return (request_id, response_id, pumpswap.get("source_failure_id"))
-    if role == "ORIGIN_LINEAGE":
-        origin = item.get("origin_lineage") or {}
-        if not isinstance(origin, Mapping):
-            origin = {}
-        return (
-            origin.get("source_request_id") or item.get("origin_source_request_id"),
-            origin.get("source_response_id") or item.get("origin_source_response_id"),
-            origin.get("source_failure_id"),
-        )
-    return (None, None, None)
+    """Compatibility wrapper over the canonical freeze-ready role-id extractor."""
+    from printer_v1.discovery.memory_observation_activation import (
+        role_ids_from_candidate,
+    )
+
+    return role_ids_from_candidate(item, liquidity, role)
 
 
 def _admission_authority_from_freeze_item(item: Mapping[str, Any]) -> Any:
-    """Resolve freeze-item admission authority with fail-closed missing handling.
+    """Compatibility wrapper over the canonical admission-authority resolver."""
+    from printer_v1.discovery.memory_observation_activation import (
+        admission_authority_from_item,
+    )
 
-    Missing, None, empty, or unknown values never infer DIRECT_PUMP_PUMPSWAP.
-    """
-    from printer_v1.discovery.memory_observation_activation import AdmissionAuthority
-
-    if "admission_authority" not in item:
-        raise ValueError("ADMISSION_AUTHORITY_MISSING")
-    raw = item.get("admission_authority")
-    if raw is None:
-        raise ValueError("ADMISSION_AUTHORITY_MISSING")
-    text = str(raw).strip()
-    if not text:
-        raise ValueError("ADMISSION_AUTHORITY_MISSING")
-    return AdmissionAuthority(text)
+    return admission_authority_from_item(item)
 
 
 def _memory_observation_activation_route(
@@ -1496,240 +1443,23 @@ def _filter_observation_rows_by_retained_role_completeness(
     measured_transport_identity_keys: Sequence[Sequence[object]] | None = None,
     require_current_run_provenance: bool = True,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Exclude role/provenance-incomplete nominees before the neutral freeze.
-
-    Candidate-local role truth and current-run measured provenance are both
-    required for freeze eligibility.
-    """
+    """Compatibility wrapper over the canonical retained-role completeness filter."""
     from printer_v1.discovery.memory_observation_activation import (
-        RETAINED_EVIDENCE_ROLE_INCOMPLETE_PRE_FREEZE,
-        assess_retained_evidence_role_completeness,
-        claims_consistent_with_admission_authority,
-        qualify_candidate_local_retained_role,
-        qualify_candidate_retained_evidence_timing,
-        required_evidence_roles_for_admission_authority,
+        filter_observation_rows_by_retained_role_completeness,
     )
 
-    if require_current_run_provenance and (
-        not str(request_key_root or "").strip()
-        or not str(campaign_id or "").strip()
-        or not str(run_id or "").strip()
-        or not str(cycle_id or "").strip()
-        or campaign_source_request_manifest is None
-    ):
-        # Fail closed before freeze when pre-holder measured ownership is absent.
-        return [], [
-            {
-                "mint": None,
-                "pool": None,
-                "admission_authority": None,
-                "required_roles": (),
-                "present_roles": (),
-                "missing_roles": (),
-                "qualification_failures": {
-                    "current_run_provenance": (
-                        "RETAINED_CURRENT_RUN_PROVENANCE_UNAVAILABLE"
-                    )
-                },
-                "disposition": RETAINED_EVIDENCE_ROLE_INCOMPLETE_PRE_FREEZE,
-                "detail": "RETAINED_CURRENT_RUN_PROVENANCE_UNAVAILABLE",
-            }
-        ]
-
-    complete_rows: list[dict[str, Any]] = []
-    exclusions: list[dict[str, Any]] = []
-    for raw in rows:
-        item = dict(raw)
-        mint = str(item.get("mint") or "")
-        pool = str(item.get("pool") or item.get("pumpswap_pool") or "")
-        try:
-            admission_authority = _admission_authority_from_freeze_item(item)
-        except ValueError as exc:
-            detail = str(exc) or "ADMISSION_AUTHORITY_UNSUPPORTED"
-            if detail not in {
-                "ADMISSION_AUTHORITY_MISSING",
-                "ADMISSION_AUTHORITY_UNSUPPORTED",
-            }:
-                detail = "ADMISSION_AUTHORITY_UNSUPPORTED"
-            exclusions.append(
-                {
-                    "mint": mint,
-                    "pool": pool,
-                    "admission_authority": (
-                        None
-                        if "admission_authority" not in item
-                        else item.get("admission_authority")
-                    ),
-                    "required_roles": (),
-                    "present_roles": (),
-                    "missing_roles": (),
-                    "qualification_failures": {"admission_authority": detail},
-                    "disposition": RETAINED_EVIDENCE_ROLE_INCOMPLETE_PRE_FREEZE,
-                    "detail": detail,
-                }
-            )
-            continue
-
-        # Claims are optional provenance. When present they must match authority.
-        if "claims_pump_origin" in item or "claims_pumpswap_graduation" in item:
-            expected_direct = (
-                admission_authority.value == "DIRECT_PUMP_PUMPSWAP"
-            )
-            claims_origin = bool(
-                item.get(
-                    "claims_pump_origin",
-                    expected_direct,
-                )
-            )
-            claims_graduation = bool(
-                item.get(
-                    "claims_pumpswap_graduation",
-                    expected_direct,
-                )
-            )
-            if not claims_consistent_with_admission_authority(
-                admission_authority,
-                claims_pump_origin=claims_origin,
-                claims_pumpswap_graduation=claims_graduation,
-            ):
-                exclusions.append(
-                    {
-                        "mint": mint,
-                        "pool": pool,
-                        "admission_authority": admission_authority.value,
-                        "required_roles": [
-                            role.value
-                            for role in required_evidence_roles_for_admission_authority(
-                                admission_authority
-                            )
-                        ],
-                        "present_roles": [],
-                        "missing_roles": [],
-                        "qualification_failures": {
-                            "admission_authority": (
-                                "ADMISSION_AUTHORITY_CLAIMS_INCONSISTENT"
-                            )
-                        },
-                        "disposition": RETAINED_EVIDENCE_ROLE_INCOMPLETE_PRE_FREEZE,
-                        "detail": "ADMISSION_AUTHORITY_CLAIMS_INCONSISTENT",
-                    }
-                )
-                continue
-
-        liquidity = dict(item.get("liquidity") or {})
-        market_req, market_resp, _market_fail = _role_ids_from_candidate(
-            item, liquidity, "MARKET_OBSERVATION"
-        )
-        timing_ok, timing_reason, resolved_observed_at = (
-            qualify_candidate_retained_evidence_timing(
-                connection,
-                item,
-                now=now,
-                market_request_id=market_req,
-                market_response_id=market_resp,
-            )
-        )
-        if not timing_ok:
-            exclusions.append(
-                {
-                    "mint": mint,
-                    "pool": pool,
-                    "admission_authority": admission_authority.value,
-                    "required_roles": [
-                        role.value
-                        for role in required_evidence_roles_for_admission_authority(
-                            admission_authority
-                        )
-                    ],
-                    "present_roles": [],
-                    "missing_roles": [],
-                    "qualification_failures": {
-                        "timing": str(
-                            timing_reason or "RETAINED_OBSERVATION_TIME_MISSING"
-                        )
-                    },
-                    "disposition": RETAINED_EVIDENCE_ROLE_INCOMPLETE_PRE_FREEZE,
-                    "detail": str(
-                        timing_reason or "RETAINED_OBSERVATION_TIME_MISSING"
-                    ),
-                }
-            )
-            continue
-
-        qualifying_roles = set()
-        qualification_failures: dict[str, str] = {}
-        for role in required_evidence_roles_for_admission_authority(admission_authority):
-            request_id, response_id, failure_id = _role_ids_from_candidate(
-                item, liquidity, role.value
-            )
-            ok, reason = qualify_candidate_local_retained_role(
-                connection,
-                role=role,
-                mint=mint,
-                pool=pool,
-                request_id_raw=request_id,
-                response_id_raw=response_id,
-                failure_id_raw=failure_id,
-                admission_authority=admission_authority,
-                now=now,
-                evidence_expires_at=(
-                    None
-                    if item.get("evidence_expires_at") is None
-                    else str(item.get("evidence_expires_at"))
-                ),
-                request_key_root=request_key_root,
-                campaign_id=campaign_id,
-                run_id=run_id,
-                cycle_id=cycle_id,
-                campaign_source_request_manifest=campaign_source_request_manifest,
-                measured_transport_identity_keys=measured_transport_identity_keys,
-                require_current_run_provenance=require_current_run_provenance,
-            )
-            if ok:
-                qualifying_roles.add(role)
-            else:
-                qualification_failures[role.value] = str(
-                    reason or "RETAINED_EVIDENCE_ROLE_MISSING"
-                )
-
-        assessment = assess_retained_evidence_role_completeness(
-            admission_authority=admission_authority,
-            qualifying_roles=qualifying_roles,
-            mint=mint,
-            qualification_failures=qualification_failures,
-        )
-        if assessment["complete"]:
-            # Preserve the resolved authority on the freeze item so activation
-            # construction cannot re-default an explicit MARKET_PRESENT nominee.
-            item["admission_authority"] = admission_authority.value
-            expected_direct = (
-                admission_authority.value == "DIRECT_PUMP_PUMPSWAP"
-            )
-            item["claims_pump_origin"] = expected_direct
-            item["claims_pumpswap_graduation"] = expected_direct
-            # Compose the proven retained observation time onto the freeze item
-            # so selected activation reuses the same established fact.
-            if resolved_observed_at:
-                item["liquidity_observed_at"] = str(resolved_observed_at)
-                liquidity["liquidity_observed_at"] = str(resolved_observed_at)
-                item["liquidity"] = liquidity
-            complete_rows.append(item)
-            continue
-        exclusions.append(
-            {
-                "mint": mint,
-                "pool": pool,
-                "admission_authority": assessment["admission_authority"],
-                "required_roles": list(assessment["required_roles"]),
-                "present_roles": list(assessment["present_roles"]),
-                "missing_roles": list(assessment["missing_roles"]),
-                "qualification_failures": dict(
-                    assessment.get("qualification_failures") or {}
-                ),
-                "disposition": assessment["disposition"],
-            }
-        )
-    return complete_rows, exclusions
+    return filter_observation_rows_by_retained_role_completeness(
+        connection,
+        rows,
+        now=now,
+        request_key_root=request_key_root,
+        campaign_id=campaign_id,
+        run_id=run_id,
+        cycle_id=cycle_id,
+        campaign_source_request_manifest=campaign_source_request_manifest,
+        measured_transport_identity_keys=measured_transport_identity_keys,
+        require_current_run_provenance=require_current_run_provenance,
+    )
 
 
 def _build_frozen_memory_activation_set(
@@ -5198,10 +4928,11 @@ class AuthoritativeLiveOperationalCampaignOwner:
                                 entry.get("transport_identity_keys") or ()
                             )
                         ]
-                    (
-                        role_complete_observation_rows,
-                        retained_role_pre_freeze_exclusions,
-                    ) = _filter_observation_rows_by_retained_role_completeness(
+                    from printer_v1.discovery.memory_observation_activation import (
+                        measure_freeze_ready_candidates,
+                    )
+
+                    freeze_ready_measurement = measure_freeze_ready_candidates(
                         connection,
                         observation_rows,
                         now=evaluated.isoformat(),
@@ -5218,6 +4949,17 @@ class AuthoritativeLiveOperationalCampaignOwner:
                         measured_transport_identity_keys=measured_keys,
                         require_current_run_provenance=True,
                     )
+                    # Pass pre-dedupe role-complete rows into freeze so
+                    # freeze_eligible_reserve remains uniqueness diagnostic owner.
+                    role_complete_observation_rows = list(
+                        freeze_ready_measurement.role_complete
+                    )
+                    retained_role_pre_freeze_exclusions = [
+                        dict(item) for item in freeze_ready_measurement.exclusions
+                    ]
+                    supply.diagnostics["freeze_ready_depth"] = int(
+                        freeze_ready_measurement.freeze_ready_depth
+                    )
                 supply.diagnostics["retained_evidence_role_pre_freeze"] = {
                     "input_count": len(observation_rows),
                     "complete_count": len(role_complete_observation_rows),
@@ -5225,6 +4967,11 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     "exclusions": retained_role_pre_freeze_exclusions,
                     "current_run_provenance_available": (
                         provenance_unavailable_detail is None
+                    ),
+                    "freeze_ready_depth": int(
+                        (supply.diagnostics.get("freeze_ready_depth"))
+                        if supply.diagnostics.get("freeze_ready_depth") is not None
+                        else len(role_complete_observation_rows)
                     ),
                 }
                 # Post-filter freeze depth is the sole admission authority.
@@ -5263,12 +5010,102 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     **freeze_authority,
                 }
                 if freeze_authority.get("coverage_blocker"):
-                    supply.diagnostics["freeze_depth_enforcement"][
-                        "terminal"
-                    ] = "PRE_LIFECYCLE_DISCOVERY_SELECTION_COVERAGE_INSUFFICIENT"
-                    supply.diagnostics["freeze_depth_enforcement"][
-                        "durable_report_required"
-                    ] = True
+                    from printer_v1.discovery.eligible_token_supply import (
+                        decide_pre_lifecycle_supply_continuation,
+                    )
+                    from printer_v1.discovery.permanent_discovery_availability import (
+                        MINIMUM_FREEZE_DEPTH,
+                    )
+                    from printer_v1.discovery.pre_lifecycle_temporal_acquisition import (
+                        WAITING_FOR_ELIGIBLE_SUPPLY,
+                    )
+
+                    freeze_ready_depth = int(
+                        freeze_authority.get("valid_fresh_unique_observation_depth")
+                        or freeze_authority.get("observation_eligible_count")
+                        or len(role_complete_observation_rows)
+                    )
+                    acquisition_deadline = None
+                    refresh_interval = 600
+                    if pre_lifecycle_temporal_refresh_owner is not None:
+                        acquisition_deadline = getattr(
+                            pre_lifecycle_temporal_refresh_owner,
+                            "acquisition_deadline_at",
+                            None,
+                        )
+                        refresh_interval = int(
+                            getattr(
+                                pre_lifecycle_temporal_refresh_owner,
+                                "refresh_interval_seconds",
+                                600,
+                            )
+                        )
+                    if acquisition_deadline is None:
+                        acquisition_deadline = (
+                            evaluated
+                            + timedelta(seconds=int(pre_lifecycle_acquisition_seconds))
+                        ).isoformat()
+                    continuation = decide_pre_lifecycle_supply_continuation(
+                        freeze_ready_depth=freeze_ready_depth,
+                        enrichment_work_remaining=False,
+                        source_operations_remaining=max(
+                            0,
+                            int(
+                                (
+                                    supply.diagnostics.get(
+                                        "discovery_operations_remaining"
+                                    )
+                                    if supply is not None
+                                    else 0
+                                )
+                                or 0
+                            ),
+                        ),
+                        acquisition_deadline_at=str(acquisition_deadline),
+                        now=datetime.now(timezone.utc).isoformat(),
+                        universe_state="ALL_REACHABLE_CANDIDATES_EVALUATED",
+                        supervision_active=True,
+                        cancellation_requested=False,
+                        pending_refresh_exists=False,
+                        refresh_interval_seconds=refresh_interval,
+                        minimum_freeze_depth=int(MINIMUM_FREEZE_DEPTH),
+                    )
+                    if continuation.status == WAITING_FOR_ELIGIBLE_SUPPLY:
+                        if pre_lifecycle_temporal_refresh_owner is not None:
+                            pre_lifecycle_temporal_refresh_owner.request_temporal_refresh(
+                                reserve_depth=freeze_ready_depth,
+                                required_capacity=int(MINIMUM_FREEZE_DEPTH),
+                                universe_state="ALL_REACHABLE_CANDIDATES_EVALUATED",
+                                source_operations_remaining=max(
+                                    0,
+                                    int(
+                                        (
+                                            supply.diagnostics.get(
+                                                "discovery_operations_remaining"
+                                            )
+                                            if supply is not None
+                                            else 0
+                                        )
+                                        or 0
+                                    ),
+                                ),
+                                provider_terminal_failure=False,
+                                now=datetime.now(timezone.utc).isoformat(),
+                            )
+                        supply.diagnostics["freeze_depth_enforcement"][
+                            "terminal"
+                        ] = WAITING_FOR_ELIGIBLE_SUPPLY
+                        supply.diagnostics["freeze_depth_enforcement"][
+                            "continuation"
+                        ] = "WAITING_FOR_ELIGIBLE_SUPPLY"
+                        selection_terminal = WAITING_FOR_ELIGIBLE_SUPPLY
+                    else:
+                        supply.diagnostics["freeze_depth_enforcement"][
+                            "terminal"
+                        ] = "PRE_LIFECYCLE_DISCOVERY_SELECTION_COVERAGE_INSUFFICIENT"
+                        supply.diagnostics["freeze_depth_enforcement"][
+                            "durable_report_required"
+                        ] = True
                 else:
                     for reserve_state, items in (
                         ("SELECTED", frozen_eligible_reserve.selected),
@@ -5867,8 +5704,18 @@ class AuthoritativeLiveOperationalCampaignOwner:
             else:
                 atomic_ready = len(graduated_candidates) >= 2 and holder_eligible >= 2
             if depth_blocker and selection_terminal is None:
+                freeze_terminal = (
+                    (
+                        (supply.diagnostics if supply is not None else {}).get(
+                            "freeze_depth_enforcement"
+                        )
+                        or {}
+                    ).get("terminal")
+                )
                 selection_terminal = (
-                    "PRE_LIFECYCLE_DISCOVERY_SELECTION_COVERAGE_INSUFFICIENT"
+                    str(freeze_terminal)
+                    if freeze_terminal
+                    else "PRE_LIFECYCLE_DISCOVERY_SELECTION_COVERAGE_INSUFFICIENT"
                 )
             terminal = (
                 "PILOT_INPUT_READY"
