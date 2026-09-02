@@ -19,7 +19,7 @@ Use `CURRENT_HANDOFF.md` only for the current lane, current commit, latest compl
 
 Historical roadmaps, old lane documents, old chats, previous handoffs, and older current-looking pointers are historical evidence only unless explicitly re-adopted.
 
-## Current durable state — 2026-08-27
+## Current durable state — 2026-09-02
 
 Active capability family:
 
@@ -40,11 +40,14 @@ Current adopted operational envelope remains:
 
 Latest completed campaign:
 
-- authorization: `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260827T122355Z_8e43eae7`;
-- authorization SHA-256: `9711e77a5b169edc1e1bf7ee20560450662a373fb41aa05a9ff70e5f6dc3768a`;
-- permanently consumed; no retry, rerun, resume, restart, reuse, inheritance, or successor;
-- authoritative post-campaign DB SHA-256: `f4e54b3a2dc9f4dbd41b6f05bb5288f25ca15dc71b7e66de1e05ef7c213e34b1`;
-- campaign classification: `EXPECTED_OPERATIONAL_BLOCKER__NO_CODE_CHANGE`;
+- authorization: `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260901T203521Z_12a7ea61`;
+- authorization SHA-256: `b8112ab756e46c60bac82d486a0de113113cb3b266690f2850f2d6c7698a96f3`;
+- authorized execution HEAD: `91c757c542d8098ecf7b244769061f333dcfc21f`;
+- permanently consumed `CONSUMED / CHILD_EXITED_ZERO / PERMANENTLY NON-REUSABLE`;
+- no retry, rerun, resume, restart, reuse, inheritance, or successor;
+- authoritative post-campaign DB SHA-256: `a3172e04f99ef410ba66eb4e2928b5b4edbdd7dfad4d713fcd1605fa3b702a8c`;
+- campaign classification: `COMMITTED_CODE_DEFECT` / `LATER_CYCLE_COOPERATIVE_MINT_MARKET_BATCH_DUPLICATE_TRANSPORT_IDENTITY`;
+- scope-propagation repair live proof: `CAMPAIGN_SOURCE_REQUEST_SCOPE_PROPAGATION_REPAIR_LIVE_PROOF_PASS`;
 - no current-campaign active work;
 - retrieval, financial capabilities, 12h, and 24h remain locked.
 
@@ -69,31 +72,31 @@ The remote-host work is infrastructure support only. It does not reorder or adva
 The exact current lane is:
 
 ```text
-FRESH EXACT-HEAD / EXACT-DB ONE-SHOT STANDARD-4H AUTHORIZATION PREPARATION
+LATER-CYCLE COOPERATIVE MINT-MARKET-BATCH DUPLICATE TRANSPORT IDENTITY — DESIGN / SPECIFICATION ONLY
 ```
 
-The consumed Sep-1 authorization
-`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260901T181024Z_ab6c68fe` is
-`CONSUMED / CHILD_EXITED_NONZERO / PERMANENTLY NON-REUSABLE`. The freeze-ready
-scope-propagation repair is closed PASS. Post-repair readiness is closed
-`V2_9_8B_POST_SCOPE_PROPAGATION_REPAIR_FRESH_READINESS_PASS`. Use
-`CURRENT_HANDOFF.md` for the live HEAD after that readiness documentation
-commit.
+The consumed Sep-1/Sep-2 authorization
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260901T203521Z_12a7ea61` is
+`CONSUMED / CHILD_EXITED_ZERO / PERMANENTLY NON-REUSABLE`. The earlier consumed
+Sep-1 authorization `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260901T181024Z_ab6c68fe`
+remains `CONSUMED / CHILD_EXITED_NONZERO / PERMANENTLY NON-REUSABLE`. The
+freeze-ready scope-propagation repair is closed PASS and live-proven. Use
+`CURRENT_HANDOFF.md` for the live HEAD after the 12a7ea61 closeout
+documentation commit.
 
 Allowed now:
 
-- prepare exactly one fresh exact-HEAD / exact-DB one-shot Standard-4H
-  authorization package using the existing canonical owners;
-- bind the actual HEAD of the readiness commit and the freshly re-read
-  authoritative DB identity;
-- include the complete prior non-reuse trust root plus the consumed Sep-1 ID;
-- stop unconsumed for independent package review.
+- write the design/specification for the proven later-cycle cooperative
+  mint-market-batch duplicate transport identity defect;
+- stop for independent design review;
+- do not implement in this next lane unless that design is separately approved.
 
 Do not redo the completed authorization-boundary design.
-Do not reuse the consumed Sep-1 authorization.
-Do not retry, rerun, resume, restart, or create a successor from that run.
+Do not reuse either consumed Sep-1 authorization.
+Do not retry, rerun, resume, restart, or create a successor from those runs.
 Do not create an application marker.
 Do not call `apply_authorization_once`.
+Do not prepare another authorization.
 Do not run Printer.
 Do not contact providers/RPC/WebSocket.
 Do not run Central Scheduler.

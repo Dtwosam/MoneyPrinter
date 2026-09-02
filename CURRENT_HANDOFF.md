@@ -2,103 +2,103 @@
 
 ## Current lane
 
-`FRESH EXACT-HEAD / EXACT-DB ONE-SHOT STANDARD-4H AUTHORIZATION PREPARATION — POST-SCOPE-PROPAGATION-REPAIR READINESS PASS; PACKAGE PREPARATION PERMITTED AGAINST THIS COMMIT HEAD`
+`LATER-CYCLE COOPERATIVE MINT-MARKET-BATCH DUPLICATE TRANSPORT IDENTITY — DESIGN / SPECIFICATION ONLY`
 
-The V2-9.8B campaign-source-request-scope propagation repair remains closed
-PASS. The post-repair fresh exact-HEAD / exact-DB readiness/governance audit is
-closed PASS.
+The Sep-1/Sep-2 Standard-4H campaign under authorization
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260901T203521Z_12a7ea61` is closed.
 
-This handoff does **not** authorize application or execution.
+This handoff does **not** authorize another campaign, another authorization,
+application, or execution.
 
 ## Latest completed work
 
-Repair closeout:
+Campaign closeout:
 
-`V2_9_8B_CAMPAIGN_SOURCE_REQUEST_SCOPE_PROPAGATION_REPAIR_PASS`
+`V2_9_8B_AUTH_12A7EA61_CAMPAIGN_CLOSEOUT_PASS`
 
-Readiness verdict:
+Evidence-audit verdict:
 
-`V2_9_8B_POST_SCOPE_PROPAGATION_REPAIR_FRESH_READINESS_PASS`
+`V2_9_8B_AUTH_12A7EA61_POST_APPLICATION_EVIDENCE_AUDIT_PASS`
 
-Readiness report:
+Scope-propagation repair live proof:
 
-`docs/printer-v1-v2-9-8b-post-scope-propagation-repair-fresh-readiness.md`
+`CAMPAIGN_SOURCE_REQUEST_SCOPE_PROPAGATION_REPAIR_LIVE_PROOF_PASS`
 
-Repair-closeout HEAD evaluated during this readiness audit:
+Primary later-cycle classification:
 
-`952960452999379abaaf99fb579f58ae00b3ab9a`
+`COMMITTED_CODE_DEFECT` /
+`LATER_CYCLE_COOPERATIVE_MINT_MARKET_BATCH_DUPLICATE_TRANSPORT_IDENTITY`
 
-The commit that lands this handoff and readiness report becomes the exact live
-HEAD that any immediately following package preparation must bind. Do not reuse
-`95296045...` or any remembered SHA as the package binding after this commit
-exists.
+Closeout:
 
-Consumed authorization remains:
+`docs/printer-v1-v2-9-8b-auth-12a7ea61-campaign-closeout.md`
 
-`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260901T181024Z_ab6c68fe`
+## Consumed authorization
 
-`CONSUMED / CHILD_EXITED_NONZERO / PERMANENTLY NON-REUSABLE`
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260901T203521Z_12a7ea61`
 
-Do not retry or reuse it.
+`CONSUMED / CHILD_EXITED_ZERO / PERMANENTLY NON-REUSABLE`
 
-## Fresh host-local DB identity at readiness
+Authorization SHA-256:
+
+`b8112ab756e46c60bac82d486a0de113113cb3b266690f2850f2d6c7698a96f3`
+
+Authorized execution HEAD:
+
+`91c757c542d8098ecf7b244769061f333dcfc21f`
+
+Do not retry, rerun, resume, restart, reuse, or create a successor from this
+authorization. It must remain in every future prior-authorization non-reuse
+trust root, together with consumed
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260901T181024Z_ab6c68fe` and every already
+required prior ID.
+
+## Campaign result
+
+Wrapper: child exited 0; cleanup complete; lease released;
+`success = true` under the existing operational-terminal contract.
+
+Campaign contract: Cycle 1 admitted two tokens and completed
+`WINDOW_15M -> WINDOW_1H -> WINDOW_4H` (`CLEAN_PROMOTED` then 4h
+`NO_PROMOTION`). Cycle 2 was attempted and not admitted. The campaign did not
+achieve four through-4h identities.
+
+Cycle 2 failed while still in cooperative `MARKET_DISCOVERY` because mint-batch
+`r1` and `r2` replayed the same DexScreener due-mint transport identity
+(`AQi9C9ak1TKTse3kSFKANybEhZmaVpTab1ukhsEhpump`) into the Cycle 2 six-unit
+owner.
+
+## Post-campaign DB identity
 
 Required authoritative DB path:
 
 `data/printer_v1.sqlite3`
 
-Fresh identity:
-
-- SHA-256: `ca4c678b6164ad2aad36ed6140a06d96dc409d1cd3b64c40b17bce78a42b01dc`
-- size: `146505728`
+- SHA-256: `a3172e04f99ef410ba66eb4e2928b5b4edbdd7dfad4d713fcd1605fa3b702a8c`
+- size: `154796032`
 - inode: `1230526`
-- mtime_ns: `1788290102639046545`
+- mtime_ns: `1788310792540112946`
 - migration count/head: `62` / `062_pre_admission_attempt_evidence.sql`
 - integrity: `ok`
 - foreign-key violations: `0`
 - journal mode: `delete`
 - sidecars: none
 
-Preparation must re-read these facts at package-creation time and fail closed
-on drift.
+Do not restore the pre-run DB. Campaign writes were authorized.
 
-## Durable zero-state / quiescence at readiness
+## Durable zero-state / quiescence
 
-All canonical ownership domains were zero. Campaign and candidate-acquisition
-leases were released/terminal. `active_printer_runtime_processes` was empty.
-Historical terminal rows, including the consumed Sep-1 campaign, remain
-historical residue and must not be mutated.
-
-## Governing authorization design
-
-Do not redesign the completed preparation boundary:
-
-`docs/printer-v1-v2-9-8b-next-standard-4h-authorization-preparation-boundary-design.md`
-
-Canonical owners remain authoritative:
-
-- document validator:
-  `validate_four_token_standard_four_hour_authorization_document`;
-- application/consumption owner: `apply_authorization_once`;
-- operational policy: `exact_operational_policy()`;
-- profile: `FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE`;
-- zero-state: `assert_four_token_standard_four_hour_zero_state`;
-- prior non-reuse: `validate_prior_authorizations_non_reusable`.
+All canonical ownership domains are zero. Campaign and candidate-acquisition
+leases are released/terminal. No operational Printer processes. Historical
+terminal rows, including this campaign and the failed Cycle 2 pre-admission
+attempt, remain historical residue and must not be mutated.
 
 ## Exact next permitted action
 
-`Prepare exactly one fresh exact-HEAD / exact-DB one-shot Standard-4H authorization package using the existing canonical authorization owners, binding the actual HEAD of this readiness commit and the freshly re-read authoritative DB identity, including the complete prior non-reuse trust root with V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260901T181024Z_ab6c68fe, and stop unconsumed for independent package review.`
+`Write the design/specification for the proven later-cycle cooperative mint-market-batch duplicate transport identity defect, using the existing six-unit uniqueness contract and cooperative-resume ownership, and stop for independent design review. Do not implement. Do not run Printer. Do not prepare or apply another authorization.`
 
-After that package is published:
-
-- final package state must be exactly `PREPARED / UNCONSUMED / UNAPPLIED`;
-- do not create an application marker;
-- do not call `apply_authorization_once`;
-- do not add a later tracked commit that would recreate exact-HEAD binding drift;
-- record package ID/path/SHA-256 in the operator response / package bytes only.
-
-Independent package review is the next lane after preparation. Review PASS still
-does not authorize application or execution.
+The completed authorization-boundary design remains authoritative and must not
+be redone. The scope-propagation repair remains closed PASS and live-proven.
 
 ## Application / execution remain blocked
 
@@ -113,7 +113,8 @@ This handoff does **not** authorize:
 - authoritative DB mutation;
 - retry / rerun / resume / restart / successor;
 - retrieval / BUY / SELL / HOLD / positions / trades / audits / PnL;
-- `WINDOW_12H` / `WINDOW_24H`.
+- `WINDOW_12H` / `WINDOW_24H`;
+- production-code repair in this closeout.
 
 ## Standard-4H envelope
 
@@ -134,21 +135,10 @@ Preserve exactly:
 ## Builder sequence
 
 ```text
-readiness -> design/specification -> preparation -> independent package review -> explicit application/execution approval -> one-shot bounded execution/proof -> closeout
+audit/readiness -> design/specification -> implementation if approved -> bounded proof/test -> closeout
 ```
 
-Do not collapse preparation, review, application approval, and execution into
-one action. The authorization-boundary design is already complete; do not redo
-it.
-
-## Active-work governance
-
-```text
-Raw historical slot state alone must not establish active execution authority.
-Canonical campaign/run/supervision/lease/Scheduler/factory/progression/pre-admission ownership truth governs active-work readiness.
-```
-
-Do not mutate historical Aug-30 Cycle-2 `SELECTED` rows.
+Do not collapse design, implementation, and another campaign into one action.
 
 ## Permanent locks
 

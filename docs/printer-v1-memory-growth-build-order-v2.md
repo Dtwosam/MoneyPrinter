@@ -2344,11 +2344,11 @@ execution approval. That pointer is historical after pre-application
 <!-- V2_9_8B_AUTH_PACKAGE_REVIEW_CLOSEOUT_CURRENT_STATE_END -->
 
 <!-- V2_9_8B_STALE_AUTH_HEAD_DRIFT_CLOSEOUT_CURRENT_STATE_START -->
-## V2-9.8B Stale Standard-4H Authorization Exact-HEAD-Drift Closeout — Current Authority
+## V2-9.8B Stale Standard-4H Authorization Exact-HEAD-Drift Closeout — Historical Authority
 
-This block supersedes older current-looking package-review, design, readiness,
-and authorization-preparation pointers in this file for current-lane
-selection. Historical text remains evidence only.
+This block is historical after the later 12a7ea61 campaign closeout.
+Historical text remains evidence only. The stale authorization remains
+governance-required non-reusable.
 
 - preapplication verdict:
   `V2_9_8B_FROZEN_STD4H_PREAPPLICATION_APPROVAL_BLOCKED`
@@ -2374,28 +2374,40 @@ selection. Historical text remains evidence only.
 - closeout:
   `docs/printer-v1-v2-9-8b-stale-standard-4h-authorization-head-drift-closeout.md`
 
-This stale-authorization closeout and fresh-preparation re-entry become active
-only when this six-doc package is committed. Until that commit exists, do not
-prepare another authorization.
-
-After closeout commit, the exact current permitted lane is:
-
-```text
-FRESH EXACT-HEAD / EXACT-DB ONE-SHOT STANDARD-4H AUTHORIZATION PREPARATION — STALE PRIOR AUTHORIZATION SEALED NON-REUSABLE
-```
-
-Exact currently permitted action:
-
-```text
-Prepare exactly one fresh exact-HEAD / exact-DB one-shot Standard-4H authorization package using the existing canonical authorization owners, including V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260831T150842Z_b6d7ab46 in the complete prior non-reuse trust root, and stop unconsumed for independent package review.
-```
-
-Separately approved fresh preparation only. NOT automatic successor/retry.
-Application/consumption/execution remain blocked. Preserve:
-
-```text
-readiness -> design/specification -> preparation -> independent package review -> explicit application/execution approval -> one-shot bounded execution/proof -> closeout
-```
+At stale-authorization closeout time, the next permitted lane was fresh
+exact-HEAD / exact-DB preparation. That pointer is historical after later
+readiness, package application, the 12a7ea61 campaign, and its closeout.
 
 All permanent V1 locks remain unchanged.
 <!-- V2_9_8B_STALE_AUTH_HEAD_DRIFT_CLOSEOUT_CURRENT_STATE_END -->
+
+<!-- V2_9_8B_AUTH_12A7EA61_CAMPAIGN_CLOSEOUT_CURRENT_STATE_START -->
+## V2-9.8B Authorization 12a7ea61 Campaign Closeout — Current Authority
+
+This block supersedes older current-looking Standard-4H next-lane pointers in
+this file for current-lane selection only. Historical text remains evidence.
+
+- campaign closeout: `V2_9_8B_AUTH_12A7EA61_CAMPAIGN_CLOSEOUT_PASS`
+- authorization: `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260901T203521Z_12a7ea61`
+- authorization SHA-256: `b8112ab756e46c60bac82d486a0de113113cb3b266690f2850f2d6c7698a96f3`
+- final state: `CONSUMED / CHILD_EXITED_ZERO / PERMANENTLY NON-REUSABLE`
+- authorized execution HEAD: `91c757c542d8098ecf7b244769061f333dcfc21f`
+- post-campaign DB SHA-256: `a3172e04f99ef410ba66eb4e2928b5b4edbdd7dfad4d713fcd1605fa3b702a8c`
+- Cycle 1: 2 tokens; `WINDOW_15M` and `WINDOW_1H` `CLEAN_PROMOTED`; `WINDOW_4H` `NO_PROMOTION`
+- Cycle 2: attempted, not admitted
+- classification: `COMMITTED_CODE_DEFECT` / `LATER_CYCLE_COOPERATIVE_MINT_MARKET_BATCH_DUPLICATE_TRANSPORT_IDENTITY`
+- scope-repair live proof: `CAMPAIGN_SOURCE_REQUEST_SCOPE_PROPAGATION_REPAIR_LIVE_PROOF_PASS`
+- no current-campaign active work
+- retrieval/financial/12h/24h locks remain closed
+- closeout: `docs/printer-v1-v2-9-8b-auth-12a7ea61-campaign-closeout.md`
+
+The exact current permitted lane is:
+
+```text
+LATER-CYCLE COOPERATIVE MINT-MARKET-BATCH DUPLICATE TRANSPORT IDENTITY — DESIGN / SPECIFICATION ONLY
+```
+
+This is design/specification only. It does not authorize implementation,
+Printer execution, another authorization, provider/RPC/WebSocket calls,
+Scheduler execution, retrieval, financial capabilities, or longer windows.
+<!-- V2_9_8B_AUTH_12A7EA61_CAMPAIGN_CLOSEOUT_CURRENT_STATE_END -->

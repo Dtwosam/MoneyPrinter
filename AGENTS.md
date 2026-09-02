@@ -45,6 +45,76 @@ Every major capability must preserve:
 Use minimum sufficient risk-based verification. Do not request broad regression
 suites unless the change risk or lane closeout requires them.
 
+### Current V2-9.8B authorization 12a7ea61 campaign closeout — 2026-09-02
+
+Consumed authorization:
+
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260901T203521Z_12a7ea61`
+
+Final state:
+
+`CONSUMED / CHILD_EXITED_ZERO / PERMANENTLY NON-REUSABLE`
+
+Authorization SHA-256:
+
+`b8112ab756e46c60bac82d486a0de113113cb3b266690f2850f2d6c7698a96f3`
+
+Authorized execution HEAD:
+
+`91c757c542d8098ecf7b244769061f333dcfc21f`
+
+Execution:
+
+`20260901T205859Z-89a1f9b9b2bd`
+
+Campaign closeout:
+
+`V2_9_8B_AUTH_12A7EA61_CAMPAIGN_CLOSEOUT_PASS`
+
+Primary later-cycle classification:
+
+`COMMITTED_CODE_DEFECT` /
+`LATER_CYCLE_COOPERATIVE_MINT_MARKET_BATCH_DUPLICATE_TRANSPORT_IDENTITY`
+
+Scope-propagation repair live proof:
+
+`CAMPAIGN_SOURCE_REQUEST_SCOPE_PROPAGATION_REPAIR_LIVE_PROOF_PASS`
+
+Post-campaign authoritative DB SHA-256:
+
+`a3172e04f99ef410ba66eb4e2928b5b4edbdd7dfad4d713fcd1605fa3b702a8c`
+
+Governing closeout:
+
+`docs/printer-v1-v2-9-8b-auth-12a7ea61-campaign-closeout.md`
+
+This block supersedes older current-looking Standard-4H next-lane pointers
+later in this file for current-lane selection only. Historical consumed/stale
+authorization text remains evidence. This consumed authorization, and consumed
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260901T181024Z_ab6c68fe`, must remain in every
+future Standard-4H prior non-reuse trust root. Do not retry, rerun, resume,
+restart, or create a successor from that run.
+
+Cycle 1 admitted two tokens and completed
+`WINDOW_15M -> WINDOW_1H -> WINDOW_4H`. Cycle 2 was attempted and not admitted.
+The previous `CAMPAIGN_SOURCE_REQUEST_SCOPE_REQUIRED` defect was absent.
+
+The exact current permitted lane is:
+
+```text
+LATER-CYCLE COOPERATIVE MINT-MARKET-BATCH DUPLICATE TRANSPORT IDENTITY — DESIGN / SPECIFICATION ONLY
+```
+
+Use `CURRENT_HANDOFF.md` for the live HEAD after this closeout documentation
+commit, latest completed work, and next permitted action. Do not implement the
+defect repair in the closeout lane. Do not prepare another authorization.
+
+This does **not** authorize `apply_authorization_once`, application-marker
+creation, Printer execution, child launch, another campaign, provider/RPC/
+WebSocket calls, Central Scheduler runtime, authoritative DB mutation,
+retry/rerun/resume/restart/successor, retrieval, BUY/SELL/HOLD, positions,
+trades, audits, PnL, or `WINDOW_12H` / `WINDOW_24H`.
+
 ### Current V2-9.8B consumed Sep-1 Standard-4H scope-propagation repair — 2026-09-01
 
 Consumed authorization:
@@ -87,27 +157,16 @@ Repair-closeout HEAD evaluated during that readiness audit:
 
 `952960452999379abaaf99fb579f58ae00b3ab9a`
 
-This block supersedes older current-looking Standard-4H next-lane pointers later
-in this file for current-lane selection only. Historical consumed/stale
-authorization text remains evidence. The consumed Sep-1 authorization must remain
-in every future Standard-4H prior non-reuse trust root. Do not retry, rerun,
-resume, restart, or create a successor from that run.
+This block is historical for current-lane selection after the 12a7ea61 campaign
+closeout. The repair closeout and live-proof remain valid evidence. The consumed
+Sep-1 authorization
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260901T181024Z_ab6c68fe` must remain in every
+future Standard-4H prior non-reuse trust root. Do not retry, rerun, resume,
+restart, or create a successor from that run.
 
-The exact current permitted lane is:
-
-```text
-FRESH EXACT-HEAD / EXACT-DB ONE-SHOT STANDARD-4H AUTHORIZATION PREPARATION
-```
-
-Use `CURRENT_HANDOFF.md` for the live HEAD after the readiness documentation
-commit, latest completed work, and next permitted action. The completed
-authorization-boundary design remains authoritative and must not be redone.
-
-This does **not** authorize `apply_authorization_once`, application-marker
-creation, Printer execution, child launch, another campaign, provider/RPC/
-WebSocket calls, Central Scheduler runtime, authoritative DB mutation,
-retry/rerun/resume/restart/successor, retrieval, BUY/SELL/HOLD, positions,
-trades, audits, PnL, or `WINDOW_12H` / `WINDOW_24H`.
+The exact current permitted lane is no longer fresh Standard-4H authorization
+preparation. Use the 12a7ea61 campaign-closeout block above and
+`CURRENT_HANDOFF.md`.
 
 ### Current V2-9.8B stale Standard-4H authorization exact-HEAD-drift closeout — 2026-08-31
 
@@ -209,11 +268,14 @@ only when this six-doc package is committed. Until that commit exists, do not
 prepare another authorization. Do not invent the future closeout commit SHA.
 The later preparation must bind the actual HEAD produced by that commit.
 
-After this package is committed, the exact current permitted lane is:
+After this package was committed, the then-current permitted lane was:
 
 ```text
 FRESH EXACT-HEAD / EXACT-DB ONE-SHOT STANDARD-4H AUTHORIZATION PREPARATION — STALE PRIOR AUTHORIZATION SEALED NON-REUSABLE
 ```
+
+That preparation pointer is historical after later readiness, the 12a7ea61
+campaign, and its closeout. Use the Active Authority Stack current block above.
 
 Exact currently permitted action:
 
@@ -1196,15 +1258,16 @@ authority. Current adopted envelope:
 The exact current next permitted lane is:
 
 ```text
-FRESH EXACT-HEAD / EXACT-DB ONE-SHOT STANDARD-4H AUTHORIZATION PREPARATION — STALE PRIOR AUTHORIZATION SEALED NON-REUSABLE
+LATER-CYCLE COOPERATIVE MINT-MARKET-BATCH DUPLICATE TRANSPORT IDENTITY — DESIGN / SPECIFICATION ONLY
 ```
 
 Historical at the time of the 2026-08-26 source-stack synchronization:
 `POST-SYNCHRONIZATION FRESH NEXT-BOUNDED-CAMPAIGN AUTHORIZATION READINESS /
 GOVERNANCE ONLY`. Later post-repair readiness, authorization-boundary design
-PASS, independent package review PASS, and the stale exact-HEAD-drift closeout
-supersede older pointers for current-lane selection; use the Active Authority
-Stack and `CURRENT_HANDOFF.md`.
+PASS, independent package review PASS, the stale exact-HEAD-drift closeout,
+scope-propagation repair, and the 12a7ea61 campaign closeout supersede older
+pointers for current-lane selection; use the Active Authority Stack and
+`CURRENT_HANDOFF.md`.
 
 No automatic run, retry, recovery, successor, cursor reset, N7, provider/RPC
 work, operational campaign, or Printer execution is authorized by this anchor
@@ -1270,15 +1333,16 @@ Current adopted operational envelope:
 The exact current next permitted lane is:
 
 ```text
-FRESH EXACT-HEAD / EXACT-DB ONE-SHOT STANDARD-4H AUTHORIZATION PREPARATION — STALE PRIOR AUTHORIZATION SEALED NON-REUSABLE
+LATER-CYCLE COOPERATIVE MINT-MARKET-BATCH DUPLICATE TRANSPORT IDENTITY — DESIGN / SPECIFICATION ONLY
 ```
 
 Historical at the time of this adoption closeout:
 `POST-SYNCHRONIZATION FRESH NEXT-BOUNDED-CAMPAIGN AUTHORIZATION READINESS /
 GOVERNANCE ONLY`. Later post-repair readiness, authorization-boundary design
-PASS, independent package review PASS, and the stale exact-HEAD-drift closeout
-supersede older pointers for current-lane selection; use the Active Authority
-Stack and `CURRENT_HANDOFF.md`.
+PASS, independent package review PASS, the stale exact-HEAD-drift closeout,
+scope-propagation repair, and the 12a7ea61 campaign closeout supersede older
+pointers for current-lane selection; use the Active Authority Stack and
+`CURRENT_HANDOFF.md`.
 
 This adoption creates no authorization, automatically authorizes no campaign,
 and unlocks no live runtime. No existing consumed authorization,
