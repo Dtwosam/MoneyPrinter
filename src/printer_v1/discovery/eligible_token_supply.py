@@ -1106,6 +1106,123 @@ def _candidate_liquidity_lineage(candidate: Mapping[str, Any]) -> dict[str, Any]
     }
 
 
+def load_completed_cooperative_mint_market_batch_mints(
+    connection: sqlite3.Connection,
+    *,
+    campaign_source_request_scope: Any,
+    execution_id: str,
+    campaign_id: str,
+    run_id: str,
+    cycle_id: str,
+) -> frozenset[str]:
+    """Return exact current-cycle mints whose round market transport completed.
+
+    Cooperative resume may reuse durable Source Governor evidence, but only from
+    the authentic typed execution/campaign/run/cycle scope. A mint is suppressed
+    from ``due_mints`` only when the original round request has a COMPLETE,
+    CLEAN_DATA response carrying the exact canonical DexScreener mint-batch
+    transport identity. Failures, partial/dirty responses, foreign roots,
+    protocol-resume batches, malformed identities, and different transport
+    identities remain eligible for their existing lawful continuation rules.
+    """
+    from printer_v1.discovery.permanent_discovery_availability import (
+        request_key_belongs_to_root,
+        validate_campaign_source_request_scope,
+        validate_cooperative_resume_source_request_scope,
+    )
+    from printer_v1.sources.measured_transport import (
+        MeasuredTransportError,
+        canonical_transport_identity_key,
+    )
+
+    scope = validate_campaign_source_request_scope(
+        campaign_source_request_scope,
+        execution_id=execution_id,
+        campaign_id=campaign_id,
+        run_id=run_id,
+        cycle_id=cycle_id,
+    )
+    validate_cooperative_resume_source_request_scope(
+        connection,
+        scope=scope,
+        execution_id=execution_id,
+        campaign_id=campaign_id,
+        run_id=run_id,
+        cycle_id=cycle_id,
+    )
+
+    rows = connection.execute(
+        """
+        SELECT r.request_key,s.normalized_payload_json
+        FROM printer_source_requests AS r
+        JOIN printer_source_responses AS s ON s.source_request_id=r.id
+        WHERE (r.request_key=? OR r.request_key LIKE ?)
+          AND r.source_name='dexscreener'
+          AND r.request_kind='candidate_market_batch'
+          AND s.source_status='COMPLETE'
+          AND s.data_quality_label='CLEAN_DATA'
+        ORDER BY r.id ASC
+        """,
+        (scope.request_key_root, f"{scope.request_key_root}%"),
+    ).fetchall()
+
+    expected_identity_prefix = (
+        "MINT_MARKET_BATCH",
+        "dexscreener_pair",
+        "candidate_market_batch",
+        "GET /tokens/v1/solana/{mints}",
+        1,
+        "due_mints",
+    )
+    round_prefix = "-mint-batch-r"
+    completed: set[str] = set()
+    for row in rows:
+        values = dict(row) if hasattr(row, "keys") else {
+            "request_key": row[0],
+            "normalized_payload_json": row[1],
+        }
+        request_key = str(values.get("request_key") or "")
+        if not request_key_belongs_to_root(request_key, scope.request_key_root):
+            continue
+        suffix = request_key[len(scope.request_key_root):]
+        if not suffix.startswith(round_prefix):
+            continue
+        sequence_token = suffix[len(round_prefix):]
+        if not sequence_token.isdigit() or int(sequence_token) < 1:
+            continue
+
+        raw_payload = values.get("normalized_payload_json")
+        if not raw_payload:
+            continue
+        try:
+            payload = json.loads(str(raw_payload))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, Mapping):
+            continue
+        identities = payload.get("transport_operation_identities") or ()
+        if isinstance(identities, (str, bytes)) or not isinstance(identities, Sequence):
+            continue
+        for raw_identity in identities:
+            if not isinstance(raw_identity, Mapping):
+                continue
+            try:
+                identity_key = canonical_transport_identity_key(raw_identity)
+            except (MeasuredTransportError, TypeError, ValueError):
+                continue
+            if tuple(identity_key[:6]) != expected_identity_prefix:
+                continue
+            target_identity = str(identity_key[6] or "").strip()
+            if not target_identity:
+                continue
+            completed.update(
+                mint.strip()
+                for mint in target_identity.split(",")
+                if mint.strip()
+            )
+    return frozenset(completed)
+
+
 # --------------------------------------------------------------------------- #
 # Persistent discovery loop                                                    #
 # --------------------------------------------------------------------------- #
@@ -1433,6 +1550,7 @@ def run_persistent_eligible_token_supply(
     )
 
     evaluated_mints: set[str] = set()
+    completed_cooperative_market_mints: frozenset[str] = frozenset()
     campaign_eligible: dict[str, dict[str, Any]] = {}
     all_candidates: list[dict[str, Any]] = []
     rejection_reasons: dict[str, int] = {}
@@ -1491,6 +1609,35 @@ def run_persistent_eligible_token_supply(
 
     connection = _connect(db_path)
     try:
+        # A completed MARKET_DISCOVERY transport is durable current-cycle work,
+        # even when its mint has not yet reached fresh MOE. Rehydrate that exact
+        # state before building ``due_mints`` so cooperative resume cannot issue
+        # the same canonical transport twice. The six-unit duplicate guard stays
+        # unchanged and remains the final invariant owner.
+        if (
+            permanent_availability
+            and cooperative_resume
+            and cooperative_quantum
+            and cooperative_phase == "MARKET_DISCOVERY"
+        ):
+            if campaign_source_scope_obj is None:
+                from printer_v1.discovery.permanent_discovery_availability import (
+                    CAMPAIGN_SOURCE_REQUEST_SCOPE_REQUIRED,
+                )
+
+                raise ValueError(CAMPAIGN_SOURCE_REQUEST_SCOPE_REQUIRED)
+            completed_cooperative_market_mints = (
+                load_completed_cooperative_mint_market_batch_mints(
+                    connection,
+                    campaign_source_request_scope=campaign_source_scope_obj,
+                    execution_id=campaign_source_scope_obj.execution_id,
+                    campaign_id=campaign_source_scope_obj.campaign_id,
+                    run_id=campaign_source_scope_obj.run_id,
+                    cycle_id=campaign_source_scope_obj.cycle_id,
+                )
+            )
+            evaluated_mints.update(completed_cooperative_market_mints)
+
         # V2-9.8B corrective program: a later cooperative quantum must not
         # forget fresh protocol-confirmed MOE persisted by an earlier quantum.
         # Rehydrate only this exact Cycle-2 campaign and still apply the existing
@@ -3571,6 +3718,12 @@ def run_persistent_eligible_token_supply(
                 None
                 if campaign_source_scope_obj is None
                 else campaign_source_scope_obj.as_dict()
+            ),
+            "cooperative_completed_market_mint_count": len(
+                completed_cooperative_market_mints
+            ),
+            "cooperative_completed_market_mints": sorted(
+                completed_cooperative_market_mints
             ),
             "next_cooperative_phase": (
                 "AUXILIARY_LIQUIDITY_BACKUP"
