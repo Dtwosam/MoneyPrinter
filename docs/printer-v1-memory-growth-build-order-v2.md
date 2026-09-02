@@ -2446,14 +2446,46 @@ this file for current-lane selection only. Historical text remains evidence.
 - retrieval/financial/12h/24h locks remain closed
 - readiness: `docs/printer-v1-v2-9-8b-post-duplicate-transport-repair-fresh-readiness-governance.md`
 
-The exact current permitted lane is:
+The exact current permitted lane at readiness time was:
 
 ```text
 FRESH EXACT-HEAD / EXACT-DB ONE-SHOT STANDARD-4H AUTHORIZATION PREPARATION
 ```
 
-This is package preparation only. It does not authorize application,
+That preparation pointer is historical after the 59fdefe7 campaign closeout.
+This is package-preparation history only. It does not authorize application,
 consumption, Printer execution, provider/RPC/WebSocket calls, Scheduler
-execution, retrieval, financial capabilities, or longer windows. Do not enter
-it automatically. Stop unconsumed for independent package review.
+execution, retrieval, financial capabilities, or longer windows.
 <!-- V2_9_8B_POST_DUPLICATE_TRANSPORT_REPAIR_FRESH_READINESS_CURRENT_STATE_END -->
+
+<!-- V2_9_8B_AUTH_59FDEFE7_CAMPAIGN_CLOSEOUT_CURRENT_STATE_START -->
+## V2-9.8B Authorization 59fdefe7 Campaign Closeout — Current Authority
+
+This block supersedes older current-looking Standard-4H next-lane pointers in
+this file for current-lane selection only. Historical text remains evidence.
+
+- evidence-audit verdict: `V2_9_8B_AUTH_59FDEFE7_POST_APPLICATION_EVIDENCE_AUDIT_PASS`
+- closeout verdict: `V2_9_8B_AUTH_59FDEFE7_CAMPAIGN_CLOSEOUT_BLOCKED`
+- blocker: `UNDRAINED_CURRENT_ATTEMPT_PRE_LIFECYCLE_REFRESH_WAIT`
+- primary classification: `COMMITTED_CODE_DEFECT` / `PRE_LIFECYCLE_TERMINAL_CLEANUP_ORDERING_OR_OWNERSHIP_DEFECT`
+- authorized execution HEAD: `83a6ef964e7289ca17c9c1a600758ffdb5e9f752`
+- authoritative post-campaign DB SHA-256: `cd6b1d4ac7171f4096d06c9b09a035a0cf622899806b9a58cc990a2936ad6659`
+- consumed authorization `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260902T122136Z_59fdefe7` remains permanently non-reusable
+- consumed authorization `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260901T203521Z_12a7ea61` remains permanently non-reusable
+- consumed authorization `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260901T181024Z_ab6c68fe` remains permanently non-reusable
+- Source Governor and Central Scheduler owners unchanged
+- retrieval/financial/12h/24h locks remain closed
+- closeout: `docs/printer-v1-v2-9-8b-auth-59fdefe7-campaign-closeout.md`
+
+The exact current permitted lane is:
+
+```text
+PRE-LIFECYCLE TERMINAL CLEANUP ORDERING OR OWNERSHIP DEFECT — AUDIT / READINESS THEN DESIGN / SPECIFICATION ONLY
+```
+
+This is defect audit/readiness then design/specification only. It does not
+authorize implementation, wait drainage, application, consumption, Printer
+execution, provider/RPC/WebSocket calls, Scheduler execution, retrieval,
+financial capabilities, or longer windows. Do not enter implementation
+automatically.
+<!-- V2_9_8B_AUTH_59FDEFE7_CAMPAIGN_CLOSEOUT_CURRENT_STATE_END -->

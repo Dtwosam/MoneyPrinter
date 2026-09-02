@@ -2,118 +2,134 @@
 
 ## Current lane
 
-`FRESH EXACT-HEAD / EXACT-DB ONE-SHOT STANDARD-4H AUTHORIZATION PREPARATION`
+`PRE-LIFECYCLE TERMINAL CLEANUP ORDERING OR OWNERSHIP DEFECT — AUDIT / READINESS THEN DESIGN / SPECIFICATION ONLY`
 
-The later-cycle cooperative mint-market-batch duplicate transport identity
-repair is closed PASS. The post-repair fresh exact-HEAD / exact-DB readiness
-is closed PASS.
+Authorization `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260902T122136Z_59fdefe7` is
+consumed. The post-application evidence audit is closed PASS. The campaign
+closeout is BLOCKED on one undrained current-attempt pre-lifecycle refresh
+wait.
 
-This handoff does **not** authorize application, consumption, or Printer
-execution. Do not enter the preparation lane automatically.
+This handoff does **not** authorize implementation, wait drainage, application,
+consumption, or Printer execution.
 
 ## Latest completed work
 
-Post-duplicate-transport-repair fresh exact-HEAD / exact-DB readiness:
+59fdefe7 campaign closeout:
+
+`V2_9_8B_AUTH_59FDEFE7_CAMPAIGN_CLOSEOUT_BLOCKED`
+
+Evidence-audit:
+
+`V2_9_8B_AUTH_59FDEFE7_POST_APPLICATION_EVIDENCE_AUDIT_PASS`
+
+Governing closeout:
+
+`docs/printer-v1-v2-9-8b-auth-59fdefe7-campaign-closeout.md`
+
+Primary classification:
+
+`COMMITTED_CODE_DEFECT` /
+`PRE_LIFECYCLE_TERMINAL_CLEANUP_ORDERING_OR_OWNERSHIP_DEFECT`
+
+Authorized / actual execution HEAD:
+
+`83a6ef964e7289ca17c9c1a600758ffdb5e9f752`
+
+This documentation-only commit is the live HEAD after closeout. Do not bind
+`83a6ef96...` after this commit exists.
+
+Prior readiness remains historically correct:
 
 `V2_9_8B_POST_DUPLICATE_TRANSPORT_REPAIR_FRESH_EXACT_HEAD_EXACT_DB_READINESS_PASS`
 
-Governing readiness:
-
-`docs/printer-v1-v2-9-8b-post-duplicate-transport-repair-fresh-readiness-governance.md`
-
-Audited starting HEAD:
-
-`b2497d8a434de3adad79432117f05ec097fa11b6`
-
-This documentation-only commit is the live HEAD a later preparation must bind.
-Do not bind `b2497d8a...` after this commit exists.
-
-Prior repair closeout remains historically correct:
+Prior duplicate-transport repair remains historically correct:
 
 `V2_9_8B_LATER_CYCLE_DUPLICATE_TRANSPORT_AUTHORITATIVE_REPAIR_PASS`
 
-Prior campaign closeout remains historically correct:
+Prior 12a7ea61 campaign closeout remains historically correct:
 
 `V2_9_8B_AUTH_12A7EA61_CAMPAIGN_CLOSEOUT_PASS`
 
-Scope-propagation repair live proof remains:
-
-`CAMPAIGN_SOURCE_REQUEST_SCOPE_PROPAGATION_REPAIR_LIVE_PROOF_PASS`
-
 ## Consumed authorization
 
-`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260901T203521Z_12a7ea61`
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260902T122136Z_59fdefe7`
 
-`CONSUMED / CHILD_EXITED_ZERO / PERMANENTLY NON-REUSABLE`
+`CONSUMED / CHILD_EXITED_NONZERO / PERMANENTLY NON-REUSABLE`
 
 Authorization SHA-256:
 
-`b8112ab756e46c60bac82d486a0de113113cb3b266690f2850f2d6c7698a96f3`
+`fcfa2d6cd0dfdb8f19c8482ace1b4c4c4b1b84b8283862ee8c4e90be74787b19`
 
-Authorized execution HEAD:
+Marker SHA-256:
 
-`91c757c542d8098ecf7b244769061f333dcfc21f`
+`55fc36e3ee5fd7407c4066ea6d915f531c20ba927126d038dd18cf295e262404`
 
 Do not retry, rerun, resume, restart, reuse, or create a successor from this
 authorization. It must remain in every future prior-authorization non-reuse
 trust root, together with consumed
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260901T203521Z_12a7ea61`, consumed
 `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260901T181024Z_ab6c68fe`, stale
 `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260831T150842Z_b6d7ab46`, and every already
-required prior ID. The complete future root is 58 IDs.
+required prior ID. The complete future root is 59 IDs.
 
 ## Campaign result
 
-Historical. Cycle 1 admitted two tokens and completed
-`WINDOW_15M -> WINDOW_1H -> WINDOW_4H`. Cycle 2 was attempted and not admitted
-because cooperative `MARKET_DISCOVERY` replayed the same DexScreener due-mint
-transport identity. That producer defect is repaired in host-local code. The
-consumed authorization remains dead.
+Cycle 1 admitted two tokens and completed `WINDOW_15M -> WINDOW_1H` both
+clean-promoted. Both `WINDOW_4H` windows blocked on
+`dexscreener_transport_failure` (DexScreener timeout / no-route, GeckoTerminal
+no-route on snapshot 012). Cycle 2 was attempted and not admitted. Shared
+terminal then raised because this attempt's Cycle-2 pre-lifecycle refresh wait
+was still `WAITING`. Child exited `1`. That wait remains `WAITING`. Do not
+manually drain it in this closeout.
 
-## Post-campaign / post-readiness DB identity
+This is not a four-token campaign success.
+
+## Post-campaign DB identity
 
 Required authoritative DB path:
 
 `data/printer_v1.sqlite3`
 
-- SHA-256: `a3172e04f99ef410ba66eb4e2928b5b4edbdd7dfad4d713fcd1605fa3b702a8c`
-- size: `154796032`
+- SHA-256: `cd6b1d4ac7171f4096d06c9b09a035a0cf622899806b9a58cc990a2936ad6659`
+- size: `158408704`
 - inode: `1230526`
-- mtime_ns: `1788310792540112946`
+- mtime_ns: `1788358651758295845`
 - migration count/head: `62` / `062_pre_admission_attempt_evidence.sql`
 - integrity: `ok`
 - foreign-key violations: `0`
 - journal mode: `delete`
 - sidecars: none
 
-Readiness left the authoritative DB byte-identical. Do not restore the
-pre-run DB. Campaign writes were authorized.
+Do not restore the pre-run DB. Campaign writes were authorized. Pre-run SHA-256
+was `a3172e04f99ef410ba66eb4e2928b5b4edbdd7dfad4d713fcd1605fa3b702a8c`.
 
 ## Durable zero-state / quiescence
 
-All canonical ownership domains remain zero. No operational Printer processes.
-Historical terminal rows, including four historical `SELECTED` slots on
-already-terminal campaigns, remain historical residue and must not be mutated.
+Official four-token zero-state domains are all `0`. No operational Printer
+processes. Campaign lease lock absent.
 
-The seven WINDOW_15M scope-test failures in
-`tests/test_v2_9_8b_window_15m_source_request_scope_repair.py` are classified
-stale/superseded test residue and are not an active production or readiness
-blocker.
+Canonical campaign-scoped active-work report is not clean:
+`active_pre_lifecycle_refresh_waits = 1`, `clean_terminal = false`. The
+offending row is
+
+`prelifecycle-refresh-wait:20260902T123958Z-5a3e78f1a7b8-campaign:20260902T123958Z-5a3e78f1a7b8-campaign-run:20260902T123958Z-5a3e78f1a7b8-cycle-2:1`
+
+still `WAITING`. Official zero-state does not project wait rows. That residue
+blocks this closeout and is in-scope for the subsequent repair audit/design.
+Do not mutate historical terminal rows to manufacture a cleaner report.
 
 ## Exact next permitted action
 
-`Prepare exactly one fresh exact-HEAD / exact-DB one-shot Standard-4H authorization package using the existing canonical authorization owners, binding the actual HEAD of this readiness commit and the freshly re-read authoritative DB identity, including the complete 58-ID prior non-reuse trust root, and stop unconsumed for independent package review.`
+`Audit/readiness then design/specification only for PRE_LIFECYCLE_TERMINAL_CLEANUP_ORDERING_OR_OWNERSHIP_DEFECT, covering later-cycle pre-lifecycle refresh-wait drain before shared terminal, parent-interrupt wait ownership, official zero-state projection of WAITING/CLAIMED waits, and the live residue row above. Do not implement yet. Do not drain the wait here. Do not prepare another authorization.`
 
-The completed authorization-boundary design remains authoritative and must not
-be redone. The scope-propagation repair remains closed PASS and live-proven.
-The later-cycle duplicate-transport repair remains closed PASS. The
-post-repair fresh readiness remains closed PASS.
-
-Do not enter that preparation lane automatically.
+Do not enter that repair-implementation lane automatically.
 
 ## Application / execution remain blocked
 
 This handoff does **not** authorize:
 
+- implementation of the cleanup defect;
+- manual drainage of the remaining wait;
 - `apply_authorization_once`;
 - application-marker creation;
 - Printer execution or child launch;
@@ -147,8 +163,7 @@ Preserve exactly:
 audit/readiness -> design/specification -> implementation if approved -> bounded proof/test -> closeout
 ```
 
-Do not collapse readiness, authorization preparation, and execution into one
-action.
+Do not collapse the subsequent defect audit/design into implementation.
 
 ## Permanent locks
 

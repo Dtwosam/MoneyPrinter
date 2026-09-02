@@ -40,16 +40,20 @@ Current adopted operational envelope remains:
 
 Latest completed campaign:
 
-- authorization: `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260901T203521Z_12a7ea61`;
-- authorization SHA-256: `b8112ab756e46c60bac82d486a0de113113cb3b266690f2850f2d6c7698a96f3`;
-- authorized execution HEAD: `91c757c542d8098ecf7b244769061f333dcfc21f`;
-- permanently consumed `CONSUMED / CHILD_EXITED_ZERO / PERMANENTLY NON-REUSABLE`;
+- authorization: `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260902T122136Z_59fdefe7`;
+- authorization SHA-256: `fcfa2d6cd0dfdb8f19c8482ace1b4c4c4b1b84b8283862ee8c4e90be74787b19`;
+- authorized execution HEAD: `83a6ef964e7289ca17c9c1a600758ffdb5e9f752`;
+- permanently consumed `CONSUMED / CHILD_EXITED_NONZERO / PERMANENTLY NON-REUSABLE`;
 - no retry, rerun, resume, restart, reuse, inheritance, or successor;
-- authoritative post-campaign DB SHA-256: `a3172e04f99ef410ba66eb4e2928b5b4edbdd7dfad4d713fcd1605fa3b702a8c`;
-- campaign classification: `COMMITTED_CODE_DEFECT` / `LATER_CYCLE_COOPERATIVE_MINT_MARKET_BATCH_DUPLICATE_TRANSPORT_IDENTITY`;
-- scope-propagation repair live proof: `CAMPAIGN_SOURCE_REQUEST_SCOPE_PROPAGATION_REPAIR_LIVE_PROOF_PASS`;
-- later-cycle duplicate-transport authoritative repair: `V2_9_8B_LATER_CYCLE_DUPLICATE_TRANSPORT_AUTHORITATIVE_REPAIR_PASS`;
-- no current-campaign active work;
+- authoritative post-campaign DB SHA-256: `cd6b1d4ac7171f4096d06c9b09a035a0cf622899806b9a58cc990a2936ad6659`;
+- campaign classification: `COMMITTED_CODE_DEFECT` / `PRE_LIFECYCLE_TERMINAL_CLEANUP_ORDERING_OR_OWNERSHIP_DEFECT`;
+- closeout: `V2_9_8B_AUTH_59FDEFE7_CAMPAIGN_CLOSEOUT_BLOCKED` on one undrained
+  current-attempt Cycle-2 pre-lifecycle refresh wait still `WAITING`;
+- later-cycle duplicate-transport authoritative repair remains historically
+  `V2_9_8B_LATER_CYCLE_DUPLICATE_TRANSPORT_AUTHORITATIVE_REPAIR_PASS` and was
+  not this campaign's terminal cause;
+- official zero-state domains are `0`; canonical campaign-scoped
+  `clean_terminal` is false because of that wait;
 - retrieval, financial capabilities, 12h, and 24h remain locked.
 
 ## Remote-host infrastructure state
@@ -73,32 +77,30 @@ The remote-host work is infrastructure support only. It does not reorder or adva
 The exact current lane is:
 
 ```text
-FRESH EXACT-HEAD / EXACT-DB ONE-SHOT STANDARD-4H AUTHORIZATION PREPARATION
+PRE-LIFECYCLE TERMINAL CLEANUP ORDERING OR OWNERSHIP DEFECT — AUDIT / READINESS THEN DESIGN / SPECIFICATION ONLY
 ```
 
-The consumed Sep-1/Sep-2 authorization
-`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260901T203521Z_12a7ea61` is
-`CONSUMED / CHILD_EXITED_ZERO / PERMANENTLY NON-REUSABLE`. The earlier consumed
-Sep-1 authorization `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260901T181024Z_ab6c68fe`
-remains `CONSUMED / CHILD_EXITED_NONZERO / PERMANENTLY NON-REUSABLE`. The
-freeze-ready scope-propagation repair is closed PASS and live-proven. The
-later-cycle duplicate-transport authoritative repair is closed PASS. The
-post-duplicate-transport-repair fresh exact-HEAD / exact-DB readiness is closed
-PASS. Use `CURRENT_HANDOFF.md` for the live HEAD after that readiness
-documentation commit.
+The consumed Sep-2 authorization
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260902T122136Z_59fdefe7` is
+`CONSUMED / CHILD_EXITED_NONZERO / PERMANENTLY NON-REUSABLE`. Consumed
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260901T203521Z_12a7ea61` remains
+`CONSUMED / CHILD_EXITED_ZERO / PERMANENTLY NON-REUSABLE`. Consumed
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260901T181024Z_ab6c68fe` remains
+`CONSUMED / CHILD_EXITED_NONZERO / PERMANENTLY NON-REUSABLE`. The later-cycle
+duplicate-transport authoritative repair remains closed PASS and was not this
+campaign's terminal cause. The 59fdefe7 campaign closeout is BLOCKED on the
+undrained Cycle-2 pre-lifecycle refresh wait. Use `CURRENT_HANDOFF.md` for the
+live HEAD after that closeout documentation commit.
 
 Allowed now:
 
-- prepare exactly one fresh exact-HEAD / exact-DB one-shot Standard-4H
-  authorization package using the existing canonical owners;
-- bind the actual HEAD of the readiness documentation commit and the freshly
-  re-read authoritative DB identity;
-- include the complete prior non-reuse trust root plus consumed `12a7ea61`;
-- stop unconsumed for independent package review;
-- do not enter that preparation lane automatically.
+- audit/readiness then design/specification only for
+  `PRE_LIFECYCLE_TERMINAL_CLEANUP_ORDERING_OR_OWNERSHIP_DEFECT`;
+- keep the remaining `WAITING` wait as identified residue;
+- do not implement, drain, or prepare another authorization in this closeout.
 
 Do not redo the completed authorization-boundary design.
-Do not reuse either consumed Sep-1 authorization.
+Do not reuse consumed `59fdefe7`, `12a7ea61`, or `ab6c68fe`.
 Do not retry, rerun, resume, restart, or create a successor from those runs.
 Do not create an application marker.
 Do not call `apply_authorization_once`.

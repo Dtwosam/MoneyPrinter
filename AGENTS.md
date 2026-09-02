@@ -45,6 +45,89 @@ Every major capability must preserve:
 Use minimum sufficient risk-based verification. Do not request broad regression
 suites unless the change risk or lane closeout requires them.
 
+### Current V2-9.8B authorization 59fdefe7 campaign closeout — 2026-09-02
+
+Consumed authorization:
+
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260902T122136Z_59fdefe7`
+
+Final state:
+
+`CONSUMED / CHILD_EXITED_NONZERO / PERMANENTLY NON-REUSABLE`
+
+Authorization SHA-256:
+
+`fcfa2d6cd0dfdb8f19c8482ace1b4c4c4b1b84b8283862ee8c4e90be74787b19`
+
+Authorized execution HEAD:
+
+`83a6ef964e7289ca17c9c1a600758ffdb5e9f752`
+
+Execution:
+
+`20260902T123958Z-5a3e78f1a7b8`
+
+Evidence-audit verdict:
+
+`V2_9_8B_AUTH_59FDEFE7_POST_APPLICATION_EVIDENCE_AUDIT_PASS`
+
+Closeout verdict:
+
+`V2_9_8B_AUTH_59FDEFE7_CAMPAIGN_CLOSEOUT_BLOCKED`
+
+Blocker:
+
+`UNDRAINED_CURRENT_ATTEMPT_PRE_LIFECYCLE_REFRESH_WAIT`
+
+Primary classification:
+
+`COMMITTED_CODE_DEFECT` /
+`PRE_LIFECYCLE_TERMINAL_CLEANUP_ORDERING_OR_OWNERSHIP_DEFECT`
+
+Post-campaign authoritative DB SHA-256:
+
+`cd6b1d4ac7171f4096d06c9b09a035a0cf622899806b9a58cc990a2936ad6659`
+
+Governing closeout:
+
+`docs/printer-v1-v2-9-8b-auth-59fdefe7-campaign-closeout.md`
+
+This block supersedes older current-looking Standard-4H next-lane pointers
+later in this file for current-lane selection only. Historical campaign/repair
+truth remains evidence. Consumed
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260902T122136Z_59fdefe7`, consumed
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260901T203521Z_12a7ea61`, consumed
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260901T181024Z_ab6c68fe`, and stale
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260831T150842Z_b6d7ab46` must remain in every
+future Standard-4H prior non-reuse trust root, together with every already
+required prior ID. The complete future root is 59 IDs. Do not retry, rerun,
+resume, restart, or create a successor from those runs.
+
+Cycle 1 admitted two tokens and completed `WINDOW_15M` and `WINDOW_1H`
+clean-promoted; both `WINDOW_4H` windows blocked on
+`dexscreener_transport_failure`. Cycle 2 was attempted and not admitted. Shared
+terminal then failed because this attempt's Cycle-2 pre-lifecycle refresh wait
+was still `WAITING`. That wait remains `WAITING` and was not drained in this
+closeout.
+
+The exact current permitted lane is:
+
+```text
+PRE-LIFECYCLE TERMINAL CLEANUP ORDERING OR OWNERSHIP DEFECT — AUDIT / READINESS THEN DESIGN / SPECIFICATION ONLY
+```
+
+Use `CURRENT_HANDOFF.md` for the live HEAD after this closeout documentation
+commit, latest completed work, and next permitted action. Do not implement the
+repair in this closeout. Do not drain the remaining wait here. Do not create an
+application marker. Do not call `apply_authorization_once`. Do not run Printer.
+Do not prepare another authorization.
+
+This does **not** authorize `apply_authorization_once`, application-marker
+creation, Printer execution, child launch, another campaign, provider/RPC/
+WebSocket calls, Central Scheduler runtime, authoritative DB mutation,
+retry/rerun/resume/restart/successor, retrieval, BUY/SELL/HOLD, positions,
+trades, audits, PnL, or `WINDOW_12H` / `WINDOW_24H`.
+
 ### Current V2-9.8B post-duplicate-transport-repair fresh readiness — 2026-09-02
 
 Readiness verdict:
@@ -63,30 +146,19 @@ Integrated repair commit remaining in ancestry:
 
 `041e2550ec2ec090e45eec2d8de45f6a0c1e84f0`
 
-Authoritative DB SHA-256:
+Authoritative DB SHA-256 at readiness time:
 
 `a3172e04f99ef410ba66eb4e2928b5b4edbdd7dfad4d713fcd1605fa3b702a8c`
 
-This block supersedes older current-looking Standard-4H next-lane pointers
-later in this file for current-lane selection only. Historical campaign/repair
-truth remains evidence. Consumed
-`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260901T203521Z_12a7ea61` and consumed
+This block is historical for current-lane selection after the 59fdefe7 campaign
+closeout. Readiness facts remain evidence. Consumed
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260902T122136Z_59fdefe7`, consumed
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260901T203521Z_12a7ea61`, and consumed
 `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260901T181024Z_ab6c68fe` must remain in every
 future Standard-4H prior non-reuse trust root, together with stale
 `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260831T150842Z_b6d7ab46` and every already
 required prior ID. Do not retry, rerun, resume, restart, or create a successor
-from those runs.
-
-The exact current permitted lane is:
-
-```text
-FRESH EXACT-HEAD / EXACT-DB ONE-SHOT STANDARD-4H AUTHORIZATION PREPARATION
-```
-
-Use `CURRENT_HANDOFF.md` for the live HEAD after this readiness documentation
-commit, latest completed work, and next permitted action. Do not enter the
-preparation lane automatically. Do not create an application marker. Do not
-call `apply_authorization_once`. Do not run Printer.
+from those runs. Use the current-lane block above and `CURRENT_HANDOFF.md`.
 
 This does **not** authorize `apply_authorization_once`, application-marker
 creation, Printer execution, child launch, another campaign, provider/RPC/
@@ -1342,7 +1414,7 @@ authority. Current adopted envelope:
 The exact current next permitted lane is:
 
 ```text
-FRESH EXACT-HEAD / EXACT-DB ONE-SHOT STANDARD-4H AUTHORIZATION PREPARATION
+PRE-LIFECYCLE TERMINAL CLEANUP ORDERING OR OWNERSHIP DEFECT — AUDIT / READINESS THEN DESIGN / SPECIFICATION ONLY
 ```
 
 Historical at the time of the 2026-08-26 source-stack synchronization:
@@ -1350,10 +1422,10 @@ Historical at the time of the 2026-08-26 source-stack synchronization:
 GOVERNANCE ONLY`. Later post-repair readiness, authorization-boundary design
 PASS, independent package review PASS, the stale exact-HEAD-drift closeout,
 scope-propagation repair, the 12a7ea61 campaign closeout, the later-cycle
-duplicate-transport authoritative repair, and the post-duplicate-transport-
-repair fresh exact-HEAD / exact-DB readiness supersede older pointers for
-current-lane selection; use the Active Authority Stack and
-`CURRENT_HANDOFF.md`.
+duplicate-transport authoritative repair, the post-duplicate-transport-repair
+fresh exact-HEAD / exact-DB readiness, and the 59fdefe7 campaign closeout
+supersede older pointers for current-lane selection; use the Active Authority
+Stack and `CURRENT_HANDOFF.md`.
 
 No automatic run, retry, recovery, successor, cursor reset, N7, provider/RPC
 work, operational campaign, or Printer execution is authorized by this anchor
@@ -1419,7 +1491,7 @@ Current adopted operational envelope:
 The exact current next permitted lane is:
 
 ```text
-FRESH EXACT-HEAD / EXACT-DB ONE-SHOT STANDARD-4H AUTHORIZATION PREPARATION
+PRE-LIFECYCLE TERMINAL CLEANUP ORDERING OR OWNERSHIP DEFECT — AUDIT / READINESS THEN DESIGN / SPECIFICATION ONLY
 ```
 
 Historical at the time of this adoption closeout:
@@ -1427,10 +1499,10 @@ Historical at the time of this adoption closeout:
 GOVERNANCE ONLY`. Later post-repair readiness, authorization-boundary design
 PASS, independent package review PASS, the stale exact-HEAD-drift closeout,
 scope-propagation repair, the 12a7ea61 campaign closeout, the later-cycle
-duplicate-transport authoritative repair, and the post-duplicate-transport-
-repair fresh exact-HEAD / exact-DB readiness supersede older pointers for
-current-lane selection; use the Active Authority Stack and
-`CURRENT_HANDOFF.md`.
+duplicate-transport authoritative repair, the post-duplicate-transport-repair
+fresh exact-HEAD / exact-DB readiness, and the 59fdefe7 campaign closeout
+supersede older pointers for current-lane selection; use the Active Authority
+Stack and `CURRENT_HANDOFF.md`.
 
 This adoption creates no authorization, automatically authorizes no campaign,
 and unlocks no live runtime. No existing consumed authorization,
