@@ -73,7 +73,7 @@ The remote-host work is infrastructure support only. It does not reorder or adva
 The exact current lane is:
 
 ```text
-POST-REPAIR FRESH EXACT-HEAD / EXACT-DB READINESS / GOVERNANCE
+FRESH EXACT-HEAD / EXACT-DB ONE-SHOT STANDARD-4H AUTHORIZATION PREPARATION
 ```
 
 The consumed Sep-1/Sep-2 authorization
@@ -82,23 +82,26 @@ The consumed Sep-1/Sep-2 authorization
 Sep-1 authorization `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260901T181024Z_ab6c68fe`
 remains `CONSUMED / CHILD_EXITED_NONZERO / PERMANENTLY NON-REUSABLE`. The
 freeze-ready scope-propagation repair is closed PASS and live-proven. The
-later-cycle duplicate-transport authoritative repair is closed PASS. Use
-`CURRENT_HANDOFF.md` for the live HEAD after that repair closeout
+later-cycle duplicate-transport authoritative repair is closed PASS. The
+post-duplicate-transport-repair fresh exact-HEAD / exact-DB readiness is closed
+PASS. Use `CURRENT_HANDOFF.md` for the live HEAD after that readiness
 documentation commit.
 
 Allowed now:
 
-- establish fresh exact-HEAD / exact-DB readiness / governance after the
-  repair closeout commit exists;
-- do not enter that lane automatically;
-- do not prepare or apply an authorization in this closeout.
+- prepare exactly one fresh exact-HEAD / exact-DB one-shot Standard-4H
+  authorization package using the existing canonical owners;
+- bind the actual HEAD of the readiness documentation commit and the freshly
+  re-read authoritative DB identity;
+- include the complete prior non-reuse trust root plus consumed `12a7ea61`;
+- stop unconsumed for independent package review;
+- do not enter that preparation lane automatically.
 
 Do not redo the completed authorization-boundary design.
 Do not reuse either consumed Sep-1 authorization.
 Do not retry, rerun, resume, restart, or create a successor from those runs.
 Do not create an application marker.
 Do not call `apply_authorization_once`.
-Do not prepare another authorization.
 Do not run Printer.
 Do not contact providers/RPC/WebSocket.
 Do not run Central Scheduler.

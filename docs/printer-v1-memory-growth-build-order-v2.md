@@ -2424,14 +2424,36 @@ this file for current-lane selection only. Historical text remains evidence.
 - retrieval/financial/12h/24h locks remain closed
 - closeout: `docs/printer-v1-v2-9-8b-later-cycle-duplicate-transport-repair-closeout.md`
 
+At repair closeout time, the next permitted lane was post-repair fresh
+exact-HEAD / exact-DB readiness / governance. That pointer is historical after
+the post-duplicate-transport-repair fresh readiness.
+<!-- V2_9_8B_LATER_CYCLE_DUPLICATE_TRANSPORT_REPAIR_CLOSEOUT_CURRENT_STATE_END -->
+
+<!-- V2_9_8B_POST_DUPLICATE_TRANSPORT_REPAIR_FRESH_READINESS_CURRENT_STATE_START -->
+## V2-9.8B Post-Duplicate-Transport-Repair Fresh Readiness — Current Authority
+
+This block supersedes older current-looking Standard-4H next-lane pointers in
+this file for current-lane selection only. Historical text remains evidence.
+
+- readiness verdict: `V2_9_8B_POST_DUPLICATE_TRANSPORT_REPAIR_FRESH_EXACT_HEAD_EXACT_DB_READINESS_PASS`
+- audited repair-closeout HEAD: `b2497d8a434de3adad79432117f05ec097fa11b6`
+- integrated repair commit remaining in ancestry: `041e2550ec2ec090e45eec2d8de45f6a0c1e84f0`
+- authoritative DB SHA-256: `a3172e04f99ef410ba66eb4e2928b5b4edbdd7dfad4d713fcd1605fa3b702a8c`
+- consumed authorization `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260901T203521Z_12a7ea61` remains permanently non-reusable
+- consumed authorization `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260901T181024Z_ab6c68fe` remains permanently non-reusable
+- seven WINDOW_15M scope-test failures classified non-blocking
+- Source Governor and Central Scheduler owners unchanged
+- retrieval/financial/12h/24h locks remain closed
+- readiness: `docs/printer-v1-v2-9-8b-post-duplicate-transport-repair-fresh-readiness-governance.md`
+
 The exact current permitted lane is:
 
 ```text
-POST-REPAIR FRESH EXACT-HEAD / EXACT-DB READINESS / GOVERNANCE
+FRESH EXACT-HEAD / EXACT-DB ONE-SHOT STANDARD-4H AUTHORIZATION PREPARATION
 ```
 
-This is readiness/governance only. It does not authorize implementation of a
-new defect, Printer execution, another authorization, provider/RPC/WebSocket
-calls, Scheduler execution, retrieval, financial capabilities, or longer
-windows. Do not enter it automatically.
-<!-- V2_9_8B_LATER_CYCLE_DUPLICATE_TRANSPORT_REPAIR_CLOSEOUT_CURRENT_STATE_END -->
+This is package preparation only. It does not authorize application,
+consumption, Printer execution, provider/RPC/WebSocket calls, Scheduler
+execution, retrieval, financial capabilities, or longer windows. Do not enter
+it automatically. Stop unconsumed for independent package review.
+<!-- V2_9_8B_POST_DUPLICATE_TRANSPORT_REPAIR_FRESH_READINESS_CURRENT_STATE_END -->
