@@ -2459,11 +2459,44 @@ consumption, Printer execution, provider/RPC/WebSocket calls, Scheduler
 execution, retrieval, financial capabilities, or longer windows.
 <!-- V2_9_8B_POST_DUPLICATE_TRANSPORT_REPAIR_FRESH_READINESS_CURRENT_STATE_END -->
 
-<!-- V2_9_8B_AUTH_59FDEFE7_CAMPAIGN_CLOSEOUT_CURRENT_STATE_START -->
-## V2-9.8B Authorization 59fdefe7 Campaign Closeout — Current Authority
+<!-- V2_9_8B_SEP2_SURVIVING_WAIT_RECONCILIATION_CURRENT_STATE_START -->
+## V2-9.8B Sep-2 Surviving Pre-Lifecycle Wait Reconciliation / Zero-State — Current Authority
 
 This block supersedes older current-looking Standard-4H next-lane pointers in
 this file for current-lane selection only. Historical text remains evidence.
+
+- reconciliation verdict: `V2_9_8B_SEP2_SURVIVING_PRE_LIFECYCLE_WAIT_RECONCILIATION_ZERO_STATE_PASS`
+- classification: `HISTORICAL_ORPHANED_ACTIVE_WAIT_RESIDUE`
+- start HEAD: `6f8a1b6ac7f00fda1f7dca38c7532473b03f1ada`
+- authoritative DB SHA-256 before: `cd6b1d4ac7171f4096d06c9b09a035a0cf622899806b9a58cc990a2936ad6659`
+- authoritative DB SHA-256 after: `fb52d8fae2d22c70f6c2c7de7ddf4a18c7d89f01450f12e6c60093ee85e17cff`
+- known wait now `CANCELLED` / `PARENT_CAMPAIGN_INTERRUPTED:SAFE_STOP_PREFLIGHT_FAILED`
+- canonical owner: `abandon_scoped_refresh_waits`
+- official zero-state projection: all required domains `0`
+- consumed authorization `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260902T122136Z_59fdefe7` remains permanently non-reusable
+- consumed authorization `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260901T203521Z_12a7ea61` remains permanently non-reusable
+- consumed authorization `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260901T181024Z_ab6c68fe` remains permanently non-reusable
+- Source Governor and Central Scheduler owners unchanged
+- retrieval/financial/12h/24h locks remain closed
+- closeout: `docs/printer-v1-v2-9-8b-sep2-surviving-pre-lifecycle-wait-reconciliation-zero-state-closeout.md`
+
+The exact current permitted lane is:
+
+```text
+FRESH POST-RECONCILIATION EXACT-HEAD / EXACT-DB NEXT-BOUNDED-CAMPAIGN READINESS / GOVERNANCE AUDIT
+```
+
+That next lane must bind the final post-reconciliation Git HEAD and the new
+authoritative DB SHA above. This does not authorize authorization preparation,
+application, consumption, Printer execution, provider/RPC/WebSocket calls,
+Scheduler execution, retrieval, financial capabilities, or longer windows.
+<!-- V2_9_8B_SEP2_SURVIVING_WAIT_RECONCILIATION_CURRENT_STATE_END -->
+
+<!-- V2_9_8B_AUTH_59FDEFE7_CAMPAIGN_CLOSEOUT_CURRENT_STATE_START -->
+## V2-9.8B Authorization 59fdefe7 Campaign Closeout — Historical Authority
+
+This block is historical for current-lane selection after the Sep-2 surviving
+pre-lifecycle wait reconciliation. Campaign facts remain evidence.
 
 - evidence-audit verdict: `V2_9_8B_AUTH_59FDEFE7_POST_APPLICATION_EVIDENCE_AUDIT_PASS`
 - closeout verdict: `V2_9_8B_AUTH_59FDEFE7_CAMPAIGN_CLOSEOUT_BLOCKED`
@@ -2489,16 +2522,11 @@ this file for current-lane selection only. Historical text remains evidence.
 - terminal-transaction / production-owner proof hardening closeout: `docs/printer-v1-v2-9-8b-four-concurrent-4-2-2-terminal-transaction-and-production-owner-proof-hardening-closeout.md`
 - hardening verdict: `V2_9_8B_FOUR_CONCURRENT_4_2_2_TERMINAL_TRANSACTION_AND_PRODUCTION_OWNER_PROOF_HARDENING_PASS`
 
-The exact current permitted lane is:
-
-```text
-INDEPENDENT CODE REVIEW / OPERATOR REVIEW
-```
-
-The terminal-transaction and production-owner proof hardening lane is closed
-PASS. This does not authorize a live campaign, wait drainage, application,
-consumption, Printer execution, provider/RPC/WebSocket calls, Scheduler
-execution, retrieval, financial capabilities, or longer windows. Independent
-code review / operator review is required before any later explicit
-authorization decision.
+The exact current permitted lane is no longer independent code review / wait
+drainage review. Use the current-authority block above and `CURRENT_HANDOFF.md`.
+The terminal-transaction and production-owner proof hardening lane remains
+historically closed PASS. The surviving wait was later canonical-reconciled.
+This historical campaign closeout does not authorize a live campaign,
+application, consumption, Printer execution, provider/RPC/WebSocket calls,
+Scheduler execution, retrieval, financial capabilities, or longer windows.
 <!-- V2_9_8B_AUTH_59FDEFE7_CAMPAIGN_CLOSEOUT_CURRENT_STATE_END -->

@@ -19,7 +19,7 @@ Use `CURRENT_HANDOFF.md` only for the current lane, current commit, latest compl
 
 Historical roadmaps, old lane documents, old chats, previous handoffs, and older current-looking pointers are historical evidence only unless explicitly re-adopted.
 
-## Current durable state — 2026-09-02
+## Current durable state — 2026-09-02 post-wait-reconciliation
 
 Active capability family:
 
@@ -47,15 +47,24 @@ Latest completed campaign:
 - authorized execution HEAD: `83a6ef964e7289ca17c9c1a600758ffdb5e9f752`;
 - permanently consumed `CONSUMED / CHILD_EXITED_NONZERO / PERMANENTLY NON-REUSABLE`;
 - no retry, rerun, resume, restart, reuse, inheritance, or successor;
-- authoritative post-campaign DB SHA-256: `cd6b1d4ac7171f4096d06c9b09a035a0cf622899806b9a58cc990a2936ad6659`;
-- campaign classification: `COMMITTED_CODE_DEFECT` / `PRE_LIFECYCLE_TERMINAL_CLEANUP_ORDERING_OR_OWNERSHIP_DEFECT`;
-- closeout: `V2_9_8B_AUTH_59FDEFE7_CAMPAIGN_CLOSEOUT_BLOCKED` on one undrained
-  current-attempt Cycle-2 pre-lifecycle refresh wait still `WAITING`;
+- historical post-campaign DB SHA-256:
+  `cd6b1d4ac7171f4096d06c9b09a035a0cf622899806b9a58cc990a2936ad6659`;
+- post-reconciliation authoritative DB SHA-256:
+  `fb52d8fae2d22c70f6c2c7de7ddf4a18c7d89f01450f12e6c60093ee85e17cff`;
+- campaign classification remains historically
+  `COMMITTED_CODE_DEFECT` / `PRE_LIFECYCLE_TERMINAL_CLEANUP_ORDERING_OR_OWNERSHIP_DEFECT`;
+- campaign closeout remains historically
+  `V2_9_8B_AUTH_59FDEFE7_CAMPAIGN_CLOSEOUT_BLOCKED` on the then-undrained
+  Cycle-2 pre-lifecycle refresh wait;
+- later residue reconciliation is
+  `V2_9_8B_SEP2_SURVIVING_PRE_LIFECYCLE_WAIT_RECONCILIATION_ZERO_STATE_PASS`;
+  that wait is now `CANCELLED` /
+  `PARENT_CAMPAIGN_INTERRUPTED:SAFE_STOP_PREFLIGHT_FAILED`;
 - later-cycle duplicate-transport authoritative repair remains historically
   `V2_9_8B_LATER_CYCLE_DUPLICATE_TRANSPORT_AUTHORITATIVE_REPAIR_PASS` and was
   not this campaign's terminal cause;
-- official zero-state domains are `0`; canonical campaign-scoped
-  `clean_terminal` is false because of that wait;
+- official zero-state domains are now all `0`; canonical campaign-scoped
+  `clean_terminal` is true;
 - retrieval, financial capabilities, 12h, and 24h remain locked.
 
 ## Remote-host infrastructure state
@@ -79,21 +88,22 @@ The remote-host work is infrastructure support only. It does not reorder or adva
 The exact current lane is:
 
 ```text
-INDEPENDENT CODE REVIEW / OPERATOR REVIEW
+FRESH POST-RECONCILIATION EXACT-HEAD / EXACT-DB NEXT-BOUNDED-CAMPAIGN READINESS / GOVERNANCE AUDIT
 ```
 
-The four-concurrent 4/2/2 terminal-transaction and production-owner proof
-hardening lane is closed PASS:
+The Sep-2 surviving pre-lifecycle wait reconciliation / zero-state lane is
+closed PASS:
 
-`V2_9_8B_FOUR_CONCURRENT_4_2_2_TERMINAL_TRANSACTION_AND_PRODUCTION_OWNER_PROOF_HARDENING_PASS`
+`V2_9_8B_SEP2_SURVIVING_PRE_LIFECYCLE_WAIT_RECONCILIATION_ZERO_STATE_PASS`
 
 Governing closeout:
 
-`docs/printer-v1-v2-9-8b-four-concurrent-4-2-2-terminal-transaction-and-production-owner-proof-hardening-closeout.md`
+`docs/printer-v1-v2-9-8b-sep2-surviving-pre-lifecycle-wait-reconciliation-zero-state-closeout.md`
 
-The prior implementation remains historically:
+The four-concurrent 4/2/2 terminal-transaction and production-owner proof
+hardening lane remains historically closed PASS:
 
-`V2_9_8B_FOUR_CONCURRENT_OVERLAPPED_TWO_CYCLE_CAPACITY_FAST_ADMISSION_IMPLEMENTATION_PASS`
+`V2_9_8B_FOUR_CONCURRENT_4_2_2_TERMINAL_TRANSACTION_AND_PRODUCTION_OWNER_PROOF_HARDENING_PASS`
 
 The consumed Sep-2 authorization
 `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260902T122136Z_59fdefe7` is
@@ -101,17 +111,18 @@ The consumed Sep-2 authorization
 `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260901T203521Z_12a7ea61` remains
 `CONSUMED / CHILD_EXITED_ZERO / PERMANENTLY NON-REUSABLE`. Consumed
 `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260901T181024Z_ab6c68fe` remains
-`CONSUMED / CHILD_EXITED_NONZERO / PERMANENTLY NON-REUSABLE`. The 59fdefe7
-campaign closeout remains BLOCKED on the undrained Cycle-2 pre-lifecycle
-refresh wait. Source-stack wording now permits four concurrent through-4h
-tokens as two overlapping two-slot cycles. Use `CURRENT_HANDOFF.md` for the
-live HEAD after this hardening documentation commit.
+`CONSUMED / CHILD_EXITED_NONZERO / PERMANENTLY NON-REUSABLE`. Source-stack
+wording permits four concurrent through-4h tokens as two overlapping two-slot
+cycles. Use `CURRENT_HANDOFF.md` for the live HEAD after this reconciliation
+documentation commit. Subsequent readiness must bind that HEAD and DB SHA-256
+`fb52d8fae2d22c70f6c2c7de7ddf4a18c7d89f01450f12e6c60093ee85e17cff`.
 
 Allowed now:
 
-- independent code review / operator review of the hardening closeout;
-- keep the remaining `WAITING` wait as identified residue;
-- do not drain, run Printer, or prepare another authorization in this handoff.
+- fresh post-reconciliation exact-HEAD / exact-DB next-bounded-campaign
+  readiness / governance audit;
+- do not prepare or apply an authorization in this handoff;
+- do not run Printer.
 
 Do not redo the completed authorization-boundary design.
 Do not reuse consumed `59fdefe7`, `12a7ea61`, or `ab6c68fe`.
