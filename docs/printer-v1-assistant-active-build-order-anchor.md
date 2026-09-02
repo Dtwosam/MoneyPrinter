@@ -29,10 +29,12 @@ Current adopted operational envelope remains:
 
 - policy family: `V2-9.8B-FOUR-TOKEN-STANDARD-4H-OPERATIONAL-V1`;
 - two cycles;
-- exactly two concurrently active token slots;
-- up to four distinct token identities across the full two-cycle campaign;
-- concurrent capacity remains exactly `2`;
-- no increase to 3 or 4 concurrent tokens is authorized;
+- exactly two token slots per cycle, ordinals `(1, 2)`;
+- up to four concurrent through-4h lifecycle tokens as two overlapping
+  two-slot cycles;
+- Cycle 2 may overlap Cycle 1 through `WINDOW_15M`, `WINDOW_1H`, and
+  `WINDOW_4H`;
+- no third cycle; no fifth token; compiled 6-token / 3-cycle max unused;
 - standard lifecycle: `WINDOW_15M -> hard-gated WINDOW_1H -> hard-gated WINDOW_4H -> stop`;
 - `WINDOW_5M_MICRO_EVENT` remains support-only;
 - `WINDOW_12H` and `WINDOW_24H` remain locked;
@@ -77,16 +79,16 @@ The remote-host work is infrastructure support only. It does not reorder or adva
 The exact current lane is:
 
 ```text
-FOUR-CONCURRENT OVERLAPPED TWO-CYCLE CAPACITY + CYCLE-2 FAST ADMISSION — DESIGN / SPECIFICATION
+OPERATOR REVIEW / BOUNDED-LIVE-AUTHORIZATION DECISION
 ```
 
-The four-concurrent overlapped two-cycle feasibility audit is closed PASS:
+The four-concurrent overlapped two-cycle implementation is closed PASS:
 
-`V2_9_8B_FOUR_CONCURRENT_OVERLAPPED_TWO_CYCLE_FEASIBILITY_AUDIT_PASS`
+`V2_9_8B_FOUR_CONCURRENT_OVERLAPPED_TWO_CYCLE_CAPACITY_FAST_ADMISSION_IMPLEMENTATION_PASS`
 
-Governing audit:
+Governing closeout:
 
-`docs/printer-v1-v2-9-8b-four-concurrent-overlapped-two-cycle-feasibility-audit.md`
+`docs/printer-v1-v2-9-8b-four-concurrent-overlapped-two-cycle-capacity-fast-admission-implementation-closeout.md`
 
 The consumed Sep-2 authorization
 `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260902T122136Z_59fdefe7` is
@@ -94,22 +96,19 @@ The consumed Sep-2 authorization
 `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260901T203521Z_12a7ea61` remains
 `CONSUMED / CHILD_EXITED_ZERO / PERMANENTLY NON-REUSABLE`. Consumed
 `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260901T181024Z_ab6c68fe` remains
-`CONSUMED / CHILD_EXITED_NONZERO / PERMANENTLY NON-REUSABLE`. The later-cycle
-duplicate-transport authoritative repair remains closed PASS and was not this
-campaign's terminal cause. The 59fdefe7 campaign closeout is BLOCKED on the
-undrained Cycle-2 pre-lifecycle refresh wait. The live 2026-08-26 source-stack
-wording still locks concurrent capacity at exactly 2; operational
-`configured_through_4h_tokens` is already 4. This audit does not adopt four
-concurrent tokens. Use `CURRENT_HANDOFF.md` for the live HEAD after this
-audit documentation commit.
+`CONSUMED / CHILD_EXITED_NONZERO / PERMANENTLY NON-REUSABLE`. The 59fdefe7
+campaign closeout remains BLOCKED on the undrained Cycle-2 pre-lifecycle
+refresh wait. Source-stack wording now permits four concurrent through-4h
+tokens as two overlapping two-slot cycles. Use `CURRENT_HANDOFF.md` for the
+live HEAD after this implementation documentation commit.
 
 Allowed now:
 
-- design/specification only for four-concurrent overlapped two-cycle
-  capacity plus Cycle-2 fast admission, including explicit source-stack /
-  capability-envelope adoption before implementation;
+- operator review of the implementation closeout;
+- a later separate explicit decision whether to prepare a fresh exact-HEAD /
+  exact-DB one-shot authorization;
 - keep the remaining `WAITING` wait as identified residue;
-- do not implement, drain, or prepare another authorization.
+- do not drain, run Printer, or prepare another authorization in this handoff.
 
 Do not redo the completed authorization-boundary design.
 Do not reuse consumed `59fdefe7`, `12a7ea61`, or `ab6c68fe`.

@@ -1116,13 +1116,12 @@ successor, cursor reset, N7, or operational campaign is authorized.
 Restored active-path rules (historical restoration baseline; current envelope
 clarified by the 2026-08-26 four-token standard-4h source-stack adoption):
 
-- begin with 2 active tokens;
-- concurrent active capacity remains exactly 2; no increase to 3 or 4
-  concurrent tokens is authorized;
-- later adopted 4/2/2 means two cycles × two concurrent slots and up to four
-  distinct token identities across the campaign, not concurrent capacity four;
-- concurrent capacity remains exactly `2`;
-- no capacity increase to 3 or 4 concurrent tokens is authorized.
+- begin with 2 active tokens per cycle;
+- 2026-09-02 amendment: up to four concurrent through-4h tokens as two
+  overlapping two-slot cycles; no third cycle; no fifth token;
+- compiled 6-token / 3-cycle maximum remains unused;
+- freeze-ready depth remains >= 4; Cycle-2 campaign-history disjointness
+  remains required.
 - use the proven governed discovery/selection/tracking handoff;
 - do not require or consume candidate-acquisition N2, N7, cursor or recovery state;
 - retain trustworthy positive and negative outcomes as clean when evidence is
@@ -1829,14 +1828,16 @@ Adopted authority family:
 - `V2-9.8B-FOUR-TOKEN-STANDARD-4H-OPERATIONAL-V1`
 - public mode family: `four-token-standard-four-hour-run`
 
-Exact capacity semantics:
+Exact capacity semantics (amended 2026-09-02):
 
 - two cycles;
-- exactly two concurrently active token slots;
-- up to four distinct token identities across the full two-cycle campaign;
-- "four-token" does **not** mean concurrent capacity four;
-- concurrent capacity remains exactly `2`;
-- no capacity increase to 3 or 4 concurrent tokens is authorized.
+- exactly two token slots per cycle, ordinals `(1, 2)`;
+- up to four concurrent through-4h lifecycle tokens as two overlapping
+  two-slot cycles;
+- Cycle 2 may overlap Cycle 1 through `WINDOW_15M`, `WINDOW_1H`, and
+  `WINDOW_4H`;
+- no third cycle; no fifth token;
+- compiled 6-token / 3-cycle maximum remains unused.
 
 Standard observation lifecycle:
 
@@ -2003,7 +2004,7 @@ advanced afterward and are synchronized into the active source stack by the
 | --- | --- |
 | Source-stack adoption is treated as campaign approval | Block; fresh authorization readiness/governance is next |
 | Prior run or consumed authorization is treated as current authority | Prohibited; historical-only |
-| Four-token is misread as >2 concurrent capacity | Block; concurrent capacity remains exactly 2 |
+| Four-token is misread as 3 cycles, 6 tokens, or 4 slots in one cycle | Block; live envelope is 2 overlapping two-slot cycles / 4 through-4h tokens |
 | Candidate-acquisition N2/N7 is treated as current required next lane | Block; deferred unless later explicit reactivation |
 | Automatic retry/resume/restart/successor is assumed | Prohibited |
 | Design drifts into runtime or financial work during sync closeout | Stop immediately |
@@ -2481,18 +2482,18 @@ this file for current-lane selection only. Historical text remains evidence.
 - four-concurrent overlapped two-cycle feasibility audit: `docs/printer-v1-v2-9-8b-four-concurrent-overlapped-two-cycle-feasibility-audit.md`
 - feasibility verdict: `V2_9_8B_FOUR_CONCURRENT_OVERLAPPED_TWO_CYCLE_FEASIBILITY_AUDIT_PASS`
 - feasibility classification: `NARROW_CAPACITY_AND_ADMISSION_CHANGE_FEASIBLE`
+- implementation closeout: `docs/printer-v1-v2-9-8b-four-concurrent-overlapped-two-cycle-capacity-fast-admission-implementation-closeout.md`
+- implementation verdict: `V2_9_8B_FOUR_CONCURRENT_OVERLAPPED_TWO_CYCLE_CAPACITY_FAST_ADMISSION_IMPLEMENTATION_PASS`
 
 The exact current permitted lane is:
 
 ```text
-FOUR-CONCURRENT OVERLAPPED TWO-CYCLE CAPACITY + CYCLE-2 FAST ADMISSION — DESIGN / SPECIFICATION
+OPERATOR REVIEW / BOUNDED-LIVE-AUTHORIZATION DECISION
 ```
 
-That design must include explicit source-stack / capability-envelope adoption
-before implementation. It absorbs the previous later-cycle deadline-enforcement
-and wait-ownership design. This is design/specification only. It does not
-authorize implementation, wait drainage, application, consumption, Printer
-execution, provider/RPC/WebSocket calls, Scheduler execution, retrieval,
-financial capabilities, or longer windows. Do not enter implementation
-automatically.
+Implementation is closed PASS. This does not authorize a live campaign, wait
+drainage, application, consumption, Printer execution, provider/RPC/WebSocket
+calls, Scheduler execution, retrieval, financial capabilities, or longer
+windows. A later explicit operator decision is required before any fresh
+authorization preparation.
 <!-- V2_9_8B_AUTH_59FDEFE7_CAMPAIGN_CLOSEOUT_CURRENT_STATE_END -->

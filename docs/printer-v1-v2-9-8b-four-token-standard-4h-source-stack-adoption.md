@@ -53,21 +53,24 @@ Supporting later evidence (historical / non-authorizing by itself):
 
 ## 3. Exact capacity semantics
 
-The current bounded operational campaign envelope may use:
+The 2026-08-26 adoption text locked campaign-wide concurrent capacity at 2.
+That wording is amended by the 2026-09-02 four-concurrent overlapped two-cycle
+adoption below. Historical 2026-08-26 campaigns remain evidence. The live
+envelope is:
 
 - two cycles;
-- exactly two concurrently active token slots;
-- up to four **distinct** token identities across the full two-cycle campaign.
+- exactly two token slots per cycle, ordinals `(1, 2)`;
+- up to four **concurrent through-4h lifecycle tokens** as two overlapping
+  two-slot cycles;
+- Cycle 2 may overlap Cycle 1 through `WINDOW_15M`, `WINDOW_1H`, and
+  `WINDOW_4H`;
+- no third cycle;
+- no fifth token;
+- compiled 6-token / 3-cycle maximum remains unused;
+- cycle-spacing floor remains 300 seconds.
 
-"Four-token" does **not** mean concurrent capacity four.
-
-Concurrent capacity remains exactly:
-
-```text
-2
-```
-
-No capacity increase to 3 or 4 concurrent tokens is authorized by this adoption.
+Per-cycle concurrent slots remain exactly 2. Campaign-wide concurrent
+through-4h tokens are 4. This does not authorize 3 cycles or 6 tokens.
 
 ## 4. Cycle disjointness
 

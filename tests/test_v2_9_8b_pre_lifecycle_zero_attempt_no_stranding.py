@@ -4,7 +4,7 @@ The existing zero-attempt suite proves the shape terminalizes and is admitted.
 This module proves the property the whole residue programme cares about: after an
 early Cycle-1 pre-lifecycle terminal, no campaign, run, cycle, supervision,
 tracking-queue, or factory-run ownership is left non-terminal, and the
-eleven-domain zero-state projection returns to all zero.
+official zero-state projection returns to all zero.
 
 It also proves the migration-55 counterfactual: without the migration-056
 provenance table the same path fails closed *before* terminalizing, which is
@@ -23,6 +23,7 @@ from printer_v1.operator_cli.four_token_factory_adapter import (
     reconcile_four_token_cycle_terminal,
 )
 from printer_v1.operator_cli.four_token_proof_zero_state_gate import (
+    REQUIRED_ZERO_STATE_DOMAINS,
     project_four_token_proof_zero_state,
 )
 from tests.test_v2_9_8b_four_token_factory_wake_ordering import (
@@ -142,7 +143,7 @@ def test_early_cycle1_terminal_leaves_no_stranded_ownership(tmp_path) -> None:
     ).fetchone()[0] == 0
 
     projection = project_four_token_proof_zero_state(connection)
-    assert len(projection) == 11
+    assert set(projection) == set(REQUIRED_ZERO_STATE_DOMAINS)
     assert all(value == 0 for value in projection.values()), projection
     connection.close()
 

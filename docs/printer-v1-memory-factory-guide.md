@@ -1159,9 +1159,12 @@ Current adopted operational envelope (2026-08-26):
 `docs/printer-v1-v2-9-8b-four-token-standard-4h-source-stack-adoption.md`
 
 - two cycles;
-- exactly two concurrently active token slots;
-- up to four distinct token identities across the campaign;
-- concurrent capacity remains exactly 2;
+- exactly two token slots per cycle, ordinals `(1, 2)`;
+- up to four concurrent through-4h lifecycle tokens as two overlapping
+  two-slot cycles;
+- Cycle 2 may overlap Cycle 1 through `WINDOW_15M`, `WINDOW_1H`, and
+  `WINDOW_4H`;
+- no third cycle; no fifth token; compiled 6-token / 3-cycle max unused;
 - standard `WINDOW_15M` → hard-gated `WINDOW_1H` → hard-gated `WINDOW_4H` → stop;
 - `WINDOW_12H` / `WINDOW_24H` locked;
 - Cycle-2 fresh slots must be campaign-history disjoint;
@@ -1290,9 +1293,11 @@ authorization):
 ```text
 policy_family: V2-9.8B-FOUR-TOKEN-STANDARD-4H-OPERATIONAL-V1
 active_cycles: 2
-concurrent_active_token_slots: 2
+slots_per_cycle: 2
+concurrent_through_4h_tokens: 4
 distinct_token_identities_across_campaign: up_to_4
-increase_to_3_or_4_concurrent: locked
+third_cycle_or_fifth_token: locked
+compiled_6_token_3_cycle_maximum: unused
 candidate_acquisition_n2_n7: deferred_not_prerequisite
 candidate_cursor_recovery_authority: off
 WINDOW_5M_MICRO_EVENT: conditional support-only

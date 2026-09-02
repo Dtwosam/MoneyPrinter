@@ -208,6 +208,40 @@ def _persist_completed_later_cycle_refresh_progress(
     return updated
 
 
+def later_cycle_gate_quantum_seconds(
+    progress_by_cycle: Mapping[str, Mapping[str, Any]],
+) -> float:
+    """Factory-gate bound for one later-cycle cooperative unit.
+
+    Uses the declared next governed-request worst-case when present. A parked
+    persisted refresh without a declared next-request bound uses the existing
+    one-request DIRECT_PUMP_SIGNATURE_PAGE primitive, never the full ~115s
+    PERSISTED_REFRESH aggregate.
+    """
+    from printer_v1.discovery.eligible_token_supply import (
+        AcquisitionQuantumKind,
+        acquisition_governed_request_bound,
+        acquisition_quantum_bound,
+    )
+
+    if progress_by_cycle:
+        progress = next(iter(progress_by_cycle.values()))
+        next_request_bound = progress.get("next_governed_request_worst_case_seconds")
+        if next_request_bound is not None:
+            value = float(next_request_bound)
+            if value <= 0:
+                raise LiveOperationalError("LATER_CYCLE_NEXT_REQUEST_BOUND_INVALID")
+            return value
+        if bool(progress.get("waiting_for_refresh")):
+            return acquisition_governed_request_bound(
+                AcquisitionQuantumKind.PERSISTED_REFRESH,
+                request_kind="DIRECT_PUMP_SIGNATURE_PAGE",
+                checkpoint_reserve_seconds=5.0,
+            ).worst_case_seconds
+    kind = _next_later_cycle_quantum_kind(progress_by_cycle)
+    return acquisition_quantum_bound(kind).worst_case_seconds
+
+
 def _next_later_cycle_quantum_kind(
     progress_by_cycle: Mapping[str, Mapping[str, Any]],
 ) -> Any:
@@ -3982,25 +4016,8 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     candidate_supply=production_later_supply,
                 )
             )
-            from printer_v1.discovery.eligible_token_supply import (
-                acquisition_quantum_bound,
-            )
-
             def next_later_cycle_quantum_seconds() -> float:
-                if later_cycle_progress:
-                    progress = next(iter(later_cycle_progress.values()))
-                    next_request_bound = progress.get(
-                        "next_governed_request_worst_case_seconds"
-                    )
-                    if next_request_bound is not None:
-                        value = float(next_request_bound)
-                        if value <= 0:
-                            raise LiveOperationalError(
-                                "LATER_CYCLE_NEXT_REQUEST_BOUND_INVALID"
-                            )
-                        return value
-                kind = _next_later_cycle_quantum_kind(later_cycle_progress)
-                return acquisition_quantum_bound(kind).worst_case_seconds
+                return later_cycle_gate_quantum_seconds(later_cycle_progress)
 
             # Resolve on every factory boundary so deadline protection uses the
             # actual next state-machine unit, never a global guessed duration.

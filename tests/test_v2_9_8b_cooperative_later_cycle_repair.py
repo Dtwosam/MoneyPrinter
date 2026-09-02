@@ -172,10 +172,9 @@ class CooperativeLaterCycleRepairTests(unittest.TestCase):
         finally:
             connection.close()
 
-    def test_active_refresh_wake_fails_closed_on_claimed_or_ambiguous_wait(self) -> None:
+    def test_active_refresh_wake_reenters_immediately_on_claimed_wait(self) -> None:
         self.assertTrue(hasattr(factory, "_active_later_cycle_refresh_wake_at"))
         due = datetime(2026, 8, 20, 1, 40, tzinfo=timezone.utc)
-
         claimed = self._wait_connection()
         try:
             self._insert_wait(
@@ -185,15 +184,19 @@ class CooperativeLaterCycleRepairTests(unittest.TestCase):
                 state="CLAIMED",
                 scheduled_for=due,
             )
-            with self.assertRaises(ValueError):
-                factory._active_later_cycle_refresh_wake_at(
-                    claimed,
-                    campaign_id="campaign",
-                    run_id="run",
-                    cycle_id="cycle-2",
-                )
+            wake_at = factory._active_later_cycle_refresh_wake_at(
+                claimed,
+                campaign_id="campaign",
+                run_id="run",
+                cycle_id="cycle-2",
+            )
+            self.assertIsNone(wake_at)
         finally:
             claimed.close()
+
+    def test_active_refresh_wake_fails_closed_on_ambiguous_wait(self) -> None:
+        self.assertTrue(hasattr(factory, "_active_later_cycle_refresh_wake_at"))
+        due = datetime(2026, 8, 20, 1, 40, tzinfo=timezone.utc)
 
         ambiguous = self._wait_connection()
         try:

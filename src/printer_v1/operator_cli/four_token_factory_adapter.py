@@ -1345,6 +1345,16 @@ def reconcile_parent_interrupted_open_pre_admission_attempts(
             now=instant,
         )
 
+    from printer_v1.operator_cli.pre_lifecycle_persistent_refresh_owner import (
+        abandon_scoped_refresh_waits,
+    )
+    abandon_scoped_refresh_waits(
+        connection,
+        campaign_id=campaign,
+        run_id=run,
+        cause=expected_cause,
+        now=instant.isoformat(),
+    )
     if state in {
         PreAdmissionAttemptState.NO_PAIR.value,
         PreAdmissionAttemptState.BLOCKED.value,

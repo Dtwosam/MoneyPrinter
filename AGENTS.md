@@ -140,19 +140,26 @@ The live 2026-08-26 source-stack wording still locks concurrent capacity at
 exactly 2. Operational `configured_through_4h_tokens` is already 4. This audit
 does not adopt four concurrent tokens.
 
+Four-concurrent overlapped two-cycle capacity + Cycle-2 fast admission
+implementation is closed PASS:
+
+`V2_9_8B_FOUR_CONCURRENT_OVERLAPPED_TWO_CYCLE_CAPACITY_FAST_ADMISSION_IMPLEMENTATION_PASS`
+
+Governing closeout:
+
+`docs/printer-v1-v2-9-8b-four-concurrent-overlapped-two-cycle-capacity-fast-admission-implementation-closeout.md`
+
 The exact current permitted lane is:
 
 ```text
-FOUR-CONCURRENT OVERLAPPED TWO-CYCLE CAPACITY + CYCLE-2 FAST ADMISSION — DESIGN / SPECIFICATION
+OPERATOR REVIEW / BOUNDED-LIVE-AUTHORIZATION DECISION
 ```
 
-That design must include explicit source-stack / capability-envelope adoption
-before implementation. It absorbs the previous later-cycle deadline-enforcement
-and wait-ownership design. Use `CURRENT_HANDOFF.md` for the live HEAD after
-this audit documentation commit, latest completed work, and next permitted
-action. Do not implement. Do not drain the remaining wait. Do not create an
-application marker. Do not call `apply_authorization_once`. Do not run Printer.
-Do not prepare another authorization.
+Use `CURRENT_HANDOFF.md` for the live HEAD after this implementation
+documentation commit, latest completed work, and next permitted action. Do not
+run Printer. Do not drain the remaining wait. Do not create an application
+marker. Do not call `apply_authorization_once`. Do not prepare another
+authorization unless a later explicit operator decision says so.
 
 This does **not** authorize `apply_authorization_once`, application-marker
 creation, Printer execution, child launch, another campaign, provider/RPC/
@@ -1162,14 +1169,15 @@ Current active memory-growth lane after V2-9.8A operator activation PASS:
 
 - V2-9.8B — Active Bounded Memory Growth Operations
 
-Current adopted bounded operational envelope (2026-08-26 source-stack sync):
+Current adopted bounded operational envelope (2026-08-26 source-stack sync,
+amended 2026-09-02 for four concurrent through-4h tokens):
 
 - docs/printer-v1-v2-9-8b-four-token-standard-4h-source-stack-adoption.md
 - policy family: `V2-9.8B-FOUR-TOKEN-STANDARD-4H-OPERATIONAL-V1`
-- two cycles; exactly two concurrently active token slots; up to four distinct
-  token identities across the full two-cycle campaign
-- "four-token" does not mean concurrent capacity four; concurrent capacity
-  remains exactly 2; no increase to 3 or 4 concurrent tokens is authorized
+- two cycles; exactly two token slots per cycle; up to four concurrent
+  through-4h lifecycle tokens as two overlapping two-slot cycles
+- Cycle 2 may overlap Cycle 1 through `WINDOW_15M`, `WINDOW_1H`, and
+  `WINDOW_4H`; no third cycle; no fifth token; compiled 6/3 remains unused
 - standard lifecycle: `WINDOW_15M` → hard-gated `WINDOW_1H` → hard-gated
   `WINDOW_4H` → stop; `WINDOW_12H` / `WINDOW_24H` remain locked
 - Cycle-2 fresh slots must be campaign-history disjoint from earlier admitted
@@ -1436,9 +1444,12 @@ restoration-only and 2026-08-01 wrapper-design next-lane pointers for current
 authority. Current adopted envelope:
 
 - two cycles;
-- exactly two concurrently active token slots;
-- up to four distinct token identities across the campaign;
-- concurrent capacity remains exactly 2;
+- exactly two token slots per cycle, ordinals `(1, 2)`;
+- up to four concurrent through-4h lifecycle tokens as two overlapping
+  two-slot cycles;
+- Cycle 2 may overlap Cycle 1 through `WINDOW_15M`, `WINDOW_1H`, and
+  `WINDOW_4H`;
+- no third cycle; no fifth token; compiled 6-token / 3-cycle max unused;
 - standard `WINDOW_15M` → hard-gated `WINDOW_1H` → hard-gated `WINDOW_4H` → stop;
 - `WINDOW_12H` / `WINDOW_24H` locked;
 - no authorization is created by the adoption itself.
@@ -1446,7 +1457,7 @@ authority. Current adopted envelope:
 The exact current next permitted lane is:
 
 ```text
-FOUR-CONCURRENT OVERLAPPED TWO-CYCLE CAPACITY + CYCLE-2 FAST ADMISSION — DESIGN / SPECIFICATION
+OPERATOR REVIEW / BOUNDED-LIVE-AUTHORIZATION DECISION
 ```
 
 Historical at the time of the 2026-08-26 source-stack synchronization:
@@ -1512,9 +1523,10 @@ advanced afterward and are now synchronized into the active source stack by the
 Current adopted operational envelope:
 
 - `docs/printer-v1-v2-9-8b-four-token-standard-4h-source-stack-adoption.md`
-- two cycles; exactly 2 concurrent active token slots; up to 4 distinct token
-  identities across the campaign
-- concurrent capacity remains exactly 2
+- two cycles; exactly 2 token slots per cycle; up to 4 concurrent through-4h
+  lifecycle tokens as two overlapping two-slot cycles
+- Cycle 2 may overlap Cycle 1 through 15m / 1h / 4h; no third cycle; no fifth
+  token; compiled 6/3 unused
 - standard `WINDOW_15M` → hard-gated `WINDOW_1H` → hard-gated `WINDOW_4H` → stop
 - `WINDOW_12H` / `WINDOW_24H` locked
 - candidate-acquisition N2/N7/cursor/recovery deferred
@@ -1523,7 +1535,7 @@ Current adopted operational envelope:
 The exact current next permitted lane is:
 
 ```text
-FOUR-CONCURRENT OVERLAPPED TWO-CYCLE CAPACITY + CYCLE-2 FAST ADMISSION — DESIGN / SPECIFICATION
+OPERATOR REVIEW / BOUNDED-LIVE-AUTHORIZATION DECISION
 ```
 
 Historical at the time of this adoption closeout:

@@ -386,6 +386,19 @@ def reconcile_campaign_terminal(
                 cancel_job(connection, job_id=job_id)
                 cancelled += 1
         report["cancelled_jobs"] = cancelled
+        from printer_v1.operator_cli.pre_lifecycle_persistent_refresh_owner import (
+            abandon_scoped_refresh_waits,
+        )
+        report["abandoned_refresh_waits"] = list(
+            abandon_scoped_refresh_waits(
+                connection,
+                campaign_id=campaign_id,
+                run_id=run_id,
+                cycle_id=cycle_id,
+                cause=cause,
+                now=instant,
+            )
+        )
 
         # 2b. Terminalize attributable pre-admission discovery attempts. Existing
         #     PLANNED/RUNNING cleanup keeps its broad attribution law. A frozen

@@ -123,6 +123,11 @@ _ZERO_STATE_QUERIES: tuple[tuple[str, str], ...] = (
         "WHERE work_state = 'RUNNING'",
     ),
     (
+        "active_pre_lifecycle_discovery_refresh_waits",
+        "SELECT COUNT(*) FROM printer_pre_lifecycle_discovery_refresh_waits "
+        "WHERE wait_state IN ('WAITING','CLAIMED')",
+    ),
+    (
         "active_scheduler_jobs",
         "SELECT COUNT(*) FROM printer_scheduler_jobs "
         "WHERE status IN ('PENDING','RUNNING','COOLDOWN')",

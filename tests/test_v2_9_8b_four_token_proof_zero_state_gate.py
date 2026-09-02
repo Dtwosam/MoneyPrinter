@@ -227,9 +227,80 @@ class FourTokenProofZeroStateGateTests(unittest.TestCase):
             "active_factory_steps",
             "pre_admission_discovery_attempts",
             "active_pre_lifecycle_discovery_refresh_work",
+            "active_pre_lifecycle_discovery_refresh_waits",
             "active_scheduler_jobs",
         ):
             self.assertIn(domain, gate.REQUIRED_ZERO_STATE_DOMAINS)
+
+    def test_waiting_refresh_wait_blocks(self) -> None:
+        path = _quiescent_database(self.tmp_path)
+        stamp = NOW.isoformat()
+        connection = sqlite3.connect(path)
+        try:
+            connection.execute(
+                """
+                INSERT INTO printer_pre_lifecycle_discovery_refresh_waits (
+                    wait_id, campaign_id, run_id, cycle_id, supervision_id,
+                    scheduler_job_id, refresh_ordinal, wait_state, scheduled_for,
+                    acquisition_deadline_at, created_at, updated_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    "wait-waiting",
+                    "campaign-wait",
+                    "run-wait",
+                    "cycle-2",
+                    "supervision-wait",
+                    1,
+                    1,
+                    "WAITING",
+                    stamp,
+                    stamp,
+                    stamp,
+                    stamp,
+                ),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        with self.assertRaises(gate.FourTokenProofZeroStateError) as caught:
+            self._assert_ready(path)
+        self.assertIn("active_pre_lifecycle_discovery_refresh_waits", str(caught.exception))
+
+    def test_claimed_refresh_wait_blocks(self) -> None:
+        path = _quiescent_database(self.tmp_path)
+        stamp = NOW.isoformat()
+        connection = sqlite3.connect(path)
+        try:
+            connection.execute(
+                """
+                INSERT INTO printer_pre_lifecycle_discovery_refresh_waits (
+                    wait_id, campaign_id, run_id, cycle_id, supervision_id,
+                    scheduler_job_id, refresh_ordinal, wait_state, scheduled_for,
+                    acquisition_deadline_at, created_at, updated_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    "wait-claimed",
+                    "campaign-claimed",
+                    "run-claimed",
+                    "cycle-2",
+                    "supervision-claimed",
+                    1,
+                    1,
+                    "CLAIMED",
+                    stamp,
+                    stamp,
+                    stamp,
+                    stamp,
+                ),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        with self.assertRaises(gate.FourTokenProofZeroStateError) as caught:
+            self._assert_ready(path)
+        self.assertIn("active_pre_lifecycle_discovery_refresh_waits", str(caught.exception))
 
     def test_residual_active_campaign_work_blocks(self) -> None:
         path = _quiescent_database(self.tmp_path)

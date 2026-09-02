@@ -226,6 +226,14 @@ class FourTokenAdmissionBoundaryResult:
     attempt_terminal_cause: str | None = None
     cycle_id: str | None = None
     attempt_wake_at: datetime | None = None
+    attempt_acquisition_deadline_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class LaterCycleRefreshWaitProjection:
+    wait_state: str
+    scheduled_for: datetime
+    acquisition_deadline_at: datetime
 
 
 def _later_cycle_acquisition_deadline_conflict(
@@ -244,22 +252,25 @@ def _later_cycle_acquisition_deadline_conflict(
     return current + timedelta(seconds=worst_case_quantum_seconds) >= deadline
 
 
-def _active_later_cycle_refresh_wake_at(
+def _active_later_cycle_refresh_wait(
     connection: sqlite3.Connection,
     *,
     campaign_id: str,
     run_id: str,
     cycle_id: str,
-) -> datetime | None:
-    """Resolve exactly one WAITING later-cycle temporal-refresh wake, or None.
+) -> LaterCycleRefreshWaitProjection | None:
+    """Resolve exactly one WAITING or CLAIMED later-cycle refresh wait.
 
-    CLAIMED or ambiguous active ownership fails closed.
+    Ambiguous multi-wait ownership fails closed. CLAIMED is live cooperative
+    ownership and is re-enterable.
     """
     from printer_v1.discovery.pre_lifecycle_temporal_acquisition import (
         active_refresh_waits,
         parse_iso,
     )
 
+    if not hasattr(connection, "execute"):
+        return None
     waits = active_refresh_waits(
         connection,
         campaign_id=str(campaign_id),
@@ -272,11 +283,36 @@ def _active_later_cycle_refresh_wake_at(
         raise ValueError("ambiguous later-cycle refresh wait ownership")
     wait = waits[0]
     state = str(wait["wait_state"] or "")
-    if state != "WAITING":
+    if state not in {"WAITING", "CLAIMED"}:
         raise ValueError(
-            f"later-cycle refresh wait ownership is not WAITING: {state}"
+            f"later-cycle refresh wait ownership is not WAITING or CLAIMED: {state}"
         )
-    return parse_iso(str(wait["scheduled_for"]))
+    return LaterCycleRefreshWaitProjection(
+        wait_state=state,
+        scheduled_for=parse_iso(str(wait["scheduled_for"])),
+        acquisition_deadline_at=parse_iso(str(wait["acquisition_deadline_at"])),
+    )
+
+
+def _active_later_cycle_refresh_wake_at(
+    connection: sqlite3.Connection,
+    *,
+    campaign_id: str,
+    run_id: str,
+    cycle_id: str,
+) -> datetime | None:
+    """WAITING waits wake at scheduled_for; CLAIMED waits re-enter immediately."""
+    projection = _active_later_cycle_refresh_wait(
+        connection,
+        campaign_id=campaign_id,
+        run_id=run_id,
+        cycle_id=cycle_id,
+    )
+    if projection is None:
+        return None
+    if projection.wait_state == "CLAIMED":
+        return None
+    return projection.scheduled_for
 
 
 def _cooperative_later_cycle_recheck(
@@ -284,6 +320,7 @@ def _cooperative_later_cycle_recheck(
     *,
     next_due_work_at: datetime | None,
     proof_deadline: datetime,
+    acquisition_deadline_at: datetime | None = None,
 ) -> tuple[bool, datetime | None]:
     """Decide whether a RUNNING later-cycle attempt requires coordinator re-entry.
 
@@ -291,6 +328,9 @@ def _cooperative_later_cycle_recheck(
       (False, None) for non-RUNNING attempts;
       (True, None) for a productive cooperative quantum with no refresh wait;
       (True, earliest_due) when a genuine WAITING refresh must bound the wake.
+
+    Cycle-2 ``acquisition_deadline_at`` is a re-entry wake, not factory
+    ``PROOF_DEADLINE``.
     """
     if str(boundary.attempt_state or "") != "RUNNING":
         return (False, None)
@@ -303,6 +343,11 @@ def _cooperative_later_cycle_recheck(
     ]
     if next_due_work_at is not None:
         candidates.append(next_due_work_at.astimezone(timezone.utc))
+    deadline = acquisition_deadline_at
+    if deadline is None:
+        deadline = boundary.attempt_acquisition_deadline_at
+    if deadline is not None:
+        candidates.append(deadline.astimezone(timezone.utc))
     return (True, min(candidates))
 
 
@@ -434,14 +479,38 @@ def _run_four_token_admission_boundary(
 
     pre = project_health()
     disposition = evaluate(pre)
+    later_cycle_id = f"{first_cycle_id}-2"
+    wait_projection = _active_later_cycle_refresh_wait(
+        connection,
+        campaign_id=str(binding.campaign_id),
+        run_id=str(binding.campaign_run_id),
+        cycle_id=later_cycle_id,
+    )
+    acquisition_deadline_at = (
+        None
+        if wait_projection is None
+        else wait_projection.acquisition_deadline_at
+    )
     if disposition.kind is not FourTokenAdmissionDispositionKind.CYCLE_ADMISSION:
-        return FourTokenAdmissionBoundaryResult(disposition, False)
-    if _later_cycle_acquisition_deadline_conflict(
-        now=now,
-        earliest_lifecycle_deadline=next_due_work_at,
-        worst_case_quantum_seconds=_resolve_acquisition_quantum_bound(
-            acquisition_quantum_worst_case_seconds
-        ),
+        return FourTokenAdmissionBoundaryResult(
+            disposition,
+            False,
+            attempt_acquisition_deadline_at=acquisition_deadline_at,
+        )
+    current = now.astimezone(timezone.utc)
+    acquisition_deadline_due = (
+        acquisition_deadline_at is not None
+        and current >= acquisition_deadline_at
+    )
+    if (
+        not acquisition_deadline_due
+        and _later_cycle_acquisition_deadline_conflict(
+            now=now,
+            earliest_lifecycle_deadline=next_due_work_at,
+            worst_case_quantum_seconds=_resolve_acquisition_quantum_bound(
+                acquisition_quantum_worst_case_seconds
+            ),
+        )
     ):
         from printer_v1.operator_cli.four_token_proof_integration import (
             FourTokenAdmissionDisposition,
@@ -455,6 +524,7 @@ def _run_four_token_admission_boundary(
                 False,
             ),
             False,
+            attempt_acquisition_deadline_at=acquisition_deadline_at,
         )
     attempt = later_cycle_callback(
         campaign_id=binding.campaign_id,
@@ -477,16 +547,22 @@ def _run_four_token_admission_boundary(
     attempt_terminal_cause = str(
         getattr(attempt, "first_terminal_cause", "") or ""
     )
-    later_cycle_id = f"{first_cycle_id}-2"
     if attempt_state != "PAIR_READY" or not attempt_id:
         wake_at = None
+        deadline_at = acquisition_deadline_at
         if attempt_state == "RUNNING":
-            wake_at = _active_later_cycle_refresh_wake_at(
+            wait_projection = _active_later_cycle_refresh_wait(
                 connection,
                 campaign_id=str(binding.campaign_id),
                 run_id=str(binding.campaign_run_id),
                 cycle_id=later_cycle_id,
             )
+            if wait_projection is not None:
+                deadline_at = wait_projection.acquisition_deadline_at
+                if wait_projection.wait_state == "CLAIMED":
+                    wake_at = None
+                else:
+                    wake_at = wait_projection.scheduled_for
         return FourTokenAdmissionBoundaryResult(
             disposition,
             False,
@@ -495,6 +571,7 @@ def _run_four_token_admission_boundary(
             attempt_terminal_cause or None,
             None,
             wake_at,
+            deadline_at,
         )
 
     post_now = (clock or (lambda: now))()
@@ -10398,6 +10475,9 @@ def run_one_command_15m_factory(
                             boundary,
                             next_due_work_at=_next_due(),
                             proof_deadline=proof_deadline,
+                            acquisition_deadline_at=(
+                                boundary.attempt_acquisition_deadline_at
+                            ),
                         )
                     )
                     if should_recheck:

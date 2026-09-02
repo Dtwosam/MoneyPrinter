@@ -268,8 +268,14 @@ class PreLifecycleTemporalRefreshOwner:
             insert_refresh_wait(c,wait_id=wait_id,campaign_id=self.campaign_id,run_id=self.run_id,cycle_id=self.cycle_id,supervision_id=self.supervision_id,scheduler_job_id=int(job_id),refresh_ordinal=ordinal,scheduled_for=scheduled,acquisition_deadline_at=self.acquisition_deadline_at,now=now); c.commit()
             self._publish(WAITING_FOR_ELIGIBLE_SUPPLY,wait_id=wait_id,scheduler_job_id=int(job_id),refresh_ordinal=ordinal,scheduled_for=scheduled,eligible_reserve_depth=reserve_depth,required_eligible_capacity=required_capacity,acquisition_deadline_at=self.acquisition_deadline_at)
             waiting=TemporalRefreshOutcome(status=WAITING_FOR_ELIGIBLE_SUPPLY,wait_id=wait_id,scheduler_job_id=int(job_id),refresh_ordinal=ordinal,scheduled_for=scheduled,reserve_depth_before=reserve_depth,reserve_depth_after=reserve_depth,detail='pre-lifecycle acquisition waiting for a due Scheduler refresh')
-            if self._waiter is None: return waiting
-            aborted=bool(self._waiter(max(0.0,(due-parse_iso(now)).total_seconds()))); woke=self._now(scheduled); self._acquisition_mark=woke
+            if self._waiter is None:
+                if parse_iso(now) < due:
+                    return waiting
+                woke = now
+                aborted = False
+                self._acquisition_mark = woke
+            else:
+                aborted=bool(self._waiter(max(0.0,(due-parse_iso(now)).total_seconds()))); woke=self._now(scheduled); self._acquisition_mark=woke
         active,cancelled=self._supervision()
         if (not resuming and aborted) or not active or cancelled:
             cause=WAIT_ABORT_SUPERVISION if not active else WAIT_ABORT_CANCELLED; status=SUPERVISION_FAILED if not active else CANCELLED
@@ -345,4 +351,90 @@ class PreLifecycleTemporalRefreshOwner:
         else: fail_job(c,job_id=job_id,error=cause,max_retries=0)
         terminalize_refresh_wait(c,wait_id=wait_id,wait_state='SUCCEEDED' if succeeded else 'FAILED',first_terminal_cause=cause,now=now); c.commit()
 
-__all__=['PreLifecycleTemporalRefreshError','PreLifecycleTemporalRefreshOwner','REFRESH_WORK_TYPE','bounded_interruptible_wait','classify_refresh_stage_exception']
+
+def abandon_scoped_refresh_waits(
+    connection: sqlite3.Connection,
+    *,
+    campaign_id: str,
+    run_id: str,
+    cause: str,
+    now: str,
+    cycle_id: str | None = None,
+) -> tuple[str, ...]:
+    """Terminalize WAITING/CLAIMED waits for one campaign/run (optional cycle).
+
+    Cancels still-active matching Scheduler jobs and RUNNING refresh work.
+    Already-terminal jobs/waits are left unchanged. Does not invent a second
+    wait owner.
+    """
+    from printer_v1.discovery.pre_lifecycle_temporal_acquisition import (
+        WAIT_TABLE,
+        wait_table_exists,
+    )
+    from printer_v1.scheduler.scheduler import cancel_job as _cancel_job
+
+    if not wait_table_exists(connection):
+        return ()
+    cause_text = str(cause or "").strip()
+    if not cause_text:
+        raise PreLifecycleTemporalRefreshError("MISSING_REFRESH_WAIT_ABANDON_CAUSE")
+    clauses = ["campaign_id=?", "run_id=?", "wait_state IN ('WAITING','CLAIMED')"]
+    params: list[Any] = [str(campaign_id), str(run_id)]
+    if cycle_id:
+        clauses.append("cycle_id=?")
+        params.append(str(cycle_id))
+    previous = connection.row_factory
+    connection.row_factory = sqlite3.Row
+    try:
+        rows = list(
+            connection.execute(
+                f"SELECT wait_id,cycle_id,scheduler_job_id FROM {WAIT_TABLE} "
+                f"WHERE {' AND '.join(clauses)} ORDER BY refresh_ordinal,wait_id",
+                tuple(params),
+            ).fetchall()
+        )
+    finally:
+        connection.row_factory = previous
+    abandoned: list[str] = []
+    for row in rows:
+        wait_id = str(row["wait_id"])
+        job_id = int(row["scheduler_job_id"])
+        job = connection.execute(
+            "SELECT status,locked_at,lock_owner FROM printer_scheduler_jobs WHERE id=?",
+            (job_id,),
+        ).fetchone()
+        if job is not None:
+            status = str(job[0] if not isinstance(job, sqlite3.Row) else job["status"])
+            locked_at = job[1] if not isinstance(job, sqlite3.Row) else job["locked_at"]
+            lock_owner = job[2] if not isinstance(job, sqlite3.Row) else job["lock_owner"]
+            if status in {"PENDING", "RUNNING", "COOLDOWN"} or locked_at is not None or lock_owner:
+                _cancel_job(connection, job_id=job_id)
+        for work in active_refresh_work(
+            connection,
+            campaign_id=str(campaign_id),
+            run_id=str(run_id),
+            cycle_id=str(row["cycle_id"]),
+        ):
+            if str(work.get("wait_id") or "") != wait_id:
+                continue
+            if str(work.get("work_state") or "") != "RUNNING":
+                continue
+            terminalize_refresh_work(
+                connection,
+                refresh_work_id=str(work["refresh_work_id"]),
+                work_state="FAILED",
+                first_terminal_cause=cause_text,
+                now=now,
+            )
+        terminalize_refresh_wait(
+            connection,
+            wait_id=wait_id,
+            wait_state="CANCELLED",
+            first_terminal_cause=cause_text,
+            now=now,
+        )
+        abandoned.append(wait_id)
+    return tuple(abandoned)
+
+
+__all__=['PreLifecycleTemporalRefreshError','PreLifecycleTemporalRefreshOwner','REFRESH_WORK_TYPE','abandon_scoped_refresh_waits','bounded_interruptible_wait','classify_refresh_stage_exception']
