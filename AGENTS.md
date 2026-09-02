@@ -149,13 +149,21 @@ Governing closeout:
 
 `docs/printer-v1-v2-9-8b-four-concurrent-overlapped-two-cycle-capacity-fast-admission-implementation-closeout.md`
 
+Post-implementation correction of that reviewed HEAD is closed PASS:
+
+`V2_9_8B_FOUR_CONCURRENT_OVERLAPPED_TWO_CYCLE_POST_IMPLEMENTATION_CORRECTION_PASS`
+
+Governing correction closeout:
+
+`docs/printer-v1-v2-9-8b-four-concurrent-overlapped-two-cycle-post-implementation-correction-closeout.md`
+
 The exact current permitted lane is:
 
 ```text
-OPERATOR REVIEW / BOUNDED-LIVE-AUTHORIZATION DECISION
+INDEPENDENT CODE REVIEW / OPERATOR REVIEW
 ```
 
-Use `CURRENT_HANDOFF.md` for the live HEAD after this implementation
+Use `CURRENT_HANDOFF.md` for the live HEAD after this correction
 documentation commit, latest completed work, and next permitted action. Do not
 run Printer. Do not drain the remaining wait. Do not create an application
 marker. Do not call `apply_authorization_once`. Do not prepare another
@@ -1457,7 +1465,7 @@ authority. Current adopted envelope:
 The exact current next permitted lane is:
 
 ```text
-OPERATOR REVIEW / BOUNDED-LIVE-AUTHORIZATION DECISION
+INDEPENDENT CODE REVIEW / OPERATOR REVIEW
 ```
 
 Historical at the time of the 2026-08-26 source-stack synchronization:
@@ -1466,9 +1474,9 @@ GOVERNANCE ONLY`. Later post-repair readiness, authorization-boundary design
 PASS, independent package review PASS, the stale exact-HEAD-drift closeout,
 scope-propagation repair, the 12a7ea61 campaign closeout, the later-cycle
 duplicate-transport authoritative repair, the post-duplicate-transport-repair
-fresh exact-HEAD / exact-DB readiness, and the 59fdefe7 campaign closeout
-supersede older pointers for current-lane selection; use the Active Authority
-Stack and `CURRENT_HANDOFF.md`.
+fresh exact-HEAD / exact-DB readiness, the 59fdefe7 campaign closeout, and the
+four-concurrent post-implementation correction supersede older pointers for
+current-lane selection; use the Active Authority Stack and `CURRENT_HANDOFF.md`.
 
 No automatic run, retry, recovery, successor, cursor reset, N7, provider/RPC
 work, operational campaign, or Printer execution is authorized by this anchor
@@ -1535,7 +1543,7 @@ Current adopted operational envelope:
 The exact current next permitted lane is:
 
 ```text
-OPERATOR REVIEW / BOUNDED-LIVE-AUTHORIZATION DECISION
+INDEPENDENT CODE REVIEW / OPERATOR REVIEW
 ```
 
 Historical at the time of this adoption closeout:
@@ -1544,9 +1552,9 @@ GOVERNANCE ONLY`. Later post-repair readiness, authorization-boundary design
 PASS, independent package review PASS, the stale exact-HEAD-drift closeout,
 scope-propagation repair, the 12a7ea61 campaign closeout, the later-cycle
 duplicate-transport authoritative repair, the post-duplicate-transport-repair
-fresh exact-HEAD / exact-DB readiness, and the 59fdefe7 campaign closeout
-supersede older pointers for current-lane selection; use the Active Authority
-Stack and `CURRENT_HANDOFF.md`.
+fresh exact-HEAD / exact-DB readiness, the 59fdefe7 campaign closeout, and the
+four-concurrent post-implementation correction supersede older pointers for
+current-lane selection; use the Active Authority Stack and `CURRENT_HANDOFF.md`.
 
 This adoption creates no authorization, automatically authorizes no campaign,
 and unlocks no live runtime. No existing consumed authorization,

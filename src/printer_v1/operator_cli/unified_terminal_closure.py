@@ -394,7 +394,6 @@ def reconcile_campaign_terminal(
                 connection,
                 campaign_id=campaign_id,
                 run_id=run_id,
-                cycle_id=cycle_id,
                 cause=cause,
                 now=instant,
             )

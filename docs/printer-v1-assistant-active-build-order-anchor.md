@@ -79,16 +79,21 @@ The remote-host work is infrastructure support only. It does not reorder or adva
 The exact current lane is:
 
 ```text
-OPERATOR REVIEW / BOUNDED-LIVE-AUTHORIZATION DECISION
+INDEPENDENT CODE REVIEW / OPERATOR REVIEW
 ```
 
-The four-concurrent overlapped two-cycle implementation is closed PASS:
+The four-concurrent overlapped two-cycle post-implementation correction is
+closed PASS:
 
-`V2_9_8B_FOUR_CONCURRENT_OVERLAPPED_TWO_CYCLE_CAPACITY_FAST_ADMISSION_IMPLEMENTATION_PASS`
+`V2_9_8B_FOUR_CONCURRENT_OVERLAPPED_TWO_CYCLE_POST_IMPLEMENTATION_CORRECTION_PASS`
 
 Governing closeout:
 
-`docs/printer-v1-v2-9-8b-four-concurrent-overlapped-two-cycle-capacity-fast-admission-implementation-closeout.md`
+`docs/printer-v1-v2-9-8b-four-concurrent-overlapped-two-cycle-post-implementation-correction-closeout.md`
+
+The prior implementation remains historically:
+
+`V2_9_8B_FOUR_CONCURRENT_OVERLAPPED_TWO_CYCLE_CAPACITY_FAST_ADMISSION_IMPLEMENTATION_PASS`
 
 The consumed Sep-2 authorization
 `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260902T122136Z_59fdefe7` is
@@ -100,13 +105,11 @@ The consumed Sep-2 authorization
 campaign closeout remains BLOCKED on the undrained Cycle-2 pre-lifecycle
 refresh wait. Source-stack wording now permits four concurrent through-4h
 tokens as two overlapping two-slot cycles. Use `CURRENT_HANDOFF.md` for the
-live HEAD after this implementation documentation commit.
+live HEAD after this correction documentation commit.
 
 Allowed now:
 
-- operator review of the implementation closeout;
-- a later separate explicit decision whether to prepare a fresh exact-HEAD /
-  exact-DB one-shot authorization;
+- independent code review / operator review of the correction closeout;
 - keep the remaining `WAITING` wait as identified residue;
 - do not drain, run Printer, or prepare another authorization in this handoff.
 

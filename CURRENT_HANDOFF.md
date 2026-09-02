@@ -2,29 +2,32 @@
 
 ## Current lane
 
-`OPERATOR REVIEW / BOUNDED-LIVE-AUTHORIZATION DECISION`
+`INDEPENDENT CODE REVIEW / OPERATOR REVIEW`
 
-The four-concurrent overlapped two-cycle capacity + Cycle-2 fast admission
-implementation is closed PASS. Do not run a live campaign in this handoff.
+The four-concurrent overlapped two-cycle post-implementation correction is
+closed PASS. Do not run a live campaign in this handoff.
 
 ## Latest completed work
 
-Implementation verdict:
+Correction verdict:
 
-`V2_9_8B_FOUR_CONCURRENT_OVERLAPPED_TWO_CYCLE_CAPACITY_FAST_ADMISSION_IMPLEMENTATION_PASS`
+`V2_9_8B_FOUR_CONCURRENT_OVERLAPPED_TWO_CYCLE_POST_IMPLEMENTATION_CORRECTION_PASS`
 
 Governing closeout:
 
-`docs/printer-v1-v2-9-8b-four-concurrent-overlapped-two-cycle-capacity-fast-admission-implementation-closeout.md`
+`docs/printer-v1-v2-9-8b-four-concurrent-overlapped-two-cycle-post-implementation-correction-closeout.md`
 
-Governing design:
+Reviewed implementation HEAD:
 
-`docs/printer-v1-v2-9-8b-four-concurrent-overlapped-two-cycle-capacity-fast-admission-design.md`
+`b9cb4d00fdf91967184f18c58e49deea70457a67`
 
-Source-stack envelope now permits four concurrent through-4h tokens as two
-overlapping two-slot cycles. Cycle-2 liveness, wait cleanup, and official
-zero-state wait inclusion are implemented. Refresh timing remains
-`+600/+1200/+1800/+2400`.
+That implementation remains:
+
+`IMPLEMENTATION_PASS_WITH_REQUIRED_NARROW_CORRECTIONS`
+
+The 4/2/2 architecture and Cycle-2 liveness repair remain approved. This
+correction only fixed parent-interrupt transaction ownership, campaign-terminal
+refresh-wait scope, and missing deterministic overlap/deadline proof.
 
 Prior campaign closeout remains:
 
@@ -35,12 +38,8 @@ on undrained wait
 
 That row is still `WAITING`. Do not drain it here.
 
-Audited starting HEAD:
-
-`a4920c3e4706771b6b71ac1a6de5804038b056e8`
-
-This implementation documentation commit is the live HEAD after closeout. Do
-not bind `a4920c3e...` after this commit exists.
+This correction documentation commit is the live HEAD after closeout. Do not
+bind `b9cb4d00...` as the post-correction HEAD after this commit exists.
 
 ## Consumed authorization
 
@@ -56,12 +55,12 @@ prior-non-reuse root remains 59 IDs.
 Path: `data/printer_v1.sqlite3`
 
 - SHA-256: `cd6b1d4ac7171f4096d06c9b09a035a0cf622899806b9a58cc990a2936ad6659`
-- unchanged by this implementation
-- integrity: `ok`; FK `0`
+- unchanged by this correction
+- surviving wait still `WAITING`
 
 ## Exact next permitted action
 
-`Operator review of the implementation closeout, then a separate explicit decision whether to prepare a fresh exact-HEAD / exact-DB one-shot Standard-4H authorization. Do not prepare or apply an authorization in this handoff. Do not run Printer. Do not drain the surviving wait.`
+`Independent code review / operator review of the post-implementation correction. Do not prepare or apply an authorization in this handoff. Do not run Printer. Do not drain the surviving wait.`
 
 ## Application / execution remain blocked
 

@@ -1345,16 +1345,19 @@ def reconcile_parent_interrupted_open_pre_admission_attempts(
             now=instant,
         )
 
-    from printer_v1.operator_cli.pre_lifecycle_persistent_refresh_owner import (
-        abandon_scoped_refresh_waits,
-    )
-    abandon_scoped_refresh_waits(
-        connection,
-        campaign_id=campaign,
-        run_id=run,
-        cause=expected_cause,
-        now=instant.isoformat(),
-    )
+    def _abandon_refresh_waits() -> tuple[str, ...]:
+        from printer_v1.operator_cli.pre_lifecycle_persistent_refresh_owner import (
+            abandon_scoped_refresh_waits,
+        )
+
+        return abandon_scoped_refresh_waits(
+            connection,
+            campaign_id=campaign,
+            run_id=run,
+            cause=expected_cause,
+            now=instant.isoformat(),
+        )
+
     if state in {
         PreAdmissionAttemptState.NO_PAIR.value,
         PreAdmissionAttemptState.BLOCKED.value,
@@ -1390,9 +1393,20 @@ def reconcile_parent_interrupted_open_pre_admission_attempts(
             }
         _require_interrupt_job_shape()
         if job_cancelled:
+            owns_txn = not connection.in_transaction
+            if owns_txn:
+                connection.execute("BEGIN IMMEDIATE")
+            try:
+                abandoned = _abandon_refresh_waits()
+                if owns_txn:
+                    connection.commit()
+            except Exception:
+                if owns_txn and connection.in_transaction:
+                    connection.rollback()
+                raise
             return {
                 "reconciled": True,
-                "idempotent_replay": True,
+                "idempotent_replay": not abandoned,
                 "replay_state": "D",
                 "attempt_id": attempt_id,
                 "scheduler_job_id": job_id,
@@ -1410,6 +1424,7 @@ def reconcile_parent_interrupted_open_pre_admission_attempts(
                 raise FourTokenFactoryAdapterError(
                     "parent-interrupted cleanup Scheduler cancellation was not owned"
                 )
+            _abandon_refresh_waits()
             if owns_txn:
                 connection.commit()
         except Exception:
@@ -1442,6 +1457,7 @@ def reconcile_parent_interrupted_open_pre_admission_attempts(
             connection.execute("BEGIN IMMEDIATE")
         try:
             _terminalize_attempt()
+            _abandon_refresh_waits()
             if owns_txn:
                 connection.commit()
         except Exception:
@@ -1470,6 +1486,7 @@ def reconcile_parent_interrupted_open_pre_admission_attempts(
             raise FourTokenFactoryAdapterError(
                 "parent-interrupted cleanup Scheduler cancellation was not owned"
             )
+        _abandon_refresh_waits()
         if owns_txn:
             connection.commit()
     except Exception:

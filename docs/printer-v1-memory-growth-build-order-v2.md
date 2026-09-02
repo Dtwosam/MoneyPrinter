@@ -2484,16 +2484,18 @@ this file for current-lane selection only. Historical text remains evidence.
 - feasibility classification: `NARROW_CAPACITY_AND_ADMISSION_CHANGE_FEASIBLE`
 - implementation closeout: `docs/printer-v1-v2-9-8b-four-concurrent-overlapped-two-cycle-capacity-fast-admission-implementation-closeout.md`
 - implementation verdict: `V2_9_8B_FOUR_CONCURRENT_OVERLAPPED_TWO_CYCLE_CAPACITY_FAST_ADMISSION_IMPLEMENTATION_PASS`
+- post-implementation correction closeout: `docs/printer-v1-v2-9-8b-four-concurrent-overlapped-two-cycle-post-implementation-correction-closeout.md`
+- correction verdict: `V2_9_8B_FOUR_CONCURRENT_OVERLAPPED_TWO_CYCLE_POST_IMPLEMENTATION_CORRECTION_PASS`
 
 The exact current permitted lane is:
 
 ```text
-OPERATOR REVIEW / BOUNDED-LIVE-AUTHORIZATION DECISION
+INDEPENDENT CODE REVIEW / OPERATOR REVIEW
 ```
 
-Implementation is closed PASS. This does not authorize a live campaign, wait
-drainage, application, consumption, Printer execution, provider/RPC/WebSocket
-calls, Scheduler execution, retrieval, financial capabilities, or longer
-windows. A later explicit operator decision is required before any fresh
-authorization preparation.
+The post-implementation correction is closed PASS. This does not authorize a
+live campaign, wait drainage, application, consumption, Printer execution,
+provider/RPC/WebSocket calls, Scheduler execution, retrieval, financial
+capabilities, or longer windows. Independent code review / operator review is
+required before any later explicit authorization decision.
 <!-- V2_9_8B_AUTH_59FDEFE7_CAMPAIGN_CLOSEOUT_CURRENT_STATE_END -->
