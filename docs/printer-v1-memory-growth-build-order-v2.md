@@ -2486,6 +2486,8 @@ this file for current-lane selection only. Historical text remains evidence.
 - implementation verdict: `V2_9_8B_FOUR_CONCURRENT_OVERLAPPED_TWO_CYCLE_CAPACITY_FAST_ADMISSION_IMPLEMENTATION_PASS`
 - post-implementation correction closeout: `docs/printer-v1-v2-9-8b-four-concurrent-overlapped-two-cycle-post-implementation-correction-closeout.md`
 - correction verdict: `V2_9_8B_FOUR_CONCURRENT_OVERLAPPED_TWO_CYCLE_POST_IMPLEMENTATION_CORRECTION_PASS`
+- terminal-transaction / production-owner proof hardening closeout: `docs/printer-v1-v2-9-8b-four-concurrent-4-2-2-terminal-transaction-and-production-owner-proof-hardening-closeout.md`
+- hardening verdict: `V2_9_8B_FOUR_CONCURRENT_4_2_2_TERMINAL_TRANSACTION_AND_PRODUCTION_OWNER_PROOF_HARDENING_PASS`
 
 The exact current permitted lane is:
 
@@ -2493,9 +2495,10 @@ The exact current permitted lane is:
 INDEPENDENT CODE REVIEW / OPERATOR REVIEW
 ```
 
-The post-implementation correction is closed PASS. This does not authorize a
-live campaign, wait drainage, application, consumption, Printer execution,
-provider/RPC/WebSocket calls, Scheduler execution, retrieval, financial
-capabilities, or longer windows. Independent code review / operator review is
-required before any later explicit authorization decision.
+The terminal-transaction and production-owner proof hardening lane is closed
+PASS. This does not authorize a live campaign, wait drainage, application,
+consumption, Printer execution, provider/RPC/WebSocket calls, Scheduler
+execution, retrieval, financial capabilities, or longer windows. Independent
+code review / operator review is required before any later explicit
+authorization decision.
 <!-- V2_9_8B_AUTH_59FDEFE7_CAMPAIGN_CLOSEOUT_CURRENT_STATE_END -->

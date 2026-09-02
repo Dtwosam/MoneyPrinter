@@ -82,14 +82,14 @@ The exact current lane is:
 INDEPENDENT CODE REVIEW / OPERATOR REVIEW
 ```
 
-The four-concurrent overlapped two-cycle post-implementation correction is
-closed PASS:
+The four-concurrent 4/2/2 terminal-transaction and production-owner proof
+hardening lane is closed PASS:
 
-`V2_9_8B_FOUR_CONCURRENT_OVERLAPPED_TWO_CYCLE_POST_IMPLEMENTATION_CORRECTION_PASS`
+`V2_9_8B_FOUR_CONCURRENT_4_2_2_TERMINAL_TRANSACTION_AND_PRODUCTION_OWNER_PROOF_HARDENING_PASS`
 
 Governing closeout:
 
-`docs/printer-v1-v2-9-8b-four-concurrent-overlapped-two-cycle-post-implementation-correction-closeout.md`
+`docs/printer-v1-v2-9-8b-four-concurrent-4-2-2-terminal-transaction-and-production-owner-proof-hardening-closeout.md`
 
 The prior implementation remains historically:
 
@@ -105,11 +105,11 @@ The consumed Sep-2 authorization
 campaign closeout remains BLOCKED on the undrained Cycle-2 pre-lifecycle
 refresh wait. Source-stack wording now permits four concurrent through-4h
 tokens as two overlapping two-slot cycles. Use `CURRENT_HANDOFF.md` for the
-live HEAD after this correction documentation commit.
+live HEAD after this hardening documentation commit.
 
 Allowed now:
 
-- independent code review / operator review of the correction closeout;
+- independent code review / operator review of the hardening closeout;
 - keep the remaining `WAITING` wait as identified residue;
 - do not drain, run Printer, or prepare another authorization in this handoff.
 

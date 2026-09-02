@@ -264,34 +264,39 @@ def _transition(
     *,
     record_kind: str,
     identity: str,
-    candidate_states: tuple[str, ...],
+    expected_state: str | None,
     new_state: str,
     cause: str,
     now: str,
 ) -> str:
-    """Compare-and-update through the ownership owner; never rewrite a terminal."""
-    last_error = "not_found"
-    for expected_state in candidate_states:
-        try:
-            result = transition_state(
-                connection,
-                record_kind=record_kind,
-                identity=identity,
-                expected_state=expected_state,
-                new_state=new_state,
-                terminal_cause=cause,
-                now=now,
-            )
-            return result.current_state
-        except CampaignOwnershipError as exc:
-            message = str(exc)
-            if "terminal state" in message or "immutable" in message:
-                # First terminal cause is immutable and already recorded.
-                return "already_terminal"
-            if "unknown" in message:
-                return "not_found"
-            last_error = f"skipped:{type(exc).__name__}"
-    return last_error
+    """Compare-and-update through the ownership owner; never rewrite a terminal.
+
+    Callers must pass the already-read current state. This helper must not
+    speculate through candidate states: a wrong ``expected_state`` raises
+    inside ``transition_state``'s connection context and can roll back earlier
+    uncommitted terminal cleanup on the same connection.
+    """
+    if not expected_state:
+        return "not_found"
+    try:
+        result = transition_state(
+            connection,
+            record_kind=record_kind,
+            identity=identity,
+            expected_state=expected_state,
+            new_state=new_state,
+            terminal_cause=cause,
+            now=now,
+        )
+        return result.current_state
+    except CampaignOwnershipError as exc:
+        message = str(exc)
+        if "terminal state" in message or "immutable" in message:
+            # First terminal cause is immutable and already recorded.
+            return "already_terminal"
+        if "unknown" in message:
+            return "not_found"
+        raise
 
 
 def _current_state(
@@ -530,7 +535,7 @@ def reconcile_campaign_terminal(
                         connection,
                         record_kind="window",
                         identity=str(row["window_id"]),
-                        candidate_states=(state,),
+                        expected_state=state,
                         new_state="CANCELLED",
                         cause=cause,
                         now=instant,
@@ -651,11 +656,7 @@ def reconcile_campaign_terminal(
                         connection,
                         record_kind="token_slot",
                         identity=slot_id,
-                        candidate_states=(
-                            "SELECTED", "WINDOW_15M_ACTIVE", "WINDOW_15M_CLOSED",
-                            "WINDOW_1H_CONTINUING", "WINDOW_1H_CLOSED",
-                            "WINDOW_4H_CONTINUING", "WINDOW_4H_CLOSED",
-                        ),
+                        expected_state=str(slot["token_state"]),
                         new_state=(
                             "COOLDOWN"
                             if has_exact_owned_terminal and queue_result == "COOLDOWN"
@@ -695,11 +696,7 @@ def reconcile_campaign_terminal(
                 connection,
                 record_kind="cycle",
                 identity=cycle_id,
-                candidate_states=(
-                    (cycle_state,) if cycle_state else
-                    ("PLANNED", "DISCOVERING", "SELECTING", "TRACKING", "CLOSING",
-                     "AUDITING", "ROTATING")
-                ),
+                expected_state=cycle_state,
                 new_state=new_state,
                 cause=cause,
                 now=instant,
@@ -732,9 +729,7 @@ def reconcile_campaign_terminal(
                     connection,
                     record_kind=record_kind,
                     identity=identity,
-                    candidate_states=(
-                        "RUNNING", "STOP_REQUESTED", "PREFLIGHT", "DRAFT"
-                    ),
+                    expected_state=current,
                     new_state=new_state,
                     cause=cause,
                     now=instant,

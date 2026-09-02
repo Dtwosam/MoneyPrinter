@@ -4,30 +4,26 @@
 
 `INDEPENDENT CODE REVIEW / OPERATOR REVIEW`
 
-The four-concurrent overlapped two-cycle post-implementation correction is
-closed PASS. Do not run a live campaign in this handoff.
+The four-concurrent 4/2/2 terminal-transaction and production-owner proof
+hardening lane is closed PASS. Do not run a live campaign in this handoff.
 
 ## Latest completed work
 
-Correction verdict:
+Verdict:
 
-`V2_9_8B_FOUR_CONCURRENT_OVERLAPPED_TWO_CYCLE_POST_IMPLEMENTATION_CORRECTION_PASS`
+`V2_9_8B_FOUR_CONCURRENT_4_2_2_TERMINAL_TRANSACTION_AND_PRODUCTION_OWNER_PROOF_HARDENING_PASS`
 
 Governing closeout:
 
-`docs/printer-v1-v2-9-8b-four-concurrent-overlapped-two-cycle-post-implementation-correction-closeout.md`
+`docs/printer-v1-v2-9-8b-four-concurrent-4-2-2-terminal-transaction-and-production-owner-proof-hardening-closeout.md`
 
-Reviewed implementation HEAD:
+Reviewed prior HEAD:
 
-`b9cb4d00fdf91967184f18c58e49deea70457a67`
+`091a08be6ac5c914aae2f8e7ad032724907c8e8a`
 
-That implementation remains:
-
-`IMPLEMENTATION_PASS_WITH_REQUIRED_NARROW_CORRECTIONS`
-
-The 4/2/2 architecture and Cycle-2 liveness repair remain approved. This
-correction only fixed parent-interrupt transaction ownership, campaign-terminal
-refresh-wait scope, and missing deterministic overlap/deadline proof.
+`reconcile_campaign_terminal` no longer speculatively guesses token/run/campaign
+states. Parent-interrupt transaction ownership and campaign+run wait scope from
+`091a08be` remain accepted.
 
 Prior campaign closeout remains:
 
@@ -38,8 +34,8 @@ on undrained wait
 
 That row is still `WAITING`. Do not drain it here.
 
-This correction documentation commit is the live HEAD after closeout. Do not
-bind `b9cb4d00...` as the post-correction HEAD after this commit exists.
+This documentation commit is the live HEAD after closeout. Do not bind
+`091a08be...` as the post-hardening HEAD after this commit exists.
 
 ## Consumed authorization
 
@@ -55,12 +51,12 @@ prior-non-reuse root remains 59 IDs.
 Path: `data/printer_v1.sqlite3`
 
 - SHA-256: `cd6b1d4ac7171f4096d06c9b09a035a0cf622899806b9a58cc990a2936ad6659`
-- unchanged by this correction
+- unchanged by this lane
 - surviving wait still `WAITING`
 
 ## Exact next permitted action
 
-`Independent code review / operator review of the post-implementation correction. Do not prepare or apply an authorization in this handoff. Do not run Printer. Do not drain the surviving wait.`
+`Independent code review / operator review of the terminal-transaction and production-owner proof hardening closeout. Do not prepare or apply an authorization in this handoff. Do not run Printer. Do not drain the surviving wait.`
 
 ## Application / execution remain blocked
 

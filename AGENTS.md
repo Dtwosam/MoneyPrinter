@@ -157,13 +157,21 @@ Governing correction closeout:
 
 `docs/printer-v1-v2-9-8b-four-concurrent-overlapped-two-cycle-post-implementation-correction-closeout.md`
 
+Terminal-transaction safety and production-owner proof hardening is closed PASS:
+
+`V2_9_8B_FOUR_CONCURRENT_4_2_2_TERMINAL_TRANSACTION_AND_PRODUCTION_OWNER_PROOF_HARDENING_PASS`
+
+Governing hardening closeout:
+
+`docs/printer-v1-v2-9-8b-four-concurrent-4-2-2-terminal-transaction-and-production-owner-proof-hardening-closeout.md`
+
 The exact current permitted lane is:
 
 ```text
 INDEPENDENT CODE REVIEW / OPERATOR REVIEW
 ```
 
-Use `CURRENT_HANDOFF.md` for the live HEAD after this correction
+Use `CURRENT_HANDOFF.md` for the live HEAD after this hardening
 documentation commit, latest completed work, and next permitted action. Do not
 run Printer. Do not drain the remaining wait. Do not create an application
 marker. Do not call `apply_authorization_once`. Do not prepare another
