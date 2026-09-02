@@ -24,7 +24,8 @@ historical-residue reconciliation only.
 - branch: `assistant/v2-9-8b-later-cycle-mint-market-replay-repair`
 - start HEAD: `6f8a1b6ac7f00fda1f7dca38c7532473b03f1ada`
 - closeout documentation commit: `3e4aa14c2f08f2dec741ca9bbe80111b5534d166`
-- end HEAD: the live source-stack HEAD after this closeout package; bind `git rev-parse HEAD` from `CURRENT_HANDOFF.md`
+- SHA-binding commit: `55b4e19a0d14d634b06ed723afc1956eced4efc4`
+- end HEAD: live HEAD after this closeout package; bind `CURRENT_HANDOFF.md` / `git rev-parse HEAD`
 - consumed authorization
   `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260902T122136Z_59fdefe7` remains
   `CONSUMED / CHILD_EXITED_NONZERO / PERMANENTLY NON-REUSABLE`

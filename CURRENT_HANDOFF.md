@@ -30,9 +30,13 @@ Closeout documentation commit:
 
 `3e4aa14c2f08f2dec741ca9bbe80111b5534d166`
 
-This SHA-binding commit is the live HEAD after closeout. Do not bind
-`6f8a1b6a...` as the post-reconciliation HEAD. Subsequent readiness must bind
-the live HEAD after this commit exists.
+SHA-binding commit:
+
+`55b4e19a0d14d634b06ed723afc1956eced4efc4`
+
+The live HEAD after this closeout package is the commit that records these
+identities. Subsequent readiness must bind `git rev-parse HEAD` on this
+branch after this package, not `6f8a1b6a...`.
 
 Canonical owner:
 
