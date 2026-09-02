@@ -67,8 +67,12 @@ Start HEAD:
 
 `6f8a1b6ac7f00fda1f7dca38c7532473b03f1ada`
 
-This documentation commit is the live HEAD after closeout. Use
-`CURRENT_HANDOFF.md` for that live HEAD.
+Closeout documentation commit:
+
+`3e4aa14c2f08f2dec741ca9bbe80111b5534d166`
+
+Use `CURRENT_HANDOFF.md` for the live HEAD after this closeout package. Do not
+bind `6f8a1b6a...` as the post-reconciliation HEAD.
 
 Authoritative DB SHA-256 before:
 

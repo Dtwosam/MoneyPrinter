@@ -26,8 +26,13 @@ Start HEAD:
 
 `6f8a1b6ac7f00fda1f7dca38c7532473b03f1ada`
 
-This documentation commit is the live HEAD after closeout. Do not bind
-`6f8a1b6a...` as the post-reconciliation HEAD after this commit exists.
+Closeout documentation commit:
+
+`3e4aa14c2f08f2dec741ca9bbe80111b5534d166`
+
+This SHA-binding commit is the live HEAD after closeout. Do not bind
+`6f8a1b6a...` as the post-reconciliation HEAD. Subsequent readiness must bind
+the live HEAD after this commit exists.
 
 Canonical owner:
 

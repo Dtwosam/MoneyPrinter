@@ -2468,6 +2468,7 @@ this file for current-lane selection only. Historical text remains evidence.
 - reconciliation verdict: `V2_9_8B_SEP2_SURVIVING_PRE_LIFECYCLE_WAIT_RECONCILIATION_ZERO_STATE_PASS`
 - classification: `HISTORICAL_ORPHANED_ACTIVE_WAIT_RESIDUE`
 - start HEAD: `6f8a1b6ac7f00fda1f7dca38c7532473b03f1ada`
+- closeout documentation commit: `3e4aa14c2f08f2dec741ca9bbe80111b5534d166`
 - authoritative DB SHA-256 before: `cd6b1d4ac7171f4096d06c9b09a035a0cf622899806b9a58cc990a2936ad6659`
 - authoritative DB SHA-256 after: `fb52d8fae2d22c70f6c2c7de7ddf4a18c7d89f01450f12e6c60093ee85e17cff`
 - known wait now `CANCELLED` / `PARENT_CAMPAIGN_INTERRUPTED:SAFE_STOP_PREFLIGHT_FAILED`
