@@ -2478,15 +2478,21 @@ this file for current-lane selection only. Historical text remains evidence.
 - closeout: `docs/printer-v1-v2-9-8b-auth-59fdefe7-campaign-closeout.md`
 - Cycle-2 liveness/wait-ownership audit: `docs/printer-v1-v2-9-8b-cycle2-pre-lifecycle-admission-liveness-and-wait-ownership-audit.md`
 - audit verdict: `V2_9_8B_CYCLE2_PRE_LIFECYCLE_ADMISSION_LIVENESS_WAIT_OWNERSHIP_AUDIT_PASS`
+- four-concurrent overlapped two-cycle feasibility audit: `docs/printer-v1-v2-9-8b-four-concurrent-overlapped-two-cycle-feasibility-audit.md`
+- feasibility verdict: `V2_9_8B_FOUR_CONCURRENT_OVERLAPPED_TWO_CYCLE_FEASIBILITY_AUDIT_PASS`
+- feasibility classification: `NARROW_CAPACITY_AND_ADMISSION_CHANGE_FEASIBLE`
 
 The exact current permitted lane is:
 
 ```text
-LATER-CYCLE PRE-LIFECYCLE DEADLINE ENFORCEMENT AND WAIT OWNERSHIP — DESIGN / SPECIFICATION ONLY
+FOUR-CONCURRENT OVERLAPPED TWO-CYCLE CAPACITY + CYCLE-2 FAST ADMISSION — DESIGN / SPECIFICATION
 ```
 
-This is design/specification only. It does not authorize implementation, wait
-drainage, application, consumption, Printer execution, provider/RPC/WebSocket
-calls, Scheduler execution, retrieval, financial capabilities, or longer
-windows. Do not enter implementation automatically.
+That design must include explicit source-stack / capability-envelope adoption
+before implementation. It absorbs the previous later-cycle deadline-enforcement
+and wait-ownership design. This is design/specification only. It does not
+authorize implementation, wait drainage, application, consumption, Printer
+execution, provider/RPC/WebSocket calls, Scheduler execution, retrieval,
+financial capabilities, or longer windows. Do not enter implementation
+automatically.
 <!-- V2_9_8B_AUTH_59FDEFE7_CAMPAIGN_CLOSEOUT_CURRENT_STATE_END -->

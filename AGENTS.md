@@ -124,17 +124,35 @@ expired at `13:24:59Z` without firing because cooperative wait insert returned
 without claiming and the factory loop never re-entered the refresh owner.
 Cleanup still left the wait `WAITING`.
 
+Four-concurrent overlapped two-cycle feasibility audit is closed PASS:
+
+`V2_9_8B_FOUR_CONCURRENT_OVERLAPPED_TWO_CYCLE_FEASIBILITY_AUDIT_PASS`
+
+Governing audit:
+
+`docs/printer-v1-v2-9-8b-four-concurrent-overlapped-two-cycle-feasibility-audit.md`
+
+Classification:
+
+`NARROW_CAPACITY_AND_ADMISSION_CHANGE_FEASIBLE`
+
+The live 2026-08-26 source-stack wording still locks concurrent capacity at
+exactly 2. Operational `configured_through_4h_tokens` is already 4. This audit
+does not adopt four concurrent tokens.
+
 The exact current permitted lane is:
 
 ```text
-LATER-CYCLE PRE-LIFECYCLE DEADLINE ENFORCEMENT AND WAIT OWNERSHIP — DESIGN / SPECIFICATION ONLY
+FOUR-CONCURRENT OVERLAPPED TWO-CYCLE CAPACITY + CYCLE-2 FAST ADMISSION — DESIGN / SPECIFICATION
 ```
 
-Use `CURRENT_HANDOFF.md` for the live HEAD after this audit documentation
-commit, latest completed work, and next permitted action. Do not implement.
-Do not drain the remaining wait. Do not create an application marker. Do not
-call `apply_authorization_once`. Do not run Printer. Do not prepare another
-authorization.
+That design must include explicit source-stack / capability-envelope adoption
+before implementation. It absorbs the previous later-cycle deadline-enforcement
+and wait-ownership design. Use `CURRENT_HANDOFF.md` for the live HEAD after
+this audit documentation commit, latest completed work, and next permitted
+action. Do not implement. Do not drain the remaining wait. Do not create an
+application marker. Do not call `apply_authorization_once`. Do not run Printer.
+Do not prepare another authorization.
 
 This does **not** authorize `apply_authorization_once`, application-marker
 creation, Printer execution, child launch, another campaign, provider/RPC/
@@ -1428,7 +1446,7 @@ authority. Current adopted envelope:
 The exact current next permitted lane is:
 
 ```text
-LATER-CYCLE PRE-LIFECYCLE DEADLINE ENFORCEMENT AND WAIT OWNERSHIP — DESIGN / SPECIFICATION ONLY
+FOUR-CONCURRENT OVERLAPPED TWO-CYCLE CAPACITY + CYCLE-2 FAST ADMISSION — DESIGN / SPECIFICATION
 ```
 
 Historical at the time of the 2026-08-26 source-stack synchronization:
@@ -1505,7 +1523,7 @@ Current adopted operational envelope:
 The exact current next permitted lane is:
 
 ```text
-LATER-CYCLE PRE-LIFECYCLE DEADLINE ENFORCEMENT AND WAIT OWNERSHIP — DESIGN / SPECIFICATION ONLY
+FOUR-CONCURRENT OVERLAPPED TWO-CYCLE CAPACITY + CYCLE-2 FAST ADMISSION — DESIGN / SPECIFICATION
 ```
 
 Historical at the time of this adoption closeout:

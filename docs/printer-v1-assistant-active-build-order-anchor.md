@@ -77,8 +77,16 @@ The remote-host work is infrastructure support only. It does not reorder or adva
 The exact current lane is:
 
 ```text
-LATER-CYCLE PRE-LIFECYCLE DEADLINE ENFORCEMENT AND WAIT OWNERSHIP — DESIGN / SPECIFICATION ONLY
+FOUR-CONCURRENT OVERLAPPED TWO-CYCLE CAPACITY + CYCLE-2 FAST ADMISSION — DESIGN / SPECIFICATION
 ```
+
+The four-concurrent overlapped two-cycle feasibility audit is closed PASS:
+
+`V2_9_8B_FOUR_CONCURRENT_OVERLAPPED_TWO_CYCLE_FEASIBILITY_AUDIT_PASS`
+
+Governing audit:
+
+`docs/printer-v1-v2-9-8b-four-concurrent-overlapped-two-cycle-feasibility-audit.md`
 
 The consumed Sep-2 authorization
 `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260902T122136Z_59fdefe7` is
@@ -89,13 +97,17 @@ The consumed Sep-2 authorization
 `CONSUMED / CHILD_EXITED_NONZERO / PERMANENTLY NON-REUSABLE`. The later-cycle
 duplicate-transport authoritative repair remains closed PASS and was not this
 campaign's terminal cause. The 59fdefe7 campaign closeout is BLOCKED on the
-undrained Cycle-2 pre-lifecycle refresh wait. Use `CURRENT_HANDOFF.md` for the
-live HEAD after that closeout documentation commit.
+undrained Cycle-2 pre-lifecycle refresh wait. The live 2026-08-26 source-stack
+wording still locks concurrent capacity at exactly 2; operational
+`configured_through_4h_tokens` is already 4. This audit does not adopt four
+concurrent tokens. Use `CURRENT_HANDOFF.md` for the live HEAD after this
+audit documentation commit.
 
 Allowed now:
 
-- design/specification only for later-cycle pre-lifecycle deadline
-  enforcement and wait ownership;
+- design/specification only for four-concurrent overlapped two-cycle
+  capacity plus Cycle-2 fast admission, including explicit source-stack /
+  capability-envelope adoption before implementation;
 - keep the remaining `WAITING` wait as identified residue;
 - do not implement, drain, or prepare another authorization.
 

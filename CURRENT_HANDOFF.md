@@ -2,23 +2,42 @@
 
 ## Current lane
 
-`LATER-CYCLE PRE-LIFECYCLE DEADLINE ENFORCEMENT AND WAIT OWNERSHIP — DESIGN / SPECIFICATION ONLY`
+`FOUR-CONCURRENT OVERLAPPED TWO-CYCLE CAPACITY + CYCLE-2 FAST ADMISSION — DESIGN / SPECIFICATION`
 
-The Cycle-2 pre-lifecycle admission/liveness and wait-ownership audit is
-closed PASS. Do not implement in this handoff.
+The four-concurrent overlapped two-cycle feasibility audit is closed PASS.
+Do not implement in this handoff.
+
+This design lane must include explicit source-stack / capability-envelope
+adoption before implementation. It absorbs the previous later-cycle
+pre-lifecycle deadline-enforcement and wait-ownership design. It does **not**
+adopt four concurrent tokens in this handoff.
 
 This handoff does **not** authorize implementation, wait drainage, application,
 consumption, or Printer execution.
 
 ## Latest completed work
 
-Cycle-2 pre-lifecycle admission/liveness and wait-ownership audit:
+Four-concurrent overlapped two-cycle feasibility audit:
 
-`V2_9_8B_CYCLE2_PRE_LIFECYCLE_ADMISSION_LIVENESS_WAIT_OWNERSHIP_AUDIT_PASS`
+`V2_9_8B_FOUR_CONCURRENT_OVERLAPPED_TWO_CYCLE_FEASIBILITY_AUDIT_PASS`
 
 Governing audit:
 
-`docs/printer-v1-v2-9-8b-cycle2-pre-lifecycle-admission-liveness-and-wait-ownership-audit.md`
+`docs/printer-v1-v2-9-8b-four-concurrent-overlapped-two-cycle-feasibility-audit.md`
+
+Four-concurrent-token feasibility classification:
+
+`NARROW_CAPACITY_AND_ADMISSION_CHANGE_FEASIBLE`
+
+Cycle-2 fast-admission classification remains:
+
+`COMMITTED_CODE_DEFECT` /
+`LATER_CYCLE_PRE_LIFECYCLE_ACQUISITION_DEADLINE_ENFORCEMENT_DEFECT`
+
+Cleanup classification remains:
+
+`COMMITTED_CODE_DEFECT` /
+`PRE_LIFECYCLE_TERMINAL_CLEANUP_ORDERING_OR_OWNERSHIP_DEFECT`
 
 Prior campaign closeout remains:
 
@@ -29,22 +48,12 @@ on undrained wait
 
 Do not drain that row in design. Design only.
 
-Primary liveness classification:
-
-`COMMITTED_CODE_DEFECT` /
-`LATER_CYCLE_PRE_LIFECYCLE_ACQUISITION_DEADLINE_ENFORCEMENT_DEFECT`
-
-Cleanup classification remains:
-
-`COMMITTED_CODE_DEFECT` /
-`PRE_LIFECYCLE_TERMINAL_CLEANUP_ORDERING_OR_OWNERSHIP_DEFECT`
-
 Audited starting HEAD:
 
-`758d604fe91726ac6ac0b30f62dada6cc2c6ce8b`
+`13acfea5aa256b84baadb9206879eaa959a51a54`
 
 This documentation-only commit is the live HEAD after the audit. Do not bind
-`758d604f...` after this commit exists.
+`13acfea5...` after this commit exists.
 
 ## Consumed authorization
 
@@ -69,13 +78,14 @@ Audit was read-only. DB identity is unchanged. Do not restore the pre-run DB.
 
 ## Exact next permitted action
 
-`Write the design/specification only for later-cycle pre-lifecycle deadline enforcement and wait ownership, covering cooperative wait insert when due is already past, factory-loop re-entry versus the 2400s acquisition deadline, parent-interrupt wait-row terminalization, and official zero-state projection of WAITING/CLAIMED waits. Do not implement. Do not drain the surviving wait. Do not prepare another authorization.`
+`Write the design/specification only for four-concurrent overlapped two-cycle capacity plus Cycle-2 fast admission. The design must include explicit source-stack/capability-envelope adoption of four concurrent through-4h tokens as two overlapping two-slot cycles, later-cycle pre-lifecycle deadline enforcement and wait ownership, and official zero-state projection of WAITING/CLAIMED waits. Do not implement. Do not drain the surviving wait. Do not prepare another authorization.`
 
 ## Application / execution remain blocked
 
 This handoff does **not** authorize:
 
 - implementation;
+- source-stack adoption by this handoff alone;
 - manual drainage of the remaining wait;
 - `apply_authorization_once`;
 - application-marker creation;
