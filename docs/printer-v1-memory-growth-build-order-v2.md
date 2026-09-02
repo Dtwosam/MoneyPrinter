@@ -2476,16 +2476,17 @@ this file for current-lane selection only. Historical text remains evidence.
 - Source Governor and Central Scheduler owners unchanged
 - retrieval/financial/12h/24h locks remain closed
 - closeout: `docs/printer-v1-v2-9-8b-auth-59fdefe7-campaign-closeout.md`
+- Cycle-2 liveness/wait-ownership audit: `docs/printer-v1-v2-9-8b-cycle2-pre-lifecycle-admission-liveness-and-wait-ownership-audit.md`
+- audit verdict: `V2_9_8B_CYCLE2_PRE_LIFECYCLE_ADMISSION_LIVENESS_WAIT_OWNERSHIP_AUDIT_PASS`
 
 The exact current permitted lane is:
 
 ```text
-PRE-LIFECYCLE TERMINAL CLEANUP ORDERING OR OWNERSHIP DEFECT — AUDIT / READINESS THEN DESIGN / SPECIFICATION ONLY
+LATER-CYCLE PRE-LIFECYCLE DEADLINE ENFORCEMENT AND WAIT OWNERSHIP — DESIGN / SPECIFICATION ONLY
 ```
 
-This is defect audit/readiness then design/specification only. It does not
-authorize implementation, wait drainage, application, consumption, Printer
-execution, provider/RPC/WebSocket calls, Scheduler execution, retrieval,
-financial capabilities, or longer windows. Do not enter implementation
-automatically.
+This is design/specification only. It does not authorize implementation, wait
+drainage, application, consumption, Printer execution, provider/RPC/WebSocket
+calls, Scheduler execution, retrieval, financial capabilities, or longer
+windows. Do not enter implementation automatically.
 <!-- V2_9_8B_AUTH_59FDEFE7_CAMPAIGN_CLOSEOUT_CURRENT_STATE_END -->

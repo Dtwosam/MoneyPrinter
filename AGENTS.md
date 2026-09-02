@@ -110,17 +110,31 @@ terminal then failed because this attempt's Cycle-2 pre-lifecycle refresh wait
 was still `WAITING`. That wait remains `WAITING` and was not drained in this
 closeout.
 
+Cycle-2 pre-lifecycle admission/liveness and wait-ownership audit is closed
+PASS:
+
+`V2_9_8B_CYCLE2_PRE_LIFECYCLE_ADMISSION_LIVENESS_WAIT_OWNERSHIP_AUDIT_PASS`
+
+Governing audit:
+
+`docs/printer-v1-v2-9-8b-cycle2-pre-lifecycle-admission-liveness-and-wait-ownership-audit.md`
+
+The 2400-second Cycle-2 acquisition deadline existed, was not reset, and
+expired at `13:24:59Z` without firing because cooperative wait insert returned
+without claiming and the factory loop never re-entered the refresh owner.
+Cleanup still left the wait `WAITING`.
+
 The exact current permitted lane is:
 
 ```text
-PRE-LIFECYCLE TERMINAL CLEANUP ORDERING OR OWNERSHIP DEFECT — AUDIT / READINESS THEN DESIGN / SPECIFICATION ONLY
+LATER-CYCLE PRE-LIFECYCLE DEADLINE ENFORCEMENT AND WAIT OWNERSHIP — DESIGN / SPECIFICATION ONLY
 ```
 
-Use `CURRENT_HANDOFF.md` for the live HEAD after this closeout documentation
-commit, latest completed work, and next permitted action. Do not implement the
-repair in this closeout. Do not drain the remaining wait here. Do not create an
-application marker. Do not call `apply_authorization_once`. Do not run Printer.
-Do not prepare another authorization.
+Use `CURRENT_HANDOFF.md` for the live HEAD after this audit documentation
+commit, latest completed work, and next permitted action. Do not implement.
+Do not drain the remaining wait. Do not create an application marker. Do not
+call `apply_authorization_once`. Do not run Printer. Do not prepare another
+authorization.
 
 This does **not** authorize `apply_authorization_once`, application-marker
 creation, Printer execution, child launch, another campaign, provider/RPC/
@@ -1414,7 +1428,7 @@ authority. Current adopted envelope:
 The exact current next permitted lane is:
 
 ```text
-PRE-LIFECYCLE TERMINAL CLEANUP ORDERING OR OWNERSHIP DEFECT — AUDIT / READINESS THEN DESIGN / SPECIFICATION ONLY
+LATER-CYCLE PRE-LIFECYCLE DEADLINE ENFORCEMENT AND WAIT OWNERSHIP — DESIGN / SPECIFICATION ONLY
 ```
 
 Historical at the time of the 2026-08-26 source-stack synchronization:
@@ -1491,7 +1505,7 @@ Current adopted operational envelope:
 The exact current next permitted lane is:
 
 ```text
-PRE-LIFECYCLE TERMINAL CLEANUP ORDERING OR OWNERSHIP DEFECT — AUDIT / READINESS THEN DESIGN / SPECIFICATION ONLY
+LATER-CYCLE PRE-LIFECYCLE DEADLINE ENFORCEMENT AND WAIT OWNERSHIP — DESIGN / SPECIFICATION ONLY
 ```
 
 Historical at the time of this adoption closeout:

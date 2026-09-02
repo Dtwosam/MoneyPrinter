@@ -77,7 +77,7 @@ The remote-host work is infrastructure support only. It does not reorder or adva
 The exact current lane is:
 
 ```text
-PRE-LIFECYCLE TERMINAL CLEANUP ORDERING OR OWNERSHIP DEFECT — AUDIT / READINESS THEN DESIGN / SPECIFICATION ONLY
+LATER-CYCLE PRE-LIFECYCLE DEADLINE ENFORCEMENT AND WAIT OWNERSHIP — DESIGN / SPECIFICATION ONLY
 ```
 
 The consumed Sep-2 authorization
@@ -94,10 +94,10 @@ live HEAD after that closeout documentation commit.
 
 Allowed now:
 
-- audit/readiness then design/specification only for
-  `PRE_LIFECYCLE_TERMINAL_CLEANUP_ORDERING_OR_OWNERSHIP_DEFECT`;
+- design/specification only for later-cycle pre-lifecycle deadline
+  enforcement and wait ownership;
 - keep the remaining `WAITING` wait as identified residue;
-- do not implement, drain, or prepare another authorization in this closeout.
+- do not implement, drain, or prepare another authorization.
 
 Do not redo the completed authorization-boundary design.
 Do not reuse consumed `59fdefe7`, `12a7ea61`, or `ab6c68fe`.
