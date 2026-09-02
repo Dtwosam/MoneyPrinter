@@ -940,6 +940,7 @@ def build_graduated_supply(
         execution_id=execution_id,
         run_id=run_id,
         cycle_id=cycle_id,
+        campaign_source_request_scope=scope_obj,
         locator_runner=run_fresh_profile_locator if run_locator else None,
         tracking_precheck=tracking_precheck,
         # Pass the campaign sink unchanged; child stages emit once each.

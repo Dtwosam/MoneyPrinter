@@ -1150,6 +1150,7 @@ def run_persistent_eligible_token_supply(
     execution_id: str | None = None,
     run_id: str | None = None,
     cycle_id: str | None = None,
+    campaign_source_request_scope: Any | None = None,
     locator_runner: Callable[..., Mapping[str, Any]] | None = None,
     tracking_precheck: bool = False,
     stage_evidence_sink: Callable[[Mapping[str, Any]], None] | None = None,
@@ -1218,6 +1219,20 @@ def run_persistent_eligible_token_supply(
             if not isinstance(entry, Mapping):
                 raise EligibleTokenSupplyError("INVALID_PRIOR_SOURCE_REQUEST_COVERAGE")
             prior_source_request_coverage_rows.append(dict(entry))
+
+    campaign_source_scope_obj = None
+    if campaign_source_request_scope is not None:
+        from printer_v1.discovery.permanent_discovery_availability import (
+            validate_campaign_source_request_scope,
+        )
+
+        campaign_source_scope_obj = validate_campaign_source_request_scope(
+            campaign_source_request_scope,
+            execution_id=execution_id,
+            campaign_id=campaign_id,
+            run_id=run_id,
+            cycle_id=cycle_id,
+        )
 
     direct_acquisition_mode = str(cooperative_direct_mode or LIVE_TAIL_MODE)
     if direct_acquisition_mode not in DIRECT_ACQUISITION_MODES:
@@ -2143,6 +2158,7 @@ def run_persistent_eligible_token_supply(
                     str(front_door_request_key_prefix),
                 ),
                 request_key_root=str(discovery_request_key_prefix),
+                campaign_source_request_scope=campaign_source_scope_obj,
             )
             if str(reconciliation.get("status") or "") != "OK":
                 freeze_ready_depth_measured = 0
@@ -3551,6 +3567,11 @@ def run_persistent_eligible_token_supply(
 
         diagnostics = {
             "cooperative_phase": cooperative_phase,
+            "campaign_source_request_scope": (
+                None
+                if campaign_source_scope_obj is None
+                else campaign_source_scope_obj.as_dict()
+            ),
             "next_cooperative_phase": (
                 "AUXILIARY_LIQUIDITY_BACKUP"
                 if cooperative_quantum
