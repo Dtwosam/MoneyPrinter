@@ -940,7 +940,6 @@ def build_graduated_supply(
         execution_id=execution_id,
         run_id=run_id,
         cycle_id=cycle_id,
-        campaign_source_request_scope=scope_obj,
         locator_runner=run_fresh_profile_locator if run_locator else None,
         tracking_precheck=tracking_precheck,
         # Pass the campaign sink unchanged; child stages emit once each.
@@ -950,6 +949,7 @@ def build_graduated_supply(
         transport_identity_observer=transport_identity_observer,
         local_validation_identity_observer=local_validation_identity_observer,
         permanent_availability=permanent_availability,
+        campaign_source_request_scope=scope_obj,
         run_geckoterminal_nomination=run_geckoterminal_nomination,
         enable_geckoterminal_reconciliation=(
             enable_geckoterminal_reconciliation
