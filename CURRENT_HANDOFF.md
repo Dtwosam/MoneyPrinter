@@ -2,36 +2,35 @@
 
 ## Current lane
 
-`LATER-CYCLE COOPERATIVE MINT-MARKET-BATCH DUPLICATE TRANSPORT IDENTITY — DESIGN / SPECIFICATION ONLY`
+`POST-REPAIR FRESH EXACT-HEAD / EXACT-DB READINESS / GOVERNANCE`
 
-The Sep-1/Sep-2 Standard-4H campaign under authorization
-`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260901T203521Z_12a7ea61` is closed.
+The later-cycle cooperative mint-market-batch duplicate transport identity
+repair is closed PASS on the authoritative host-local lineage.
 
 This handoff does **not** authorize another campaign, another authorization,
-application, or execution.
+application, or execution. Do not enter the readiness lane automatically.
 
 ## Latest completed work
 
-Campaign closeout:
+Later-cycle duplicate-transport authoritative repair:
+
+`V2_9_8B_LATER_CYCLE_DUPLICATE_TRANSPORT_AUTHORITATIVE_REPAIR_PASS`
+
+Integrated repair commit:
+
+`041e2550ec2ec090e45eec2d8de45f6a0c1e84f0`
+
+Governing closeout:
+
+`docs/printer-v1-v2-9-8b-later-cycle-duplicate-transport-repair-closeout.md`
+
+Prior campaign closeout remains historically correct:
 
 `V2_9_8B_AUTH_12A7EA61_CAMPAIGN_CLOSEOUT_PASS`
 
-Evidence-audit verdict:
-
-`V2_9_8B_AUTH_12A7EA61_POST_APPLICATION_EVIDENCE_AUDIT_PASS`
-
-Scope-propagation repair live proof:
+Scope-propagation repair live proof remains:
 
 `CAMPAIGN_SOURCE_REQUEST_SCOPE_PROPAGATION_REPAIR_LIVE_PROOF_PASS`
-
-Primary later-cycle classification:
-
-`COMMITTED_CODE_DEFECT` /
-`LATER_CYCLE_COOPERATIVE_MINT_MARKET_BATCH_DUPLICATE_TRANSPORT_IDENTITY`
-
-Closeout:
-
-`docs/printer-v1-v2-9-8b-auth-12a7ea61-campaign-closeout.md`
 
 ## Consumed authorization
 
@@ -55,18 +54,11 @@ required prior ID.
 
 ## Campaign result
 
-Wrapper: child exited 0; cleanup complete; lease released;
-`success = true` under the existing operational-terminal contract.
-
-Campaign contract: Cycle 1 admitted two tokens and completed
-`WINDOW_15M -> WINDOW_1H -> WINDOW_4H` (`CLEAN_PROMOTED` then 4h
-`NO_PROMOTION`). Cycle 2 was attempted and not admitted. The campaign did not
-achieve four through-4h identities.
-
-Cycle 2 failed while still in cooperative `MARKET_DISCOVERY` because mint-batch
-`r1` and `r2` replayed the same DexScreener due-mint transport identity
-(`AQi9C9ak1TKTse3kSFKANybEhZmaVpTab1ukhsEhpump`) into the Cycle 2 six-unit
-owner.
+Historical. Cycle 1 admitted two tokens and completed
+`WINDOW_15M -> WINDOW_1H -> WINDOW_4H`. Cycle 2 was attempted and not admitted
+because cooperative `MARKET_DISCOVERY` replayed the same DexScreener due-mint
+transport identity. That producer defect is now repaired in host-local code.
+The consumed authorization remains dead.
 
 ## Post-campaign DB identity
 
@@ -84,21 +76,21 @@ Required authoritative DB path:
 - journal mode: `delete`
 - sidecars: none
 
-Do not restore the pre-run DB. Campaign writes were authorized.
+This repair lane did not mutate the authoritative DB. Do not restore the
+pre-run DB. Campaign writes were authorized.
 
 ## Durable zero-state / quiescence
 
-All canonical ownership domains are zero. Campaign and candidate-acquisition
-leases are released/terminal. No operational Printer processes. Historical
-terminal rows, including this campaign and the failed Cycle 2 pre-admission
-attempt, remain historical residue and must not be mutated.
+All canonical ownership domains remain zero. No operational Printer processes.
+Historical terminal rows remain historical residue and must not be mutated.
 
 ## Exact next permitted action
 
-`Write the design/specification for the proven later-cycle cooperative mint-market-batch duplicate transport identity defect, using the existing six-unit uniqueness contract and cooperative-resume ownership, and stop for independent design review. Do not implement. Do not run Printer. Do not prepare or apply another authorization.`
+`Establish fresh exact-HEAD / exact-DB readiness / governance after the later-cycle duplicate-transport repair closeout commit exists. Do not prepare or apply an authorization in this handoff. Do not run Printer.`
 
 The completed authorization-boundary design remains authoritative and must not
 be redone. The scope-propagation repair remains closed PASS and live-proven.
+The later-cycle duplicate-transport repair remains closed PASS.
 
 ## Application / execution remain blocked
 
@@ -113,8 +105,7 @@ This handoff does **not** authorize:
 - authoritative DB mutation;
 - retry / rerun / resume / restart / successor;
 - retrieval / BUY / SELL / HOLD / positions / trades / audits / PnL;
-- `WINDOW_12H` / `WINDOW_24H`;
-- production-code repair in this closeout.
+- `WINDOW_12H` / `WINDOW_24H`.
 
 ## Standard-4H envelope
 
@@ -138,7 +129,8 @@ Preserve exactly:
 audit/readiness -> design/specification -> implementation if approved -> bounded proof/test -> closeout
 ```
 
-Do not collapse design, implementation, and another campaign into one action.
+Do not collapse readiness, authorization preparation, and execution into one
+action.
 
 ## Permanent locks
 

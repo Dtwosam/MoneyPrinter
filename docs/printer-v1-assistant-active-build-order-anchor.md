@@ -48,6 +48,7 @@ Latest completed campaign:
 - authoritative post-campaign DB SHA-256: `a3172e04f99ef410ba66eb4e2928b5b4edbdd7dfad4d713fcd1605fa3b702a8c`;
 - campaign classification: `COMMITTED_CODE_DEFECT` / `LATER_CYCLE_COOPERATIVE_MINT_MARKET_BATCH_DUPLICATE_TRANSPORT_IDENTITY`;
 - scope-propagation repair live proof: `CAMPAIGN_SOURCE_REQUEST_SCOPE_PROPAGATION_REPAIR_LIVE_PROOF_PASS`;
+- later-cycle duplicate-transport authoritative repair: `V2_9_8B_LATER_CYCLE_DUPLICATE_TRANSPORT_AUTHORITATIVE_REPAIR_PASS`;
 - no current-campaign active work;
 - retrieval, financial capabilities, 12h, and 24h remain locked.
 
@@ -72,7 +73,7 @@ The remote-host work is infrastructure support only. It does not reorder or adva
 The exact current lane is:
 
 ```text
-LATER-CYCLE COOPERATIVE MINT-MARKET-BATCH DUPLICATE TRANSPORT IDENTITY — DESIGN / SPECIFICATION ONLY
+POST-REPAIR FRESH EXACT-HEAD / EXACT-DB READINESS / GOVERNANCE
 ```
 
 The consumed Sep-1/Sep-2 authorization
@@ -80,16 +81,17 @@ The consumed Sep-1/Sep-2 authorization
 `CONSUMED / CHILD_EXITED_ZERO / PERMANENTLY NON-REUSABLE`. The earlier consumed
 Sep-1 authorization `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260901T181024Z_ab6c68fe`
 remains `CONSUMED / CHILD_EXITED_NONZERO / PERMANENTLY NON-REUSABLE`. The
-freeze-ready scope-propagation repair is closed PASS and live-proven. Use
-`CURRENT_HANDOFF.md` for the live HEAD after the 12a7ea61 closeout
+freeze-ready scope-propagation repair is closed PASS and live-proven. The
+later-cycle duplicate-transport authoritative repair is closed PASS. Use
+`CURRENT_HANDOFF.md` for the live HEAD after that repair closeout
 documentation commit.
 
 Allowed now:
 
-- write the design/specification for the proven later-cycle cooperative
-  mint-market-batch duplicate transport identity defect;
-- stop for independent design review;
-- do not implement in this next lane unless that design is separately approved.
+- establish fresh exact-HEAD / exact-DB readiness / governance after the
+  repair closeout commit exists;
+- do not enter that lane automatically;
+- do not prepare or apply an authorization in this closeout.
 
 Do not redo the completed authorization-boundary design.
 Do not reuse either consumed Sep-1 authorization.

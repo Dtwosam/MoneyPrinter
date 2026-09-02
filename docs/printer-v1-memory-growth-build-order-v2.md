@@ -2382,10 +2382,10 @@ All permanent V1 locks remain unchanged.
 <!-- V2_9_8B_STALE_AUTH_HEAD_DRIFT_CLOSEOUT_CURRENT_STATE_END -->
 
 <!-- V2_9_8B_AUTH_12A7EA61_CAMPAIGN_CLOSEOUT_CURRENT_STATE_START -->
-## V2-9.8B Authorization 12a7ea61 Campaign Closeout — Current Authority
+## V2-9.8B Authorization 12a7ea61 Campaign Closeout — Historical Authority
 
-This block supersedes older current-looking Standard-4H next-lane pointers in
-this file for current-lane selection only. Historical text remains evidence.
+This block is historical after the later-cycle duplicate-transport
+authoritative repair closeout. Campaign facts remain evidence.
 
 - campaign closeout: `V2_9_8B_AUTH_12A7EA61_CAMPAIGN_CLOSEOUT_PASS`
 - authorization: `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260901T203521Z_12a7ea61`
@@ -2401,13 +2401,37 @@ this file for current-lane selection only. Historical text remains evidence.
 - retrieval/financial/12h/24h locks remain closed
 - closeout: `docs/printer-v1-v2-9-8b-auth-12a7ea61-campaign-closeout.md`
 
+At campaign closeout time, the next permitted lane was later-cycle
+duplicate-transport design/specification. That pointer is historical after
+the authoritative repair closeout.
+<!-- V2_9_8B_AUTH_12A7EA61_CAMPAIGN_CLOSEOUT_CURRENT_STATE_END -->
+
+<!-- V2_9_8B_LATER_CYCLE_DUPLICATE_TRANSPORT_REPAIR_CLOSEOUT_CURRENT_STATE_START -->
+## V2-9.8B Later-Cycle Duplicate-Transport Authoritative Repair — Current Authority
+
+This block supersedes older current-looking Standard-4H next-lane pointers in
+this file for current-lane selection only. Historical text remains evidence.
+
+- repair verdict: `V2_9_8B_LATER_CYCLE_DUPLICATE_TRANSPORT_AUTHORITATIVE_REPAIR_PASS`
+- integrated repair commit: `041e2550ec2ec090e45eec2d8de45f6a0c1e84f0`
+- authoritative starting HEAD: `903046d7dc6b215b80eeed5633072eb1cd39dfe2`
+- execution HEAD remaining in ancestry: `91c757c542d8098ecf7b244769061f333dcfc21f`
+- verified portable replay-only source: `173cb1bd7c16104dc5e4266b8f1886d0275dc168`
+- consumed authorization `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260901T203521Z_12a7ea61` remains permanently non-reusable
+- six-unit `DUPLICATE_TRANSPORT_IDENTITY` remains fail-closed
+- Source Governor and Central Scheduler owners unchanged
+- authoritative DB SHA-256 unchanged: `a3172e04f99ef410ba66eb4e2928b5b4edbdd7dfad4d713fcd1605fa3b702a8c`
+- retrieval/financial/12h/24h locks remain closed
+- closeout: `docs/printer-v1-v2-9-8b-later-cycle-duplicate-transport-repair-closeout.md`
+
 The exact current permitted lane is:
 
 ```text
-LATER-CYCLE COOPERATIVE MINT-MARKET-BATCH DUPLICATE TRANSPORT IDENTITY — DESIGN / SPECIFICATION ONLY
+POST-REPAIR FRESH EXACT-HEAD / EXACT-DB READINESS / GOVERNANCE
 ```
 
-This is design/specification only. It does not authorize implementation,
-Printer execution, another authorization, provider/RPC/WebSocket calls,
-Scheduler execution, retrieval, financial capabilities, or longer windows.
-<!-- V2_9_8B_AUTH_12A7EA61_CAMPAIGN_CLOSEOUT_CURRENT_STATE_END -->
+This is readiness/governance only. It does not authorize implementation of a
+new defect, Printer execution, another authorization, provider/RPC/WebSocket
+calls, Scheduler execution, retrieval, financial capabilities, or longer
+windows. Do not enter it automatically.
+<!-- V2_9_8B_LATER_CYCLE_DUPLICATE_TRANSPORT_REPAIR_CLOSEOUT_CURRENT_STATE_END -->
