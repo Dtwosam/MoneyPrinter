@@ -45,6 +45,69 @@ Every major capability must preserve:
 Use minimum sufficient risk-based verification. Do not request broad regression
 suites unless the change risk or lane closeout requires them.
 
+### Current V2-9.8B four-token Standard-4H per-token request-ceiling wiring repair readiness / audit — 2026-09-03
+
+Readiness/audit verdict:
+
+`V2_9_8B_FOUR_TOKEN_STANDARD4H_PER_TOKEN_REQUEST_CEILING_WIRING_REPAIR_READINESS_AUDIT_PASS`
+
+Repair classification:
+
+`NARROW_POLICY_WIRING_REPAIR_FEASIBLE`
+
+Governing audit:
+
+`docs/printer-v1-v2-9-8b-four-token-standard4h-per-token-request-ceiling-wiring-repair-audit.md`
+
+Adopted forensic:
+
+`docs/printer-v1-v2-9-8b-auth-202fbea1-sep3-consumed-4-2-2-standard4h-post-run-forensic-closeout.md`
+
+Forensic verdict:
+
+`V2_9_8B_SEP3_CONSUMED_4_2_2_STANDARD4H_POST_RUN_FORENSIC_CLOSEOUT_PASS`
+
+Campaign result: `CAMPAIGN_FAILED`
+
+Primary classification: `PROVEN_COMMITTED_BUDGET_ENFORCEMENT_DEFECT`
+
+This block supersedes older current-looking Standard-4H next-lane pointers
+later in this file for current-lane selection only. Historical campaign,
+readiness, and authorization-boundary facts remain evidence.
+
+Consumed authorization
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260903T121923Z_202fbea1` is
+`CONSUMED / CHILD_EXITED_ZERO / PERMANENTLY NON-REUSABLE`. Do not retry, rerun,
+resume, restart, or create a successor from that run. Future prior-non-reuse
+root is 60 IDs.
+
+Authoritative DB SHA-256:
+
+`575984caa484b12f4bb5fca0a06cdf7865adeb03b5f16874406fb0c1a73daa6e`
+
+The exact current permitted lane is:
+
+```text
+FOUR-TOKEN STANDARD-4H PER-TOKEN REQUEST-CEILING WIRING REPAIR — DESIGN / SPECIFICATION
+```
+
+That later design may specify the narrow factory helper that selects
+`lifecycle_requests_per_token = 118` for `four_token_proof` without changing
+selective-1h `50`. It may not implement. Do not begin implementation
+automatically. Do not run Printer. Do not create an application marker. Do not
+call `apply_authorization_once`. Do not prepare another authorization.
+
+The Sep-3 Cycle-2 `DUPLICATE_TRANSPORT_IDENTITY` /
+`DISCOVERY_ARCHITECTURE_FALSE_SHORTAGE` finding is
+`CYCLE2_FINDING_INDEPENDENT` and needs its own disposition before another live
+4/2/2 authorization.
+
+This does **not** authorize repair implementation, `apply_authorization_once`,
+application-marker creation, Printer execution, child launch, another campaign,
+provider/RPC/WebSocket calls, Central Scheduler runtime,
+retry/rerun/resume/restart/successor, retrieval, BUY/SELL/HOLD, positions,
+trades, audits, PnL, or `WINDOW_12H` / `WINDOW_24H`.
+
 ### Current V2-9.8B next bounded 4/2/2 Standard-4H authorization-boundary / package design — 2026-09-03
 
 Design verdict:
@@ -59,9 +122,9 @@ Governing design:
 
 `docs/printer-v1-v2-9-8b-next-bounded-4-2-2-standard-4h-authorization-boundary-package-design.md`
 
-This block supersedes older current-looking Standard-4H next-lane pointers
-later in this file for current-lane selection only. Historical campaign/repair
-truth remains evidence.
+This block is historical for current-lane selection after the per-token
+request-ceiling wiring repair readiness/audit PASS. Design facts remain
+evidence. The post-design preparation pointer is not the current lane.
 
 Design baseline HEAD:
 
@@ -88,16 +151,11 @@ future Standard-4H prior non-reuse trust root, together with every already
 required prior ID. The complete future root is 59 IDs. Do not retry, rerun,
 resume, restart, or create a successor from those runs.
 
-The exact current permitted lane is:
-
-```text
-FRESH EXACT-HEAD / EXACT-DB ONE-SHOT 4/2/2 STANDARD-4H AUTHORIZATION PACKAGE PREPARATION
-```
-
-That later lane may create/freeze/hash exactly one authorization package only
-after separate operator approval. It may not apply or consume it. Do not begin
-that lane automatically. Do not run Printer. Do not create an application
-marker. Do not call `apply_authorization_once`.
+The exact current permitted lane is no longer authorization-boundary design or
+fresh package preparation. Use the current-lane block above and
+`CURRENT_HANDOFF.md`. Do not jump to authorization creation. Do not implement
+the per-token ceiling repair automatically. Do not run Printer. Do not create
+an application marker. Do not call `apply_authorization_once`.
 
 This does **not** authorize `apply_authorization_once`, application-marker
 creation, Printer execution, child launch, another campaign, provider/RPC/
@@ -1642,7 +1700,7 @@ authority. Current adopted envelope:
 The exact current next permitted lane is:
 
 ```text
-FRESH EXACT-HEAD / EXACT-DB ONE-SHOT 4/2/2 STANDARD-4H AUTHORIZATION PACKAGE PREPARATION
+FOUR-TOKEN STANDARD-4H PER-TOKEN REQUEST-CEILING WIRING REPAIR — DESIGN / SPECIFICATION
 ```
 
 Historical at the time of the 2026-08-26 source-stack synchronization:
@@ -1653,11 +1711,12 @@ scope-propagation repair, the 12a7ea61 campaign closeout, the later-cycle
 duplicate-transport authoritative repair, the post-duplicate-transport-repair
 fresh exact-HEAD / exact-DB readiness, the 59fdefe7 campaign closeout, the
 four-concurrent post-implementation correction, the Sep-2 surviving
-pre-lifecycle wait reconciliation, the post-reconciliation readiness PASS, and
-the next-bounded 4/2/2 authorization-boundary package design PASS supersede
-older pointers for current-lane selection; use the Active Authority Stack and
-`CURRENT_HANDOFF.md`. Preparation may begin only after separate operator
-approval and must not apply or consume.
+pre-lifecycle wait reconciliation, the post-reconciliation readiness PASS, the
+next-bounded 4/2/2 authorization-boundary package design PASS, the Sep-3
+consumed 4/2/2 forensic closeout, and the per-token request-ceiling wiring
+repair readiness/audit PASS supersede older pointers for current-lane
+selection; use the Active Authority Stack and `CURRENT_HANDOFF.md`. Do not
+implement the repair automatically. Do not prepare or apply an authorization.
 
 No automatic run, retry, recovery, successor, cursor reset, N7, provider/RPC
 work, operational campaign, or Printer execution is authorized by this anchor
@@ -1724,7 +1783,7 @@ Current adopted operational envelope:
 The exact current next permitted lane is:
 
 ```text
-FRESH EXACT-HEAD / EXACT-DB ONE-SHOT 4/2/2 STANDARD-4H AUTHORIZATION PACKAGE PREPARATION
+FOUR-TOKEN STANDARD-4H PER-TOKEN REQUEST-CEILING WIRING REPAIR — DESIGN / SPECIFICATION
 ```
 
 Historical at the time of this adoption closeout:
@@ -1735,10 +1794,11 @@ scope-propagation repair, the 12a7ea61 campaign closeout, the later-cycle
 duplicate-transport authoritative repair, the post-duplicate-transport-repair
 fresh exact-HEAD / exact-DB readiness, the 59fdefe7 campaign closeout, the
 four-concurrent post-implementation correction, the Sep-2 surviving
-pre-lifecycle wait reconciliation, the post-reconciliation readiness PASS, and
-the next-bounded 4/2/2 authorization-boundary package design PASS supersede
-older pointers for current-lane selection; use the Active Authority
-Stack and `CURRENT_HANDOFF.md`.
+pre-lifecycle wait reconciliation, the post-reconciliation readiness PASS, the
+next-bounded 4/2/2 authorization-boundary package design PASS, the Sep-3
+consumed 4/2/2 forensic closeout, and the per-token request-ceiling wiring
+repair readiness/audit PASS supersede older pointers for current-lane
+selection; use the Active Authority Stack and `CURRENT_HANDOFF.md`.
 
 This adoption creates no authorization, automatically authorizes no campaign,
 and unlocks no live runtime. No existing consumed authorization,

@@ -42,31 +42,23 @@ Current adopted operational envelope remains:
 
 Latest completed campaign:
 
-- authorization: `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260902T122136Z_59fdefe7`;
-- authorization SHA-256: `fcfa2d6cd0dfdb8f19c8482ace1b4c4c4b1b84b8283862ee8c4e90be74787b19`;
-- authorized execution HEAD: `83a6ef964e7289ca17c9c1a600758ffdb5e9f752`;
-- permanently consumed `CONSUMED / CHILD_EXITED_NONZERO / PERMANENTLY NON-REUSABLE`;
+- authorization: `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260903T121923Z_202fbea1`;
+- authorization SHA-256: `02153f8a96b13f5096cd0e695c78649f16e2f11105894f91a86517d486493c5d`;
+- authorized execution HEAD: `26d7b91bb5f115ad816b3cd632b5036d07b82b0e`;
+- permanently consumed `CONSUMED / CHILD_EXITED_ZERO / PERMANENTLY NON-REUSABLE`;
 - no retry, rerun, resume, restart, reuse, inheritance, or successor;
-- historical post-campaign DB SHA-256:
-  `cd6b1d4ac7171f4096d06c9b09a035a0cf622899806b9a58cc990a2936ad6659`;
-- post-reconciliation authoritative DB SHA-256:
-  `fb52d8fae2d22c70f6c2c7de7ddf4a18c7d89f01450f12e6c60093ee85e17cff`;
-- campaign classification remains historically
-  `COMMITTED_CODE_DEFECT` / `PRE_LIFECYCLE_TERMINAL_CLEANUP_ORDERING_OR_OWNERSHIP_DEFECT`;
-- campaign closeout remains historically
-  `V2_9_8B_AUTH_59FDEFE7_CAMPAIGN_CLOSEOUT_BLOCKED` on the then-undrained
-  Cycle-2 pre-lifecycle refresh wait;
-- later residue reconciliation is
-  `V2_9_8B_SEP2_SURVIVING_PRE_LIFECYCLE_WAIT_RECONCILIATION_ZERO_STATE_PASS`;
-  later readiness is
-  `V2_9_8B_POST_RECONCILIATION_FRESH_EXACT_HEAD_EXACT_DB_NEXT_BOUNDED_CAMPAIGN_READINESS_GOVERNANCE_PASS`;
-  that wait is now `CANCELLED` /
-  `PARENT_CAMPAIGN_INTERRUPTED:SAFE_STOP_PREFLIGHT_FAILED`;
-- later-cycle duplicate-transport authoritative repair remains historically
-  `V2_9_8B_LATER_CYCLE_DUPLICATE_TRANSPORT_AUTHORITATIVE_REPAIR_PASS` and was
-  not this campaign's terminal cause;
-- official zero-state domains are now all `0`; canonical campaign-scoped
-  `clean_terminal` is true;
+- post-run authoritative DB SHA-256:
+  `575984caa484b12f4bb5fca0a06cdf7865adeb03b5f16874406fb0c1a73daa6e`;
+- campaign result `CAMPAIGN_FAILED`;
+- primary classification
+  `PROVEN_COMMITTED_BUDGET_ENFORCEMENT_DEFECT` /
+  `FOUR_TOKEN_STD4H_PER_TOKEN_CEILING_STILL_SELECTIVE_1H_CONTINUOUS_50`;
+- forensic closeout
+  `V2_9_8B_SEP3_CONSUMED_4_2_2_STANDARD4H_POST_RUN_FORENSIC_CLOSEOUT_PASS`;
+- per-token ceiling wiring repair readiness/audit
+  `V2_9_8B_FOUR_TOKEN_STANDARD4H_PER_TOKEN_REQUEST_CEILING_WIRING_REPAIR_READINESS_AUDIT_PASS`;
+- Cycle-2 `DUPLICATE_TRANSPORT_IDENTITY` remains a separate independent finding;
+- official zero-state domains are all `0`;
 - retrieval, financial capabilities, 12h, and 24h remain locked.
 
 ## Remote-host infrastructure state
@@ -90,11 +82,29 @@ The remote-host work is infrastructure support only. It does not reorder or adva
 The exact current lane is:
 
 ```text
-FRESH EXACT-HEAD / EXACT-DB ONE-SHOT 4/2/2 STANDARD-4H AUTHORIZATION PACKAGE PREPARATION
+FOUR-TOKEN STANDARD-4H PER-TOKEN REQUEST-CEILING WIRING REPAIR — DESIGN / SPECIFICATION
 ```
 
-The next-bounded 4/2/2 Standard-4H authorization-boundary / package design is
-closed PASS:
+The Sep-3 consumed 4/2/2 Standard-4H forensic closeout is closed PASS:
+
+`V2_9_8B_SEP3_CONSUMED_4_2_2_STANDARD4H_POST_RUN_FORENSIC_CLOSEOUT_PASS`
+
+Campaign result: `CAMPAIGN_FAILED`. Consumed authorization
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260903T121923Z_202fbea1` is permanently
+non-reusable.
+
+The per-token request-ceiling wiring repair readiness/audit is closed PASS:
+
+`V2_9_8B_FOUR_TOKEN_STANDARD4H_PER_TOKEN_REQUEST_CEILING_WIRING_REPAIR_READINESS_AUDIT_PASS`
+
+Classification: `NARROW_POLICY_WIRING_REPAIR_FEASIBLE`
+
+Governing audit:
+
+`docs/printer-v1-v2-9-8b-four-token-standard4h-per-token-request-ceiling-wiring-repair-audit.md`
+
+The next-bounded 4/2/2 Standard-4H authorization-boundary / package design
+remains historically closed PASS:
 
 `V2_9_8B_NEXT_BOUNDED_4_2_2_STANDARD_4H_AUTHORIZATION_BOUNDARY_PACKAGE_DESIGN_PASS`
 
@@ -103,6 +113,9 @@ Classification: `EXISTING_OWNER_ALREADY_SUFFICIENT`
 Governing design:
 
 `docs/printer-v1-v2-9-8b-next-bounded-4-2-2-standard-4h-authorization-boundary-package-design.md`
+
+Do not implement the repair automatically. Do not prepare or apply an
+authorization. Do not run Printer.
 
 Post-reconciliation exact-HEAD / exact-DB next-bounded-campaign readiness /
 governance remains historically closed PASS:

@@ -2459,32 +2459,58 @@ consumption, Printer execution, provider/RPC/WebSocket calls, Scheduler
 execution, retrieval, financial capabilities, or longer windows.
 <!-- V2_9_8B_POST_DUPLICATE_TRANSPORT_REPAIR_FRESH_READINESS_CURRENT_STATE_END -->
 
-<!-- V2_9_8B_NEXT_BOUNDED_AUTH_BOUNDARY_DESIGN_CURRENT_STATE_START -->
-## V2-9.8B Next Bounded 4/2/2 Standard-4H Authorization-Boundary / Package Design — Current Authority
+<!-- V2_9_8B_PER_TOKEN_CEILING_WIRING_REPAIR_AUDIT_CURRENT_STATE_START -->
+## V2-9.8B Four-Token Standard-4H Per-Token Request-Ceiling Wiring Repair Readiness / Audit — Current Authority
 
 This block supersedes older current-looking Standard-4H next-lane pointers in
 this file for current-lane selection only. Historical text remains evidence.
 
+- forensic verdict: `V2_9_8B_SEP3_CONSUMED_4_2_2_STANDARD4H_POST_RUN_FORENSIC_CLOSEOUT_PASS`
+- campaign result: `CAMPAIGN_FAILED`
+- primary classification: `PROVEN_COMMITTED_BUDGET_ENFORCEMENT_DEFECT`
+- audit verdict: `V2_9_8B_FOUR_TOKEN_STANDARD4H_PER_TOKEN_REQUEST_CEILING_WIRING_REPAIR_READINESS_AUDIT_PASS`
+- repair classification: `NARROW_POLICY_WIRING_REPAIR_FEASIBLE`
+- consumed authorization: `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260903T121923Z_202fbea1`
+- that authorization remains `CONSUMED / CHILD_EXITED_ZERO / PERMANENTLY NON-REUSABLE`
+- authoritative DB SHA-256: `575984caa484b12f4bb5fca0a06cdf7865adeb03b5f16874406fb0c1a73daa6e`
+- forensic: `docs/printer-v1-v2-9-8b-auth-202fbea1-sep3-consumed-4-2-2-standard4h-post-run-forensic-closeout.md`
+- audit: `docs/printer-v1-v2-9-8b-four-token-standard4h-per-token-request-ceiling-wiring-repair-audit.md`
+- Cycle-2 finding remains `CYCLE2_FINDING_INDEPENDENT`
+- Source Governor and Central Scheduler owners unchanged
+- retrieval/financial/12h/24h locks remain closed
+
+The exact current permitted lane is:
+
+```text
+FOUR-TOKEN STANDARD-4H PER-TOKEN REQUEST-CEILING WIRING REPAIR — DESIGN / SPECIFICATION
+```
+
+That later design may specify the narrow factory helper that selects
+`lifecycle_requests_per_token = 118` for `four_token_proof` without changing
+selective-1h `50`. It may not implement. Do not begin it automatically. This
+does not authorize Printer execution, provider/RPC/WebSocket calls, Scheduler
+execution, retrieval, financial capabilities, or longer windows.
+<!-- V2_9_8B_PER_TOKEN_CEILING_WIRING_REPAIR_AUDIT_CURRENT_STATE_END -->
+
+<!-- V2_9_8B_NEXT_BOUNDED_AUTH_BOUNDARY_DESIGN_CURRENT_STATE_START -->
+## V2-9.8B Next Bounded 4/2/2 Standard-4H Authorization-Boundary / Package Design — Historical Authority
+
+This block is historical for current-lane selection after the per-token
+request-ceiling wiring repair readiness/audit PASS. Design facts remain
+evidence.
+
 - design verdict: `V2_9_8B_NEXT_BOUNDED_4_2_2_STANDARD_4H_AUTHORIZATION_BOUNDARY_PACKAGE_DESIGN_PASS`
 - implementation-boundary classification: `EXISTING_OWNER_ALREADY_SUFFICIENT`
 - design baseline HEAD: `f465e34f702fb80175740a2df3e686d50d914a88`
-- authoritative DB SHA-256: `fb52d8fae2d22c70f6c2c7de7ddf4a18c7d89f01450f12e6c60093ee85e17cff`
-- no authorization package/ID/hash/marker created
+- historical DB SHA-256 at that design: `fb52d8fae2d22c70f6c2c7de7ddf4a18c7d89f01450f12e6c60093ee85e17cff`
+- no authorization package/ID/hash/marker was created by that design
 - consumed authorization `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260902T122136Z_59fdefe7` remains permanently non-reusable
 - Source Governor and Central Scheduler owners unchanged
 - retrieval/financial/12h/24h locks remain closed
 - design: `docs/printer-v1-v2-9-8b-next-bounded-4-2-2-standard-4h-authorization-boundary-package-design.md`
 
-The exact current permitted lane is:
-
-```text
-FRESH EXACT-HEAD / EXACT-DB ONE-SHOT 4/2/2 STANDARD-4H AUTHORIZATION PACKAGE PREPARATION
-```
-
-That later lane may create/freeze/hash one package only after separate operator
-approval. It may not apply or consume it. Do not begin it automatically. This
-does not authorize Printer execution, provider/RPC/WebSocket calls, Scheduler
-execution, retrieval, financial capabilities, or longer windows.
+The exact current permitted lane is no longer fresh package preparation. Use
+the current-authority block above and `CURRENT_HANDOFF.md`.
 <!-- V2_9_8B_NEXT_BOUNDED_AUTH_BOUNDARY_DESIGN_CURRENT_STATE_END -->
 
 <!-- V2_9_8B_POST_RECONCILIATION_READINESS_CURRENT_STATE_START -->

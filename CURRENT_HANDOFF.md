@@ -2,66 +2,77 @@
 
 ## Current lane
 
-`FRESH EXACT-HEAD / EXACT-DB ONE-SHOT 4/2/2 STANDARD-4H AUTHORIZATION PACKAGE PREPARATION`
+`FOUR-TOKEN STANDARD-4H PER-TOKEN REQUEST-CEILING WIRING REPAIR — DESIGN / SPECIFICATION`
 
-The next-bounded 4/2/2 Standard-4H authorization-boundary / package design is
-closed PASS. Existing owners are already sufficient. Do not begin package
-preparation in this handoff unless a later explicit operator approval says so.
-Do not apply or consume an authorization. Do not run Printer.
+The Sep-3 consumed 4/2/2 Standard-4H forensic closeout and the per-token
+request-ceiling wiring repair readiness/audit are closed PASS. Do not begin
+design implementation in this handoff. Do not implement the repair. Do not
+prepare or apply an authorization. Do not run Printer.
 
 ## Latest completed work
 
-Verdict:
+Forensic verdict:
 
-`V2_9_8B_NEXT_BOUNDED_4_2_2_STANDARD_4H_AUTHORIZATION_BOUNDARY_PACKAGE_DESIGN_PASS`
+`V2_9_8B_SEP3_CONSUMED_4_2_2_STANDARD4H_POST_RUN_FORENSIC_CLOSEOUT_PASS`
 
-Implementation-boundary classification:
+Campaign result:
 
-`EXISTING_OWNER_ALREADY_SUFFICIENT`
+`CAMPAIGN_FAILED`
 
-Governing design:
+Primary classification:
 
-`docs/printer-v1-v2-9-8b-next-bounded-4-2-2-standard-4h-authorization-boundary-package-design.md`
+`PROVEN_COMMITTED_BUDGET_ENFORCEMENT_DEFECT`
 
-Design baseline HEAD:
+Governing forensic:
 
-`f465e34f702fb80175740a2df3e686d50d914a88`
+`docs/printer-v1-v2-9-8b-auth-202fbea1-sep3-consumed-4-2-2-standard4h-post-run-forensic-closeout.md`
 
-This documentation commit is the live design HEAD. Later package preparation,
-if separately approved, must bind the live HEAD after this commit exists, not
-`f465e34f...`.
+Readiness/audit verdict:
+
+`V2_9_8B_FOUR_TOKEN_STANDARD4H_PER_TOKEN_REQUEST_CEILING_WIRING_REPAIR_READINESS_AUDIT_PASS`
+
+Repair classification:
+
+`NARROW_POLICY_WIRING_REPAIR_FEASIBLE`
+
+Governing audit:
+
+`docs/printer-v1-v2-9-8b-four-token-standard4h-per-token-request-ceiling-wiring-repair-audit.md`
+
+This documentation commit is the live audit HEAD. Later design must bind the
+live HEAD after this commit exists.
 
 Authoritative DB SHA-256 remains:
 
-`fb52d8fae2d22c70f6c2c7de7ddf4a18c7d89f01450f12e6c60093ee85e17cff`
+`575984caa484b12f4bb5fca0a06cdf7865adeb03b5f16874406fb0c1a73daa6e`
 
-No authorization package, ID, hash, or application marker was created. No DB
-mutation. No providers. No Printer run.
-
-Prior readiness remains:
-
-`V2_9_8B_POST_RECONCILIATION_FRESH_EXACT_HEAD_EXACT_DB_NEXT_BOUNDED_CAMPAIGN_READINESS_GOVERNANCE_PASS`
+No production code, tests, migrations, or DB mutation. No providers. No
+Printer run.
 
 ## Consumed authorization
 
-`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260902T122136Z_59fdefe7`
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260903T121923Z_202fbea1`
 
-`CONSUMED / CHILD_EXITED_NONZERO / PERMANENTLY NON-REUSABLE`
+`CONSUMED / CHILD_EXITED_ZERO / PERMANENTLY NON-REUSABLE`
 
 Do not retry, rerun, resume, restart, reuse, or create a successor. Future
-prior-non-reuse root remains 59 IDs, including this consumed ID.
+prior-non-reuse root is 60 IDs, including this consumed ID.
+
+Earlier consumed `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260902T122136Z_59fdefe7`
+remains permanently non-reusable.
 
 ## Exact next permitted action
 
-`Fresh exact-HEAD / exact-DB one-shot 4/2/2 Standard-4H authorization package preparation, only after separate operator approval. Bind the live design HEAD after this documentation commit and DB SHA-256 fb52d8fae2d22c70f6c2c7de7ddf4a18c7d89f01450f12e6c60093ee85e17cff. Create/freeze/hash at most one package. Do not apply or consume it. Do not run Printer.`
+`Four-token Standard-4H per-token request-ceiling wiring repair design / specification. Bind the live audit HEAD after this documentation commit and DB SHA-256 575984caa484b12f4bb5fca0a06cdf7865adeb03b5f16874406fb0c1a73daa6e. Specify the narrow factory helper that selects lifecycle_requests_per_token=118 for four_token_proof without changing selective-1h 50. Do not implement. Do not run Printer.`
 
 ## Application / execution remain blocked
 
 This handoff does **not** authorize:
 
+- repair implementation;
 - `apply_authorization_once`;
 - application-marker creation;
-- automatic package preparation;
+- package preparation;
 - Printer execution or child launch;
 - provider / RPC / WebSocket calls;
 - Central Scheduler runtime;
@@ -72,14 +83,18 @@ This handoff does **not** authorize:
 Preserve:
 
 ```text
-readiness PASS
--> authorization-boundary design/specification PASS
--> authorization preparation only if separately approved
--> independent package review
--> separate explicit execution approval
--> bounded campaign
--> closeout
+forensic closeout PASS
+-> repair readiness/audit PASS
+-> design/specification
+-> implementation if approved
+-> bounded proof
+-> independent review
+-> fresh readiness
 ```
+
+The Sep-3 Cycle-2 `DUPLICATE_TRANSPORT_IDENTITY` /
+`DISCOVERY_ARCHITECTURE_FALSE_SHORTAGE` finding remains separate. It must
+receive its own disposition before another live 4/2/2 authorization.
 
 ## Permanent locks
 
@@ -89,8 +104,8 @@ No scoring/ranking/confidence/weighted logic. No Source Governor or Central
 Scheduler bypass. Retrieval and financial capability remain locked.
 `WINDOW_5M_MICRO_EVENT` remains support-only. `WINDOW_12H` / `WINDOW_24H`
 remain locked. No automatic retry/rerun/resume/restart. 4/2/2 preserved.
-`476 / 118 / 444`, retries `0`, endpoint rotation `false`. Refresh timing
-`+600 / +1200 / +1800 / +2400` preserved.
+Authorized envelope `476 / 118 / 444`, retries `0`, endpoint rotation `false`.
+Refresh timing `+600 / +1200 / +1800 / +2400` preserved.
 
 Remote/VPS work remains paused at
 `agent/remote-host-linux-portability-implementation`, HEAD
