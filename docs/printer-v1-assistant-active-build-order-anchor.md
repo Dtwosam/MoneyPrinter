@@ -19,7 +19,7 @@ Use `CURRENT_HANDOFF.md` only for the current lane, current commit, latest compl
 
 Historical roadmaps, old lane documents, old chats, previous handoffs, and older current-looking pointers are historical evidence only unless explicitly re-adopted.
 
-## Current durable state — 2026-09-02 post-wait-reconciliation
+## Current durable state — 2026-09-03 post-reconciliation readiness
 
 Active capability family:
 
@@ -58,6 +58,8 @@ Latest completed campaign:
   Cycle-2 pre-lifecycle refresh wait;
 - later residue reconciliation is
   `V2_9_8B_SEP2_SURVIVING_PRE_LIFECYCLE_WAIT_RECONCILIATION_ZERO_STATE_PASS`;
+  later readiness is
+  `V2_9_8B_POST_RECONCILIATION_FRESH_EXACT_HEAD_EXACT_DB_NEXT_BOUNDED_CAMPAIGN_READINESS_GOVERNANCE_PASS`;
   that wait is now `CANCELLED` /
   `PARENT_CAMPAIGN_INTERRUPTED:SAFE_STOP_PREFLIGHT_FAILED`;
 - later-cycle duplicate-transport authoritative repair remains historically
@@ -88,11 +90,20 @@ The remote-host work is infrastructure support only. It does not reorder or adva
 The exact current lane is:
 
 ```text
-FRESH POST-RECONCILIATION EXACT-HEAD / EXACT-DB NEXT-BOUNDED-CAMPAIGN READINESS / GOVERNANCE AUDIT
+NEXT-BOUNDED-CAMPAIGN ONE-SHOT AUTHORIZATION BOUNDARY / PACKAGE DESIGN-SPECIFICATION
 ```
 
-The Sep-2 surviving pre-lifecycle wait reconciliation / zero-state lane is
-closed PASS:
+Post-reconciliation exact-HEAD / exact-DB next-bounded-campaign readiness /
+governance is closed PASS:
+
+`V2_9_8B_POST_RECONCILIATION_FRESH_EXACT_HEAD_EXACT_DB_NEXT_BOUNDED_CAMPAIGN_READINESS_GOVERNANCE_PASS`
+
+Governing readiness:
+
+`docs/printer-v1-v2-9-8b-post-reconciliation-next-bounded-campaign-readiness-governance.md`
+
+The Sep-2 surviving pre-lifecycle wait reconciliation / zero-state lane remains
+historically closed PASS:
 
 `V2_9_8B_SEP2_SURVIVING_PRE_LIFECYCLE_WAIT_RECONCILIATION_ZERO_STATE_PASS`
 
@@ -113,14 +124,15 @@ The consumed Sep-2 authorization
 `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260901T181024Z_ab6c68fe` remains
 `CONSUMED / CHILD_EXITED_NONZERO / PERMANENTLY NON-REUSABLE`. Source-stack
 wording permits four concurrent through-4h tokens as two overlapping two-slot
-cycles. Use `CURRENT_HANDOFF.md` for the live HEAD after this reconciliation
-documentation commit. Subsequent readiness must bind that HEAD and DB SHA-256
+cycles. Use `CURRENT_HANDOFF.md` for the live HEAD after this readiness
+documentation commit. Subsequent authorization-boundary / package
+design-specification must bind that HEAD and DB SHA-256
 `fb52d8fae2d22c70f6c2c7de7ddf4a18c7d89f01450f12e6c60093ee85e17cff`.
 
 Allowed now:
 
-- fresh post-reconciliation exact-HEAD / exact-DB next-bounded-campaign
-  readiness / governance audit;
+- one-shot authorization boundary / package design-specification for the live
+  readiness HEAD and exact DB SHA;
 - do not prepare or apply an authorization in this handoff;
 - do not run Printer.
 

@@ -2459,11 +2459,41 @@ consumption, Printer execution, provider/RPC/WebSocket calls, Scheduler
 execution, retrieval, financial capabilities, or longer windows.
 <!-- V2_9_8B_POST_DUPLICATE_TRANSPORT_REPAIR_FRESH_READINESS_CURRENT_STATE_END -->
 
-<!-- V2_9_8B_SEP2_SURVIVING_WAIT_RECONCILIATION_CURRENT_STATE_START -->
-## V2-9.8B Sep-2 Surviving Pre-Lifecycle Wait Reconciliation / Zero-State — Current Authority
+<!-- V2_9_8B_POST_RECONCILIATION_READINESS_CURRENT_STATE_START -->
+## V2-9.8B Post-Reconciliation Next-Bounded-Campaign Readiness / Governance — Current Authority
 
 This block supersedes older current-looking Standard-4H next-lane pointers in
 this file for current-lane selection only. Historical text remains evidence.
+
+- readiness verdict: `V2_9_8B_POST_RECONCILIATION_FRESH_EXACT_HEAD_EXACT_DB_NEXT_BOUNDED_CAMPAIGN_READINESS_GOVERNANCE_PASS`
+- blocker classification: `NO_BLOCKER`
+- audited HEAD: `55e3ee80f1f8905173955c678da94cabd01eb8ee`
+- authoritative DB SHA-256: `fb52d8fae2d22c70f6c2c7de7ddf4a18c7d89f01450f12e6c60093ee85e17cff`
+- official zero-state projection: all required domains `0`
+- Sep-2 wait remains `CANCELLED` / `PARENT_CAMPAIGN_INTERRUPTED:SAFE_STOP_PREFLIGHT_FAILED`
+- consumed authorization `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260902T122136Z_59fdefe7` remains permanently non-reusable
+- Source Governor and Central Scheduler owners unchanged
+- retrieval/financial/12h/24h locks remain closed
+- readiness: `docs/printer-v1-v2-9-8b-post-reconciliation-next-bounded-campaign-readiness-governance.md`
+
+The exact current permitted lane is:
+
+```text
+NEXT-BOUNDED-CAMPAIGN ONE-SHOT AUTHORIZATION BOUNDARY / PACKAGE DESIGN-SPECIFICATION
+```
+
+That lane is design/specification first. It must bind the live readiness HEAD
+after this documentation commit and the DB SHA above. This does not authorize
+authorization preparation, application, consumption, Printer execution,
+provider/RPC/WebSocket calls, Scheduler execution, retrieval, financial
+capabilities, or longer windows.
+<!-- V2_9_8B_POST_RECONCILIATION_READINESS_CURRENT_STATE_END -->
+
+<!-- V2_9_8B_SEP2_SURVIVING_WAIT_RECONCILIATION_CURRENT_STATE_START -->
+## V2-9.8B Sep-2 Surviving Pre-Lifecycle Wait Reconciliation / Zero-State — Historical Authority
+
+This block is historical for current-lane selection after the post-reconciliation
+readiness/governance PASS. Reconciliation facts remain evidence.
 
 - reconciliation verdict: `V2_9_8B_SEP2_SURVIVING_PRE_LIFECYCLE_WAIT_RECONCILIATION_ZERO_STATE_PASS`
 - classification: `HISTORICAL_ORPHANED_ACTIVE_WAIT_RESIDUE`
@@ -2481,16 +2511,12 @@ this file for current-lane selection only. Historical text remains evidence.
 - retrieval/financial/12h/24h locks remain closed
 - closeout: `docs/printer-v1-v2-9-8b-sep2-surviving-pre-lifecycle-wait-reconciliation-zero-state-closeout.md`
 
-The exact current permitted lane is:
-
-```text
-FRESH POST-RECONCILIATION EXACT-HEAD / EXACT-DB NEXT-BOUNDED-CAMPAIGN READINESS / GOVERNANCE AUDIT
-```
-
-That next lane must bind the final post-reconciliation Git HEAD and the new
-authoritative DB SHA above. This does not authorize authorization preparation,
-application, consumption, Printer execution, provider/RPC/WebSocket calls,
-Scheduler execution, retrieval, financial capabilities, or longer windows.
+The exact current permitted lane is no longer the post-reconciliation
+readiness/governance audit. Use the current-authority block above and
+`CURRENT_HANDOFF.md`. This historical reconciliation closeout does not
+authorize authorization preparation, application, consumption, Printer
+execution, provider/RPC/WebSocket calls, Scheduler execution, retrieval,
+financial capabilities, or longer windows.
 <!-- V2_9_8B_SEP2_SURVIVING_WAIT_RECONCILIATION_CURRENT_STATE_END -->
 
 <!-- V2_9_8B_AUTH_59FDEFE7_CAMPAIGN_CLOSEOUT_CURRENT_STATE_START -->

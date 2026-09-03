@@ -2,62 +2,39 @@
 
 ## Current lane
 
-`FRESH POST-RECONCILIATION EXACT-HEAD / EXACT-DB NEXT-BOUNDED-CAMPAIGN READINESS / GOVERNANCE AUDIT`
+`NEXT-BOUNDED-CAMPAIGN ONE-SHOT AUTHORIZATION BOUNDARY / PACKAGE DESIGN-SPECIFICATION`
 
-The Sep-2 surviving pre-lifecycle wait reconciliation / zero-state lane is
-closed PASS. Do not prepare or apply an authorization in this handoff. Do not
-run Printer.
+Post-reconciliation exact-HEAD / exact-DB next-bounded-campaign readiness /
+governance is closed PASS. Do not prepare or apply an authorization in this
+handoff. Do not run Printer.
 
 ## Latest completed work
 
 Verdict:
 
+`V2_9_8B_POST_RECONCILIATION_FRESH_EXACT_HEAD_EXACT_DB_NEXT_BOUNDED_CAMPAIGN_READINESS_GOVERNANCE_PASS`
+
+Governing readiness:
+
+`docs/printer-v1-v2-9-8b-post-reconciliation-next-bounded-campaign-readiness-governance.md`
+
+Blocker classification: `NO_BLOCKER`
+
+Audited HEAD:
+
+`55e3ee80f1f8905173955c678da94cabd01eb8ee`
+
+This documentation commit is the live readiness HEAD. Subsequent
+authorization-boundary / package design-specification must bind this live HEAD,
+not `55e3ee80...`, after this commit exists.
+
+Prior reconciliation remains:
+
 `V2_9_8B_SEP2_SURVIVING_PRE_LIFECYCLE_WAIT_RECONCILIATION_ZERO_STATE_PASS`
 
-Governing closeout:
-
-`docs/printer-v1-v2-9-8b-sep2-surviving-pre-lifecycle-wait-reconciliation-zero-state-closeout.md`
-
-Classification:
-
-`HISTORICAL_ORPHANED_ACTIVE_WAIT_RESIDUE`
-
-Start HEAD:
-
-`6f8a1b6ac7f00fda1f7dca38c7532473b03f1ada`
-
-Closeout documentation commit:
-
-`3e4aa14c2f08f2dec741ca9bbe80111b5534d166`
-
-SHA-binding commit:
-
-`55b4e19a0d14d634b06ed723afc1956eced4efc4`
-
-The live HEAD after this closeout package is the commit that records these
-identities. Subsequent readiness must bind `git rev-parse HEAD` on this
-branch after this package, not `6f8a1b6a...`.
-
-Canonical owner:
-
-`abandon_scoped_refresh_waits`
-
-Truthful terminal cause:
-
-`PARENT_CAMPAIGN_INTERRUPTED:SAFE_STOP_PREFLIGHT_FAILED`
-
-Known wait:
-
-`prelifecycle-refresh-wait:20260902T123958Z-5a3e78f1a7b8-campaign:20260902T123958Z-5a3e78f1a7b8-campaign-run:20260902T123958Z-5a3e78f1a7b8-cycle-2:1`
-
-Pre-state `WAITING`. Post-state `CANCELLED`. Matching refresh work: none.
-Matching Scheduler job `3548` remained `CANCELLED` / unlocked. Matching
-Cycle-2 attempt remained `CANCELLED` with the same first-terminal cause.
-Official zero-state projection is all required domains `0`.
-
-Prior campaign closeout remains historically
-`V2_9_8B_AUTH_59FDEFE7_CAMPAIGN_CLOSEOUT_BLOCKED` on the then-undrained wait.
-That residue is now canonically terminal.
+Official zero-state projection is all required domains `0`. The Sep-2 wait
+remains `CANCELLED` /
+`PARENT_CAMPAIGN_INTERRUPTED:SAFE_STOP_PREFLIGHT_FAILED`.
 
 ## Consumed authorization
 
@@ -68,19 +45,16 @@ That residue is now canonically terminal.
 Do not retry, rerun, resume, restart, reuse, or create a successor. Future
 prior-non-reuse root remains 59 IDs.
 
-## Post-reconciliation DB identity
+## Authoritative DB identity
 
 Path: `data/printer_v1.sqlite3`
 
-- SHA-256 before: `cd6b1d4ac7171f4096d06c9b09a035a0cf622899806b9a58cc990a2936ad6659`
-- SHA-256 after: `fb52d8fae2d22c70f6c2c7de7ddf4a18c7d89f01450f12e6c60093ee85e17cff`
-
-The after SHA is the new authoritative DB identity. Subsequent readiness must
-bind it.
+- SHA-256: `fb52d8fae2d22c70f6c2c7de7ddf4a18c7d89f01450f12e6c60093ee85e17cff`
+- unchanged by this read-only audit
 
 ## Exact next permitted action
 
-`Fresh post-reconciliation exact-HEAD / exact-DB next-bounded-campaign readiness / governance audit. Bind the live HEAD after this documentation commit and DB SHA-256 fb52d8fae2d22c70f6c2c7de7ddf4a18c7d89f01450f12e6c60093ee85e17cff. Do not prepare or apply an authorization in this handoff. Do not run Printer.`
+`One-shot authorization boundary / package design-specification for the live readiness HEAD after this documentation commit and DB SHA-256 fb52d8fae2d22c70f6c2c7de7ddf4a18c7d89f01450f12e6c60093ee85e17cff. Design/specification only. Do not prepare or apply an authorization in this handoff. Do not run Printer.`
 
 ## Application / execution remain blocked
 
@@ -99,12 +73,13 @@ This handoff does **not** authorize:
 Preserve:
 
 ```text
-readiness
--> authorization-boundary design/specification
--> authorization preparation only if separately approved
+readiness PASS
+-> authorization boundary/package design-specification
+-> implementation/preparation only if separately approved
+-> bounded proof/validation
 -> independent package review
--> later explicit execution approval
--> bounded execution/proof
+-> separate execution approval
+-> bounded campaign
 -> closeout
 ```
 

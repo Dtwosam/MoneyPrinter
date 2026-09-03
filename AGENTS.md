@@ -45,6 +45,64 @@ Every major capability must preserve:
 Use minimum sufficient risk-based verification. Do not request broad regression
 suites unless the change risk or lane closeout requires them.
 
+### Current V2-9.8B post-reconciliation next-bounded-campaign readiness / governance — 2026-09-03
+
+Readiness verdict:
+
+`V2_9_8B_POST_RECONCILIATION_FRESH_EXACT_HEAD_EXACT_DB_NEXT_BOUNDED_CAMPAIGN_READINESS_GOVERNANCE_PASS`
+
+Governing readiness:
+
+`docs/printer-v1-v2-9-8b-post-reconciliation-next-bounded-campaign-readiness-governance.md`
+
+Blocker classification: `NO_BLOCKER`
+
+This block supersedes older current-looking Standard-4H next-lane pointers
+later in this file for current-lane selection only. Historical campaign/repair
+truth remains evidence.
+
+Audited HEAD:
+
+`55e3ee80f1f8905173955c678da94cabd01eb8ee`
+
+This documentation commit is the live readiness HEAD. Subsequent work must
+bind that live HEAD, not `55e3ee80...`, after this commit exists. Use
+`CURRENT_HANDOFF.md`.
+
+Authoritative DB SHA-256:
+
+`fb52d8fae2d22c70f6c2c7de7ddf4a18c7d89f01450f12e6c60093ee85e17cff`
+
+Official zero-state projection is all required domains `0`. The Sep-2 wait
+remains `CANCELLED` /
+`PARENT_CAMPAIGN_INTERRUPTED:SAFE_STOP_PREFLIGHT_FAILED`.
+
+Consumed
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260902T122136Z_59fdefe7`, consumed
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260901T203521Z_12a7ea61`, consumed
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260901T181024Z_ab6c68fe`, and stale
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260831T150842Z_b6d7ab46` must remain in every
+future Standard-4H prior non-reuse trust root, together with every already
+required prior ID. The complete future root is 59 IDs. Do not retry, rerun,
+resume, restart, or create a successor from those runs.
+
+The exact current permitted lane is:
+
+```text
+NEXT-BOUNDED-CAMPAIGN ONE-SHOT AUTHORIZATION BOUNDARY / PACKAGE DESIGN-SPECIFICATION
+```
+
+That lane is design/specification first. It must bind the live readiness HEAD
+and the DB SHA above. Do not jump to authorization creation. Do not run
+Printer. Do not create an application marker. Do not call
+`apply_authorization_once`.
+
+This does **not** authorize `apply_authorization_once`, application-marker
+creation, Printer execution, child launch, another campaign, provider/RPC/
+WebSocket calls, Central Scheduler runtime, retry/rerun/resume/restart/
+successor, retrieval, BUY/SELL/HOLD, positions, trades, audits, PnL, or
+`WINDOW_12H` / `WINDOW_24H`.
+
 ### Current V2-9.8B Sep-2 surviving pre-lifecycle wait reconciliation / zero-state — 2026-09-02
 
 Reconciliation verdict:
@@ -59,9 +117,8 @@ Classification:
 
 `HISTORICAL_ORPHANED_ACTIVE_WAIT_RESIDUE`
 
-This block supersedes older current-looking Standard-4H next-lane pointers
-later in this file for current-lane selection only. Historical campaign/repair
-truth remains evidence.
+This block is historical for current-lane selection after the post-reconciliation
+readiness/governance PASS. Reconciliation facts remain evidence.
 
 Start HEAD:
 
@@ -98,14 +155,9 @@ future Standard-4H prior non-reuse trust root, together with every already
 required prior ID. The complete future root is 59 IDs. Do not retry, rerun,
 resume, restart, or create a successor from those runs.
 
-The exact current permitted lane is:
-
-```text
-FRESH POST-RECONCILIATION EXACT-HEAD / EXACT-DB NEXT-BOUNDED-CAMPAIGN READINESS / GOVERNANCE AUDIT
-```
-
-That next lane must bind the final post-reconciliation Git HEAD and the new
-authoritative DB SHA above. Do not jump directly to authorization creation.
+The exact current permitted lane is no longer the post-reconciliation
+readiness/governance audit. Use the current-lane block above and
+`CURRENT_HANDOFF.md`. Do not jump directly to authorization creation.
 Do not run Printer. Do not create an application marker. Do not call
 `apply_authorization_once`.
 
@@ -1537,7 +1589,7 @@ authority. Current adopted envelope:
 The exact current next permitted lane is:
 
 ```text
-FRESH POST-RECONCILIATION EXACT-HEAD / EXACT-DB NEXT-BOUNDED-CAMPAIGN READINESS / GOVERNANCE AUDIT
+NEXT-BOUNDED-CAMPAIGN ONE-SHOT AUTHORIZATION BOUNDARY / PACKAGE DESIGN-SPECIFICATION
 ```
 
 Historical at the time of the 2026-08-26 source-stack synchronization:
@@ -1547,9 +1599,10 @@ PASS, independent package review PASS, the stale exact-HEAD-drift closeout,
 scope-propagation repair, the 12a7ea61 campaign closeout, the later-cycle
 duplicate-transport authoritative repair, the post-duplicate-transport-repair
 fresh exact-HEAD / exact-DB readiness, the 59fdefe7 campaign closeout, the
-four-concurrent post-implementation correction, and the Sep-2 surviving
-pre-lifecycle wait reconciliation supersede older pointers for current-lane
-selection; use the Active Authority Stack and `CURRENT_HANDOFF.md`.
+four-concurrent post-implementation correction, the Sep-2 surviving
+pre-lifecycle wait reconciliation, and the post-reconciliation readiness PASS
+supersede older pointers for current-lane selection; use the Active Authority
+Stack and `CURRENT_HANDOFF.md`.
 
 No automatic run, retry, recovery, successor, cursor reset, N7, provider/RPC
 work, operational campaign, or Printer execution is authorized by this anchor
@@ -1616,7 +1669,7 @@ Current adopted operational envelope:
 The exact current next permitted lane is:
 
 ```text
-FRESH POST-RECONCILIATION EXACT-HEAD / EXACT-DB NEXT-BOUNDED-CAMPAIGN READINESS / GOVERNANCE AUDIT
+NEXT-BOUNDED-CAMPAIGN ONE-SHOT AUTHORIZATION BOUNDARY / PACKAGE DESIGN-SPECIFICATION
 ```
 
 Historical at the time of this adoption closeout:
@@ -1626,9 +1679,10 @@ PASS, independent package review PASS, the stale exact-HEAD-drift closeout,
 scope-propagation repair, the 12a7ea61 campaign closeout, the later-cycle
 duplicate-transport authoritative repair, the post-duplicate-transport-repair
 fresh exact-HEAD / exact-DB readiness, the 59fdefe7 campaign closeout, the
-four-concurrent post-implementation correction, and the Sep-2 surviving
-pre-lifecycle wait reconciliation supersede older pointers for current-lane
-selection; use the Active Authority Stack and `CURRENT_HANDOFF.md`.
+four-concurrent post-implementation correction, the Sep-2 surviving
+pre-lifecycle wait reconciliation, and the post-reconciliation readiness PASS
+supersede older pointers for current-lane selection; use the Active Authority
+Stack and `CURRENT_HANDOFF.md`.
 
 This adoption creates no authorization, automatically authorizes no campaign,
 and unlocks no live runtime. No existing consumed authorization,
