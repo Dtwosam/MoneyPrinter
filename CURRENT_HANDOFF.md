@@ -2,45 +2,43 @@
 
 ## Current lane
 
-`SEP-3 CYCLE-2 DUPLICATE-TRANSPORT ACQUISITION REPAIR — DESIGN / SPECIFICATION`
+`STANDARD-4H BUDGET + CYCLE-2 REFRESH-REENTRY JOINT REPAIR — IMPLEMENTATION + BOUNDED PROOF`
 
-The Sep-3 Cycle-2 duplicate-transport / NO-PAIR blocker audit is closed PASS.
-Do not begin design implementation in this handoff. Do not implement the
-repair. The independent four-token per-token `50 -> 118` design lane remains
-open and is not this repair. Do not implement either. Do not prepare or apply
-an authorization. Do not run Printer.
+The joint design is closed PASS. Do not begin implementation in this
+handoff. Do not run Printer. Do not prepare or apply an authorization.
 
 ## Latest completed work
 
-Cycle-2 audit verdict:
+Joint design verdict:
 
-`V2_9_8B_SEP3_CYCLE2_DUPLICATE_TRANSPORT_NO_PAIR_BLOCKER_AUDIT_PASS`
+`V2_9_8B_STANDARD4H_BUDGET_AND_CYCLE2_REFRESH_REENTRY_JOINT_REPAIR_DESIGN_PASS`
 
-Primary classification:
+Budget slice:
 
-`NEW_NARROW_REFRESH_REENTRY_DEFECT`
+`V2_9_8B_FOUR_TOKEN_STANDARD4H_PER_TOKEN_REQUEST_CEILING_WIRING_REPAIR_DESIGN_PASS`
 
-Repair classification:
+Classification:
 
-`NARROW_REPAIR_FEASIBLE`
+`NARROW_MODE_AWARE_TOKEN_CEILING_SELECTOR_DESIGN`
 
-Repair-disposition of the historical mint-batch repair:
+Cycle-2 slice:
 
-`REPAIR_REACHED_BUT_SCOPE_GAP`
+`V2_9_8B_SEP3_CYCLE2_DUPLICATE_TRANSPORT_ACQUISITION_REPAIR_DESIGN_PASS`
 
-Governing audit:
+Classification:
 
-`docs/printer-v1-v2-9-8b-sep3-cycle2-duplicate-transport-no-pair-blocker-audit.md`
+`NARROW_REFRESH_REENTRY_COMPLETED_TRANSPORT_SKIP_DESIGN`
 
-This documentation commit is the live audit HEAD. Later Cycle-2 design must
+Owner:
+
+`REFRESH_COMPOSITION_SKIP_OWNER`
+
+Governing design:
+
+`docs/printer-v1-v2-9-8b-standard4h-budget-and-cycle2-refresh-reentry-joint-repair-design.md`
+
+This documentation commit is the live design HEAD. Later implementation must
 bind the live HEAD after this commit exists.
-
-Independently remaining open (not this lane):
-
-`FOUR-TOKEN STANDARD-4H PER-TOKEN REQUEST-CEILING WIRING REPAIR — DESIGN / SPECIFICATION`
-
-That independent design remains closed-audit / open-design. Do not implement
-it in this handoff.
 
 Authoritative DB SHA-256 remains:
 
@@ -63,13 +61,13 @@ remains permanently non-reusable.
 
 ## Exact next permitted action
 
-`Sep-3 Cycle-2 duplicate-transport acquisition repair design / specification. Bind the live audit HEAD after this documentation commit and DB SHA-256 575984caa484b12f4bb5fca0a06cdf7865adeb03b5f16874406fb0c1a73daa6e. Specify a producer/checkpoint skip of already-sealed Cycle-2 Pump live-tail before=HEAD without weakening the duplicate guard, without adding request/job/refresh identity to the canonical key, and without changing refresh timing or budgets. Do not implement. The independent four-token 50->118 design remains open. Do not run Printer.`
+`Standard-4H budget + Cycle-2 refresh re-entry joint repair implementation + bounded proof. Bind the live design HEAD after this documentation commit and DB SHA-256 575984caa484b12f4bb5fca0a06cdf7865adeb03b5f16874406fb0c1a73daa6e. Implement both independently specified slices together. Preserve separate proof verdicts BUDGET_REPAIR_PASS, CYCLE2_REFRESH_REENTRY_REPAIR_PASS, and JOINT_SEAM_PASS. Do not weaken DUPLICATE_TRANSPORT_IDENTITY. Do not hard-code 118. Do not run Printer. Do not prepare another authorization.`
 
 ## Application / execution remain blocked
 
 This handoff does **not** authorize:
 
-- repair implementation of either open design;
+- automatic start of implementation without an explicit implementation lane;
 - `apply_authorization_once`;
 - application-marker creation;
 - package preparation;
@@ -85,17 +83,16 @@ Preserve:
 ```text
 forensic closeout PASS
 -> repair readiness/audit PASS
--> design/specification
+-> design/specification PASS
 -> implementation if approved
 -> bounded proof
 -> independent review
 -> fresh readiness
 ```
 
-The Cycle-2 finding is no longer an unaudited independent residue. It is
-audited PASS with `NARROW_REPAIR_FEASIBLE`. Both this Cycle-2 design and the
-independent `50 -> 118` design must close before another live 4/2/2
-authorization.
+Both independent designs are now closed PASS. Implementation may proceed only
+as the next explicit lane. Consumed `...202fbea1` remains permanently
+non-reusable.
 
 ## Permanent locks
 

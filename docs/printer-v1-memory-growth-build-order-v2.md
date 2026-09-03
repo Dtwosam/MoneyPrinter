@@ -2459,13 +2459,47 @@ consumption, Printer execution, provider/RPC/WebSocket calls, Scheduler
 execution, retrieval, financial capabilities, or longer windows.
 <!-- V2_9_8B_POST_DUPLICATE_TRANSPORT_REPAIR_FRESH_READINESS_CURRENT_STATE_END -->
 
-<!-- V2_9_8B_SEP3_CYCLE2_DUPLICATE_TRANSPORT_AUDIT_CURRENT_STATE_START -->
-## V2-9.8B Sep-3 Cycle-2 Duplicate-Transport / NO-PAIR Blocker Audit — Current Authority
+<!-- V2_9_8B_STANDARD4H_BUDGET_CYCLE2_REFRESH_REENTRY_JOINT_DESIGN_CURRENT_STATE_START -->
+## V2-9.8B Standard-4H Budget + Cycle-2 Refresh-Reentry Joint Repair Design — Current Authority
 
 This block supersedes older current-looking Standard-4H next-lane pointers in
 this file for current-lane selection only. Historical text remains evidence.
-The independent four-token `50 -> 118` design remains open and is not this
-Cycle-2 repair.
+Both independent Sep-3 designs are closed PASS.
+
+- joint design verdict: `V2_9_8B_STANDARD4H_BUDGET_AND_CYCLE2_REFRESH_REENTRY_JOINT_REPAIR_DESIGN_PASS`
+- budget slice: `V2_9_8B_FOUR_TOKEN_STANDARD4H_PER_TOKEN_REQUEST_CEILING_WIRING_REPAIR_DESIGN_PASS`
+- budget classification: `NARROW_MODE_AWARE_TOKEN_CEILING_SELECTOR_DESIGN`
+- Cycle-2 slice: `V2_9_8B_SEP3_CYCLE2_DUPLICATE_TRANSPORT_ACQUISITION_REPAIR_DESIGN_PASS`
+- Cycle-2 classification: `NARROW_REFRESH_REENTRY_COMPLETED_TRANSPORT_SKIP_DESIGN`
+- Cycle-2 owner: `REFRESH_COMPOSITION_SKIP_OWNER`
+- Cycle-2 audit verdict: `V2_9_8B_SEP3_CYCLE2_DUPLICATE_TRANSPORT_NO_PAIR_BLOCKER_AUDIT_PASS`
+- per-token ceiling audit verdict: `V2_9_8B_FOUR_TOKEN_STANDARD4H_PER_TOKEN_REQUEST_CEILING_WIRING_REPAIR_READINESS_AUDIT_PASS`
+- consumed authorization: `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260903T121923Z_202fbea1`
+- that authorization remains `CONSUMED / CHILD_EXITED_ZERO / PERMANENTLY NON-REUSABLE`
+- authoritative DB SHA-256: `575984caa484b12f4bb5fca0a06cdf7865adeb03b5f16874406fb0c1a73daa6e`
+- governing design: `docs/printer-v1-v2-9-8b-standard4h-budget-and-cycle2-refresh-reentry-joint-repair-design.md`
+- Source Governor and Central Scheduler owners unchanged
+- retrieval/financial/12h/24h locks remain closed
+
+The exact current permitted lane is:
+
+```text
+STANDARD-4H BUDGET + CYCLE-2 REFRESH-REENTRY JOINT REPAIR — IMPLEMENTATION + BOUNDED PROOF
+```
+
+That later implementation may implement both independently specified slices
+together. It must preserve separate proof verdicts `BUDGET_REPAIR_PASS`,
+`CYCLE2_REFRESH_REENTRY_REPAIR_PASS`, and `JOINT_SEAM_PASS`. Do not begin
+it automatically. This does not authorize Printer execution, provider/RPC/
+WebSocket calls, Scheduler execution, retrieval, financial capabilities, or
+longer windows.
+<!-- V2_9_8B_STANDARD4H_BUDGET_CYCLE2_REFRESH_REENTRY_JOINT_DESIGN_CURRENT_STATE_END -->
+
+<!-- V2_9_8B_SEP3_CYCLE2_DUPLICATE_TRANSPORT_AUDIT_CURRENT_STATE_START -->
+## V2-9.8B Sep-3 Cycle-2 Duplicate-Transport / NO-PAIR Blocker Audit — Historical Authority
+
+This block is historical for current-lane selection after the joint budget +
+Cycle-2 refresh-reentry repair design PASS. Historical text remains evidence.
 
 - forensic verdict: `V2_9_8B_SEP3_CONSUMED_4_2_2_STANDARD4H_POST_RUN_FORENSIC_CLOSEOUT_PASS`
 - campaign result: `CAMPAIGN_FAILED`
@@ -2483,16 +2517,14 @@ Cycle-2 repair.
 - Source Governor and Central Scheduler owners unchanged
 - retrieval/financial/12h/24h locks remain closed
 
-The exact current permitted lane is:
+The exact current permitted lane at audit time was:
 
 ```text
 SEP-3 CYCLE-2 DUPLICATE-TRANSPORT ACQUISITION REPAIR — DESIGN / SPECIFICATION
 ```
 
-That later design may specify a producer/checkpoint skip of already-sealed
-Cycle-2 Pump live-tail `before=HEAD` without weakening the duplicate guard.
-It may not implement. Do not begin it automatically. The independent
-four-token per-token `50 -> 118` design remains open. This does not authorize
+That design pointer is historical after the joint design PASS. Use the current
+authority block above and `CURRENT_HANDOFF.md`. This does not authorize
 Printer execution, provider/RPC/WebSocket calls, Scheduler execution,
 retrieval, financial capabilities, or longer windows.
 <!-- V2_9_8B_SEP3_CYCLE2_DUPLICATE_TRANSPORT_AUDIT_CURRENT_STATE_END -->
@@ -2500,9 +2532,9 @@ retrieval, financial capabilities, or longer windows.
 <!-- V2_9_8B_PER_TOKEN_CEILING_WIRING_REPAIR_AUDIT_CURRENT_STATE_START -->
 ## V2-9.8B Four-Token Standard-4H Per-Token Request-Ceiling Wiring Repair Readiness / Audit — Historical Authority
 
-This block is historical for current-lane selection after the Sep-3 Cycle-2
-duplicate-transport / NO-PAIR blocker audit PASS. Audit facts remain evidence.
-The independent `50 -> 118` design remains open and is not the Cycle-2 repair.
+This block is historical for current-lane selection after the joint budget +
+Cycle-2 refresh-reentry repair design PASS. Audit facts remain evidence. The
+independent `50 -> 118` design is now closed PASS inside that joint design.
 
 - forensic verdict: `V2_9_8B_SEP3_CONSUMED_4_2_2_STANDARD4H_POST_RUN_FORENSIC_CLOSEOUT_PASS`
 - campaign result: `CAMPAIGN_FAILED`
@@ -2519,8 +2551,7 @@ The independent `50 -> 118` design remains open and is not the Cycle-2 repair.
 
 The exact current permitted lane is no longer this per-token ceiling design as
 the sole next action. Use the current-authority block above and
-`CURRENT_HANDOFF.md`. The independent four-token per-token `50 -> 118` design
-lane remains open. Do not implement either automatically. This does not
+`CURRENT_HANDOFF.md`. Do not implement automatically. This does not
 authorize Printer execution, provider/RPC/WebSocket calls, Scheduler
 execution, retrieval, financial capabilities, or longer windows.
 <!-- V2_9_8B_PER_TOKEN_CEILING_WIRING_REPAIR_AUDIT_CURRENT_STATE_END -->

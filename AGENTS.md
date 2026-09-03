@@ -45,6 +45,71 @@ Every major capability must preserve:
 Use minimum sufficient risk-based verification. Do not request broad regression
 suites unless the change risk or lane closeout requires them.
 
+### Current V2-9.8B Standard-4H budget + Cycle-2 refresh-reentry joint repair design — 2026-09-03
+
+Joint design verdict:
+
+`V2_9_8B_STANDARD4H_BUDGET_AND_CYCLE2_REFRESH_REENTRY_JOINT_REPAIR_DESIGN_PASS`
+
+Budget slice:
+
+`V2_9_8B_FOUR_TOKEN_STANDARD4H_PER_TOKEN_REQUEST_CEILING_WIRING_REPAIR_DESIGN_PASS`
+
+Classification:
+
+`NARROW_MODE_AWARE_TOKEN_CEILING_SELECTOR_DESIGN`
+
+Cycle-2 slice:
+
+`V2_9_8B_SEP3_CYCLE2_DUPLICATE_TRANSPORT_ACQUISITION_REPAIR_DESIGN_PASS`
+
+Classification:
+
+`NARROW_REFRESH_REENTRY_COMPLETED_TRANSPORT_SKIP_DESIGN`
+
+Owner:
+
+`REFRESH_COMPOSITION_SKIP_OWNER`
+
+Governing design:
+
+`docs/printer-v1-v2-9-8b-standard4h-budget-and-cycle2-refresh-reentry-joint-repair-design.md`
+
+This block supersedes older current-looking Standard-4H next-lane pointers
+later in this file for current-lane selection only. Historical campaign,
+readiness, per-token ceiling audit, Cycle-2 audit, and authorization-boundary
+facts remain evidence. Both independent designs are now closed PASS.
+
+Consumed authorization
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260903T121923Z_202fbea1` is
+`CONSUMED / CHILD_EXITED_ZERO / PERMANENTLY NON-REUSABLE`. Do not retry, rerun,
+resume, restart, or create a successor from that run. Future prior-non-reuse
+root is 60 IDs.
+
+Authoritative DB SHA-256:
+
+`575984caa484b12f4bb5fca0a06cdf7865adeb03b5f16874406fb0c1a73daa6e`
+
+The exact current permitted lane is:
+
+```text
+STANDARD-4H BUDGET + CYCLE-2 REFRESH-REENTRY JOINT REPAIR — IMPLEMENTATION + BOUNDED PROOF
+```
+
+That later implementation may implement both independently specified slices
+together. It must preserve separate proof verdicts `BUDGET_REPAIR_PASS`,
+`CYCLE2_REFRESH_REENTRY_REPAIR_PASS`, and `JOINT_SEAM_PASS`. Do not weaken
+`DUPLICATE_TRANSPORT_IDENTITY`. Do not hard-code `118`. Do not begin
+implementation automatically. Do not run Printer. Do not create an application
+marker. Do not call `apply_authorization_once`. Do not prepare another
+authorization.
+
+This does **not** authorize `apply_authorization_once`, application-marker
+creation, Printer execution, child launch, another campaign, provider/RPC/
+WebSocket calls, Central Scheduler runtime, retry/rerun/resume/restart/
+successor, retrieval, BUY/SELL/HOLD, positions, trades, audits, PnL, or
+`WINDOW_12H` / `WINDOW_24H`.
+
 ### Current V2-9.8B Sep-3 Cycle-2 duplicate-transport / NO-PAIR blocker audit — 2026-09-03
 
 Audit verdict:
@@ -67,11 +132,8 @@ Governing audit:
 
 `docs/printer-v1-v2-9-8b-sep3-cycle2-duplicate-transport-no-pair-blocker-audit.md`
 
-This block supersedes older current-looking Standard-4H next-lane pointers
-later in this file for current-lane selection only. Historical campaign,
-readiness, per-token ceiling audit, and authorization-boundary facts remain
-evidence. The independent four-token `50 -> 118` design remains open and is
-not this Cycle-2 repair.
+This block is historical for current-lane selection after the joint budget +
+Cycle-2 refresh-reentry repair design PASS. Audit facts remain evidence.
 
 Consumed authorization
 `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260903T121923Z_202fbea1` is
@@ -83,35 +145,14 @@ Authoritative DB SHA-256:
 
 `575984caa484b12f4bb5fca0a06cdf7865adeb03b5f16874406fb0c1a73daa6e`
 
-The exact current permitted lane is:
+The exact current permitted lane is no longer Cycle-2 design as a sole next
+action. Use the current-lane block above and `CURRENT_HANDOFF.md`.
 
-```text
-SEP-3 CYCLE-2 DUPLICATE-TRANSPORT ACQUISITION REPAIR — DESIGN / SPECIFICATION
-```
-
-That later design may specify a producer/checkpoint skip of already-sealed
-Cycle-2 Pump live-tail `before=HEAD` without weakening the duplicate guard,
-without adding request/job/refresh identity to the canonical key, and without
-changing refresh timing or budgets. It may not implement. Do not begin
-implementation automatically. Do not run Printer. Do not create an application
-marker. Do not call `apply_authorization_once`. Do not prepare another
-authorization.
-
-The independent four-token per-token request-ceiling wiring repair design
-remains open:
-
-```text
-FOUR-TOKEN STANDARD-4H PER-TOKEN REQUEST-CEILING WIRING REPAIR — DESIGN / SPECIFICATION
-```
-
-Do not implement that lane in this Cycle-2 design. Both independent designs
-must close before another live 4/2/2 authorization.
-
-This does **not** authorize repair implementation, `apply_authorization_once`,
-application-marker creation, Printer execution, child launch, another campaign,
-provider/RPC/WebSocket calls, Central Scheduler runtime,
-retry/rerun/resume/restart/successor, retrieval, BUY/SELL/HOLD, positions,
-trades, audits, PnL, or `WINDOW_12H` / `WINDOW_24H`.
+This does **not** authorize `apply_authorization_once`, application-marker
+creation, Printer execution, child launch, another campaign, provider/RPC/
+WebSocket calls, Central Scheduler runtime, retry/rerun/resume/restart/
+successor, retrieval, BUY/SELL/HOLD, positions, trades, audits, PnL, or
+`WINDOW_12H` / `WINDOW_24H`.
 
 ### Current V2-9.8B four-token Standard-4H per-token request-ceiling wiring repair readiness / audit — 2026-09-03
 
@@ -139,9 +180,9 @@ Campaign result: `CAMPAIGN_FAILED`
 
 Primary classification: `PROVEN_COMMITTED_BUDGET_ENFORCEMENT_DEFECT`
 
-This block is historical for current-lane selection after the Sep-3 Cycle-2
-duplicate-transport / NO-PAIR blocker audit PASS. Audit facts remain evidence.
-The independent `50 -> 118` design remains open and is not the Cycle-2 repair.
+This block is historical for current-lane selection after the joint budget +
+Cycle-2 refresh-reentry repair design PASS. Audit facts remain evidence. The
+independent `50 -> 118` design is now closed PASS inside that joint design.
 
 Consumed authorization
 `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260903T121923Z_202fbea1` is
@@ -155,8 +196,7 @@ Authoritative DB SHA-256:
 
 The exact current permitted lane is no longer this per-token ceiling design as
 the sole next action. Use the current-lane block above and
-`CURRENT_HANDOFF.md`. The independent four-token per-token `50 -> 118` design
-lane remains open. Do not implement either automatically. Do not run Printer.
+`CURRENT_HANDOFF.md`. Do not implement automatically. Do not run Printer.
 Do not create an application marker. Do not call `apply_authorization_once`.
 Do not prepare another authorization.
 
@@ -1758,11 +1798,11 @@ authority. Current adopted envelope:
 The exact current next permitted lane is:
 
 ```text
-SEP-3 CYCLE-2 DUPLICATE-TRANSPORT ACQUISITION REPAIR — DESIGN / SPECIFICATION
+STANDARD-4H BUDGET + CYCLE-2 REFRESH-REENTRY JOINT REPAIR — IMPLEMENTATION + BOUNDED PROOF
 ```
 
-The independent four-token per-token `50 -> 118` design remains open and is
-not this Cycle-2 repair.
+Both independent designs are closed PASS. The later implementation must
+preserve separate proof verdicts. Do not begin implementation automatically.
 
 Historical at the time of the 2026-08-26 source-stack synchronization:
 `POST-SYNCHRONIZATION FRESH NEXT-BOUNDED-CAMPAIGN AUTHORIZATION READINESS /
@@ -1775,11 +1815,11 @@ four-concurrent post-implementation correction, the Sep-2 surviving
 pre-lifecycle wait reconciliation, the post-reconciliation readiness PASS, the
 next-bounded 4/2/2 authorization-boundary package design PASS, the Sep-3
 consumed 4/2/2 forensic closeout, the per-token request-ceiling wiring
-repair readiness/audit PASS, and the Sep-3 Cycle-2 duplicate-transport /
-NO-PAIR blocker audit PASS supersede older pointers for current-lane
-selection; use the Active Authority Stack and `CURRENT_HANDOFF.md`. Do not
-implement either repair automatically. Do not prepare or apply an
-authorization.
+repair readiness/audit PASS, the Sep-3 Cycle-2 duplicate-transport /
+NO-PAIR blocker audit PASS, and the joint budget + Cycle-2 refresh-reentry
+repair design PASS supersede older pointers for current-lane selection; use
+the Active Authority Stack and `CURRENT_HANDOFF.md`. Do not implement
+automatically. Do not prepare or apply an authorization.
 
 No automatic run, retry, recovery, successor, cursor reset, N7, provider/RPC
 work, operational campaign, or Printer execution is authorized by this anchor
@@ -1846,11 +1886,11 @@ Current adopted operational envelope:
 The exact current next permitted lane is:
 
 ```text
-SEP-3 CYCLE-2 DUPLICATE-TRANSPORT ACQUISITION REPAIR — DESIGN / SPECIFICATION
+STANDARD-4H BUDGET + CYCLE-2 REFRESH-REENTRY JOINT REPAIR — IMPLEMENTATION + BOUNDED PROOF
 ```
 
-The independent four-token per-token `50 -> 118` design remains open and is
-not this Cycle-2 repair.
+Both independent designs are closed PASS. The later implementation must
+preserve separate proof verdicts. Do not begin implementation automatically.
 
 Historical at the time of this adoption closeout:
 `POST-SYNCHRONIZATION FRESH NEXT-BOUNDED-CAMPAIGN AUTHORIZATION READINESS /
@@ -1863,9 +1903,10 @@ four-concurrent post-implementation correction, the Sep-2 surviving
 pre-lifecycle wait reconciliation, the post-reconciliation readiness PASS, the
 next-bounded 4/2/2 authorization-boundary package design PASS, the Sep-3
 consumed 4/2/2 forensic closeout, the per-token request-ceiling wiring
-repair readiness/audit PASS, and the Sep-3 Cycle-2 duplicate-transport /
-NO-PAIR blocker audit PASS supersede older pointers for current-lane
-selection; use the Active Authority Stack and `CURRENT_HANDOFF.md`.
+repair readiness/audit PASS, the Sep-3 Cycle-2 duplicate-transport /
+NO-PAIR blocker audit PASS, and the joint budget + Cycle-2 refresh-reentry
+repair design PASS supersede older pointers for current-lane selection; use
+the Active Authority Stack and `CURRENT_HANDOFF.md`.
 
 This adoption creates no authorization, automatically authorizes no campaign,
 and unlocks no live runtime. No existing consumed authorization,
