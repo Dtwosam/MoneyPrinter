@@ -19,7 +19,7 @@ Use `CURRENT_HANDOFF.md` only for the current lane, current commit, latest compl
 
 Historical roadmaps, old lane documents, old chats, previous handoffs, and older current-looking pointers are historical evidence only unless explicitly re-adopted.
 
-## Current durable state — 2026-09-03 post-reconciliation readiness
+## Current durable state — 2026-09-03 authorization-boundary design
 
 Active capability family:
 
@@ -90,11 +90,22 @@ The remote-host work is infrastructure support only. It does not reorder or adva
 The exact current lane is:
 
 ```text
-NEXT-BOUNDED-CAMPAIGN ONE-SHOT AUTHORIZATION BOUNDARY / PACKAGE DESIGN-SPECIFICATION
+FRESH EXACT-HEAD / EXACT-DB ONE-SHOT 4/2/2 STANDARD-4H AUTHORIZATION PACKAGE PREPARATION
 ```
 
+The next-bounded 4/2/2 Standard-4H authorization-boundary / package design is
+closed PASS:
+
+`V2_9_8B_NEXT_BOUNDED_4_2_2_STANDARD_4H_AUTHORIZATION_BOUNDARY_PACKAGE_DESIGN_PASS`
+
+Classification: `EXISTING_OWNER_ALREADY_SUFFICIENT`
+
+Governing design:
+
+`docs/printer-v1-v2-9-8b-next-bounded-4-2-2-standard-4h-authorization-boundary-package-design.md`
+
 Post-reconciliation exact-HEAD / exact-DB next-bounded-campaign readiness /
-governance is closed PASS:
+governance remains historically closed PASS:
 
 `V2_9_8B_POST_RECONCILIATION_FRESH_EXACT_HEAD_EXACT_DB_NEXT_BOUNDED_CAMPAIGN_READINESS_GOVERNANCE_PASS`
 
@@ -124,19 +135,20 @@ The consumed Sep-2 authorization
 `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260901T181024Z_ab6c68fe` remains
 `CONSUMED / CHILD_EXITED_NONZERO / PERMANENTLY NON-REUSABLE`. Source-stack
 wording permits four concurrent through-4h tokens as two overlapping two-slot
-cycles. Use `CURRENT_HANDOFF.md` for the live HEAD after this readiness
-documentation commit. Subsequent authorization-boundary / package
-design-specification must bind that HEAD and DB SHA-256
+cycles. Use `CURRENT_HANDOFF.md` for the live HEAD after this design
+documentation commit. Later package preparation, if separately approved, must
+bind that HEAD and DB SHA-256
 `fb52d8fae2d22c70f6c2c7de7ddf4a18c7d89f01450f12e6c60093ee85e17cff`.
 
 Allowed now:
 
-- one-shot authorization boundary / package design-specification for the live
-  readiness HEAD and exact DB SHA;
-- do not prepare or apply an authorization in this handoff;
+- separately approved exact-HEAD / exact-DB one-shot 4/2/2 Standard-4H
+  authorization package preparation only;
+- do not apply or consume an authorization in this handoff;
 - do not run Printer.
 
-Do not redo the completed authorization-boundary design.
+Do not begin package preparation automatically.
+Do not redo the existing canonical authorization owners.
 Do not reuse consumed `59fdefe7`, `12a7ea61`, or `ab6c68fe`.
 Do not retry, rerun, resume, restart, or create a successor from those runs.
 Do not create an application marker.

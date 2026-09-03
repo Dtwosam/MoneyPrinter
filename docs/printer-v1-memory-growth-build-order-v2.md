@@ -2459,11 +2459,39 @@ consumption, Printer execution, provider/RPC/WebSocket calls, Scheduler
 execution, retrieval, financial capabilities, or longer windows.
 <!-- V2_9_8B_POST_DUPLICATE_TRANSPORT_REPAIR_FRESH_READINESS_CURRENT_STATE_END -->
 
-<!-- V2_9_8B_POST_RECONCILIATION_READINESS_CURRENT_STATE_START -->
-## V2-9.8B Post-Reconciliation Next-Bounded-Campaign Readiness / Governance — Current Authority
+<!-- V2_9_8B_NEXT_BOUNDED_AUTH_BOUNDARY_DESIGN_CURRENT_STATE_START -->
+## V2-9.8B Next Bounded 4/2/2 Standard-4H Authorization-Boundary / Package Design — Current Authority
 
 This block supersedes older current-looking Standard-4H next-lane pointers in
 this file for current-lane selection only. Historical text remains evidence.
+
+- design verdict: `V2_9_8B_NEXT_BOUNDED_4_2_2_STANDARD_4H_AUTHORIZATION_BOUNDARY_PACKAGE_DESIGN_PASS`
+- implementation-boundary classification: `EXISTING_OWNER_ALREADY_SUFFICIENT`
+- design baseline HEAD: `f465e34f702fb80175740a2df3e686d50d914a88`
+- authoritative DB SHA-256: `fb52d8fae2d22c70f6c2c7de7ddf4a18c7d89f01450f12e6c60093ee85e17cff`
+- no authorization package/ID/hash/marker created
+- consumed authorization `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260902T122136Z_59fdefe7` remains permanently non-reusable
+- Source Governor and Central Scheduler owners unchanged
+- retrieval/financial/12h/24h locks remain closed
+- design: `docs/printer-v1-v2-9-8b-next-bounded-4-2-2-standard-4h-authorization-boundary-package-design.md`
+
+The exact current permitted lane is:
+
+```text
+FRESH EXACT-HEAD / EXACT-DB ONE-SHOT 4/2/2 STANDARD-4H AUTHORIZATION PACKAGE PREPARATION
+```
+
+That later lane may create/freeze/hash one package only after separate operator
+approval. It may not apply or consume it. Do not begin it automatically. This
+does not authorize Printer execution, provider/RPC/WebSocket calls, Scheduler
+execution, retrieval, financial capabilities, or longer windows.
+<!-- V2_9_8B_NEXT_BOUNDED_AUTH_BOUNDARY_DESIGN_CURRENT_STATE_END -->
+
+<!-- V2_9_8B_POST_RECONCILIATION_READINESS_CURRENT_STATE_START -->
+## V2-9.8B Post-Reconciliation Next-Bounded-Campaign Readiness / Governance — Historical Authority
+
+This block is historical for current-lane selection after the authorization-
+boundary / package design PASS. Readiness facts remain evidence.
 
 - readiness verdict: `V2_9_8B_POST_RECONCILIATION_FRESH_EXACT_HEAD_EXACT_DB_NEXT_BOUNDED_CAMPAIGN_READINESS_GOVERNANCE_PASS`
 - blocker classification: `NO_BLOCKER`
@@ -2476,17 +2504,11 @@ this file for current-lane selection only. Historical text remains evidence.
 - retrieval/financial/12h/24h locks remain closed
 - readiness: `docs/printer-v1-v2-9-8b-post-reconciliation-next-bounded-campaign-readiness-governance.md`
 
-The exact current permitted lane is:
-
-```text
-NEXT-BOUNDED-CAMPAIGN ONE-SHOT AUTHORIZATION BOUNDARY / PACKAGE DESIGN-SPECIFICATION
-```
-
-That lane is design/specification first. It must bind the live readiness HEAD
-after this documentation commit and the DB SHA above. This does not authorize
-authorization preparation, application, consumption, Printer execution,
-provider/RPC/WebSocket calls, Scheduler execution, retrieval, financial
-capabilities, or longer windows.
+The exact current permitted lane is no longer authorization-boundary design.
+Use the current-authority block above and `CURRENT_HANDOFF.md`. This historical
+readiness closeout does not authorize authorization preparation, application,
+consumption, Printer execution, provider/RPC/WebSocket calls, Scheduler
+execution, retrieval, financial capabilities, or longer windows.
 <!-- V2_9_8B_POST_RECONCILIATION_READINESS_CURRENT_STATE_END -->
 
 <!-- V2_9_8B_SEP2_SURVIVING_WAIT_RECONCILIATION_CURRENT_STATE_START -->
