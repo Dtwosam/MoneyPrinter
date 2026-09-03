@@ -2460,34 +2460,36 @@ execution, retrieval, financial capabilities, or longer windows.
 <!-- V2_9_8B_POST_DUPLICATE_TRANSPORT_REPAIR_FRESH_READINESS_CURRENT_STATE_END -->
 
 <!-- V2_9_8B_STANDARD4H_BUDGET_CYCLE2_REFRESH_REENTRY_JOINT_IMPL_CURRENT_STATE_START -->
-## V2-9.8B Standard-4H Budget + Cycle-2 Refresh-Reentry Joint Repair Implementation — Current Authority
+## V2-9.8B Post-Joint-Repair Next-Bounded 4/2/2 Standard-4H Readiness / Governance — Current Authority
 
 This block supersedes older current-looking Standard-4H next-lane pointers in
 this file for current-lane selection only. Historical text remains evidence.
-Joint implementation + bounded proof is closed PASS.
+The operator-provided independent code/proof review PASS is accepted as the
+prerequisite evidence for this fresh readiness closeout.
 
-- joint implementation verdict: `V2_9_8B_STANDARD4H_BUDGET_AND_CYCLE2_REFRESH_REENTRY_JOINT_REPAIR_IMPLEMENTATION_BOUNDED_PROOF_PASS`
-- `BUDGET_REPAIR_PASS`
-- `CYCLE2_REFRESH_REENTRY_REPAIR_PASS`
-- `JOINT_SEAM_PASS`
+- readiness verdict: `V2_9_8B_POST_JOINT_REPAIR_FRESH_EXACT_HEAD_EXACT_DB_NEXT_BOUNDED_4_2_2_STANDARD4H_READINESS_GOVERNANCE_PASS`
+- classification: `READY_FOR_FRESH_EXACT_HEAD_EXACT_DB_ONE_SHOT_AUTHORIZATION_PACKAGE_PREPARATION`
+- audited implementation HEAD: `568f4d39ec558a4133c16d13ca328b3883144f42`
 - implementation baseline HEAD: `1a505ac1234d94f584d9001ece796bb06373d234`
 - consumed authorization: `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260903T121923Z_202fbea1`
 - that authorization remains `CONSUMED / CHILD_EXITED_ZERO / PERMANENTLY NON-REUSABLE`
 - authoritative DB SHA-256: `575984caa484b12f4bb5fca0a06cdf7865adeb03b5f16874406fb0c1a73daa6e`
-- governing closeout: `docs/printer-v1-v2-9-8b-standard4h-budget-and-cycle2-refresh-reentry-joint-repair-closeout.md`
-- governing design: `docs/printer-v1-v2-9-8b-standard4h-budget-and-cycle2-refresh-reentry-joint-repair-design.md`
+- readiness: `docs/printer-v1-v2-9-8b-post-joint-repair-next-bounded-4-2-2-standard4h-readiness-governance.md`
+- completed repair closeout: `docs/printer-v1-v2-9-8b-standard4h-budget-and-cycle2-refresh-reentry-joint-repair-closeout.md`
 - Source Governor and Central Scheduler owners unchanged
 - retrieval/financial/12h/24h locks remain closed
 
 The exact current permitted lane is:
 
 ```text
-INDEPENDENT CODE / PROOF REVIEW — STANDARD-4H BUDGET + CYCLE-2 REFRESH-REENTRY JOINT REPAIR
+FRESH EXACT-HEAD / EXACT-DB ONE-SHOT 4/2/2 STANDARD-4H AUTHORIZATION PACKAGE PREPARATION + INDEPENDENT PACKAGE REVIEW
 ```
 
-Do not prepare another authorization. Do not run Printer. Focused tests do
-not establish live 4/2/2 readiness. A later fresh readiness lane is required
-after independent review.
+Only after this readiness documentation is committed may exactly one fresh
+package be prepared for independent review. It must bind the readiness commit
+HEAD, not `568f4d39...`, and the unchanged DB SHA above. No application,
+consumption, Printer run, provider/RPC/WebSocket call, Scheduler execution,
+retrieval, financial capability, or longer window is authorized.
 <!-- V2_9_8B_STANDARD4H_BUDGET_CYCLE2_REFRESH_REENTRY_JOINT_IMPL_CURRENT_STATE_END -->
 
 <!-- V2_9_8B_STANDARD4H_BUDGET_CYCLE2_REFRESH_REENTRY_JOINT_DESIGN_CURRENT_STATE_START -->

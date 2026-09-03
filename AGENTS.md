@@ -45,32 +45,34 @@ Every major capability must preserve:
 Use minimum sufficient risk-based verification. Do not request broad regression
 suites unless the change risk or lane closeout requires them.
 
-### Current V2-9.8B Standard-4H budget + Cycle-2 refresh-reentry joint repair implementation — 2026-09-03
+### Current V2-9.8B post-joint-repair next-bounded 4/2/2 Standard-4H readiness / governance — 2026-09-03
 
-Joint implementation verdict:
+Readiness verdict:
 
-`V2_9_8B_STANDARD4H_BUDGET_AND_CYCLE2_REFRESH_REENTRY_JOINT_REPAIR_IMPLEMENTATION_BOUNDED_PROOF_PASS`
+`V2_9_8B_POST_JOINT_REPAIR_FRESH_EXACT_HEAD_EXACT_DB_NEXT_BOUNDED_4_2_2_STANDARD4H_READINESS_GOVERNANCE_PASS`
 
-Component results:
+Classification:
 
 ```text
-BUDGET_REPAIR_PASS
-CYCLE2_REFRESH_REENTRY_REPAIR_PASS
-JOINT_SEAM_PASS
+READY_FOR_FRESH_EXACT_HEAD_EXACT_DB_ONE_SHOT_AUTHORIZATION_PACKAGE_PREPARATION
 ```
 
-Governing closeout:
+Audited implementation HEAD:
 
-`docs/printer-v1-v2-9-8b-standard4h-budget-and-cycle2-refresh-reentry-joint-repair-closeout.md`
+`568f4d39ec558a4133c16d13ca328b3883144f42`
 
-Governing design:
+Implementation baseline:
 
-`docs/printer-v1-v2-9-8b-standard4h-budget-and-cycle2-refresh-reentry-joint-repair-design.md`
+`1a505ac1234d94f584d9001ece796bb06373d234`
 
+Governing readiness:
+
+`docs/printer-v1-v2-9-8b-post-joint-repair-next-bounded-4-2-2-standard4h-readiness-governance.md`
+
+The operator-provided independent code/proof review PASS is accepted as the
+required prerequisite evidence. The completed repair chain remains evidence.
 This block supersedes older current-looking Standard-4H next-lane pointers
-later in this file for current-lane selection only. Historical campaign,
-readiness, per-token ceiling audit, Cycle-2 audit, joint design, and
-authorization-boundary facts remain evidence.
+later in this file for current-lane selection only.
 
 Consumed authorization
 `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260903T121923Z_202fbea1` is
@@ -85,13 +87,14 @@ Authoritative DB SHA-256:
 The exact current permitted lane is:
 
 ```text
-INDEPENDENT CODE / PROOF REVIEW — STANDARD-4H BUDGET + CYCLE-2 REFRESH-REENTRY JOINT REPAIR
+FRESH EXACT-HEAD / EXACT-DB ONE-SHOT 4/2/2 STANDARD-4H AUTHORIZATION PACKAGE PREPARATION + INDEPENDENT PACKAGE REVIEW
 ```
 
-Do not prepare another authorization. Do not run Printer. Do not create an
-application marker. Do not call `apply_authorization_once`. Focused tests do
-not establish live 4/2/2 readiness. A later fresh readiness lane is required
-after independent review.
+Only after the readiness documentation commit exists may exactly one fresh
+package be prepared for independent review. It must bind that new readiness
+commit HEAD (not `568f4d39...`) and the unchanged DB SHA above. It remains
+unconsumed; do not create an application marker or call
+`apply_authorization_once`.
 
 This does **not** authorize `apply_authorization_once`, application-marker
 creation, Printer execution, child launch, another campaign, provider/RPC/

@@ -2,47 +2,42 @@
 
 ## Current lane
 
-`INDEPENDENT CODE / PROOF REVIEW — STANDARD-4H BUDGET + CYCLE-2 REFRESH-REENTRY JOINT REPAIR`
+`FRESH EXACT-HEAD / EXACT-DB ONE-SHOT 4/2/2 STANDARD-4H AUTHORIZATION PACKAGE PREPARATION + INDEPENDENT PACKAGE REVIEW`
 
-The joint implementation + bounded proof is closed PASS. Do not begin
-independent review implementation in this handoff. Do not run Printer. Do not
-prepare or apply an authorization. Focused tests do not establish live 4/2/2
-readiness.
+The post-joint-repair readiness/governance audit is closed PASS. Preparation
+and independent package review are next; application and execution remain
+separately blocked.
 
 ## Latest completed work
 
-Joint implementation verdict:
+Readiness verdict:
 
-`V2_9_8B_STANDARD4H_BUDGET_AND_CYCLE2_REFRESH_REENTRY_JOINT_REPAIR_IMPLEMENTATION_BOUNDED_PROOF_PASS`
+`V2_9_8B_POST_JOINT_REPAIR_FRESH_EXACT_HEAD_EXACT_DB_NEXT_BOUNDED_4_2_2_STANDARD4H_READINESS_GOVERNANCE_PASS`
 
-Component results:
+Classification:
 
 ```text
-BUDGET_REPAIR_PASS
-CYCLE2_REFRESH_REENTRY_REPAIR_PASS
-JOINT_SEAM_PASS
+READY_FOR_FRESH_EXACT_HEAD_EXACT_DB_ONE_SHOT_AUTHORIZATION_PACKAGE_PREPARATION
 ```
 
-Governing closeout:
+Readiness closeout:
 
-`docs/printer-v1-v2-9-8b-standard4h-budget-and-cycle2-refresh-reentry-joint-repair-closeout.md`
+`docs/printer-v1-v2-9-8b-post-joint-repair-next-bounded-4-2-2-standard4h-readiness-governance.md`
 
-Governing design:
+Audited implementation HEAD:
 
-`docs/printer-v1-v2-9-8b-standard4h-budget-and-cycle2-refresh-reentry-joint-repair-design.md`
+`568f4d39ec558a4133c16d13ca328b3883144f42`
 
-Implementation baseline HEAD:
+Implementation baseline:
 
 `1a505ac1234d94f584d9001ece796bb06373d234`
 
-This documentation/implementation commit is the live implementation HEAD.
-Later independent review must bind the live HEAD after this commit exists.
+The operator-provided independent review PASS is accepted prerequisite evidence.
+No provider, Printer, or authoritative-DB mutation occurred in readiness.
 
 Authoritative DB SHA-256 remains:
 
 `575984caa484b12f4bb5fca0a06cdf7865adeb03b5f16874406fb0c1a73daa6e`
-
-No providers. No Printer run. No authorization. No authoritative DB mutation.
 
 ## Consumed authorization
 
@@ -58,7 +53,7 @@ remains permanently non-reusable.
 
 ## Exact next permitted action
 
-`Independent code / proof review of the Standard-4H budget + Cycle-2 refresh re-entry joint repair. Bind the live implementation HEAD after this commit and DB SHA-256 575984caa484b12f4bb5fca0a06cdf7865adeb03b5f16874406fb0c1a73daa6e. Do not prepare another authorization. Do not run Printer. A later fresh readiness lane is required after independent review.`
+`Prepare exactly one fresh exact-HEAD / exact-DB one-shot 4/2/2 Standard-4H authorization package using existing canonical owners; bind the readiness documentation commit HEAD (not 568f4d39ec558a4133c16d13ca328b3883144f42), bind DB SHA-256 575984caa484b12f4bb5fca0a06cdf7865adeb03b5f16874406fb0c1a73daa6e, include the complete 60-ID prior non-reuse root including 202fbea1, and stop unconsumed for independent package review.`
 
 ## Application / execution remain blocked
 
@@ -66,7 +61,6 @@ This handoff does **not** authorize:
 
 - `apply_authorization_once`;
 - application-marker creation;
-- package preparation;
 - Printer execution or child launch;
 - provider / RPC / WebSocket calls;
 - Central Scheduler runtime;
@@ -81,8 +75,9 @@ forensic closeout PASS
 -> repair readiness/audit PASS
 -> design/specification PASS
 -> implementation + bounded proof PASS
--> independent review
--> fresh readiness
+-> independent review PASS
+-> fresh readiness PASS
+-> fresh authorization preparation + independent package review
 ```
 
 ## Permanent locks

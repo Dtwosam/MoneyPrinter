@@ -19,7 +19,7 @@ Use `CURRENT_HANDOFF.md` only for the current lane, current commit, latest compl
 
 Historical roadmaps, old lane documents, old chats, previous handoffs, and older current-looking pointers are historical evidence only unless explicitly re-adopted.
 
-## Current durable state — 2026-09-03 joint budget + Cycle-2 refresh-reentry implementation
+## Current durable state — 2026-09-03 post-joint-repair readiness / governance
 
 Active capability family:
 
@@ -65,6 +65,10 @@ Latest completed campaign:
   `V2_9_8B_STANDARD4H_BUDGET_AND_CYCLE2_REFRESH_REENTRY_JOINT_REPAIR_DESIGN_PASS`;
 - joint implementation
   `V2_9_8B_STANDARD4H_BUDGET_AND_CYCLE2_REFRESH_REENTRY_JOINT_REPAIR_IMPLEMENTATION_BOUNDED_PROOF_PASS`;
+- independent code/proof review
+  `V2_9_8B_STANDARD4H_BUDGET_AND_CYCLE2_REFRESH_REENTRY_JOINT_REPAIR_INDEPENDENT_CODE_PROOF_REVIEW_PASS`;
+- post-joint-repair readiness/governance
+  `V2_9_8B_POST_JOINT_REPAIR_FRESH_EXACT_HEAD_EXACT_DB_NEXT_BOUNDED_4_2_2_STANDARD4H_READINESS_GOVERNANCE_PASS`;
 - official zero-state domains are all `0`;
 - retrieval, financial capabilities, 12h, and 24h remain locked.
 
@@ -89,19 +93,17 @@ The remote-host work is infrastructure support only. It does not reorder or adva
 The exact current lane is:
 
 ```text
-INDEPENDENT CODE / PROOF REVIEW — STANDARD-4H BUDGET + CYCLE-2 REFRESH-REENTRY JOINT REPAIR
+FRESH EXACT-HEAD / EXACT-DB ONE-SHOT 4/2/2 STANDARD-4H AUTHORIZATION PACKAGE PREPARATION + INDEPENDENT PACKAGE REVIEW
 ```
 
-Joint implementation verdict:
+Audited implementation HEAD:
 
-`V2_9_8B_STANDARD4H_BUDGET_AND_CYCLE2_REFRESH_REENTRY_JOINT_REPAIR_IMPLEMENTATION_BOUNDED_PROOF_PASS`
+`568f4d39ec558a4133c16d13ca328b3883144f42`
 
-Component results:
+Readiness classification:
 
 ```text
-BUDGET_REPAIR_PASS
-CYCLE2_REFRESH_REENTRY_REPAIR_PASS
-JOINT_SEAM_PASS
+READY_FOR_FRESH_EXACT_HEAD_EXACT_DB_ONE_SHOT_AUTHORIZATION_PACKAGE_PREPARATION
 ```
 
 Governing closeout:
@@ -128,9 +130,11 @@ Governing design:
 
 `docs/printer-v1-v2-9-8b-standard4h-budget-and-cycle2-refresh-reentry-joint-repair-design.md`
 
-Do not begin independent review as implementation. Do not prepare another
-authorization. Do not run Printer. Focused tests do not establish live 4/2/2
-readiness. A later fresh readiness lane is required after independent review.
+Only after this readiness documentation is committed may exactly one fresh
+package be prepared for independent review. It must bind the readiness commit
+HEAD, not `568f4d39...`, and the unchanged DB SHA. No application, consumption,
+Printer run, provider/RPC/WebSocket call, or Central Scheduler execution is
+authorized.
 
 The Sep-3 consumed 4/2/2 Standard-4H forensic closeout is closed PASS:
 
