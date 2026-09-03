@@ -2459,12 +2459,43 @@ consumption, Printer execution, provider/RPC/WebSocket calls, Scheduler
 execution, retrieval, financial capabilities, or longer windows.
 <!-- V2_9_8B_POST_DUPLICATE_TRANSPORT_REPAIR_FRESH_READINESS_CURRENT_STATE_END -->
 
-<!-- V2_9_8B_STANDARD4H_BUDGET_CYCLE2_REFRESH_REENTRY_JOINT_DESIGN_CURRENT_STATE_START -->
-## V2-9.8B Standard-4H Budget + Cycle-2 Refresh-Reentry Joint Repair Design — Current Authority
+<!-- V2_9_8B_STANDARD4H_BUDGET_CYCLE2_REFRESH_REENTRY_JOINT_IMPL_CURRENT_STATE_START -->
+## V2-9.8B Standard-4H Budget + Cycle-2 Refresh-Reentry Joint Repair Implementation — Current Authority
 
 This block supersedes older current-looking Standard-4H next-lane pointers in
 this file for current-lane selection only. Historical text remains evidence.
-Both independent Sep-3 designs are closed PASS.
+Joint implementation + bounded proof is closed PASS.
+
+- joint implementation verdict: `V2_9_8B_STANDARD4H_BUDGET_AND_CYCLE2_REFRESH_REENTRY_JOINT_REPAIR_IMPLEMENTATION_BOUNDED_PROOF_PASS`
+- `BUDGET_REPAIR_PASS`
+- `CYCLE2_REFRESH_REENTRY_REPAIR_PASS`
+- `JOINT_SEAM_PASS`
+- implementation baseline HEAD: `1a505ac1234d94f584d9001ece796bb06373d234`
+- consumed authorization: `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260903T121923Z_202fbea1`
+- that authorization remains `CONSUMED / CHILD_EXITED_ZERO / PERMANENTLY NON-REUSABLE`
+- authoritative DB SHA-256: `575984caa484b12f4bb5fca0a06cdf7865adeb03b5f16874406fb0c1a73daa6e`
+- governing closeout: `docs/printer-v1-v2-9-8b-standard4h-budget-and-cycle2-refresh-reentry-joint-repair-closeout.md`
+- governing design: `docs/printer-v1-v2-9-8b-standard4h-budget-and-cycle2-refresh-reentry-joint-repair-design.md`
+- Source Governor and Central Scheduler owners unchanged
+- retrieval/financial/12h/24h locks remain closed
+
+The exact current permitted lane is:
+
+```text
+INDEPENDENT CODE / PROOF REVIEW — STANDARD-4H BUDGET + CYCLE-2 REFRESH-REENTRY JOINT REPAIR
+```
+
+Do not prepare another authorization. Do not run Printer. Focused tests do
+not establish live 4/2/2 readiness. A later fresh readiness lane is required
+after independent review.
+<!-- V2_9_8B_STANDARD4H_BUDGET_CYCLE2_REFRESH_REENTRY_JOINT_IMPL_CURRENT_STATE_END -->
+
+<!-- V2_9_8B_STANDARD4H_BUDGET_CYCLE2_REFRESH_REENTRY_JOINT_DESIGN_CURRENT_STATE_START -->
+## V2-9.8B Standard-4H Budget + Cycle-2 Refresh-Reentry Joint Repair Design — Historical Authority
+
+This block is historical for current-lane selection after the joint
+implementation + bounded proof PASS. Historical text remains evidence.
+Both independent Sep-3 designs remain closed PASS.
 
 - joint design verdict: `V2_9_8B_STANDARD4H_BUDGET_AND_CYCLE2_REFRESH_REENTRY_JOINT_REPAIR_DESIGN_PASS`
 - budget slice: `V2_9_8B_FOUR_TOKEN_STANDARD4H_PER_TOKEN_REQUEST_CEILING_WIRING_REPAIR_DESIGN_PASS`
@@ -2481,18 +2512,16 @@ Both independent Sep-3 designs are closed PASS.
 - Source Governor and Central Scheduler owners unchanged
 - retrieval/financial/12h/24h locks remain closed
 
-The exact current permitted lane is:
+The exact current permitted lane at design time was:
 
 ```text
 STANDARD-4H BUDGET + CYCLE-2 REFRESH-REENTRY JOINT REPAIR — IMPLEMENTATION + BOUNDED PROOF
 ```
 
-That later implementation may implement both independently specified slices
-together. It must preserve separate proof verdicts `BUDGET_REPAIR_PASS`,
-`CYCLE2_REFRESH_REENTRY_REPAIR_PASS`, and `JOINT_SEAM_PASS`. Do not begin
-it automatically. This does not authorize Printer execution, provider/RPC/
-WebSocket calls, Scheduler execution, retrieval, financial capabilities, or
-longer windows.
+That implementation pointer is historical after the joint implementation PASS.
+Use the current-authority block above and `CURRENT_HANDOFF.md`. This does not
+authorize Printer execution, provider/RPC/WebSocket calls, Scheduler
+execution, retrieval, financial capabilities, or longer windows.
 <!-- V2_9_8B_STANDARD4H_BUDGET_CYCLE2_REFRESH_REENTRY_JOINT_DESIGN_CURRENT_STATE_END -->
 
 <!-- V2_9_8B_SEP3_CYCLE2_DUPLICATE_TRANSPORT_AUDIT_CURRENT_STATE_START -->

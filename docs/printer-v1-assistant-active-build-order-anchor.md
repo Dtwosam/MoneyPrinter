@@ -19,7 +19,7 @@ Use `CURRENT_HANDOFF.md` only for the current lane, current commit, latest compl
 
 Historical roadmaps, old lane documents, old chats, previous handoffs, and older current-looking pointers are historical evidence only unless explicitly re-adopted.
 
-## Current durable state — 2026-09-03 joint budget + Cycle-2 refresh-reentry design
+## Current durable state — 2026-09-03 joint budget + Cycle-2 refresh-reentry implementation
 
 Active capability family:
 
@@ -63,6 +63,8 @@ Latest completed campaign:
 - Cycle-2 repair classification `NARROW_REPAIR_FEASIBLE`;
 - joint design
   `V2_9_8B_STANDARD4H_BUDGET_AND_CYCLE2_REFRESH_REENTRY_JOINT_REPAIR_DESIGN_PASS`;
+- joint implementation
+  `V2_9_8B_STANDARD4H_BUDGET_AND_CYCLE2_REFRESH_REENTRY_JOINT_REPAIR_IMPLEMENTATION_BOUNDED_PROOF_PASS`;
 - official zero-state domains are all `0`;
 - retrieval, financial capabilities, 12h, and 24h remain locked.
 
@@ -87,8 +89,24 @@ The remote-host work is infrastructure support only. It does not reorder or adva
 The exact current lane is:
 
 ```text
-STANDARD-4H BUDGET + CYCLE-2 REFRESH-REENTRY JOINT REPAIR — IMPLEMENTATION + BOUNDED PROOF
+INDEPENDENT CODE / PROOF REVIEW — STANDARD-4H BUDGET + CYCLE-2 REFRESH-REENTRY JOINT REPAIR
 ```
+
+Joint implementation verdict:
+
+`V2_9_8B_STANDARD4H_BUDGET_AND_CYCLE2_REFRESH_REENTRY_JOINT_REPAIR_IMPLEMENTATION_BOUNDED_PROOF_PASS`
+
+Component results:
+
+```text
+BUDGET_REPAIR_PASS
+CYCLE2_REFRESH_REENTRY_REPAIR_PASS
+JOINT_SEAM_PASS
+```
+
+Governing closeout:
+
+`docs/printer-v1-v2-9-8b-standard4h-budget-and-cycle2-refresh-reentry-joint-repair-closeout.md`
 
 Joint design verdict:
 
@@ -110,9 +128,9 @@ Governing design:
 
 `docs/printer-v1-v2-9-8b-standard4h-budget-and-cycle2-refresh-reentry-joint-repair-design.md`
 
-The later implementation must preserve separate proof verdicts
-`BUDGET_REPAIR_PASS`, `CYCLE2_REFRESH_REENTRY_REPAIR_PASS`, and
-`JOINT_SEAM_PASS`. Do not begin implementation automatically.
+Do not begin independent review as implementation. Do not prepare another
+authorization. Do not run Printer. Focused tests do not establish live 4/2/2
+readiness. A later fresh readiness lane is required after independent review.
 
 The Sep-3 consumed 4/2/2 Standard-4H forensic closeout is closed PASS:
 
@@ -190,18 +208,15 @@ The consumed Sep-2 authorization
 `CONSUMED / CHILD_EXITED_NONZERO / PERMANENTLY NON-REUSABLE`. Source-stack
 wording permits four concurrent through-4h tokens as two overlapping two-slot
 cycles. Use `CURRENT_HANDOFF.md` for the live HEAD after this documentation
-commit. Later implementation must bind that live HEAD and DB SHA-256
+commit. Later independent review must bind that live HEAD and DB SHA-256
 `575984caa484b12f4bb5fca0a06cdf7865adeb03b5f16874406fb0c1a73daa6e`.
 
 Allowed now:
 
-- joint Standard-4H budget + Cycle-2 refresh-reentry repair implementation +
-  bounded proof, only as the next explicit lane;
-- preserve separate proof verdicts `BUDGET_REPAIR_PASS`,
-  `CYCLE2_REFRESH_REENTRY_REPAIR_PASS`, and `JOINT_SEAM_PASS`;
-- do not begin implementation automatically;
-- do not apply or consume an authorization in this handoff;
-- do not run Printer.
+- independent code / proof review of the joint repair;
+- do not prepare or apply an authorization in this handoff;
+- do not run Printer;
+- do not claim live 4/2/2 readiness from focused tests.
 
 Do not begin implementation automatically.
 Do not begin package preparation automatically.

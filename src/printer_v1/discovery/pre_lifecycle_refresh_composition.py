@@ -21,9 +21,10 @@ trades/audits/PnL, no retry/restart/resume/successor, no paid API.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 from printer_v1.discovery.combined_executor import ensure_cycle_discovery_batch
 from printer_v1.discovery.permanent_discovery_availability import (
@@ -193,6 +194,107 @@ def _cooperative_checkpointed_request(
     return True
 
 
+def cycle_pump_live_tail_head_already_completed(
+    connection: sqlite3.Connection,
+    *,
+    request_key_root: str,
+) -> bool:
+    """True when this cycle already sealed Pump live-tail address|before=HEAD.
+
+    Refresh re-entry may not re-issue that canonical transport merely because
+    the refresh request-key prefix is new. Failures, partial/dirty responses,
+    foreign roots, different cursors, and malformed identities do not count.
+    """
+    from printer_v1.discovery.permanent_discovery_availability import (
+        request_key_belongs_to_root,
+    )
+    from printer_v1.sources.direct_pump_migration import (
+        DIRECT_MIGRATION_INDEXED_ADDRESS,
+        SIGNATURE_PAGE_REQUEST_KIND,
+        SIGNATURE_PAGE_TARGET_CATEGORY,
+        direct_migration_signature_page_target_identity,
+    )
+    from printer_v1.sources.measured_transport import (
+        MeasuredTransportError,
+        canonical_transport_identity_key,
+    )
+
+    root = str(request_key_root or "").strip()
+    if not root:
+        return False
+    tables = {
+        str(row[0])
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name IN ('printer_source_requests','printer_source_responses')"
+        ).fetchall()
+    }
+    if tables != {"printer_source_requests", "printer_source_responses"}:
+        return False
+    try:
+        expected_identity = canonical_transport_identity_key(
+            {
+                "stage": "DIRECT_PUMP_NOMINATION",
+                "source_name": "solana_rpc",
+                "governed_request_kind": SIGNATURE_PAGE_REQUEST_KIND,
+                "method_or_endpoint": "getSignaturesForAddress",
+                "within_request_ordinal": 1,
+                "target_category": SIGNATURE_PAGE_TARGET_CATEGORY,
+                "target_identity": direct_migration_signature_page_target_identity(
+                    indexed_address=DIRECT_MIGRATION_INDEXED_ADDRESS,
+                    cursor_before=None,
+                ),
+            }
+        )
+    except (MeasuredTransportError, TypeError, ValueError):
+        return False
+
+    rows = connection.execute(
+        """
+        SELECT r.request_key,s.normalized_payload_json
+        FROM printer_source_requests AS r
+        JOIN printer_source_responses AS s ON s.source_request_id=r.id
+        WHERE (r.request_key=? OR r.request_key LIKE ?)
+          AND r.source_name='solana_rpc'
+          AND r.request_kind=?
+          AND s.source_status='COMPLETE'
+          AND s.data_quality_label='CLEAN_DATA'
+        ORDER BY r.id ASC
+        """,
+        (root, f"{root}%", SIGNATURE_PAGE_REQUEST_KIND),
+    ).fetchall()
+    for row in rows:
+        values = dict(row) if hasattr(row, "keys") else {
+            "request_key": row[0],
+            "normalized_payload_json": row[1],
+        }
+        request_key = str(values.get("request_key") or "")
+        if not request_key_belongs_to_root(request_key, root):
+            continue
+        raw_payload = values.get("normalized_payload_json")
+        if not raw_payload:
+            continue
+        try:
+            payload = json.loads(str(raw_payload))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, Mapping):
+            continue
+        identities = payload.get("transport_operation_identities") or ()
+        if isinstance(identities, (str, bytes)) or not isinstance(identities, Sequence):
+            continue
+        for raw_identity in identities:
+            if not isinstance(raw_identity, Mapping):
+                continue
+            try:
+                identity_key = canonical_transport_identity_key(raw_identity)
+            except (MeasuredTransportError, TypeError, ValueError):
+                continue
+            if identity_key == expected_identity:
+                return True
+    return False
+
+
 def _cooperative_next_request_bound_seconds() -> float:
     from printer_v1.discovery.eligible_token_supply import (
         AcquisitionQuantumKind,
@@ -341,6 +443,33 @@ def build_pre_lifecycle_refresh_stage(
                     channels_skipped.append(
                         {"channel": channel, "reason": "INSUFFICIENT_WORST_CASE_SOURCE_BUDGET"}
                     )
+                    continue
+                if cycle_pump_live_tail_head_already_completed(
+                    connection, request_key_root=request_key_prefix
+                ):
+                    from printer_v1.sources.direct_pump_migration import (
+                        DIRECT_MIGRATION_INDEXED_ADDRESS,
+                        direct_migration_signature_page_target_identity,
+                    )
+
+                    channels_skipped.append(
+                        {
+                            "channel": channel,
+                            "reason": (
+                                "CANONICAL_PUMP_LIVE_TAIL_HEAD_ALREADY_COMPLETED"
+                            ),
+                        }
+                    )
+                    stage_reports[channel] = {
+                        "status": "CANONICAL_TRANSPORT_ALREADY_COMPLETED",
+                        "source_requests": 0,
+                        "target_identity": (
+                            direct_migration_signature_page_target_identity(
+                                indexed_address=DIRECT_MIGRATION_INDEXED_ADDRESS,
+                                cursor_before=None,
+                            )
+                        ),
+                    }
                     continue
                 channels_attempted.append(channel)
                 from printer_v1.discovery.direct_migration_discovery import (
@@ -710,4 +839,5 @@ __all__ = [
     "PreLifecycleRefreshCompositionError",
     "build_cycle_discovery_batch_resolver",
     "build_pre_lifecycle_refresh_stage",
+    "cycle_pump_live_tail_head_already_completed",
 ]

@@ -45,6 +45,60 @@ Every major capability must preserve:
 Use minimum sufficient risk-based verification. Do not request broad regression
 suites unless the change risk or lane closeout requires them.
 
+### Current V2-9.8B Standard-4H budget + Cycle-2 refresh-reentry joint repair implementation — 2026-09-03
+
+Joint implementation verdict:
+
+`V2_9_8B_STANDARD4H_BUDGET_AND_CYCLE2_REFRESH_REENTRY_JOINT_REPAIR_IMPLEMENTATION_BOUNDED_PROOF_PASS`
+
+Component results:
+
+```text
+BUDGET_REPAIR_PASS
+CYCLE2_REFRESH_REENTRY_REPAIR_PASS
+JOINT_SEAM_PASS
+```
+
+Governing closeout:
+
+`docs/printer-v1-v2-9-8b-standard4h-budget-and-cycle2-refresh-reentry-joint-repair-closeout.md`
+
+Governing design:
+
+`docs/printer-v1-v2-9-8b-standard4h-budget-and-cycle2-refresh-reentry-joint-repair-design.md`
+
+This block supersedes older current-looking Standard-4H next-lane pointers
+later in this file for current-lane selection only. Historical campaign,
+readiness, per-token ceiling audit, Cycle-2 audit, joint design, and
+authorization-boundary facts remain evidence.
+
+Consumed authorization
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260903T121923Z_202fbea1` is
+`CONSUMED / CHILD_EXITED_ZERO / PERMANENTLY NON-REUSABLE`. Do not retry, rerun,
+resume, restart, or create a successor from that run. Future prior-non-reuse
+root is 60 IDs.
+
+Authoritative DB SHA-256:
+
+`575984caa484b12f4bb5fca0a06cdf7865adeb03b5f16874406fb0c1a73daa6e`
+
+The exact current permitted lane is:
+
+```text
+INDEPENDENT CODE / PROOF REVIEW — STANDARD-4H BUDGET + CYCLE-2 REFRESH-REENTRY JOINT REPAIR
+```
+
+Do not prepare another authorization. Do not run Printer. Do not create an
+application marker. Do not call `apply_authorization_once`. Focused tests do
+not establish live 4/2/2 readiness. A later fresh readiness lane is required
+after independent review.
+
+This does **not** authorize `apply_authorization_once`, application-marker
+creation, Printer execution, child launch, another campaign, provider/RPC/
+WebSocket calls, Central Scheduler runtime, retry/rerun/resume/restart/
+successor, retrieval, BUY/SELL/HOLD, positions, trades, audits, PnL, or
+`WINDOW_12H` / `WINDOW_24H`.
+
 ### Current V2-9.8B Standard-4H budget + Cycle-2 refresh-reentry joint repair design — 2026-09-03
 
 Joint design verdict:
@@ -75,10 +129,8 @@ Governing design:
 
 `docs/printer-v1-v2-9-8b-standard4h-budget-and-cycle2-refresh-reentry-joint-repair-design.md`
 
-This block supersedes older current-looking Standard-4H next-lane pointers
-later in this file for current-lane selection only. Historical campaign,
-readiness, per-token ceiling audit, Cycle-2 audit, and authorization-boundary
-facts remain evidence. Both independent designs are now closed PASS.
+This block is historical for current-lane selection after the joint
+implementation + bounded proof PASS. Design facts remain evidence.
 
 Consumed authorization
 `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260903T121923Z_202fbea1` is
@@ -90,19 +142,8 @@ Authoritative DB SHA-256:
 
 `575984caa484b12f4bb5fca0a06cdf7865adeb03b5f16874406fb0c1a73daa6e`
 
-The exact current permitted lane is:
-
-```text
-STANDARD-4H BUDGET + CYCLE-2 REFRESH-REENTRY JOINT REPAIR — IMPLEMENTATION + BOUNDED PROOF
-```
-
-That later implementation may implement both independently specified slices
-together. It must preserve separate proof verdicts `BUDGET_REPAIR_PASS`,
-`CYCLE2_REFRESH_REENTRY_REPAIR_PASS`, and `JOINT_SEAM_PASS`. Do not weaken
-`DUPLICATE_TRANSPORT_IDENTITY`. Do not hard-code `118`. Do not begin
-implementation automatically. Do not run Printer. Do not create an application
-marker. Do not call `apply_authorization_once`. Do not prepare another
-authorization.
+The exact current permitted lane is no longer joint implementation. Use the
+current-lane block above and `CURRENT_HANDOFF.md`.
 
 This does **not** authorize `apply_authorization_once`, application-marker
 creation, Printer execution, child launch, another campaign, provider/RPC/
@@ -1798,11 +1839,12 @@ authority. Current adopted envelope:
 The exact current next permitted lane is:
 
 ```text
-STANDARD-4H BUDGET + CYCLE-2 REFRESH-REENTRY JOINT REPAIR — IMPLEMENTATION + BOUNDED PROOF
+INDEPENDENT CODE / PROOF REVIEW — STANDARD-4H BUDGET + CYCLE-2 REFRESH-REENTRY JOINT REPAIR
 ```
 
-Both independent designs are closed PASS. The later implementation must
-preserve separate proof verdicts. Do not begin implementation automatically.
+Joint implementation + bounded proof is closed PASS. Do not prepare another
+authorization. Do not run Printer. Focused tests do not establish live 4/2/2
+readiness.
 
 Historical at the time of the 2026-08-26 source-stack synchronization:
 `POST-SYNCHRONIZATION FRESH NEXT-BOUNDED-CAMPAIGN AUTHORIZATION READINESS /
@@ -1816,10 +1858,10 @@ pre-lifecycle wait reconciliation, the post-reconciliation readiness PASS, the
 next-bounded 4/2/2 authorization-boundary package design PASS, the Sep-3
 consumed 4/2/2 forensic closeout, the per-token request-ceiling wiring
 repair readiness/audit PASS, the Sep-3 Cycle-2 duplicate-transport /
-NO-PAIR blocker audit PASS, and the joint budget + Cycle-2 refresh-reentry
-repair design PASS supersede older pointers for current-lane selection; use
-the Active Authority Stack and `CURRENT_HANDOFF.md`. Do not implement
-automatically. Do not prepare or apply an authorization.
+NO-PAIR blocker audit PASS, the joint budget + Cycle-2 refresh-reentry repair design PASS, and the joint
+implementation + bounded proof PASS supersede older pointers for current-lane
+selection; use the Active Authority Stack and `CURRENT_HANDOFF.md`. Do not
+implement automatically. Do not prepare or apply an authorization.
 
 No automatic run, retry, recovery, successor, cursor reset, N7, provider/RPC
 work, operational campaign, or Printer execution is authorized by this anchor
@@ -1886,11 +1928,12 @@ Current adopted operational envelope:
 The exact current next permitted lane is:
 
 ```text
-STANDARD-4H BUDGET + CYCLE-2 REFRESH-REENTRY JOINT REPAIR — IMPLEMENTATION + BOUNDED PROOF
+INDEPENDENT CODE / PROOF REVIEW — STANDARD-4H BUDGET + CYCLE-2 REFRESH-REENTRY JOINT REPAIR
 ```
 
-Both independent designs are closed PASS. The later implementation must
-preserve separate proof verdicts. Do not begin implementation automatically.
+Joint implementation + bounded proof is closed PASS. Do not prepare another
+authorization. Do not run Printer. Focused tests do not establish live 4/2/2
+readiness.
 
 Historical at the time of this adoption closeout:
 `POST-SYNCHRONIZATION FRESH NEXT-BOUNDED-CAMPAIGN AUTHORIZATION READINESS /
@@ -1904,9 +1947,9 @@ pre-lifecycle wait reconciliation, the post-reconciliation readiness PASS, the
 next-bounded 4/2/2 authorization-boundary package design PASS, the Sep-3
 consumed 4/2/2 forensic closeout, the per-token request-ceiling wiring
 repair readiness/audit PASS, the Sep-3 Cycle-2 duplicate-transport /
-NO-PAIR blocker audit PASS, and the joint budget + Cycle-2 refresh-reentry
-repair design PASS supersede older pointers for current-lane selection; use
-the Active Authority Stack and `CURRENT_HANDOFF.md`.
+NO-PAIR blocker audit PASS, the joint budget + Cycle-2 refresh-reentry repair design PASS, and the joint
+implementation + bounded proof PASS supersede older pointers for current-lane
+selection; use the Active Authority Stack and `CURRENT_HANDOFF.md`.
 
 This adoption creates no authorization, automatically authorizes no campaign,
 and unlocks no live runtime. No existing consumed authorization,

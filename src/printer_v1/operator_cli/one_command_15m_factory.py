@@ -7434,6 +7434,30 @@ def _request_ceiling_for_run_config(config: Mapping[str, Any]) -> int:
     )
 
 
+def _token_ceiling_for_run_config(config: Mapping[str, Any]) -> int:
+    """Select the applicable governed-request per-token ceiling for this config.
+
+    Four-token Standard-4H must not inherit the standalone continuous-1h
+    per-token ceiling merely because ``continuous_first_hour`` enables WINDOW_1H.
+    Mirror the run/Scheduler selectors: ``four_token_proof`` consumes the scaled
+    Standard-4H per-token share; standalone continuous/selective-1h keeps 50;
+    15m-only keeps 22.
+    """
+    if bool(config.get("four_token_proof")):
+        from printer_v1.operator_cli.multi_cycle_memory_growth import (
+            scaled_standard_four_hour_capacity_contract,
+        )
+
+        return int(
+            scaled_standard_four_hour_capacity_contract(4)[
+                "lifecycle_requests_per_token"
+            ]
+        )
+    if bool(config.get("continuous_first_hour")):
+        return _CONTINUOUS_MAX_REQUESTS_PER_TOKEN
+    return _MAX_GOVERNED_REQUESTS_PER_TOKEN
+
+
 def _run_step_job_count(conn: sqlite3.Connection, run_id: str) -> int:
     return int(conn.execute(
         "SELECT COUNT(*) FROM printer_scheduler_jobs WHERE job_name LIKE ?",
@@ -7685,12 +7709,8 @@ def _enforce_budgets_before_step(
                 STOP_BUDGET, scope="CUMULATIVE_LIFECYCLE", detail=str(exc),
             ) from exc
         return
-    continuous = bool(config.get("continuous_first_hour"))
     run_ceiling = _request_ceiling_for_run_config(config)
-    token_ceiling = (
-        _CONTINUOUS_MAX_REQUESTS_PER_TOKEN
-        if continuous else _MAX_GOVERNED_REQUESTS_PER_TOKEN
-    )
+    token_ceiling = _token_ceiling_for_run_config(config)
     if _run_request_count(conn, run_id) + projected > run_ceiling:
         raise _GlobalStop(STOP_BUDGET, scope="CUMULATIVE_LIFECYCLE")
     prefix = _token_prefix(step["step_key"])

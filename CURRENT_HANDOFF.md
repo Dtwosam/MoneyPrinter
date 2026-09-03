@@ -2,50 +2,47 @@
 
 ## Current lane
 
-`STANDARD-4H BUDGET + CYCLE-2 REFRESH-REENTRY JOINT REPAIR — IMPLEMENTATION + BOUNDED PROOF`
+`INDEPENDENT CODE / PROOF REVIEW — STANDARD-4H BUDGET + CYCLE-2 REFRESH-REENTRY JOINT REPAIR`
 
-The joint design is closed PASS. Do not begin implementation in this
-handoff. Do not run Printer. Do not prepare or apply an authorization.
+The joint implementation + bounded proof is closed PASS. Do not begin
+independent review implementation in this handoff. Do not run Printer. Do not
+prepare or apply an authorization. Focused tests do not establish live 4/2/2
+readiness.
 
 ## Latest completed work
 
-Joint design verdict:
+Joint implementation verdict:
 
-`V2_9_8B_STANDARD4H_BUDGET_AND_CYCLE2_REFRESH_REENTRY_JOINT_REPAIR_DESIGN_PASS`
+`V2_9_8B_STANDARD4H_BUDGET_AND_CYCLE2_REFRESH_REENTRY_JOINT_REPAIR_IMPLEMENTATION_BOUNDED_PROOF_PASS`
 
-Budget slice:
+Component results:
 
-`V2_9_8B_FOUR_TOKEN_STANDARD4H_PER_TOKEN_REQUEST_CEILING_WIRING_REPAIR_DESIGN_PASS`
+```text
+BUDGET_REPAIR_PASS
+CYCLE2_REFRESH_REENTRY_REPAIR_PASS
+JOINT_SEAM_PASS
+```
 
-Classification:
+Governing closeout:
 
-`NARROW_MODE_AWARE_TOKEN_CEILING_SELECTOR_DESIGN`
-
-Cycle-2 slice:
-
-`V2_9_8B_SEP3_CYCLE2_DUPLICATE_TRANSPORT_ACQUISITION_REPAIR_DESIGN_PASS`
-
-Classification:
-
-`NARROW_REFRESH_REENTRY_COMPLETED_TRANSPORT_SKIP_DESIGN`
-
-Owner:
-
-`REFRESH_COMPOSITION_SKIP_OWNER`
+`docs/printer-v1-v2-9-8b-standard4h-budget-and-cycle2-refresh-reentry-joint-repair-closeout.md`
 
 Governing design:
 
 `docs/printer-v1-v2-9-8b-standard4h-budget-and-cycle2-refresh-reentry-joint-repair-design.md`
 
-This documentation commit is the live design HEAD. Later implementation must
-bind the live HEAD after this commit exists.
+Implementation baseline HEAD:
+
+`1a505ac1234d94f584d9001ece796bb06373d234`
+
+This documentation/implementation commit is the live implementation HEAD.
+Later independent review must bind the live HEAD after this commit exists.
 
 Authoritative DB SHA-256 remains:
 
 `575984caa484b12f4bb5fca0a06cdf7865adeb03b5f16874406fb0c1a73daa6e`
 
-No production code, tests, migrations, or DB mutation. No providers. No
-Printer run.
+No providers. No Printer run. No authorization. No authoritative DB mutation.
 
 ## Consumed authorization
 
@@ -61,13 +58,12 @@ remains permanently non-reusable.
 
 ## Exact next permitted action
 
-`Standard-4H budget + Cycle-2 refresh re-entry joint repair implementation + bounded proof. Bind the live design HEAD after this documentation commit and DB SHA-256 575984caa484b12f4bb5fca0a06cdf7865adeb03b5f16874406fb0c1a73daa6e. Implement both independently specified slices together. Preserve separate proof verdicts BUDGET_REPAIR_PASS, CYCLE2_REFRESH_REENTRY_REPAIR_PASS, and JOINT_SEAM_PASS. Do not weaken DUPLICATE_TRANSPORT_IDENTITY. Do not hard-code 118. Do not run Printer. Do not prepare another authorization.`
+`Independent code / proof review of the Standard-4H budget + Cycle-2 refresh re-entry joint repair. Bind the live implementation HEAD after this commit and DB SHA-256 575984caa484b12f4bb5fca0a06cdf7865adeb03b5f16874406fb0c1a73daa6e. Do not prepare another authorization. Do not run Printer. A later fresh readiness lane is required after independent review.`
 
 ## Application / execution remain blocked
 
 This handoff does **not** authorize:
 
-- automatic start of implementation without an explicit implementation lane;
 - `apply_authorization_once`;
 - application-marker creation;
 - package preparation;
@@ -84,15 +80,10 @@ Preserve:
 forensic closeout PASS
 -> repair readiness/audit PASS
 -> design/specification PASS
--> implementation if approved
--> bounded proof
+-> implementation + bounded proof PASS
 -> independent review
 -> fresh readiness
 ```
-
-Both independent designs are now closed PASS. Implementation may proceed only
-as the next explicit lane. Consumed `...202fbea1` remains permanently
-non-reusable.
 
 ## Permanent locks
 
