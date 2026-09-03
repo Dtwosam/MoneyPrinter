@@ -19,7 +19,7 @@ Use `CURRENT_HANDOFF.md` only for the current lane, current commit, latest compl
 
 Historical roadmaps, old lane documents, old chats, previous handoffs, and older current-looking pointers are historical evidence only unless explicitly re-adopted.
 
-## Current durable state — 2026-09-03 authorization-boundary design
+## Current durable state — 2026-09-03 Cycle-2 duplicate-transport audit
 
 Active capability family:
 
@@ -57,7 +57,10 @@ Latest completed campaign:
   `V2_9_8B_SEP3_CONSUMED_4_2_2_STANDARD4H_POST_RUN_FORENSIC_CLOSEOUT_PASS`;
 - per-token ceiling wiring repair readiness/audit
   `V2_9_8B_FOUR_TOKEN_STANDARD4H_PER_TOKEN_REQUEST_CEILING_WIRING_REPAIR_READINESS_AUDIT_PASS`;
-- Cycle-2 `DUPLICATE_TRANSPORT_IDENTITY` remains a separate independent finding;
+- Cycle-2 duplicate-transport / NO-PAIR blocker audit
+  `V2_9_8B_SEP3_CYCLE2_DUPLICATE_TRANSPORT_NO_PAIR_BLOCKER_AUDIT_PASS`;
+- Cycle-2 primary classification `NEW_NARROW_REFRESH_REENTRY_DEFECT`;
+- Cycle-2 repair classification `NARROW_REPAIR_FEASIBLE`;
 - official zero-state domains are all `0`;
 - retrieval, financial capabilities, 12h, and 24h remain locked.
 
@@ -82,6 +85,12 @@ The remote-host work is infrastructure support only. It does not reorder or adva
 The exact current lane is:
 
 ```text
+SEP-3 CYCLE-2 DUPLICATE-TRANSPORT ACQUISITION REPAIR — DESIGN / SPECIFICATION
+```
+
+The independent four-token per-token `50 -> 118` design remains open:
+
+```text
 FOUR-TOKEN STANDARD-4H PER-TOKEN REQUEST-CEILING WIRING REPAIR — DESIGN / SPECIFICATION
 ```
 
@@ -93,7 +102,19 @@ Campaign result: `CAMPAIGN_FAILED`. Consumed authorization
 `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260903T121923Z_202fbea1` is permanently
 non-reusable.
 
-The per-token request-ceiling wiring repair readiness/audit is closed PASS:
+The Sep-3 Cycle-2 duplicate-transport / NO-PAIR blocker audit is closed PASS:
+
+`V2_9_8B_SEP3_CYCLE2_DUPLICATE_TRANSPORT_NO_PAIR_BLOCKER_AUDIT_PASS`
+
+Primary classification: `NEW_NARROW_REFRESH_REENTRY_DEFECT`
+
+Repair classification: `NARROW_REPAIR_FEASIBLE`
+
+Governing audit:
+
+`docs/printer-v1-v2-9-8b-sep3-cycle2-duplicate-transport-no-pair-blocker-audit.md`
+
+The per-token request-ceiling wiring repair readiness/audit remains closed PASS:
 
 `V2_9_8B_FOUR_TOKEN_STANDARD4H_PER_TOKEN_REQUEST_CEILING_WIRING_REPAIR_READINESS_AUDIT_PASS`
 
@@ -114,7 +135,7 @@ Governing design:
 
 `docs/printer-v1-v2-9-8b-next-bounded-4-2-2-standard-4h-authorization-boundary-package-design.md`
 
-Do not implement the repair automatically. Do not prepare or apply an
+Do not implement either repair automatically. Do not prepare or apply an
 authorization. Do not run Printer.
 
 Post-reconciliation exact-HEAD / exact-DB next-bounded-campaign readiness /
@@ -148,21 +169,23 @@ The consumed Sep-2 authorization
 `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260901T181024Z_ab6c68fe` remains
 `CONSUMED / CHILD_EXITED_NONZERO / PERMANENTLY NON-REUSABLE`. Source-stack
 wording permits four concurrent through-4h tokens as two overlapping two-slot
-cycles. Use `CURRENT_HANDOFF.md` for the live HEAD after this design
-documentation commit. Later package preparation, if separately approved, must
-bind that HEAD and DB SHA-256
-`fb52d8fae2d22c70f6c2c7de7ddf4a18c7d89f01450f12e6c60093ee85e17cff`.
+cycles. Use `CURRENT_HANDOFF.md` for the live HEAD after this documentation
+commit. Later Cycle-2 design must bind that live HEAD and DB SHA-256
+`575984caa484b12f4bb5fca0a06cdf7865adeb03b5f16874406fb0c1a73daa6e`.
 
 Allowed now:
 
-- separately approved exact-HEAD / exact-DB one-shot 4/2/2 Standard-4H
-  authorization package preparation only;
+- Cycle-2 duplicate-transport acquisition repair design / specification only;
+- the independent four-token `50 -> 118` design remains open and is not this
+  Cycle-2 repair;
+- do not implement either design in this handoff;
 - do not apply or consume an authorization in this handoff;
 - do not run Printer.
 
+Do not begin implementation automatically.
 Do not begin package preparation automatically.
 Do not redo the existing canonical authorization owners.
-Do not reuse consumed `59fdefe7`, `12a7ea61`, or `ab6c68fe`.
+Do not reuse consumed `202fbea1`, `59fdefe7`, `12a7ea61`, or `ab6c68fe`.
 Do not retry, rerun, resume, restart, or create a successor from those runs.
 Do not create an application marker.
 Do not call `apply_authorization_once`.

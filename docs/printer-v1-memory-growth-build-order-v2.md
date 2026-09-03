@@ -2459,11 +2459,50 @@ consumption, Printer execution, provider/RPC/WebSocket calls, Scheduler
 execution, retrieval, financial capabilities, or longer windows.
 <!-- V2_9_8B_POST_DUPLICATE_TRANSPORT_REPAIR_FRESH_READINESS_CURRENT_STATE_END -->
 
-<!-- V2_9_8B_PER_TOKEN_CEILING_WIRING_REPAIR_AUDIT_CURRENT_STATE_START -->
-## V2-9.8B Four-Token Standard-4H Per-Token Request-Ceiling Wiring Repair Readiness / Audit — Current Authority
+<!-- V2_9_8B_SEP3_CYCLE2_DUPLICATE_TRANSPORT_AUDIT_CURRENT_STATE_START -->
+## V2-9.8B Sep-3 Cycle-2 Duplicate-Transport / NO-PAIR Blocker Audit — Current Authority
 
 This block supersedes older current-looking Standard-4H next-lane pointers in
 this file for current-lane selection only. Historical text remains evidence.
+The independent four-token `50 -> 118` design remains open and is not this
+Cycle-2 repair.
+
+- forensic verdict: `V2_9_8B_SEP3_CONSUMED_4_2_2_STANDARD4H_POST_RUN_FORENSIC_CLOSEOUT_PASS`
+- campaign result: `CAMPAIGN_FAILED`
+- Cycle-2 audit verdict: `V2_9_8B_SEP3_CYCLE2_DUPLICATE_TRANSPORT_NO_PAIR_BLOCKER_AUDIT_PASS`
+- Cycle-2 primary classification: `NEW_NARROW_REFRESH_REENTRY_DEFECT`
+- Cycle-2 repair classification: `NARROW_REPAIR_FEASIBLE`
+- historical mint-batch repair disposition: `REPAIR_REACHED_BUT_SCOPE_GAP`
+- per-token ceiling audit verdict: `V2_9_8B_FOUR_TOKEN_STANDARD4H_PER_TOKEN_REQUEST_CEILING_WIRING_REPAIR_READINESS_AUDIT_PASS`
+- consumed authorization: `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260903T121923Z_202fbea1`
+- that authorization remains `CONSUMED / CHILD_EXITED_ZERO / PERMANENTLY NON-REUSABLE`
+- authoritative DB SHA-256: `575984caa484b12f4bb5fca0a06cdf7865adeb03b5f16874406fb0c1a73daa6e`
+- forensic: `docs/printer-v1-v2-9-8b-auth-202fbea1-sep3-consumed-4-2-2-standard4h-post-run-forensic-closeout.md`
+- Cycle-2 audit: `docs/printer-v1-v2-9-8b-sep3-cycle2-duplicate-transport-no-pair-blocker-audit.md`
+- per-token ceiling audit: `docs/printer-v1-v2-9-8b-four-token-standard4h-per-token-request-ceiling-wiring-repair-audit.md`
+- Source Governor and Central Scheduler owners unchanged
+- retrieval/financial/12h/24h locks remain closed
+
+The exact current permitted lane is:
+
+```text
+SEP-3 CYCLE-2 DUPLICATE-TRANSPORT ACQUISITION REPAIR — DESIGN / SPECIFICATION
+```
+
+That later design may specify a producer/checkpoint skip of already-sealed
+Cycle-2 Pump live-tail `before=HEAD` without weakening the duplicate guard.
+It may not implement. Do not begin it automatically. The independent
+four-token per-token `50 -> 118` design remains open. This does not authorize
+Printer execution, provider/RPC/WebSocket calls, Scheduler execution,
+retrieval, financial capabilities, or longer windows.
+<!-- V2_9_8B_SEP3_CYCLE2_DUPLICATE_TRANSPORT_AUDIT_CURRENT_STATE_END -->
+
+<!-- V2_9_8B_PER_TOKEN_CEILING_WIRING_REPAIR_AUDIT_CURRENT_STATE_START -->
+## V2-9.8B Four-Token Standard-4H Per-Token Request-Ceiling Wiring Repair Readiness / Audit — Historical Authority
+
+This block is historical for current-lane selection after the Sep-3 Cycle-2
+duplicate-transport / NO-PAIR blocker audit PASS. Audit facts remain evidence.
+The independent `50 -> 118` design remains open and is not the Cycle-2 repair.
 
 - forensic verdict: `V2_9_8B_SEP3_CONSUMED_4_2_2_STANDARD4H_POST_RUN_FORENSIC_CLOSEOUT_PASS`
 - campaign result: `CAMPAIGN_FAILED`
@@ -2475,20 +2514,14 @@ this file for current-lane selection only. Historical text remains evidence.
 - authoritative DB SHA-256: `575984caa484b12f4bb5fca0a06cdf7865adeb03b5f16874406fb0c1a73daa6e`
 - forensic: `docs/printer-v1-v2-9-8b-auth-202fbea1-sep3-consumed-4-2-2-standard4h-post-run-forensic-closeout.md`
 - audit: `docs/printer-v1-v2-9-8b-four-token-standard4h-per-token-request-ceiling-wiring-repair-audit.md`
-- Cycle-2 finding remains `CYCLE2_FINDING_INDEPENDENT`
 - Source Governor and Central Scheduler owners unchanged
 - retrieval/financial/12h/24h locks remain closed
 
-The exact current permitted lane is:
-
-```text
-FOUR-TOKEN STANDARD-4H PER-TOKEN REQUEST-CEILING WIRING REPAIR — DESIGN / SPECIFICATION
-```
-
-That later design may specify the narrow factory helper that selects
-`lifecycle_requests_per_token = 118` for `four_token_proof` without changing
-selective-1h `50`. It may not implement. Do not begin it automatically. This
-does not authorize Printer execution, provider/RPC/WebSocket calls, Scheduler
+The exact current permitted lane is no longer this per-token ceiling design as
+the sole next action. Use the current-authority block above and
+`CURRENT_HANDOFF.md`. The independent four-token per-token `50 -> 118` design
+lane remains open. Do not implement either automatically. This does not
+authorize Printer execution, provider/RPC/WebSocket calls, Scheduler
 execution, retrieval, financial capabilities, or longer windows.
 <!-- V2_9_8B_PER_TOKEN_CEILING_WIRING_REPAIR_AUDIT_CURRENT_STATE_END -->
 

@@ -2,45 +2,45 @@
 
 ## Current lane
 
-`FOUR-TOKEN STANDARD-4H PER-TOKEN REQUEST-CEILING WIRING REPAIR — DESIGN / SPECIFICATION`
+`SEP-3 CYCLE-2 DUPLICATE-TRANSPORT ACQUISITION REPAIR — DESIGN / SPECIFICATION`
 
-The Sep-3 consumed 4/2/2 Standard-4H forensic closeout and the per-token
-request-ceiling wiring repair readiness/audit are closed PASS. Do not begin
-design implementation in this handoff. Do not implement the repair. Do not
-prepare or apply an authorization. Do not run Printer.
+The Sep-3 Cycle-2 duplicate-transport / NO-PAIR blocker audit is closed PASS.
+Do not begin design implementation in this handoff. Do not implement the
+repair. The independent four-token per-token `50 -> 118` design lane remains
+open and is not this repair. Do not implement either. Do not prepare or apply
+an authorization. Do not run Printer.
 
 ## Latest completed work
 
-Forensic verdict:
+Cycle-2 audit verdict:
 
-`V2_9_8B_SEP3_CONSUMED_4_2_2_STANDARD4H_POST_RUN_FORENSIC_CLOSEOUT_PASS`
-
-Campaign result:
-
-`CAMPAIGN_FAILED`
+`V2_9_8B_SEP3_CYCLE2_DUPLICATE_TRANSPORT_NO_PAIR_BLOCKER_AUDIT_PASS`
 
 Primary classification:
 
-`PROVEN_COMMITTED_BUDGET_ENFORCEMENT_DEFECT`
-
-Governing forensic:
-
-`docs/printer-v1-v2-9-8b-auth-202fbea1-sep3-consumed-4-2-2-standard4h-post-run-forensic-closeout.md`
-
-Readiness/audit verdict:
-
-`V2_9_8B_FOUR_TOKEN_STANDARD4H_PER_TOKEN_REQUEST_CEILING_WIRING_REPAIR_READINESS_AUDIT_PASS`
+`NEW_NARROW_REFRESH_REENTRY_DEFECT`
 
 Repair classification:
 
-`NARROW_POLICY_WIRING_REPAIR_FEASIBLE`
+`NARROW_REPAIR_FEASIBLE`
+
+Repair-disposition of the historical mint-batch repair:
+
+`REPAIR_REACHED_BUT_SCOPE_GAP`
 
 Governing audit:
 
-`docs/printer-v1-v2-9-8b-four-token-standard4h-per-token-request-ceiling-wiring-repair-audit.md`
+`docs/printer-v1-v2-9-8b-sep3-cycle2-duplicate-transport-no-pair-blocker-audit.md`
 
-This documentation commit is the live audit HEAD. Later design must bind the
-live HEAD after this commit exists.
+This documentation commit is the live audit HEAD. Later Cycle-2 design must
+bind the live HEAD after this commit exists.
+
+Independently remaining open (not this lane):
+
+`FOUR-TOKEN STANDARD-4H PER-TOKEN REQUEST-CEILING WIRING REPAIR — DESIGN / SPECIFICATION`
+
+That independent design remains closed-audit / open-design. Do not implement
+it in this handoff.
 
 Authoritative DB SHA-256 remains:
 
@@ -63,13 +63,13 @@ remains permanently non-reusable.
 
 ## Exact next permitted action
 
-`Four-token Standard-4H per-token request-ceiling wiring repair design / specification. Bind the live audit HEAD after this documentation commit and DB SHA-256 575984caa484b12f4bb5fca0a06cdf7865adeb03b5f16874406fb0c1a73daa6e. Specify the narrow factory helper that selects lifecycle_requests_per_token=118 for four_token_proof without changing selective-1h 50. Do not implement. Do not run Printer.`
+`Sep-3 Cycle-2 duplicate-transport acquisition repair design / specification. Bind the live audit HEAD after this documentation commit and DB SHA-256 575984caa484b12f4bb5fca0a06cdf7865adeb03b5f16874406fb0c1a73daa6e. Specify a producer/checkpoint skip of already-sealed Cycle-2 Pump live-tail before=HEAD without weakening the duplicate guard, without adding request/job/refresh identity to the canonical key, and without changing refresh timing or budgets. Do not implement. The independent four-token 50->118 design remains open. Do not run Printer.`
 
 ## Application / execution remain blocked
 
 This handoff does **not** authorize:
 
-- repair implementation;
+- repair implementation of either open design;
 - `apply_authorization_once`;
 - application-marker creation;
 - package preparation;
@@ -92,9 +92,10 @@ forensic closeout PASS
 -> fresh readiness
 ```
 
-The Sep-3 Cycle-2 `DUPLICATE_TRANSPORT_IDENTITY` /
-`DISCOVERY_ARCHITECTURE_FALSE_SHORTAGE` finding remains separate. It must
-receive its own disposition before another live 4/2/2 authorization.
+The Cycle-2 finding is no longer an unaudited independent residue. It is
+audited PASS with `NARROW_REPAIR_FEASIBLE`. Both this Cycle-2 design and the
+independent `50 -> 118` design must close before another live 4/2/2
+authorization.
 
 ## Permanent locks
 
