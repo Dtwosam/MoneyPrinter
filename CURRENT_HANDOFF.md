@@ -2,58 +2,67 @@
 
 ## Current lane
 
-`FRESH EXACT-HEAD / EXACT-DB ONE-SHOT 4/2/2 STANDARD-4H AUTHORIZATION PACKAGE PREPARATION + INDEPENDENT PACKAGE REVIEW`
+`PRE-HOLDER DUPLICATE MEASURED TRANSPORT PRODUCER REPAIR — IMPLEMENTATION + BOUNDED PROOF`
 
-The post-joint-repair readiness/governance audit is closed PASS. Preparation
-and independent package review are next; application and execution remain
-separately blocked.
+The fec30eaa forensic closeout and the narrow producer-repair design are both
+closed PASS. Implementation and bounded proof are the next permitted lane;
+they remain separately approved work and are not authorized by this handoff.
 
 ## Latest completed work
 
-Readiness verdict:
+Design verdict:
 
-`V2_9_8B_POST_JOINT_REPAIR_FRESH_EXACT_HEAD_EXACT_DB_NEXT_BOUNDED_4_2_2_STANDARD4H_READINESS_GOVERNANCE_PASS`
+`V2_9_8B_PRE_HOLDER_DUPLICATE_MEASURED_TRANSPORT_PRODUCER_REPAIR_DESIGN_PASS`
 
 Classification:
 
 ```text
-READY_FOR_FRESH_EXACT_HEAD_EXACT_DB_ONE_SHOT_AUTHORIZATION_PACKAGE_PREPARATION
+NARROW_CANONICAL_REQUEST_ROOT_PROPAGATION_REPAIR_DESIGN
 ```
 
-Readiness closeout:
+Design artifact:
 
-`docs/printer-v1-v2-9-8b-post-joint-repair-next-bounded-4-2-2-standard4h-readiness-governance.md`
+`docs/printer-v1-v2-9-8b-pre-holder-duplicate-measured-transport-producer-repair-design.md`
 
-Audited implementation HEAD:
+Final committed design HEAD:
 
-`568f4d39ec558a4133c16d13ca328b3883144f42`
+`e43ccba54238b09da5ce38d7a1729fef8957b8de`
 
-Implementation baseline:
+The design reuses `derive_campaign_source_request_key_root` at the initial
+Cycle-1 temporal-refresh caller. It does not change the completed-tail helper,
+Source Governor, Central Scheduler, schema, canonical measured transport
+identity, CampaignSixUnitOwner, or holder duplicate guard.
 
-`1a505ac1234d94f584d9001ece796bb06373d234`
+Governing forensic:
 
-The operator-provided independent review PASS is accepted prerequisite evidence.
-No provider, Printer, or authoritative-DB mutation occurred in readiness.
+`docs/printer-v1-v2-9-8b-auth-fec30eaa-pre-holder-duplicate-measured-transport-forensic-closeout.md`
+
+Forensic verdict:
+
+`V2_9_8B_AUTH_FEC30EAA_PRE_HOLDER_DUPLICATE_MEASURED_TRANSPORT_FORENSIC_CLOSEOUT_PASS`
+
+Primary classification:
+
+`UPSTREAM_TRUE_DUPLICATE_TRANSPORT_PRODUCER_DEFECT`
 
 Authoritative DB SHA-256 remains:
 
-`575984caa484b12f4bb5fca0a06cdf7865adeb03b5f16874406fb0c1a73daa6e`
+`9ac31309c4f7a6233bc9f5d77944f88cd15a16a1659f98db665524f18dcb7a23`
 
 ## Consumed authorization
 
-`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260903T121923Z_202fbea1`
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260903T215031Z_fec30eaa`
 
-`CONSUMED / CHILD_EXITED_ZERO / PERMANENTLY NON-REUSABLE`
+`CONSUMED / CHILD_EXITED_NONZERO / PERMANENTLY NON-REUSABLE`
 
 Do not retry, rerun, resume, restart, reuse, or create a successor. Future
-prior-non-reuse root is 60 IDs, including this consumed ID.
-
-Earlier consumed `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260902T122136Z_59fdefe7`
-remains permanently non-reusable.
+Standard-4H prior-non-reuse derivation must include `fec30eaa` together with
+the prior 60-ID root, yielding an expected 61 IDs subject to the canonical
+validator.
 
 ## Exact next permitted action
 
-`Prepare exactly one fresh exact-HEAD / exact-DB one-shot 4/2/2 Standard-4H authorization package using existing canonical owners; bind the readiness documentation commit HEAD (not 568f4d39ec558a4133c16d13ca328b3883144f42), bind DB SHA-256 575984caa484b12f4bb5fca0a06cdf7865adeb03b5f16874406fb0c1a73daa6e, include the complete 60-ID prior non-reuse root including 202fbea1, and stop unconsumed for independent package review.`
+`Implement only the approved canonical request-root propagation correction in the initial Cycle-1 temporal-refresh caller, then execute the design's focused offline proof matrix and independent review. Bind implementation to the live HEAD produced by this handoff commit and to the unchanged authoritative DB identity.`
 
 ## Application / execution remain blocked
 
@@ -88,8 +97,8 @@ No scoring/ranking/confidence/weighted logic. No Source Governor or Central
 Scheduler bypass. Retrieval and financial capability remain locked.
 `WINDOW_5M_MICRO_EVENT` remains support-only. `WINDOW_12H` / `WINDOW_24H`
 remain locked. No automatic retry/rerun/resume/restart. 4/2/2 preserved.
-Authorized envelope `476 / 118 / 444`, retries `0`, endpoint rotation `false`.
-Refresh timing `+600 / +1200 / +1800 / +2400` preserved.
+Authorized envelope `476 / 118 / 444`, retries `0`, endpoint rotation `false`,
+and refresh timing `+600 / +1200 / +1800 / +2400` are unchanged.
 
 Remote/VPS work remains paused at
 `agent/remote-host-linux-portability-implementation`, HEAD
