@@ -292,7 +292,6 @@ def _lifecycle(
     return results
 
 
-
 def _attempt_owned_source_usage(
     connection: sqlite3.Connection,
     *,
@@ -352,6 +351,7 @@ def _attempt_owned_source_usage(
         ).fetchall()
     }
     return request_ids, response_ids, failure_ids, scheduler_job_ids
+
 
 def _locked_capabilities(
     connection: sqlite3.Connection, authoritative_report: Mapping[str, Any],
