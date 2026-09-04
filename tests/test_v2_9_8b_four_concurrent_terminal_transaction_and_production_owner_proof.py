@@ -57,7 +57,9 @@ from printer_v1.operator_cli.four_token_proof_integration import (
 from printer_v1.operator_cli.multi_cycle_campaign_coordinator import (
     MultiCycleAdmissionHealth,
     MultiCycleCampaignBinding,
+    MultiCycleCoordinatorError,
     admit_two_token_cycle,
+    admit_two_token_cycle_from_attempt,
     load_multi_cycle_campaign_snapshot,
     multi_cycle_configuration_contract,
 )
@@ -81,9 +83,12 @@ from printer_v1.operator_cli.pre_admission_attempt_evidence import (
     append_pre_admission_attempt_evidence,
 )
 from printer_v1.operator_cli.pre_admission_discovery_attempt import (
+    FROZEN_LANE_DECISION_OWNER,
+    PreAdmissionAttemptItem,
     PreAdmissionAttemptState,
     create_scheduled_pre_admission_attempt,
     mark_pre_admission_attempt_running,
+    persist_pre_admission_pair,
     pre_admission_attempt_lock_owner,
     terminalize_pre_admission_attempt,
 )
@@ -878,6 +883,216 @@ def test_pair_ready_survives_nonmutating_atomic_admission_recheck(
     assert second.cycle_id == "cycle-1-2"
     assert callback_calls == ["cycle-1-2", "cycle-1-2"]
     assert admit_calls == [1, 2]
+    connection.close()
+
+
+def test_real_pair_ready_atomic_consume_creates_exact_cycle2_once(
+    tmp_path: Path,
+) -> None:
+    path = _seed_campaign(tmp_path / "pair-ready-real-atomic-admit.sqlite3")
+    connection = _open(path)
+    admit_at = NOW + timedelta(seconds=301)
+
+    for ordinal, token_id, pair_id, lane in (
+        (1, 11, 111, "TRACK_FAST"),
+        (2, 12, 112, "TRACK_NORMAL"),
+    ):
+        _insert_token_pair(connection, token_id=token_id, pair_id=pair_id)
+        connection.execute(
+            """
+            INSERT INTO printer_memory_factory_campaign_token_slots(
+                token_slot_id,campaign_id,run_id,cycle_id,slot_ordinal,
+                token_identity,token_row_id,mint_identity,pair_identity,
+                pair_row_id,lifecycle_identity,token_state,created_at,updated_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,'WINDOW_15M_ACTIVE',?,?)
+            """,
+            (
+                f"slot-cycle-1-{ordinal}",
+                "campaign-1",
+                "campaign-run-1",
+                "cycle-1",
+                ordinal,
+                f"solana-mainnet:mint-{token_id}",
+                token_id,
+                f"mint-{token_id}",
+                f"pool-{token_id}",
+                pair_id,
+                LIFECYCLE,
+                _iso(NOW),
+                _iso(NOW),
+            ),
+        )
+
+    for token_id, pair_id in ((21, 121), (22, 122)):
+        _insert_token_pair(connection, token_id=token_id, pair_id=pair_id)
+    connection.commit()
+
+    attempt_id = (
+        "pre-admission:campaign-1:campaign-run-1:factory-1:c0002"
+    )
+    attempt = create_scheduled_pre_admission_attempt(
+        connection,
+        attempt_id=attempt_id,
+        campaign_id="campaign-1",
+        campaign_run_id="campaign-run-1",
+        configuration_id="configuration-1",
+        authoritative_factory_run_id="factory-1",
+        proposed_cycle_ordinal=2,
+        proposed_cycle_id="cycle-1-2",
+        cycle_cutoff=admit_at,
+        evaluated_at=admit_at,
+        selection_seed_identity="factory-1:campaign-run-1:c0002",
+        scheduled_for=admit_at,
+        now=admit_at,
+    )
+    claimed = claim_due_job(
+        connection,
+        job_id=attempt.scheduler_job_id,
+        lock_owner=pre_admission_attempt_lock_owner(attempt_id),
+        now=admit_at,
+    )
+    assert claimed is LockResult.ACQUIRED
+    mark_pre_admission_attempt_running(
+        connection, attempt_id=attempt_id, now=admit_at
+    )
+
+    frozen_items = []
+    for ordinal, token_id, pair_id, lane in (
+        (1, 21, 121, "TRACK_FAST"),
+        (2, 22, 122, "TRACK_NORMAL"),
+    ):
+        evidence_json = json.dumps(
+            {
+                "mint": f"mint-{token_id}",
+                "pair_address": f"pool-{token_id}",
+                "source_channel": "DEXSCREENER_LATEST_PROFILES",
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        frozen_items.append(
+            PreAdmissionAttemptItem(
+                attempt_id=attempt_id,
+                slot_ordinal=ordinal,
+                token_identity=f"solana-mainnet:mint-{token_id}",
+                token_row_id=token_id,
+                mint_identity=f"mint-{token_id}",
+                pair_identity=f"pool-{token_id}",
+                pair_row_id=pair_id,
+                lifecycle_identity=LIFECYCLE,
+                canonical_market_identity=f"market-{token_id}",
+                canonical_pool_identity=f"pool-{token_id}",
+                canonical_evidence_json=evidence_json,
+                canonical_evidence_hash=hashlib.sha256(
+                    evidence_json.encode()
+                ).hexdigest(),
+                evidence_version="PAIR_READY_ATOMIC_TEST_V1",
+                observed_at=admit_at,
+                channel_labels=("DEXSCREENER_LATEST_PROFILES",),
+                frozen_tracking_lane=lane,
+                frozen_discovery_action=lane,
+                frozen_discovery_label="PAIR_READY_ATOMIC_TEST",
+                frozen_classification_reason="deterministic_test_fixture",
+                frozen_lane_evidence_hash=hashlib.sha256(
+                    f"{token_id}:{pair_id}:{lane}".encode()
+                ).hexdigest(),
+                frozen_lane_decided_at=admit_at,
+                frozen_lane_decision_owner=FROZEN_LANE_DECISION_OWNER,
+            )
+        )
+    persisted = persist_pre_admission_pair(
+        connection,
+        attempt_id=attempt_id,
+        items=tuple(frozen_items),
+        now=admit_at,
+    )
+    assert persisted.state is PreAdmissionAttemptState.PAIR_READY
+    complete_job(
+        connection,
+        job_id=attempt.scheduler_job_id,
+        now=admit_at,
+    )
+    connection.commit()
+
+    result = admit_two_token_cycle_from_attempt(
+        connection,
+        binding=BINDING,
+        policy=POLICY,
+        now=admit_at,
+        attempt_id=attempt_id,
+        health=HEALTH,
+    )
+    assert result.mutation_performed is True
+    assert result.cycle_id == "cycle-1-2"
+    assert result.cycle_ordinal == 2
+
+    consumed = connection.execute(
+        """
+        SELECT attempt_state,consumed_cycle_id,consumed_at
+        FROM printer_pre_admission_discovery_attempts
+        WHERE attempt_id=?
+        """,
+        (attempt_id,),
+    ).fetchone()
+    assert consumed is not None
+    assert str(consumed["attempt_state"]) == "CONSUMED"
+    assert str(consumed["consumed_cycle_id"]) == "cycle-1-2"
+    assert consumed["consumed_at"] is not None
+
+    cycle = connection.execute(
+        """
+        SELECT cycle_ordinal,cycle_state
+        FROM printer_memory_factory_campaign_cycles
+        WHERE cycle_id='cycle-1-2'
+        """
+    ).fetchone()
+    assert cycle is not None
+    assert int(cycle["cycle_ordinal"]) == 2
+    assert str(cycle["cycle_state"]) == "PLANNED"
+
+    slots = connection.execute(
+        """
+        SELECT s.slot_ordinal,s.token_row_id,s.pair_row_id,s.token_state,
+               s.tracking_queue_id,q.tracking_lane,q.queue_status,t.token_status
+        FROM printer_memory_factory_campaign_token_slots AS s
+        JOIN printer_tracking_queue AS q ON q.id=s.tracking_queue_id
+        JOIN printer_tokens AS t ON t.id=s.token_row_id
+        WHERE s.campaign_id='campaign-1'
+          AND s.run_id='campaign-run-1'
+          AND s.cycle_id='cycle-1-2'
+        ORDER BY s.slot_ordinal
+        """
+    ).fetchall()
+    assert len(slots) == 2
+    assert [
+        (
+            int(row["slot_ordinal"]),
+            int(row["token_row_id"]),
+            int(row["pair_row_id"]),
+            str(row["token_state"]),
+            str(row["tracking_lane"]),
+            str(row["token_status"]),
+        )
+        for row in slots
+    ] == [
+        (1, 21, 121, "SELECTED", "TRACK_FAST", "TRACK_FAST"),
+        (2, 22, 122, "SELECTED", "TRACK_NORMAL", "TRACK_NORMAL"),
+    ]
+    assert all(int(row["tracking_queue_id"]) > 0 for row in slots)
+
+    with pytest.raises(
+        MultiCycleCoordinatorError,
+        match="pre-admission attempt is not unconsumed PAIR_READY",
+    ):
+        admit_two_token_cycle_from_attempt(
+            connection,
+            binding=BINDING,
+            policy=POLICY,
+            now=admit_at + timedelta(seconds=1),
+            attempt_id=attempt_id,
+            health=HEALTH,
+        )
+    _integrity(connection)
     connection.close()
 
 
