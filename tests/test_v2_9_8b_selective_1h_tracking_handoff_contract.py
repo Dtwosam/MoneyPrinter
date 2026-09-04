@@ -36,6 +36,7 @@ from printer_v1.operator_cli.authoritative_live_operational_campaign import (
 )
 from printer_v1.operator_cli.holder_reliability_budget_control import build_ledger
 from printer_v1.operator_cli.cadence_authority import (
+    CadenceAuthorityError,
     claim_tracking_authority_for_slot_insert,
 )
 from printer_v1.operator_cli.multi_cycle_campaign_coordinator import (
@@ -269,6 +270,65 @@ class SelectiveOneHourTrackingHandoffContractTests(unittest.TestCase):
         self.assertEqual(kwargs["assessed_at"], NOW)
         self.assertTrue(kwargs["fresh_evidence_requalification"])
         self.assertEqual(kwargs["requalification_lineage"], lineage)
+
+    def test_slot_claim_wrapper_requalifies_expired_cooldown_only_with_fresh_lineage(
+        self,
+    ) -> None:
+        row_id = self._row(QueueStatus.COOLDOWN)
+        self.connection.execute(
+            "UPDATE printer_tracking_queue SET next_check_at=?,last_checked_at=? WHERE id=?",
+            (
+                (NOW - timedelta(hours=1)).isoformat(),
+                NOW.isoformat(),
+                row_id,
+            ),
+        )
+        expired_at = NOW + timedelta(seconds=TRACKING_COOLDOWN_SECONDS)
+
+        with self.assertRaisesRegex(
+            CadenceAuthorityError,
+            "TRACKING_QUEUE_CLAIM_FAILED",
+        ):
+            claim_tracking_authority_for_slot_insert(
+                self.connection,
+                token_row_id=self.token_id,
+                pair_row_id=self.pair_id,
+                tracking_lane="TRACK_NORMAL",
+                now=expired_at,
+                priority_reason="later_cycle_slot_tracking_activation",
+            )
+        self.connection.rollback()
+
+        queue_id = claim_tracking_authority_for_slot_insert(
+            self.connection,
+            token_row_id=self.token_id,
+            pair_row_id=self.pair_id,
+            tracking_lane="TRACK_NORMAL",
+            now=expired_at,
+            priority_reason="later_cycle_slot_tracking_activation",
+            fresh_evidence_requalification=True,
+            requalification_lineage={
+                "pre_admission_attempt_id": "attempt-2",
+                "frozen_evidence_hash": "e" * 64,
+            },
+        )
+        self.assertGreater(queue_id, row_id)
+        row = self.connection.execute(
+            "SELECT tracking_action,queue_status FROM printer_tracking_queue WHERE id=?",
+            (queue_id,),
+        ).fetchone()
+        self.assertEqual(
+            (row["tracking_action"], row["queue_status"]),
+            ("REOPEN_REVIVED_TOKEN", "QUEUED"),
+        )
+        event = self.connection.execute(
+            "SELECT event_payload_json FROM printer_token_lifecycle_events "
+            "WHERE lifecycle_event='REOPEN_REVIVED_TOKEN' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        payload = json.loads(event[0])
+        self.assertEqual(payload["pre_admission_attempt_id"], "attempt-2")
+        self.assertEqual(payload["frozen_evidence_hash"], "e" * 64)
+        self.assertTrue(payload["fresh_evidence_requalification"])
 
     def test_frozen_pair_requalification_requires_current_holder_authority(self) -> None:
         item = SimpleNamespace(
