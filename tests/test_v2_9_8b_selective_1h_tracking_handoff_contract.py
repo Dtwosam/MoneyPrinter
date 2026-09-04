@@ -331,14 +331,31 @@ class SelectiveOneHourTrackingHandoffContractTests(unittest.TestCase):
         self.assertEqual(payload["frozen_evidence_hash"], "e" * 64)
         self.assertTrue(payload["fresh_evidence_requalification"])
 
-    def test_frozen_pair_requalification_requires_current_holder_authority(self) -> None:
+    def test_frozen_pair_requalification_uses_exact_lane_not_generic_flag(
+        self,
+    ) -> None:
+        row_id = self._row(QueueStatus.COOLDOWN)
+        self.connection.execute(
+            "UPDATE printer_tracking_queue SET next_check_at=?,last_checked_at=? WHERE id=?",
+            (
+                (NOW - timedelta(hours=1)).isoformat(),
+                NOW.isoformat(),
+                row_id,
+            ),
+        )
+        self.connection.commit()
+        expired_at = NOW + timedelta(seconds=TRACKING_COOLDOWN_SECONDS)
         item = SimpleNamespace(
+            token_row_id=self.token_id,
+            pair_row_id=self.pair_id,
             canonical_evidence_json=json.dumps(
                 {
                     "candidate": {"provenance": "PERSISTED_GRADUATED"},
                     "holder_evidence": {
                         "eligible": True,
-                        "tracking_requalification_required": True,
+                        # The old lane-agnostic precheck may truthfully be false
+                        # when another lane is fresh. Exact lane state owns now.
+                        "tracking_requalification_required": False,
                         "source_name": "goplus",
                         "reason": "CURRENT_HOLDER_EVIDENCE",
                     },
@@ -346,39 +363,50 @@ class SelectiveOneHourTrackingHandoffContractTests(unittest.TestCase):
                 sort_keys=True,
             ),
             canonical_evidence_hash="b" * 64,
-            observed_at=NOW,
+            observed_at=expired_at,
         )
         allowed, lineage = _frozen_pair_requalification_authority(
+            self.connection,
             item,
             attempt_id="attempt-2",
             campaign_id="campaign-1",
             campaign_run_id="campaign-run-1",
             cycle_id="cycle-1-2",
+            tracking_lane="TRACK_NORMAL",
+            assessed_at=expired_at,
         )
         self.assertTrue(allowed)
         self.assertIsNotNone(lineage)
         self.assertEqual(lineage["pre_admission_attempt_id"], "attempt-2")
-        self.assertEqual(lineage["frozen_evidence_hash"], "b" * 64)
+        self.assertEqual(lineage["frozen_tracking_lane"], "TRACK_NORMAL")
+        self.assertEqual(lineage["predecessor_queue_id"], row_id)
 
-        item_without_requalification = SimpleNamespace(
+        fresh_token_id = self._token("mint-b")
+        fresh_pair_id = self._pair(fresh_token_id, "pair-b")
+        fresh_item = SimpleNamespace(
+            token_row_id=fresh_token_id,
+            pair_row_id=fresh_pair_id,
             canonical_evidence_json=json.dumps(
                 {
                     "candidate": {},
                     "holder_evidence": {
                         "eligible": True,
-                        "tracking_requalification_required": False,
+                        "tracking_requalification_required": True,
                     },
                 }
             ),
             canonical_evidence_hash="c" * 64,
-            observed_at=NOW,
+            observed_at=expired_at,
         )
         allowed, lineage = _frozen_pair_requalification_authority(
-            item_without_requalification,
+            self.connection,
+            fresh_item,
             attempt_id="attempt-3",
             campaign_id="campaign-1",
             campaign_run_id="campaign-run-1",
             cycle_id="cycle-1-2",
+            tracking_lane="TRACK_NORMAL",
+            assessed_at=expired_at,
         )
         self.assertFalse(allowed)
         self.assertIsNone(lineage)
