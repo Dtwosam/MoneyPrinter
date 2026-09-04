@@ -1228,7 +1228,7 @@ def test_real_factory_reuses_time_shifted_pair_ready_after_transient_defer(
         for decision in cycle2_decisions
     } == {"WINDOW_1H"}
     assert len(cycle2_successors) == 2
-    assert all(str(row[2]) == "PLANNED" for row in cycle2_successors)
+    assert {str(row[2]) for row in cycle2_successors} == {"CANCELLED"}
     assert int(connection.execute(
         "SELECT COUNT(*) FROM printer_memory_factory_campaign_scheduler_work "
         "WHERE campaign_id=? AND run_id=? AND cycle_id=? "
