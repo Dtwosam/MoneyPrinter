@@ -10623,9 +10623,10 @@ def run_one_command_15m_factory(
                         admission_attempt_finished = True
                         continue
                     if _later_cycle_attempt_is_terminal(boundary.attempt_state):
-                        # The one durable opportunity has run. PAIR_READY may
-                        # remain frozen after post-discovery health changed; no
-                        # retry/successor is permitted.
+                        # Only a true terminal outcome ends the one durable
+                        # Cycle-2 opportunity. RUNNING and PAIR_READY are
+                        # re-enterable states of that same attempt, never a
+                        # retry, successor, resume campaign, or replacement.
                         admission_attempt_finished = True
                         if boundary.attempt_terminal_cause is not None:
                             four_token_attempt_terminal_cause = (
