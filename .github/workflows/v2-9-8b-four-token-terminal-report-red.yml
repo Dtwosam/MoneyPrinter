@@ -14,6 +14,8 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -22,6 +24,14 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e .
           python -m pip install pytest
-      - name: Run four-token terminal report/replay regression
+      - name: Compile changed Python owners
         run: |
-          python -m pytest -q tests/test_v2_9_8b_four_token_terminal_report_replay.py
+          python -m py_compile             src/printer_v1/operator_cli/final_campaign_report.py             src/printer_v1/operator_cli/zero_source_campaign_replay.py             tests/test_v2_9_8b_four_token_terminal_report_replay.py
+      - name: Run focused and nearest report regressions
+        run: |
+          python -m pytest -q             tests/test_v2_9_8b_four_token_terminal_report_replay.py             tests/test_v2_9_7d_6b_6_final_campaign_report.py             tests/test_v2_9_7d_6b_7_zero_source_read_only_replay.py             tests/test_v2_9_7e_1_insufficient_pool_terminal_cleanup.py             tests/test_v2_9_8b_cycle2_discovery_budget_accounting.py
+      - name: Check diff whitespace
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: git diff --check "$BASE_SHA" "$HEAD_SHA"
