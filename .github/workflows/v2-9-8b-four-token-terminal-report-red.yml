@@ -1,15 +1,15 @@
-name: V2-9.8B four-token terminal report RED
+name: V2-9.8B four-token terminal report proof
 
 on:
   pull_request:
     branches:
-      - agent/v2-9-8b-cycle2-durable-pair-ready-recheck-repair
+      - proof/v2-9-8b-four-token-terminal-report-ci-base
 
 permissions:
   contents: read
 
 jobs:
-  focused-red:
+  focused-proof:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
