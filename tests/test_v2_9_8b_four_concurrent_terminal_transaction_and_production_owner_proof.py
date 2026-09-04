@@ -24,6 +24,9 @@ from printer_v1.discovery.persistence import (
 from printer_v1.discovery.pre_lifecycle_refresh_composition import (
     build_pre_lifecycle_refresh_stage,
 )
+from printer_v1.discovery.pre_admission_materialization import (
+    materialize_consumed_pre_admission_pair,
+)
 from printer_v1.discovery.pre_lifecycle_temporal_acquisition import (
     ACQUISITION_DEADLINE_EXHAUSTED,
     WAITING_FOR_ELIGIBLE_SUPPLY,
@@ -91,6 +94,7 @@ from printer_v1.operator_cli.pre_admission_discovery_attempt import (
     PreAdmissionAttemptItem,
     PreAdmissionAttemptState,
     create_scheduled_pre_admission_attempt,
+    link_pre_admission_source_evidence,
     mark_pre_admission_attempt_running,
     persist_pre_admission_pair,
     pre_admission_attempt_lock_owner,
@@ -969,7 +973,8 @@ def test_real_pair_ready_atomic_consume_creates_exact_cycle2_once(
             {
                 "mint": f"mint-{token_id}",
                 "pair_address": f"pool-{token_id}",
-                "source_channel": "DEXSCREENER_LATEST_PROFILES",
+                "provenance": "PERSISTED_GRADUATED",
+                "admission_authority": "DIRECT_PUMP_PUMPSWAP",
             },
             sort_keys=True,
             separators=(",", ":"),
@@ -992,7 +997,7 @@ def test_real_pair_ready_atomic_consume_creates_exact_cycle2_once(
                 ).hexdigest(),
                 evidence_version="PAIR_READY_ATOMIC_TEST_V1",
                 observed_at=admit_at,
-                channel_labels=("DEXSCREENER_LATEST_PROFILES",),
+                channel_labels=("PERSISTED_GRADUATED",),
                 frozen_tracking_lane=lane,
                 frozen_discovery_action=lane,
                 frozen_discovery_label="PAIR_READY_ATOMIC_TEST",
@@ -1011,6 +1016,57 @@ def test_real_pair_ready_atomic_consume_creates_exact_cycle2_once(
         now=admit_at,
     )
     assert persisted.state is PreAdmissionAttemptState.PAIR_READY
+
+    source_request_id = int(
+        connection.execute(
+            """
+            INSERT INTO printer_source_requests(
+                source_name,request_kind,requested_at,request_key,
+                tracking_priority,source_status,data_quality_label
+            ) VALUES (
+                'solana_rpc','pumpswap_pool_account_batch',?,?,
+                0,'COMPLETE','CLEAN_DATA'
+            )
+            """,
+            (
+                _iso(admit_at),
+                f"{attempt_id}:materialization-source",
+            ),
+        ).lastrowid
+    )
+    source_response_id = int(
+        connection.execute(
+            """
+            INSERT INTO printer_source_responses(
+                source_request_id,source_name,received_at,status_code,
+                source_status,data_quality_label,response_hash,
+                normalized_payload_json
+            ) VALUES (
+                ?,'solana_rpc',?,200,'COMPLETE','CLEAN_DATA',?,?
+            )
+            """,
+            (
+                source_request_id,
+                _iso(admit_at),
+                "b" * 64,
+                json.dumps(
+                    {"status": "CURRENT_POOL_CONFIRMED"},
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+            ),
+        ).lastrowid
+    )
+    link_pre_admission_source_evidence(
+        connection,
+        attempt_id=attempt_id,
+        link_ordinal=1,
+        logical_stage="PUMPSWAP_CONFIRMATION",
+        source_request_id=source_request_id,
+        source_response_id=source_response_id,
+        now=admit_at,
+    )
+
     complete_job(
         connection,
         job_id=attempt.scheduler_job_id,
@@ -1083,6 +1139,58 @@ def test_real_pair_ready_atomic_consume_creates_exact_cycle2_once(
         (2, 22, 122, "SELECTED", "TRACK_NORMAL", "TRACK_NORMAL"),
     ]
     assert all(int(row["tracking_queue_id"]) > 0 for row in slots)
+
+    materialized = materialize_consumed_pre_admission_pair(
+        connection,
+        attempt_id=attempt_id,
+        campaign_id="campaign-1",
+        campaign_run_id="campaign-run-1",
+        configuration_id="configuration-1",
+        authoritative_factory_run_id="factory-1",
+        cycle_id="cycle-1-2",
+        now=admit_at,
+    )
+    assert materialized.materialized_item_count == 2
+    batch = connection.execute(
+        """
+        SELECT batch_state,first_terminal_cause
+        FROM printer_discovery_batches
+        WHERE discovery_batch_id=?
+        """,
+        (materialized.discovery_batch_id,),
+    ).fetchone()
+    assert batch is not None
+    assert str(batch["batch_state"]) == "TERMINAL_COMPLETED"
+    assert str(batch["first_terminal_cause"]) == "FROZEN_PAIR_MATERIALIZED"
+    selected_links = int(
+        connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM printer_discovery_selected_item_links
+            WHERE discovery_batch_id=?
+              AND selection_batch_id=?
+              AND cycle_id='cycle-1-2'
+              AND tracking_handoff_state='LINKED_ONLY'
+              AND first_window_15m_scheduler_job_id IS NULL
+            """,
+            (
+                materialized.discovery_batch_id,
+                materialized.selection_batch_id,
+            ),
+        ).fetchone()[0]
+    )
+    assert selected_links == 2
+    repeat_materialized = materialize_consumed_pre_admission_pair(
+        connection,
+        attempt_id=attempt_id,
+        campaign_id="campaign-1",
+        campaign_run_id="campaign-run-1",
+        configuration_id="configuration-1",
+        authoritative_factory_run_id="factory-1",
+        cycle_id="cycle-1-2",
+        now=admit_at + timedelta(seconds=1),
+    )
+    assert repeat_materialized == materialized
 
     with pytest.raises(
         MultiCycleCoordinatorError,
