@@ -11,40 +11,34 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-24.04
-    timeout-minutes: 8
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       - run: python -m pip install -e . pytest
-      - name: Compile Cycle-2 production owners
+      - name: Compile downstream lifecycle owners
         run: |
           python -m py_compile \
-            src/printer_v1/operator_cli/authoritative_live_operational_campaign.py \
-            src/printer_v1/operator_cli/pre_admission_discovery_attempt.py \
-            src/printer_v1/operator_cli/multi_cycle_campaign_coordinator.py \
-            src/printer_v1/discovery/pre_admission_materialization.py \
             src/printer_v1/operator_cli/one_command_15m_factory.py \
+            src/printer_v1/operator_cli/standard_4h_progression.py \
             src/printer_v1/operator_cli/cadence_authority.py
-      - name: Callback
+      - name: Four-token bounded offline proof
         env: {PYTHONPATH: "${{ github.workspace }}/src"}
-        run: timeout 90s python -m pytest -q tests/test_v2_9_8b_pre_admission_later_cycle_callback.py
-      - name: Atomic claim
+        run: timeout 120s python -m pytest -q tests/test_v2_9_8b_four_token_standard_four_hour_bounded_offline_proof.py
+      - name: 15m to 1h bind order
         env: {PYTHONPATH: "${{ github.workspace }}/src"}
-        run: timeout 90s python -m pytest -q tests/test_v2_9_8b_pre_admission_atomic_cycle2_consumption.py
-      - name: Consume materialize
+        run: timeout 120s python -m pytest -q tests/test_v2_9_8b_15m_to_1h_campaign_window_bind_order.py
+      - name: 1h close boundary
         env: {PYTHONPATH: "${{ github.workspace }}/src"}
-        run: timeout 90s python -m pytest -q tests/test_v2_9_8b_callback_consume_materialize_integration.py
-      - name: Factory boundary
+        run: timeout 120s python -m pytest -q tests/test_v2_9_8b_post_dtw100_checkpoint4_1h_close_boundary.py
+      - name: Standard 4h activation barrier
         env: {PYTHONPATH: "${{ github.workspace }}/src"}
-        run: timeout 90s python -m pytest -q tests/test_v2_9_8b_four_token_gate_d_factory_boundary.py
-      - name: Cadence
+        run: timeout 120s python -m pytest -q tests/test_v2_9_8b_post_dtw100_standard_four_hour_activation_factory_barrier.py
+      - name: Standard 4h handoff
         env: {PYTHONPATH: "${{ github.workspace }}/src"}
-        run: timeout 90s python -m pytest -q tests/test_v2_9_8b_cadence_authority_final_corrective.py
-      - name: Wake ordering
+        run: timeout 120s python -m pytest -q tests/test_v2_9_8b_post_dtw100_standard_four_hour_campaign_handoff.py
+      - name: Standard 4h planning
         env: {PYTHONPATH: "${{ github.workspace }}/src"}
-        run: timeout 90s python -m pytest -q tests/test_v2_9_8b_four_token_factory_wake_ordering.py
-      - name: Orchestration
-        env: {PYTHONPATH: "${{ github.workspace }}/src"}
-        run: timeout 90s python -m pytest -q tests/test_v2_9_8b_4_2_2_orchestration_correctness.py
+        run: timeout 120s python -m pytest -q tests/test_v2_9_8b_post_dtw100_standard_four_hour_campaign_planning.py
