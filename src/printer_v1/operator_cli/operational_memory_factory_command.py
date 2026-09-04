@@ -1888,6 +1888,9 @@ def _build_pre_lifecycle_temporal_refresh_owner(
         build_cycle_discovery_batch_resolver,
         build_pre_lifecycle_refresh_stage,
     )
+    from printer_v1.discovery.permanent_discovery_availability import (
+        derive_campaign_source_request_key_root,
+    )
     from printer_v1.discovery.pre_lifecycle_temporal_acquisition import (
         acquisition_deadline_at,
     )
@@ -2006,11 +2009,14 @@ def _build_pre_lifecycle_temporal_refresh_owner(
         )
 
     stage_evidence_sink_for_initial_cycle = stage_evidence_sink
+    initial_cycle_request_key_root = derive_campaign_source_request_key_root(
+        execution_id
+    )
     return compose_owner(
         owner_cycle_id=cycle_id,
         owner_cycle_cutoff=cycle_cutoff,
         owner_evaluated_at=evaluated_at,
-        owner_request_key_prefix=execution_id,
+        owner_request_key_prefix=initial_cycle_request_key_root,
         owner_stage_evidence_sink=stage_evidence_sink_for_initial_cycle,
     )
 

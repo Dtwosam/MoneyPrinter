@@ -2,36 +2,37 @@
 
 ## Current lane
 
-`PRE-HOLDER DUPLICATE MEASURED TRANSPORT PRODUCER REPAIR — IMPLEMENTATION + BOUNDED PROOF`
+`INDEPENDENT CODE / PROOF REVIEW — PRE-HOLDER DUPLICATE MEASURED TRANSPORT PRODUCER REPAIR`
 
-The fec30eaa forensic closeout and the narrow producer-repair design are both
-closed PASS. Implementation and bounded proof are the next permitted lane;
-they remain separately approved work and are not authorized by this handoff.
+The fec30eaa forensic closeout, narrow producer-repair design, and implementation
+plus bounded proof are closed PASS. Independent code/proof review is the next
+permitted lane; no execution, authorization, or new campaign is authorized.
 
 ## Latest completed work
 
-Design verdict:
+Implementation verdict:
 
-`V2_9_8B_PRE_HOLDER_DUPLICATE_MEASURED_TRANSPORT_PRODUCER_REPAIR_DESIGN_PASS`
+`V2_9_8B_PRE_HOLDER_DUPLICATE_MEASURED_TRANSPORT_PRODUCER_REPAIR_IMPLEMENTATION_BOUNDED_PROOF_PASS`
 
 Classification:
 
 ```text
-NARROW_CANONICAL_REQUEST_ROOT_PROPAGATION_REPAIR_DESIGN
+PRE_HOLDER_DUPLICATE_MEASURED_TRANSPORT_PRODUCER_REPAIR_PASS
 ```
 
-Design artifact:
+Implementation closeout:
 
-`docs/printer-v1-v2-9-8b-pre-holder-duplicate-measured-transport-producer-repair-design.md`
+`docs/printer-v1-v2-9-8b-pre-holder-duplicate-measured-transport-producer-repair-closeout.md`
 
-Final committed design HEAD:
+Implementation baseline HEAD:
 
-`e43ccba54238b09da5ce38d7a1729fef8957b8de`
+`acb761395ecf40d25c602f19fff6fdb89e207379`
 
-The design reuses `derive_campaign_source_request_key_root` at the initial
-Cycle-1 temporal-refresh caller. It does not change the completed-tail helper,
-Source Governor, Central Scheduler, schema, canonical measured transport
-identity, CampaignSixUnitOwner, or holder duplicate guard.
+Only the initial Cycle-1 temporal-refresh caller changed. It now forwards
+`derive_campaign_source_request_key_root(execution_id)` rather than the bare
+execution ID. The completed-tail helper, Source Governor, Central Scheduler,
+schema, canonical measured transport identity, CampaignSixUnitOwner, and holder
+duplicate guard are unchanged.
 
 Governing forensic:
 
@@ -62,7 +63,7 @@ validator.
 
 ## Exact next permitted action
 
-`Implement only the approved canonical request-root propagation correction in the initial Cycle-1 temporal-refresh caller, then execute the design's focused offline proof matrix and independent review. Bind implementation to the live HEAD produced by this handoff commit and to the unchanged authoritative DB identity.`
+`Perform an independent code/proof review of the narrow initial Cycle-1 canonical request-root propagation repair and its bounded offline evidence. Do not implement, run Printer, contact providers, mutate the DB, or prepare/apply another authorization in that review.`
 
 ## Application / execution remain blocked
 
