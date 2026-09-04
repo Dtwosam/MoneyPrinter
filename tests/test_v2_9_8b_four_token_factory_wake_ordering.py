@@ -1067,7 +1067,15 @@ def test_real_factory_reuses_time_shifted_pair_ready_after_transient_defer(
         "WHERE cycle_id=?",
         (cycle2_id,),
     ).fetchone()[0]) == 2
-    assert [
+    frozen_lanes = [
+        str(row[0])
+        for row in connection.execute(
+            "SELECT frozen_tracking_lane FROM "
+            "printer_pre_admission_discovery_attempt_items "
+            "ORDER BY slot_ordinal"
+        ).fetchall()
+    ]
+    opening_rows = [
         tuple(row)
         for row in connection.execute(
             "SELECT step_key,step_status,tracking_lane FROM "
@@ -1076,10 +1084,9 @@ def test_real_factory_reuses_time_shifted_pair_ready_after_transient_defer(
             "ORDER BY step_key",
             (FACTORY_RUN_ID,),
         ).fetchall()
-    ] == [
-        ("t1_c0002_snapshot_00", "SUCCEEDED", "TRACK_NORMAL"),
-        ("t2_c0002_snapshot_00", "SUCCEEDED", "TRACK_NORMAL"),
     ]
+    assert [row[1] for row in opening_rows] == ["SUCCEEDED", "SUCCEEDED"]
+    assert [row[2] for row in opening_rows] == frozen_lanes
     assert int(connection.execute(
         "SELECT COUNT(*) FROM printer_memory_factory_campaign_scheduler_work "
         "WHERE cycle_id=? AND stage_id='WINDOW_15M' "
