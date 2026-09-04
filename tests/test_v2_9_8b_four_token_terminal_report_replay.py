@@ -552,6 +552,36 @@ class FourTokenTerminalReportReplayTests(unittest.TestCase):
             [1, 2, 3, 4, 5, discovery_job_id],
         )
 
+    def _set_authoritative_budget_total(self, field: str, value: int) -> None:
+        with self.connection:
+            row = self.connection.execute(
+                """SELECT final_report_json FROM printer_memory_factory_runs
+                   WHERE run_id='authority-run'"""
+            ).fetchone()
+            authority = json.loads(str(row[0]))
+            authority["run_budgets"][field] = value
+            self.connection.execute(
+                """UPDATE printer_memory_factory_runs
+                   SET final_report_json=? WHERE run_id='authority-run'""",
+                (json.dumps(authority, sort_keys=True),),
+            )
+
+    def test_source_request_identity_total_mismatch_fails_closed(self) -> None:
+        self._set_authoritative_budget_total("governed_requests_run", 999)
+        with self.assertRaisesRegex(
+            FinalCampaignReportError,
+            "source request identity/total mismatch",
+        ):
+            self._assemble()
+
+    def test_scheduler_identity_total_mismatch_fails_closed(self) -> None:
+        self._set_authoritative_budget_total("scheduler_rows_total", 999)
+        with self.assertRaisesRegex(
+            FinalCampaignReportError,
+            "Scheduler identity/total mismatch",
+        ):
+            self._assemble()
+
     def _leave_consumed_attempt_job_active(self) -> None:
         with self.connection:
             self.connection.execute(
