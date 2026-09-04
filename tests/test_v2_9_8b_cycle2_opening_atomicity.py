@@ -154,7 +154,7 @@ def test_cycle2_opening_rolls_back_slot1_when_slot2_planning_fails(
 
     monkeypatch.setattr(factory, "_precreate_proof_15m_window", fail_second_slot)
 
-    connection.execute("BEGIN IMMEDIATE")
+    assert connection.in_transaction is False
     with pytest.raises(RuntimeError, match="INJECTED_SLOT2_OPENING_FAILURE"):
         factory._plan_opening_jobs(
             connection,
@@ -164,7 +164,8 @@ def test_cycle2_opening_rolls_back_slot1_when_slot2_planning_fails(
             cycle_ordinal=2,
             four_token_proof=True,
         )
-    connection.rollback()
+    if connection.in_transaction:
+        connection.rollback()
 
     # The two-slot first-15m opening set is one atomic planning boundary.
     # A slot-2 failure may not leave slot-1 window/job/step/work residue.
