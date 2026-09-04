@@ -11341,15 +11341,28 @@ def run_one_command_15m_factory(
             campaign_run_id=campaign_run_id,
             four_token_campaign=four_token_proof_controller is not None,
         )
+        lifecycle_discovery_results = discovery.get("discovery_results", [])
+        if four_token_proof_controller is not None:
+            historical_discovery_by_target = {
+                (int(item["token_id"]), int(item["pair_id"])): item
+                for item in lifecycle_discovery_results
+                if item.get("token_id") is not None
+                and item.get("pair_id") is not None
+            }
+            lifecycle_discovery_results = [
+                {
+                    **historical_discovery_by_target.get(
+                        (int(target["token_id"]), int(target["pair_id"])), {}
+                    ),
+                    **target,
+                }
+                for target in lifecycle_targets
+            ]
         lifecycle_reconciliation = reconcile_factory_post_cycle_lifecycle(
             conn,
             run_id=run_id,
             selected_tokens=lifecycle_targets,
-            discovery_results=(
-                lifecycle_targets
-                if four_token_proof_controller is not None
-                else discovery.get("discovery_results", [])
-            ),
+            discovery_results=lifecycle_discovery_results,
             per_token_outcomes=report["per_token_outcomes"],
             stop_reason=report["stop_reason"],
             archive_policy="cooldown",
