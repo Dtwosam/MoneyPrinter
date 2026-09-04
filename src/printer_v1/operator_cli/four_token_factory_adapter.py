@@ -1123,17 +1123,24 @@ def reconcile_four_token_cycle_terminal(
         "WHERE campaign_id=? AND run_id=? AND cycle_id=? ORDER BY slot_ordinal",
         (campaign, run, cycle),
     ).fetchall()
-    for slot in slot_rows:
-        if str(slot[1]) not in {"COOLDOWN", "ARCHIVED", "MANUAL_REVIEW", "FAILED"}:
-            transition_state(
-                connection,
-                record_kind="token_slot",
-                identity=str(slot[0]),
-                expected_state=str(slot[1]),
-                new_state="MANUAL_REVIEW",
-                terminal_cause=reason,
-                now=timestamp,
-            )
+    # Canonical TERMINAL_SUCCESS already proves each slot reached its lawful
+    # terminal lifecycle disposition (for example WINDOW_4H_CLOSED, or an
+    # earlier token-local ineligible close).  Rewriting those facts to
+    # MANUAL_REVIEW would destroy the evidence that the final two-cycle
+    # accounting immediately re-reads in Phase B.  Manual review remains a
+    # fail-closed cleanup disposition only for non-success terminalization.
+    if str(run_status) != "COMPLETED":
+        for slot in slot_rows:
+            if str(slot[1]) not in {"COOLDOWN", "ARCHIVED", "MANUAL_REVIEW", "FAILED"}:
+                transition_state(
+                    connection,
+                    record_kind="token_slot",
+                    identity=str(slot[0]),
+                    expected_state=str(slot[1]),
+                    new_state="MANUAL_REVIEW",
+                    terminal_cause=reason,
+                    now=timestamp,
+                )
     if scoped_step_ids:
         placeholders = ",".join("?" for _ in scoped_step_ids)
         connection.execute(
