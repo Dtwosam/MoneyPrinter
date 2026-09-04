@@ -362,8 +362,21 @@ def _resolve_acquisition_quantum_bound(
 
 
 def _later_cycle_attempt_is_terminal(state: str | None) -> bool:
-    value = str(state or "")
-    return bool(value) and value != "RUNNING"
+    """Return only true terminal states for the one durable Cycle-2 attempt.
+
+    PAIR_READY is deliberately not terminal. Discovery may freeze an exact pair
+    immediately before Cycle-1 lifecycle work becomes due; the post-discovery
+    health recheck must be allowed to defer admission and later consume that same
+    frozen attempt without issuing another discovery request or creating a
+    successor opportunity.
+    """
+    return str(state or "") in {
+        "NO_PAIR",
+        "BLOCKED",
+        "FAILED",
+        "CANCELLED",
+        "CONSUMED",
+    }
 
 
 _CYCLE_LOCAL_MATERIALIZATION_REASONS = frozenset(
