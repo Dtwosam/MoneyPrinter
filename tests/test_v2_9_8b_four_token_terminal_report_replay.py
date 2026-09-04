@@ -1,5 +1,7 @@
 """Focused four-token terminal-report and zero-source replay parity tests."""
 
+# Disposable CI synchronization marker; not intended for the repair branch.
+
 from __future__ import annotations
 
 import hashlib
