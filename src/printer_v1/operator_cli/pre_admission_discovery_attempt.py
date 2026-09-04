@@ -653,6 +653,7 @@ def attach_frozen_tracking_lane(
     *,
     now: datetime,
     connection: sqlite3.Connection | None = None,
+    require_claimable: bool = True,
 ) -> PreAdmissionAttemptItem:
     """Classify exact current evidence and freeze TRACK_FAST/TRACK_NORMAL provenance."""
     supplemental = None
@@ -693,7 +694,7 @@ def attach_frozen_tracking_lane(
             observed_at=item.observed_at,
             supplemental_candidate_evidence=supplemental,
         )
-        if connection is not None:
+        if connection is not None and require_claimable:
             from printer_v1.lifecycle.tracking_queue import (
                 assess_possible_tracking_claim_by_identity,
             )
