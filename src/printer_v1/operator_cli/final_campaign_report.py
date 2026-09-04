@@ -356,6 +356,62 @@ def _attempt_owned_source_usage(
     return request_ids, response_ids, failure_ids, scheduler_job_ids
 
 
+def _discovery_owned_source_usage(
+    connection: sqlite3.Connection,
+    *,
+    campaign_id: str,
+    run_id: str,
+) -> tuple[set[int], set[int], set[int], set[int]]:
+    """Return exact ordinary-discovery source and Scheduler identities."""
+    request_ids = {
+        int(row[0])
+        for row in connection.execute(
+            """SELECT DISTINCT l.source_request_id
+               FROM printer_discovery_work AS work
+               JOIN printer_discovery_work_source_links AS l
+                 ON l.discovery_work_id=work.discovery_work_id
+               WHERE work.campaign_id=? AND work.run_id=?
+                 AND l.source_request_id IS NOT NULL""",
+            (campaign_id, run_id),
+        ).fetchall()
+    }
+    response_ids = {
+        int(row[0])
+        for row in connection.execute(
+            """SELECT DISTINCT l.source_response_id
+               FROM printer_discovery_work AS work
+               JOIN printer_discovery_work_source_links AS l
+                 ON l.discovery_work_id=work.discovery_work_id
+               WHERE work.campaign_id=? AND work.run_id=?
+                 AND l.source_response_id IS NOT NULL""",
+            (campaign_id, run_id),
+        ).fetchall()
+    }
+    failure_ids = {
+        int(row[0])
+        for row in connection.execute(
+            """SELECT DISTINCT l.source_failure_id
+               FROM printer_discovery_work AS work
+               JOIN printer_discovery_work_source_links AS l
+                 ON l.discovery_work_id=work.discovery_work_id
+               WHERE work.campaign_id=? AND work.run_id=?
+                 AND l.source_failure_id IS NOT NULL""",
+            (campaign_id, run_id),
+        ).fetchall()
+    }
+    scheduler_job_ids = {
+        int(row[0])
+        for row in connection.execute(
+            """SELECT DISTINCT scheduler_job_id
+               FROM printer_discovery_work
+               WHERE campaign_id=? AND run_id=?
+                 AND scheduler_job_id IS NOT NULL""",
+            (campaign_id, run_id),
+        ).fetchall()
+    }
+    return request_ids, response_ids, failure_ids, scheduler_job_ids
+
+
 def _locked_capabilities(
     connection: sqlite3.Connection, authoritative_report: Mapping[str, Any],
 ) -> dict[str, Any]:
@@ -515,6 +571,16 @@ def assemble_final_campaign_report(
             connection,
             authoritative_run_id=str(root["authoritative_run_id"]),
         )
+        (
+            discovery_source_request_ids,
+            discovery_source_response_ids,
+            discovery_source_failure_ids,
+            discovery_scheduler_job_ids,
+        ) = _discovery_owned_source_usage(
+            connection,
+            campaign_id=campaign_id,
+            run_id=run_id,
+        )
 
     main_windows = [
         window for window in windows
@@ -557,6 +623,7 @@ def assemble_final_campaign_report(
                 if item["source_request_id"] is not None
             }
             | attempt_source_request_ids
+            | discovery_source_request_ids
         ),
         "source_response_ids": sorted(
             {
@@ -564,6 +631,7 @@ def assemble_final_campaign_report(
                 if item["source_response_id"] is not None
             }
             | attempt_source_response_ids
+            | discovery_source_response_ids
         ),
         "source_failure_ids": sorted(
             {
@@ -571,6 +639,7 @@ def assemble_final_campaign_report(
                 if item["source_failure_id"] is not None
             }
             | attempt_source_failure_ids
+            | discovery_source_failure_ids
         ),
         "scheduler_job_ids": sorted(
             {
@@ -578,6 +647,7 @@ def assemble_final_campaign_report(
                 if item["scheduler_job_id"] is not None
             }
             | attempt_scheduler_job_ids
+            | discovery_scheduler_job_ids
         ),
         "campaign_scheduler_work_total": len(work),
         "automatic_retries": 0,
