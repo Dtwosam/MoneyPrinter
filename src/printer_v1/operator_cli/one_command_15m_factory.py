@@ -7519,10 +7519,13 @@ def _standard_four_hour_cumulative_budget_for_run(
     )
 
     slots = conn.execute(
-        """SELECT token_slot_id,token_row_id,pair_row_id,slot_ordinal
-           FROM printer_memory_factory_campaign_token_slots
-           WHERE campaign_id=? AND run_id=? AND cycle_id=?
-           ORDER BY slot_ordinal""",
+        """SELECT s.token_slot_id,s.token_row_id,s.pair_row_id,s.slot_ordinal,
+                  s.tracking_queue_id,q.tracking_lane,
+                  q.token_id AS queue_token_id,q.pair_id AS queue_pair_id
+           FROM printer_memory_factory_campaign_token_slots AS s
+           LEFT JOIN printer_tracking_queue AS q ON q.id=s.tracking_queue_id
+           WHERE s.campaign_id=? AND s.run_id=? AND s.cycle_id=?
+           ORDER BY s.slot_ordinal""",
         (campaign_id, campaign_run_id, owned_cycle_id),
     ).fetchall()
     if len(slots) != 2 or {int(row["slot_ordinal"]) for row in slots} != {1, 2}:
@@ -7557,6 +7560,28 @@ def _standard_four_hour_cumulative_budget_for_run(
             raise ValueError("standard four-hour cycle has no owned factory steps")
     for slot in slots:
         slot_id = str(slot["token_slot_id"])
+        manifest = manifests.get(slot_id)
+        if manifest is None or type(manifest.get("eligible")) is not bool:
+            raise ValueError(
+                f"standard four-hour execution budget manifest invalid for {slot_id}"
+            )
+
+        queue_id = slot["tracking_queue_id"]
+        lane = None if slot["tracking_lane"] is None else str(slot["tracking_lane"])
+        if (
+            queue_id is None
+            or lane not in {"TRACK_FAST", "TRACK_NORMAL"}
+            or slot["queue_token_id"] is None
+            or int(slot["queue_token_id"]) != int(slot["token_row_id"])
+            or (
+                slot["queue_pair_id"] is not None
+                and int(slot["queue_pair_id"]) != int(slot["pair_row_id"])
+            )
+        ):
+            raise ValueError(
+                f"standard four-hour execution budget tracking authority invalid for {slot_id}"
+            )
+
         if scoped_step_ids is None:
             closes = conn.execute(
                 """SELECT tracking_lane FROM printer_memory_factory_run_steps
@@ -7581,17 +7606,17 @@ def _standard_four_hour_cumulative_budget_for_run(
                     *scoped_step_ids,
                 ),
             ).fetchall()
-        if len(closes) != 1:
+        eligible = bool(manifest["eligible"])
+        if len(closes) > 1 or (eligible and len(closes) != 1):
             raise ValueError(
                 f"standard four-hour execution budget close identity missing/ambiguous for {slot_id}"
             )
-        manifest = manifests.get(slot_id)
-        if manifest is None or type(manifest.get("eligible")) is not bool:
+        if closes and str(closes[0]["tracking_lane"]) != lane:
             raise ValueError(
-                f"standard four-hour execution budget manifest invalid for {slot_id}"
+                f"standard four-hour execution budget tracking lane mismatch for {slot_id}"
             )
-        lanes.append(str(closes[0]["tracking_lane"]))
-        mask.append(bool(manifest["eligible"]))
+        lanes.append(lane)
+        mask.append(eligible)
 
     budget = standard_campaign_lifecycle_budget(
         (lanes[0], lanes[1]), (mask[0], mask[1])
@@ -7672,8 +7697,12 @@ def _enforce_budgets_before_step(
                     conn, run_id, cycle_id=budget_cycle_id
                 )
             except ValueError as exc:
+                # Subset ownership/eligibility faults are integrity failures,
+                # not proof that a numeric request ceiling was exceeded.
                 raise _GlobalStop(
-                    STOP_BUDGET, scope="STANDARD_FOUR_HOUR_SUBSET", detail=str(exc),
+                    STOP_PREFLIGHT,
+                    scope="STANDARD_FOUR_HOUR_SUBSET_INTEGRITY",
+                    detail=str(exc),
                 ) from exc
             phase_request_ceiling = int(
                 cumulative["phase_request_ceiling"]
