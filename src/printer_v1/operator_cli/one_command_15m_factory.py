@@ -7106,11 +7106,34 @@ def _scheduler_ceiling_for_run_config(config: Mapping[str, Any]) -> int:
     )
 
 
+def _run_step_job_ids(conn: sqlite3.Connection, run_id: str) -> set[int]:
+    return {
+        int(row[0])
+        for row in conn.execute(
+            "SELECT DISTINCT scheduler_job_id "
+            "FROM printer_memory_factory_run_steps "
+            "WHERE run_id=? AND scheduler_job_id IS NOT NULL",
+            (str(run_id),),
+        ).fetchall()
+    }
+
+
 def _run_step_job_count(conn: sqlite3.Connection, run_id: str) -> int:
-    return int(conn.execute(
-        "SELECT COUNT(*) FROM printer_scheduler_jobs WHERE job_name LIKE ?",
-        (f"v2_4_{run_id}_%",),
-    ).fetchone()[0])
+    return len(_run_step_job_ids(conn, run_id))
+
+
+def _later_cycle_pre_admission_scheduler_job_ids(
+    conn: sqlite3.Connection, run_id: str
+) -> set[int]:
+    return {
+        int(row[0])
+        for row in conn.execute(
+            "SELECT DISTINCT scheduler_job_id "
+            "FROM printer_pre_admission_discovery_attempts "
+            "WHERE authoritative_factory_run_id=?",
+            (str(run_id),),
+        ).fetchall()
+    }
 
 
 def _projected_requests_for_step(
@@ -7864,13 +7887,24 @@ def _run_budgets(
         "WHERE source_name='solana_rpc' AND request_key LIKE ?",
         (f"{run_id}:%",),
     ).fetchone()[0])
-    all_step_jobs = int(conn.execute(
-        "SELECT COUNT(DISTINCT scheduler_job_id) "
-        "FROM printer_memory_factory_run_steps "
-        "WHERE run_id=? AND scheduler_job_id IS NOT NULL",
-        (run_id,),
-    ).fetchone()[0])
-    cumulative_scheduler_rows = all_step_jobs + handoffs
+    step_job_ids = _run_step_job_ids(conn, run_id)
+    all_step_jobs = len(step_job_ids)
+    handoff_job_ids = {
+        int(item["scheduler_job_id"])
+        for item in discovery.get("discovery_results", [])
+        if item.get("scheduler_job_id") is not None
+    }
+    pre_admission_job_ids = (
+        _later_cycle_pre_admission_scheduler_job_ids(conn, run_id)
+        if bool(config.get("four_token_proof"))
+        else set()
+    )
+    cumulative_scheduler_rows = len(
+        step_job_ids | handoff_job_ids | pre_admission_job_ids
+    )
+    pre_admission_scheduler_jobs = len(
+        pre_admission_job_ids - step_job_ids - handoff_job_ids
+    )
 
     if config.get("continuous_four_hour"):
         from printer_v1.operator_cli.one_token_4h_runtime import (
@@ -8029,6 +8063,7 @@ def _run_budgets(
                 "holder_rpc_fallbacks_ceiling": None,
                 "scheduler_run_step_jobs": all_step_jobs,
                 "scheduler_cancelled_discovery_handoffs": handoffs,
+                "scheduler_pre_admission_attempt_jobs": pre_admission_scheduler_jobs,
                 "scheduler_rows_total": cumulative_scheduler_rows,
                 "scheduler_rows_ceiling": None,
                 "scheduler_rows_within_ceiling": None,
@@ -8147,6 +8182,7 @@ def _run_budgets(
             ),
             "scheduler_run_step_jobs": all_step_jobs,
             "scheduler_cancelled_discovery_handoffs": handoffs,
+            "scheduler_pre_admission_attempt_jobs": pre_admission_scheduler_jobs,
             "scheduler_rows_total": cumulative_scheduler_rows,
             "scheduler_rows_ceiling": int(cumulative["scheduler_ceiling"]),
             "scheduler_rows_within_ceiling": cumulative_jobs_ok,
@@ -8194,13 +8230,14 @@ def _run_budgets(
         "holder_rpc_fallbacks_ceiling": (
             _MAX_HOLDER_RPC_REQUESTS_PER_TOKEN * max(1, len(prefixes))
         ),
-        "scheduler_run_step_jobs": _run_step_job_count(conn, run_id),
+        "scheduler_run_step_jobs": all_step_jobs,
         "scheduler_cancelled_discovery_handoffs": handoffs,
-        "scheduler_rows_total": _run_step_job_count(conn, run_id) + handoffs,
+        "scheduler_pre_admission_attempt_jobs": pre_admission_scheduler_jobs,
+        "scheduler_rows_total": cumulative_scheduler_rows,
         "scheduler_rows_ceiling": scheduler_ceiling,
         "scheduler_rows_within_ceiling": (
-            _run_step_job_count(conn, run_id) + handoffs
-        ) <= scheduler_ceiling,
+            cumulative_scheduler_rows <= scheduler_ceiling
+        ),
         "discovery_requests_ceiling": _MAX_DISCOVERY_REQUESTS,
         "automatic_retries": 0,
         "continuous_first_hour": continuous,
