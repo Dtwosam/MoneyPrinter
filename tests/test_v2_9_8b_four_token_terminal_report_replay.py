@@ -582,6 +582,38 @@ class FourTokenTerminalReportReplayTests(unittest.TestCase):
         ):
             self._assemble()
 
+    def _set_authoritative_cumulative_total(
+        self, field: str, value: int
+    ) -> None:
+        with self.connection:
+            row = self.connection.execute(
+                """SELECT final_report_json FROM printer_memory_factory_runs
+                   WHERE run_id='authority-run'"""
+            ).fetchone()
+            authority = json.loads(str(row[0]))
+            authority["run_budgets"]["cumulative_lifecycle_usage"][field] = value
+            self.connection.execute(
+                """UPDATE printer_memory_factory_runs
+                   SET final_report_json=? WHERE run_id='authority-run'""",
+                (json.dumps(authority, sort_keys=True),),
+            )
+
+    def test_cumulative_source_request_total_mismatch_fails_closed(self) -> None:
+        self._set_authoritative_cumulative_total("source_requests", 999)
+        with self.assertRaisesRegex(
+            FinalCampaignReportError,
+            "cumulative source request identity/total mismatch",
+        ):
+            self._assemble()
+
+    def test_cumulative_scheduler_total_mismatch_fails_closed(self) -> None:
+        self._set_authoritative_cumulative_total("scheduler_rows", 999)
+        with self.assertRaisesRegex(
+            FinalCampaignReportError,
+            "cumulative Scheduler identity/total mismatch",
+        ):
+            self._assemble()
+
     def _leave_consumed_attempt_job_active(self) -> None:
         with self.connection:
             self.connection.execute(
