@@ -8555,10 +8555,23 @@ def _standard_campaign_four_hour_terminal_validation(
             if owned_count:
                 reasons.append(f"ineligible_slot_owned_4h_work:{slot_id}:{owned_count}")
 
+    # Run steps share one factory ledger across every admitted cycle. Scope
+    # the raw long-continuation count back to this exact cycle's immutable
+    # token/pair ownership so valid peer-cycle work cannot contaminate terminal
+    # truth, while unowned long work for this cycle's tokens is still detected.
     total_long = int(conn.execute(
-        """SELECT COUNT(*) FROM printer_memory_factory_run_steps
-           WHERE run_id=? AND step_kind LIKE 'LONG_CONTINUATION_%'""",
-        (str(factory_run_id),),
+        """SELECT COUNT(DISTINCT s.id)
+           FROM printer_memory_factory_run_steps AS s
+           JOIN printer_memory_factory_campaign_token_slots AS cs
+             ON cs.token_row_id=s.token_id AND cs.pair_row_id=s.pair_id
+            AND cs.campaign_id=? AND cs.run_id=? AND cs.cycle_id=?
+           WHERE s.run_id=? AND s.step_kind LIKE 'LONG_CONTINUATION_%'""",
+        (
+            str(campaign_id),
+            str(run_id),
+            str(cycle_id),
+            str(factory_run_id),
+        ),
     ).fetchone()[0])
     total_owned = int(conn.execute(
         """SELECT COUNT(*) FROM printer_memory_factory_campaign_scheduler_work
@@ -8612,6 +8625,150 @@ def _standard_campaign_four_hour_terminal_validation(
         "active_owned_four_hour_work": active_owned,
         "nonterminal_owned_four_hour_windows": nonterminal_windows,
         "window_count": len(windows),
+    }
+
+
+
+def _standard_campaign_four_hour_terminal_validation_for_report(
+    conn: sqlite3.Connection,
+    *,
+    factory_run_id: str,
+    campaign_id: str | None,
+    run_id: str | None,
+    configured_cycle_id: str | None,
+) -> dict[str, Any]:
+    """Aggregate standard-4h terminal truth across every admitted cycle.
+
+    The underlying validator remains cycle-local. A multi-cycle factory run must
+    prove every durable admitted cycle independently before the report can call
+    the campaign complete. Single-cycle callers preserve the historical result
+    shape.
+    """
+    if not all((campaign_id, run_id, factory_run_id)):
+        return _standard_campaign_four_hour_terminal_validation(
+            conn,
+            factory_run_id=factory_run_id,
+            campaign_id=campaign_id,
+            run_id=run_id,
+            cycle_id=configured_cycle_id,
+        )
+
+    cycle_rows = conn.execute(
+        """SELECT cycle_id
+           FROM printer_memory_factory_campaign_cycles
+           WHERE campaign_id=? AND run_id=?
+           ORDER BY cycle_ordinal,cycle_id""",
+        (str(campaign_id), str(run_id)),
+    ).fetchall()
+    cycle_ids = [str(row[0]) for row in cycle_rows]
+    if not cycle_ids:
+        return _standard_campaign_four_hour_terminal_validation(
+            conn,
+            factory_run_id=factory_run_id,
+            campaign_id=campaign_id,
+            run_id=run_id,
+            cycle_id=configured_cycle_id,
+        )
+    if len(cycle_ids) == 1:
+        return _standard_campaign_four_hour_terminal_validation(
+            conn,
+            factory_run_id=factory_run_id,
+            campaign_id=campaign_id,
+            run_id=run_id,
+            cycle_id=cycle_ids[0],
+        )
+
+    per_cycle: dict[str, dict[str, Any]] = {}
+    for admitted_cycle_id in cycle_ids:
+        per_cycle[admitted_cycle_id] = (
+            _standard_campaign_four_hour_terminal_validation(
+                conn,
+                factory_run_id=factory_run_id,
+                campaign_id=campaign_id,
+                run_id=run_id,
+                cycle_id=admitted_cycle_id,
+            )
+        )
+
+    any_enabled = any(
+        bool(result.get("enabled")) for result in per_cycle.values()
+    )
+    all_enabled = all(
+        bool(result.get("enabled")) for result in per_cycle.values()
+    )
+    complete = all(
+        bool(result.get("complete")) for result in per_cycle.values()
+    ) and (all_enabled if any_enabled else True)
+
+    reasons: list[str] = []
+    per_token: list[dict[str, Any]] = []
+    eligible_window_details: list[dict[str, Any]] = []
+    for admitted_cycle_id, result in per_cycle.items():
+        if any_enabled and not bool(result.get("enabled")):
+            reasons.append(
+                f"{admitted_cycle_id}:standard_four_hour_validation_disabled"
+            )
+        reasons.extend(
+            f"{admitted_cycle_id}:{reason}"
+            for reason in result.get("reasons", [])
+        )
+        per_token.extend(
+            dict(item) for item in result.get("per_token", [])
+            if isinstance(item, Mapping)
+        )
+        eligible_window_details.extend(
+            dict(item)
+            for item in result.get("eligible_window_details", [])
+            if isinstance(item, Mapping)
+        )
+
+    configured = str(configured_cycle_id or "")
+    compatibility = (
+        per_cycle[configured]
+        if configured in per_cycle
+        else per_cycle[cycle_ids[0]]
+    )
+    return {
+        **compatibility,
+        "enabled": any_enabled,
+        "complete": complete,
+        "reasons": reasons,
+        "per_cycle": per_cycle,
+        "cycle_count": len(cycle_ids),
+        "per_token": per_token,
+        "eligible_window_details": eligible_window_details,
+        "expected_continuation_count": sum(
+            int(result.get("expected_continuation_count", 0) or 0)
+            for result in per_cycle.values()
+        ),
+        "progression_attempt_id": None,
+        "progression_attempt_ids": {
+            cycle: result.get("progression_attempt_id")
+            for cycle, result in per_cycle.items()
+        },
+        "aggregate_state": (
+            "NOT_APPLICABLE"
+            if not any_enabled
+            else "MULTI_CYCLE_TERMINAL_COMPLETE"
+            if complete
+            else "MULTI_CYCLE_TERMINAL_INCOMPLETE"
+        ),
+        "requires_review": any(
+            bool(result.get("requires_review"))
+            for result in per_cycle.values()
+        ) or (any_enabled and not complete),
+        "active_owned_four_hour_work": sum(
+            int(result.get("active_owned_four_hour_work", 0) or 0)
+            for result in per_cycle.values()
+        ),
+        "nonterminal_owned_four_hour_windows": sum(
+            int(result.get("nonterminal_owned_four_hour_windows", 0) or 0)
+            for result in per_cycle.values()
+        ),
+        "window_count": sum(
+            int(result.get("window_count", 0) or 0)
+            for result in per_cycle.values()
+        ),
     }
 
 
@@ -8864,12 +9021,14 @@ def _final_report(
         primary_cause=primary_cause,
         complete_clean_objects_by_window_id=promotions_by_window_id,
     )
-    standard_four_hour_validation = _standard_campaign_four_hour_terminal_validation(
-        conn,
-        factory_run_id=run_id,
-        campaign_id=config.get("campaign_id"),
-        run_id=config.get("campaign_run_id"),
-        cycle_id=config.get("cycle_id"),
+    standard_four_hour_validation = (
+        _standard_campaign_four_hour_terminal_validation_for_report(
+            conn,
+            factory_run_id=run_id,
+            campaign_id=config.get("campaign_id"),
+            run_id=config.get("campaign_run_id"),
+            configured_cycle_id=config.get("cycle_id"),
+        )
     )
     if standard_four_hour_validation.get("enabled"):
         terminal_validation = {
