@@ -731,6 +731,68 @@ def test_existing_pair_ready_reenters_before_spent_discovery_gates(
     connection.close()
 
 
+def test_existing_pair_ready_skips_future_acquisition_quantum_conflict(
+    tmp_path: Path,
+) -> None:
+    path = _seed_campaign(tmp_path / "pair-ready-no-acquisition-deferral.sqlite3")
+    connection = _open(path)
+    callback_calls: list[str] = []
+    admission_ready = FourTokenAdmissionDisposition(
+        FourTokenAdmissionDispositionKind.CYCLE_ADMISSION,
+        "ADMISSION_READY",
+        NOW,
+        True,
+    )
+    with (
+        patch(
+            "printer_v1.operator_cli.one_command_15m_factory."
+            "_existing_later_cycle_pair_ready_attempt",
+            return_value=(
+                "pre-admission:campaign-1:campaign-run-1:factory-1:c0002"
+            ),
+        ),
+        patch(
+            "printer_v1.operator_cli.cadence_authority."
+            "require_cycle_slot_tracking_authorities",
+            return_value=None,
+        ),
+    ):
+        result = _run_four_token_admission_boundary(
+            connection=connection,
+            controller=SimpleNamespace(policy=POLICY),
+            binding=BINDING,
+            first_cycle_id="cycle-1",
+            now=NOW,
+            # Inside the ordinary acquisition quantum, but not yet due.
+            next_due_work_at=NOW + timedelta(seconds=30),
+            proof_deadline=NOW + timedelta(hours=4),
+            project_health=lambda: SimpleNamespace(health=HEALTH),
+            evaluate=lambda projection: admission_ready,
+            later_cycle_callback=lambda **kwargs: (
+                callback_calls.append(str(kwargs["cycle_id"]))
+                or SimpleNamespace(
+                    attempt_id=(
+                        "pre-admission:campaign-1:campaign-run-1:factory-1:c0002"
+                    ),
+                    state="PAIR_READY",
+                    first_terminal_cause="",
+                )
+            ),
+            admit=lambda **kwargs: SimpleNamespace(
+                mutation_performed=True,
+                cycle_id="cycle-1-2",
+            ),
+            materialize=lambda **kwargs: None,
+            plan_opening=lambda **kwargs: None,
+            acquisition_quantum_worst_case_seconds=60.0,
+        )
+
+    assert result.admitted is True
+    assert result.cycle_id == "cycle-1-2"
+    assert callback_calls == ["cycle-1-2"]
+    connection.close()
+
+
 def test_transition_helper_does_not_speculate_candidate_states() -> None:
     source = inspect.getsource(_transition)
     assert "for expected_state in" not in source
