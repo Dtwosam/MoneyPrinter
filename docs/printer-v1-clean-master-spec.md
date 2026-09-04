@@ -18,12 +18,14 @@ Printer has one final goal: become a money-making machine. V1 does not try to do
 
 Printer must learn from action and inaction: buying, selling, holding, waiting, avoiding, missing entries, entering late, selling early, round-tripping, and doing nothing when data was weak.
 
-Printer's manipulation-aware and money-usefulness product law is binding by
-reference through
-`docs/printer-v1-manipulation-aware-money-usefulness-product-law.md`.
 Manipulation is a condition, not an automatic rejection or authorization. Chart
-outcome and executable trade opportunity are not the same thing, and
-full-window outcome must remain separate from internal opportunity outcome.
+outcome and realistically executable trade opportunity are not the same thing,
+and full-window outcome must remain separate from internal opportunity outcome.
+Evidence quality, market-integrity condition, tradeability, and action
+eligibility are separate dimensions; none may silently replace another or be
+collapsed into a score, rank, confidence percentage, weighted decision system,
+embedding, or vector. Later outcomes may evaluate an earlier checkpoint but
+must never rewrite it with hindsight.
 
 ## 0.3 Scope
 
@@ -2063,87 +2065,27 @@ Printer must tag late entries that buy after the move is already extended and th
 
 Part 11 is paper trading only. Every paper decision must be audited. No paper trade becomes clean training memory unless it is realistic, fully audited, and supported by clean episode data.
 
-# 12. Codex Build Order
+# 12. Engineering Practice
 
-## 12.1 Build Principle
+Printer is built as one machine through small, testable changes. The active
+build order is `docs/printer-v1-build-order.md`; this specification supplies
+the product and safety constraints, not a mandatory documentation workflow.
 
-Printer should be built as one machine, but Codex prompts should implement it in safe, testable lanes. Each lane must have a clear goal, exact files/tables/jobs affected, pass/fail checks, and strict V1 guardrails.
+For an ordinary bug or feature, understand the affected flow, make the smallest
+change, run focused verification, and review the actual diff. Use a design only
+when the change is architectural, ambiguous, schema-related, or safety-critical.
 
-## 12.2 Suggested Implementation Order
+The following acceptance rules remain mandatory in code and verification:
 
-53. Create system constants, labels, and shared data-quality contracts.
-
-54. Create database schema/migrations for context snapshots, discoveries, token snapshots, safety, liquidity, flow, chart, episodes, memory, paper decisions, and audits.
-
-55. Build source adapters with free-source limits and source_status handling.
-
-56. Build Market Regime Engine.
-
-57. Build Solana Chain Heat Engine.
-
-58. Build Discovery Engine and tracking queue.
-
-59. Build Safety / Rug Filter Engine.
-
-60. Build Liquidity + Exit Engine and paper quote realism checks.
-
-61. Build Trading Flow Engine.
-
-62. Build Chart / Volatility Engine.
-
-63. Build Snapshot Scheduler with lanes and modes.
-
-64. Build Episode / Memory Engine with clean/dirty gates.
-
-65. Build memory retrieval and condition fingerprint matching.
-
-66. Build Paper Trading + Audit Engine.
-
-67. Build reports for memory quality, paper P/L realism, decision outcomes, and drift.
-
-68. Only after V1 proves realistic paper performance should any live-trading discussion happen.
-
-## 12.3 Prompt Rules for Codex
-
-69. Start each prompt with the goal in plain English.
-
-70. State V1 restrictions: Solana only, paper only, no paid APIs, no wallet, no private keys, no live execution, no scoring.
-
-71. Specify the exact part/engine being implemented.
-
-72. Specify existing files/tables to inspect before writing code.
-
-73. Define exact schema changes if needed.
-
-74. Define source_status and data_quality behavior.
-
-75. Define pass/fail verification commands or tests.
-
-76. Do not let Codex jump into later engines before the current lane passes.
-
-77. Do not accept vague output. Every lane closes with a measurable result.
-
-78. No broad runtime, no live trading, no paper BUY unless the paper engine lane explicitly allows paper decisions and all gates are implemented.
-
-## 12.4 Global Acceptance Gates
-
-- Every stored record has source_status and data_quality_label where relevant.
-
-- No engine uses scores.
-
-- No engine buys/sells alone.
-
-- Every memory links to market regime and chain heat context.
-
-- Every paper trade links to similar clean memories.
-
-- Every paper profit is audited for realistic entry and exit.
-
-- Dirty memory is never used for decisions.
-
-- Free-source failures are recorded, not guessed over.
-
-- V1 remains paper-only.
+- Every relevant stored record carries truthful source status and data quality.
+- No engine uses scores or performs autonomous live trading.
+- Every memory and paper decision observes the clean-memory and context rules
+  defined above.
+- Every paper profit is realistic about entry, exit, liquidity, and timing.
+- Dirty or missing-critical evidence is recorded honestly and does not train
+  decision memory.
+- Free-source failures are recorded rather than guessed over.
+- V1 remains Solana-only, memecoin-only, and paper-only.
 
 # 13. Final Printer V1 Locked Rule
 
