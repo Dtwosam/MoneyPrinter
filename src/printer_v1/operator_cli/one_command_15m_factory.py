@@ -7381,7 +7381,71 @@ def _enforce_budgets_before_step(
         _CONTINUOUS_MAX_REQUESTS_PER_TOKEN
         if continuous else _MAX_GOVERNED_REQUESTS_PER_TOKEN
     )
-    if _run_request_count(conn, run_id) + projected > run_ceiling:
+    four_token_campaign = bool(config.get("four_token_proof"))
+    if four_token_campaign:
+        try:
+            from printer_v1.operator_cli.four_token_proof_integration import (
+                cycle_scoped_factory_step_ids,
+                resolve_owned_cycle_for_scheduler_job,
+            )
+            from printer_v1.operator_cli.multi_cycle_memory_growth import (
+                scaled_standard_four_hour_capacity_contract,
+            )
+
+            if step["scheduler_job_id"] is None:
+                raise ValueError(
+                    "four-token lifecycle step has no Scheduler identity"
+                )
+            budget_cycle_id = resolve_owned_cycle_for_scheduler_job(
+                conn,
+                scheduler_job_id=int(step["scheduler_job_id"]),
+                campaign_id=str(config.get("campaign_id") or ""),
+                campaign_run_id=str(config.get("campaign_run_id") or ""),
+                factory_run_id=run_id,
+            ).cycle_id
+            cycle_step_ids = cycle_scoped_factory_step_ids(
+                conn,
+                campaign_id=str(config.get("campaign_id") or ""),
+                campaign_run_id=str(config.get("campaign_run_id") or ""),
+                factory_run_id=run_id,
+                cycle_id=str(budget_cycle_id),
+            )
+            if not cycle_step_ids:
+                raise ValueError(
+                    "four-token lifecycle budget cycle has no owned factory steps"
+                )
+            cycle_used = _run_request_count_for_step_ids(
+                conn, run_id, cycle_step_ids
+            )
+            if cycle_used + projected > run_ceiling:
+                raise _GlobalStop(
+                    STOP_BUDGET,
+                    scope="CUMULATIVE_LIFECYCLE",
+                    detail="cycle-local lifecycle request ceiling exceeded",
+                )
+
+            scaled = scaled_standard_four_hour_capacity_contract(4)
+            campaign_used = int(
+                scaled["shared_discovery_requests"]
+            ) + _run_request_count(conn, run_id)
+            if (
+                campaign_used + projected
+                > int(scaled["lifecycle_request_outer_ceiling"])
+            ):
+                raise _GlobalStop(
+                    STOP_BUDGET,
+                    scope="CUMULATIVE_LIFECYCLE",
+                    detail="four-token cumulative lifecycle request ceiling exceeded",
+                )
+        except _GlobalStop:
+            raise
+        except ValueError as exc:
+            raise _GlobalStop(
+                STOP_BUDGET,
+                scope="CUMULATIVE_LIFECYCLE",
+                detail=str(exc),
+            ) from exc
+    elif _run_request_count(conn, run_id) + projected > run_ceiling:
         raise _GlobalStop(STOP_BUDGET, scope="CUMULATIVE_LIFECYCLE")
     prefix = _token_prefix(step["step_key"])
     if _token_request_count(conn, run_id, prefix) + projected > token_ceiling:
