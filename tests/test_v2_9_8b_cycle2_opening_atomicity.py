@@ -146,13 +146,25 @@ def test_cycle2_opening_rolls_back_slot1_when_slot2_planning_fails(
 ) -> None:
     db, connection, queue_ids = _seed(tmp_path)
     original_precreate = factory._precreate_proof_15m_window
+    original_insert = factory._insert_step_and_job
+    trace: list[tuple[str, bool]] = []
 
     def fail_second_slot(*args, **kwargs):
+        trace.append((f"precreate-{kwargs['slot_ordinal']}-before", connection.in_transaction))
         if int(kwargs["slot_ordinal"]) == 2:
             raise RuntimeError("INJECTED_SLOT2_OPENING_FAILURE")
-        return original_precreate(*args, **kwargs)
+        result = original_precreate(*args, **kwargs)
+        trace.append((f"precreate-{kwargs['slot_ordinal']}-after", connection.in_transaction))
+        return result
+
+    def traced_insert(*args, **kwargs):
+        trace.append((f"insert-{kwargs['step_key']}-before", connection.in_transaction))
+        result = original_insert(*args, **kwargs)
+        trace.append((f"insert-{kwargs['step_key']}-after", connection.in_transaction))
+        return result
 
     monkeypatch.setattr(factory, "_precreate_proof_15m_window", fail_second_slot)
+    monkeypatch.setattr(factory, "_insert_step_and_job", traced_insert)
 
     assert connection.in_transaction is False
     with pytest.raises(RuntimeError, match="INJECTED_SLOT2_OPENING_FAILURE"):
@@ -169,34 +181,40 @@ def test_cycle2_opening_rolls_back_slot1_when_slot2_planning_fails(
 
     # The two-slot first-15m opening set is one atomic planning boundary.
     # A slot-2 failure may not leave slot-1 window/job/step/work residue.
-    assert int(
-        connection.execute(
-            "SELECT COUNT(*) FROM printer_memory_factory_campaign_windows "
-            "WHERE campaign_id=? AND run_id=? AND cycle_id=?",
-            (CAMPAIGN_ID, CAMPAIGN_RUN_ID, CYCLE2_ID),
-        ).fetchone()[0]
-    ) == 0
-    assert int(
-        connection.execute(
-            "SELECT COUNT(*) FROM printer_memory_factory_run_steps "
-            "WHERE run_id=? AND step_key LIKE 't%_c0002_snapshot_00'",
-            (FACTORY_RUN_ID,),
-        ).fetchone()[0]
-    ) == 0
-    assert int(
-        connection.execute(
-            "SELECT COUNT(*) FROM printer_memory_factory_campaign_scheduler_work "
-            "WHERE campaign_id=? AND run_id=? AND cycle_id=?",
-            (CAMPAIGN_ID, CAMPAIGN_RUN_ID, CYCLE2_ID),
-        ).fetchone()[0]
-    ) == 0
-    assert int(
-        connection.execute(
-            "SELECT COUNT(*) FROM printer_scheduler_jobs "
-            "WHERE job_name LIKE ?",
-            (f"v2_4_{FACTORY_RUN_ID}_t%_c0002_snapshot_00",),
-        ).fetchone()[0]
-    ) == 0
+    residue = {
+        "windows": int(
+            connection.execute(
+                "SELECT COUNT(*) FROM printer_memory_factory_campaign_windows "
+                "WHERE campaign_id=? AND run_id=? AND cycle_id=?",
+                (CAMPAIGN_ID, CAMPAIGN_RUN_ID, CYCLE2_ID),
+            ).fetchone()[0]
+        ),
+        "steps": int(
+            connection.execute(
+                "SELECT COUNT(*) FROM printer_memory_factory_run_steps "
+                "WHERE run_id=? AND step_key LIKE 't%_c0002_snapshot_00'",
+                (FACTORY_RUN_ID,),
+            ).fetchone()[0]
+        ),
+        "work": int(
+            connection.execute(
+                "SELECT COUNT(*) FROM printer_memory_factory_campaign_scheduler_work "
+                "WHERE campaign_id=? AND run_id=? AND cycle_id=?",
+                (CAMPAIGN_ID, CAMPAIGN_RUN_ID, CYCLE2_ID),
+            ).fetchone()[0]
+        ),
+        "jobs": int(
+            connection.execute(
+                "SELECT COUNT(*) FROM printer_scheduler_jobs "
+                "WHERE job_name LIKE ?",
+                (f"v2_4_{FACTORY_RUN_ID}_t%_c0002_snapshot_00",),
+            ).fetchone()[0]
+        ),
+    }
+    assert residue == {"windows": 0, "steps": 0, "work": 0, "jobs": 0}, {
+        "trace": trace,
+        "residue": residue,
+    }
 
     # Admission-time tracking claims are outside the opening transaction and
     # remain available for the existing terminal compensation owner.
