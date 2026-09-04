@@ -877,6 +877,48 @@ def _admit_two_token_cycle_in_transaction(
     )
 
 
+def _frozen_pair_requalification_authority(
+    item: Any,
+    *,
+    attempt_id: str,
+    campaign_id: str,
+    campaign_run_id: str,
+    cycle_id: str,
+) -> tuple[bool, dict[str, object] | None]:
+    """Derive expired-cooldown requalification only from frozen current evidence."""
+    try:
+        payload = json.loads(str(item.canonical_evidence_json))
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise MultiCycleCoordinatorError(
+            "pre-admission frozen holder evidence is invalid"
+        ) from exc
+    if not isinstance(payload, Mapping):
+        raise MultiCycleCoordinatorError(
+            "pre-admission frozen holder evidence is invalid"
+        )
+    holder = payload.get("holder_evidence")
+    if not isinstance(holder, Mapping):
+        raise MultiCycleCoordinatorError(
+            "pre-admission frozen holder evidence is missing"
+        )
+    fresh_requalification = bool(
+        holder.get("eligible") is True
+        and holder.get("tracking_requalification_required") is True
+    )
+    if not fresh_requalification:
+        return False, None
+    return True, {
+        "campaign_id": campaign_id,
+        "run_id": campaign_run_id,
+        "cycle_id": cycle_id,
+        "pre_admission_attempt_id": attempt_id,
+        "frozen_evidence_hash": str(item.canonical_evidence_hash),
+        "fresh_evidence_evaluated_at": item.observed_at.isoformat(),
+        "holder_source_name": holder.get("source_name"),
+        "holder_evidence_reason": holder.get("reason"),
+    }
+
+
 def admit_two_token_cycle_from_attempt(
     connection: sqlite3.Connection,
     *,
@@ -938,6 +980,16 @@ def admit_two_token_cycle_from_attempt(
                     raise MultiCycleCoordinatorError(
                         "pre-admission frozen tracking lane missing or invalid"
                     )
+                (
+                    fresh_requalification,
+                    requalification_lineage,
+                ) = _frozen_pair_requalification_authority(
+                    item,
+                    attempt_id=attempt_id,
+                    campaign_id=binding.campaign_id,
+                    campaign_run_id=binding.campaign_run_id,
+                    cycle_id=attempt.proposed_cycle_id,
+                )
                 claimed_queue_ids.append(
                     claim_tracking_authority_for_slot_insert(
                         connection,
@@ -946,6 +998,8 @@ def admit_two_token_cycle_from_attempt(
                         tracking_lane=frozen_lane,
                         now=now,
                         priority_reason="later_cycle_slot_tracking_activation",
+                        fresh_evidence_requalification=fresh_requalification,
+                        requalification_lineage=requalification_lineage,
                     )
                 )
         except CadenceAuthorityError as exc:
