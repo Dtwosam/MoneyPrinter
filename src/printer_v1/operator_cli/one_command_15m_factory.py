@@ -7361,6 +7361,57 @@ def _run_request_count(conn: sqlite3.Connection, run_id: str) -> int:
     ).fetchone()[0])
 
 
+def _standard_campaign_cycle_request_count(
+    conn: sqlite3.Connection,
+    *,
+    factory_run_id: str,
+    campaign_id: str,
+    campaign_run_id: str,
+    cycle_id: str,
+    long_only: bool = False,
+) -> int:
+    """Count run-local governed requests attributable to one cycle's token slots.
+
+    Request identity remains anchored to the exact factory run-step key.  The
+    cycle scope comes from durable token-slot ownership, so peer-cycle requests
+    in the shared factory run cannot consume this cycle's two-slot budget.
+    """
+    long_clause = (
+        " AND rs.step_kind LIKE 'LONG_CONTINUATION_%'"
+        if long_only
+        else ""
+    )
+    row = conn.execute(
+        """SELECT COUNT(DISTINCT req.id)
+           FROM printer_source_requests AS req
+           JOIN printer_memory_factory_run_steps AS rs
+             ON rs.run_id=?
+            AND (
+                 req.request_key = rs.run_id || ':' || rs.step_key
+                 OR substr(
+                      req.request_key,
+                      1,
+                      length(rs.run_id || ':' || rs.step_key || ':')
+                    ) = rs.run_id || ':' || rs.step_key || ':'
+                )
+           JOIN printer_memory_factory_campaign_token_slots AS slot
+             ON slot.campaign_id=?
+            AND slot.run_id=?
+            AND slot.cycle_id=?
+            AND slot.token_row_id=rs.token_id
+            AND slot.pair_row_id=rs.pair_id
+           WHERE 1=1"""
+        + long_clause,
+        (
+            str(factory_run_id),
+            str(campaign_id),
+            str(campaign_run_id),
+            str(cycle_id),
+        ),
+    ).fetchone()
+    return int(row[0] or 0)
+
+
 def _token_request_count(conn: sqlite3.Connection, run_id: str, token_prefix: str) -> int:
     run_prefix = f"{run_id}:"
     rows = conn.execute(
@@ -7710,13 +7761,39 @@ def _enforce_budgets_before_step(
         else:
             cumulative = _cumulative_lifecycle_budget_for_run(conn, run_id, lane)
             phase_request_ceiling = int(phase["phase_request_ceiling"])
-        phase_used = int(conn.execute(
-            "SELECT COUNT(*) FROM printer_source_requests WHERE request_key LIKE ?",
-            (f"{run_id}:%4h%",),
-        ).fetchone()[0])
+        if budget_cycle_id is not None:
+            campaign_id = str(config.get("campaign_id") or "").strip()
+            campaign_run_id = str(config.get("campaign_run_id") or "").strip()
+            if not campaign_id or not campaign_run_id:
+                raise _GlobalStop(
+                    STOP_PREFLIGHT,
+                    scope="STANDARD_FOUR_HOUR_CYCLE_BUDGET_IDENTITY",
+                    detail="campaign/run identity is incomplete",
+                )
+            phase_used = _standard_campaign_cycle_request_count(
+                conn,
+                factory_run_id=run_id,
+                campaign_id=campaign_id,
+                campaign_run_id=campaign_run_id,
+                cycle_id=budget_cycle_id,
+                long_only=True,
+            )
+            lifecycle_used = _standard_campaign_cycle_request_count(
+                conn,
+                factory_run_id=run_id,
+                campaign_id=campaign_id,
+                campaign_run_id=campaign_run_id,
+                cycle_id=budget_cycle_id,
+            )
+        else:
+            phase_used = int(conn.execute(
+                "SELECT COUNT(*) FROM printer_source_requests WHERE request_key LIKE ?",
+                (f"{run_id}:%4h%",),
+            ).fetchone()[0])
+            lifecycle_used = _run_request_count(conn, run_id)
         # Discovery precedes run-local request keys; reserve its approved maximum.
         discovery_used = int(cumulative["request_components"]["discovery"])
-        cumulative_used = discovery_used + _run_request_count(conn, run_id)
+        cumulative_used = discovery_used + lifecycle_used
         try:
             require_projected_capacity(
                 current=phase_used, projected=projected,
@@ -7737,6 +7814,16 @@ def _enforce_budgets_before_step(
             raise _GlobalStop(
                 STOP_BUDGET, scope="CUMULATIVE_LIFECYCLE", detail=str(exc),
             ) from exc
+        if (
+            bool(config.get("four_token_proof"))
+            and _run_request_count(conn, run_id) + projected
+            > _request_ceiling_for_run_config(config)
+        ):
+            raise _GlobalStop(
+                STOP_BUDGET,
+                scope="FOUR_TOKEN_LIFECYCLE_OUTER",
+                detail="four-token lifecycle request outer ceiling would be exceeded",
+            )
         return
     run_ceiling = _request_ceiling_for_run_config(config)
     token_ceiling = _token_ceiling_for_run_config(config)
