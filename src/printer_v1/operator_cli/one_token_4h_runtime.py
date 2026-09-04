@@ -213,6 +213,44 @@ def _step_count(connection: sqlite3.Connection, run_id: str) -> int:
     ).fetchone()[0])
 
 
+def _standard_candidate_run_step_count(
+    connection: sqlite3.Connection,
+    *,
+    factory_run_id: str,
+    candidates: Sequence[Mapping[str, Any]],
+    long_continuation_only: bool = False,
+    distinct_scheduler_jobs: bool = False,
+) -> int:
+    """Count only factory steps owned by one standard two-slot candidate set."""
+    if len(candidates) != 2:
+        raise ValueError("standard four-hour step scope requires exactly two candidates")
+    identities = tuple(
+        (int(candidate["token_row_id"]), int(candidate["pair_row_id"]))
+        for candidate in candidates
+    )
+    if any(token_id <= 0 or pair_id <= 0 for token_id, pair_id in identities):
+        raise ValueError("standard four-hour step scope identity must be positive")
+    if len(set(identities)) != 2:
+        raise ValueError("standard four-hour step scope identities must be distinct")
+    predicate = " OR ".join("(token_id=? AND pair_id=?)" for _ in identities)
+    params: list[Any] = [str(factory_run_id)]
+    for token_id, pair_id in identities:
+        params.extend((token_id, pair_id))
+    extra = " AND step_kind LIKE 'LONG_CONTINUATION_%'" if long_continuation_only else ""
+    if distinct_scheduler_jobs:
+        extra += " AND scheduler_job_id IS NOT NULL"
+        projection = "COUNT(DISTINCT scheduler_job_id)"
+    else:
+        projection = "COUNT(*)"
+    return int(
+        connection.execute(
+            f"SELECT {projection} FROM printer_memory_factory_run_steps "
+            f"WHERE run_id=? AND ({predicate}){extra}",
+            tuple(params),
+        ).fetchone()[0]
+    )
+
+
 def _token_long_steps(
     connection: sqlite3.Connection,
     *,
@@ -242,6 +280,7 @@ def _plan_token_4h_phase(
     tracking_lane: str,
     current_close_step_id: int | None = None,
     cumulative_scheduler_ceiling: int | None = None,
+    existing_scheduler_jobs: int | None = None,
     allow_enabled_successor_planning: bool = False,
 ) -> dict[str, Any]:
     """Plan/replay one exact token's existing WINDOW_4H phase primitives."""
@@ -327,11 +366,18 @@ def _plan_token_4h_phase(
     )
     if effective_cumulative_ceiling < int(cumulative["scheduler_ceiling"]):
         raise ValueError("four-hour cumulative scheduler ceiling is too small")
-    existing_jobs = int(connection.execute(
-        "SELECT COUNT(DISTINCT scheduler_job_id) FROM printer_memory_factory_run_steps "
-        "WHERE run_id=? AND scheduler_job_id IS NOT NULL",
-        (run_id,),
-    ).fetchone()[0])
+    existing_jobs = (
+        int(existing_scheduler_jobs)
+        if existing_scheduler_jobs is not None
+        else int(connection.execute(
+            "SELECT COUNT(DISTINCT scheduler_job_id) "
+            "FROM printer_memory_factory_run_steps "
+            "WHERE run_id=? AND scheduler_job_id IS NOT NULL",
+            (run_id,),
+        ).fetchone()[0])
+    )
+    if existing_jobs < 0:
+        raise ValueError("existing scheduler job count cannot be negative")
     require_projected_capacity(
         current=existing_jobs + 1,
         projected=expected + 3,
@@ -1010,11 +1056,12 @@ def _standard_campaign_4h_plan_state(
            WHERE campaign_id=? AND run_id=? AND cycle_id=? AND window_kind='WINDOW_4H'""",
         (campaign_id, run_id, cycle_id),
     ).fetchone()[0])
-    total_steps = int(connection.execute(
-        """SELECT COUNT(*) FROM printer_memory_factory_run_steps
-           WHERE run_id=? AND step_kind LIKE 'LONG_CONTINUATION_%'""",
-        (factory_run_id,),
-    ).fetchone()[0])
+    total_steps = _standard_candidate_run_step_count(
+        connection,
+        factory_run_id=factory_run_id,
+        candidates=candidates,
+        long_continuation_only=True,
+    )
     total_owned = int(connection.execute(
         """SELECT COUNT(*) FROM printer_memory_factory_campaign_scheduler_work
            WHERE campaign_id=? AND run_id=? AND cycle_id=? AND factory_run_id=?
@@ -1124,11 +1171,12 @@ def plan_standard_campaign_4h_handoff(
            WHERE campaign_id=? AND run_id=? AND cycle_id=? AND window_kind='WINDOW_4H'""",
         (campaign_id, run_id, cycle_id),
     ).fetchone()[0])
-    existing_steps = int(connection.execute(
-        """SELECT COUNT(*) FROM printer_memory_factory_run_steps
-           WHERE run_id=? AND step_kind LIKE 'LONG_CONTINUATION_%'""",
-        (factory_run_id,),
-    ).fetchone()[0])
+    existing_steps = _standard_candidate_run_step_count(
+        connection,
+        factory_run_id=factory_run_id,
+        candidates=candidates,
+        long_continuation_only=True,
+    )
     existing_owned = int(connection.execute(
         """SELECT COUNT(*) FROM printer_memory_factory_campaign_scheduler_work
            WHERE campaign_id=? AND run_id=? AND cycle_id=? AND factory_run_id=?
@@ -1209,6 +1257,12 @@ def plan_standard_campaign_4h_handoff(
             token_id = int(candidate["token_row_id"])
             pair_id = int(candidate["pair_row_id"])
             lane = str(candidate["tracking_lane"])
+            cycle_scheduler_jobs = _standard_candidate_run_step_count(
+                connection,
+                factory_run_id=factory_run_id,
+                candidates=candidates,
+                distinct_scheduler_jobs=True,
+            )
             plan = _plan_token_4h_phase(
                 connection,
                 run_id=factory_run_id,
@@ -1218,6 +1272,7 @@ def plan_standard_campaign_4h_handoff(
                 pair_address=str(candidate["pair_identity"]),
                 tracking_lane=lane,
                 cumulative_scheduler_ceiling=int(budget["scheduler_ceiling"]),
+                existing_scheduler_jobs=cycle_scheduler_jobs,
                 allow_enabled_successor_planning=True,
             )
             if not plan.get("planned") or plan.get("replay"):

@@ -365,6 +365,41 @@ class StandardFourHourCampaignPlanningTests(unittest.TestCase):
         finally:
             fx.close()
 
+    def test_peer_cycle_long_step_does_not_block_exact_cycle_plan(self) -> None:
+        fx, candidates = self._prepared()
+        try:
+            with fx.connection:
+                fx.connection.execute(
+                    "INSERT INTO printer_tokens(id,token_mint,chain) "
+                    "VALUES (99,'peer-cycle-mint','solana')"
+                )
+                fx.connection.execute(
+                    "INSERT INTO printer_pairs(id,token_id,pair_address,base_token_mint) "
+                    "VALUES (990,99,'peer-cycle-pool','peer-cycle-mint')"
+                )
+                fx.connection.execute(
+                    """INSERT INTO printer_memory_factory_run_steps(
+                        run_id,step_key,step_kind,step_status,token_id,pair_id,
+                        token_mint,pair_address,tracking_lane,scheduled_for,result_json
+                    ) VALUES ('factory-run-1','t1_c0002_peer_4h_snapshot_001',
+                        'LONG_CONTINUATION_SNAPSHOT','SUCCEEDED',99,990,
+                        'peer-cycle-mint','peer-cycle-pool','TRACK_NORMAL',?,?)""",
+                    (_iso(T1H), json.dumps({"peer_cycle": True})),
+                )
+
+            result = self._plan(fx, candidates)
+            self.assertTrue(result["planned"])
+            self.assertFalse(result["replay"])
+            self.assertEqual(int(result["planned_jobs"]), 98)
+            self.assertEqual(
+                int(fx.connection.execute(
+                    "SELECT COUNT(*) FROM printer_memory_factory_run_steps "
+                    "WHERE token_id=99 AND pair_id=990"
+                ).fetchone()[0]),
+                1,
+            )
+        finally:
+            fx.close()
     def test_preexisting_partial_long_plan_blocks_before_four_hour_handoff(self) -> None:
         fx, candidates = self._prepared()
         try:

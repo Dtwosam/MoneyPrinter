@@ -12,7 +12,7 @@ import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 from printer_v1.discovery.scheduler_parity import reconcile_discovery_work_jobs
 from printer_v1.operator_cli.campaign_active_work import campaign_active_work_report
@@ -6988,6 +6988,48 @@ def _run_request_count(conn: sqlite3.Connection, run_id: str) -> int:
     ).fetchone()[0])
 
 
+def _run_request_count_for_step_ids(
+    conn: sqlite3.Connection,
+    run_id: str,
+    step_ids: Sequence[int],
+    *,
+    long_continuation_only: bool = False,
+) -> int:
+    """Count run-keyed governed requests owned by an exact factory-step set."""
+    owned_ids = tuple(int(step_id) for step_id in step_ids)
+    if not owned_ids:
+        return 0
+    placeholders = ",".join("?" for _ in owned_ids)
+    rows = conn.execute(
+        "SELECT id,step_key,step_kind FROM printer_memory_factory_run_steps "
+        "WHERE run_id=? "
+        f"AND id IN ({placeholders}) ORDER BY id",
+        (str(run_id), *owned_ids),
+    ).fetchall()
+    if len(rows) != len(set(owned_ids)):
+        raise ValueError("cycle-scoped request accounting lost factory step identity")
+    step_keys = {
+        str(row["step_key"])
+        for row in rows
+        if not long_continuation_only
+        or str(row["step_kind"]).startswith("LONG_CONTINUATION_")
+    }
+    if not step_keys:
+        return 0
+    prefix = f"{run_id}:"
+    request_rows = conn.execute(
+        "SELECT request_key FROM printer_source_requests "
+        "WHERE request_key>=? AND request_key<?",
+        (prefix, prefix + "\uffff"),
+    ).fetchall()
+    return sum(
+        1
+        for row in request_rows
+        if str(row[0] or "").startswith(prefix)
+        and str(row[0])[len(prefix):].split(":", 1)[0] in step_keys
+    )
+
+
 def _token_request_count(conn: sqlite3.Connection, run_id: str, token_prefix: str) -> int:
     run_prefix = f"{run_id}:"
     rows = conn.execute(
@@ -7220,11 +7262,15 @@ def _enforce_budgets_before_step(
         )
         lane = str(step["tracking_lane"])
         phase = runtime_budget(lane)
-        if bool(config.get("standard_four_hour_campaign")):
+        standard_campaign = bool(config.get("standard_four_hour_campaign"))
+        four_token_standard = standard_campaign and bool(config.get("four_token_proof"))
+        cycle_step_ids: tuple[int, ...] | None = None
+        if standard_campaign:
             try:
                 budget_cycle_id: str | None = None
-                if bool(config.get("four_token_proof")):
+                if four_token_standard:
                     from printer_v1.operator_cli.four_token_proof_integration import (
+                        cycle_scoped_factory_step_ids,
                         resolve_owned_cycle_for_scheduler_job,
                     )
 
@@ -7239,6 +7285,17 @@ def _enforce_budgets_before_step(
                         campaign_run_id=str(config.get("campaign_run_id") or ""),
                         factory_run_id=run_id,
                     ).cycle_id
+                    cycle_step_ids = cycle_scoped_factory_step_ids(
+                        conn,
+                        campaign_id=str(config.get("campaign_id") or ""),
+                        campaign_run_id=str(config.get("campaign_run_id") or ""),
+                        factory_run_id=run_id,
+                        cycle_id=str(budget_cycle_id),
+                    )
+                    if not cycle_step_ids:
+                        raise ValueError(
+                            "four-token standard budget cycle has no owned factory steps"
+                        )
                 cumulative = _standard_four_hour_cumulative_budget_for_run(
                     conn, run_id, cycle_id=budget_cycle_id
                 )
@@ -7246,19 +7303,27 @@ def _enforce_budgets_before_step(
                 raise _GlobalStop(
                     STOP_BUDGET, scope="STANDARD_FOUR_HOUR_SUBSET", detail=str(exc),
                 ) from exc
-            phase_request_ceiling = int(
-                cumulative["phase_request_ceiling"]
-            )
+            phase_request_ceiling = int(cumulative["phase_request_ceiling"])
         else:
             cumulative = _cumulative_lifecycle_budget_for_run(conn, run_id, lane)
             phase_request_ceiling = int(phase["phase_request_ceiling"])
-        phase_used = int(conn.execute(
-            "SELECT COUNT(*) FROM printer_source_requests WHERE request_key LIKE ?",
-            (f"{run_id}:%4h%",),
-        ).fetchone()[0])
+
+        if cycle_step_ids is not None:
+            phase_used = _run_request_count_for_step_ids(
+                conn, run_id, cycle_step_ids, long_continuation_only=True
+            )
+            runtime_used = _run_request_count_for_step_ids(
+                conn, run_id, cycle_step_ids
+            )
+        else:
+            phase_used = int(conn.execute(
+                "SELECT COUNT(*) FROM printer_source_requests WHERE request_key LIKE ?",
+                (f"{run_id}:%4h%",),
+            ).fetchone()[0])
+            runtime_used = _run_request_count(conn, run_id)
         # Discovery precedes run-local request keys; reserve its approved maximum.
         discovery_used = int(cumulative["request_components"]["discovery"])
-        cumulative_used = discovery_used + _run_request_count(conn, run_id)
+        cumulative_used = discovery_used + runtime_used
         try:
             require_projected_capacity(
                 current=phase_used, projected=projected,
@@ -7279,6 +7344,26 @@ def _enforce_budgets_before_step(
             raise _GlobalStop(
                 STOP_BUDGET, scope="CUMULATIVE_LIFECYCLE", detail=str(exc),
             ) from exc
+        if four_token_standard:
+            from printer_v1.operator_cli.multi_cycle_memory_growth import (
+                scaled_standard_four_hour_capacity_contract,
+            )
+
+            scaled = scaled_standard_four_hour_capacity_contract(4)
+            campaign_used = int(scaled["shared_discovery_requests"]) + _run_request_count(
+                conn, run_id
+            )
+            try:
+                require_projected_capacity(
+                    current=campaign_used,
+                    projected=projected,
+                    ceiling=int(scaled["lifecycle_request_outer_ceiling"]),
+                    label="four-token cumulative lifecycle request",
+                )
+            except ValueError as exc:
+                raise _GlobalStop(
+                    STOP_BUDGET, scope="CUMULATIVE_LIFECYCLE", detail=str(exc),
+                ) from exc
         return
     continuous = bool(config.get("continuous_first_hour"))
     selective_1h = _selective_1h_lifecycle(config)
