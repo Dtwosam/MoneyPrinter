@@ -346,7 +346,10 @@ def persist_window(
 ) -> None:
     timestamp = now or _utc_now()
     support_only = int(window_kind == "WINDOW_5M_MICRO_EVENT")
-    with connection:
+    transaction_context = (
+        connection if not connection.in_transaction else nullcontext(connection)
+    )
+    with transaction_context:
         _write(
             connection,
             """INSERT INTO printer_memory_factory_campaign_windows(

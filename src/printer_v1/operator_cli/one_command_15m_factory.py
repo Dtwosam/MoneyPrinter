@@ -1510,34 +1510,50 @@ def _plan_opening_jobs(
 ) -> None:
     if four_token_proof:
         from printer_v1.operator_cli.four_token_proof_integration import cycle_step_key
-    for target_index, target in enumerate(targets):
-        slot_ordinal = target_index + 1
-        if four_token_proof:
-            _precreate_proof_15m_window(
-                conn,
-                run_id=run_id,
-                cycle_ordinal=cycle_ordinal,
-                slot_ordinal=slot_ordinal,
-                target=target,
-                checkpoint_cutoff=_iso(scheduled_for),
+
+    # Normal opening is one atomic slot-set. Cycle 2 reaches this owner after
+    # admission/materialization may already have committed, so do not rely on a
+    # caller transaction being open. The first-commit callback is an explicit
+    # fault-injection/checkpoint surface whose historical partial-commit
+    # semantics must remain unchanged.
+    owns_transaction = first_commit_callback is None and not conn.in_transaction
+    if owns_transaction:
+        conn.execute("BEGIN")
+    try:
+        for target_index, target in enumerate(targets):
+            slot_ordinal = target_index + 1
+            if four_token_proof:
+                _precreate_proof_15m_window(
+                    conn,
+                    run_id=run_id,
+                    cycle_ordinal=cycle_ordinal,
+                    slot_ordinal=slot_ordinal,
+                    target=target,
+                    checkpoint_cutoff=_iso(scheduled_for),
+                )
+            step_key = (
+                cycle_step_key(
+                    slot_ordinal=slot_ordinal,
+                    cycle_ordinal=cycle_ordinal,
+                    suffix="snapshot_00",
+                )
+                if four_token_proof
+                else f"t{slot_ordinal}_snapshot_00"
             )
-        step_key = (
-            cycle_step_key(
-                slot_ordinal=slot_ordinal,
-                cycle_ordinal=cycle_ordinal,
-                suffix="snapshot_00",
+            _insert_step_and_job(
+                conn, run_id=run_id, target=target,
+                step_key=step_key, step_kind="SNAPSHOT",
+                scheduled_for=scheduled_for, operation_observer=operation_observer,
             )
-            if four_token_proof
-            else f"t{slot_ordinal}_snapshot_00"
-        )
-        _insert_step_and_job(
-            conn, run_id=run_id, target=target,
-            step_key=step_key, step_kind="SNAPSHOT",
-            scheduled_for=scheduled_for, operation_observer=operation_observer,
-        )
-        if target_index == 0 and first_commit_callback is not None:
+            if target_index == 0 and first_commit_callback is not None:
+                conn.commit()
+                first_commit_callback(conn, run_id)
+        if owns_transaction:
             conn.commit()
-            first_commit_callback(conn, run_id)
+    except Exception:
+        if owns_transaction and conn.in_transaction:
+            conn.rollback()
+        raise
 
 
 def _proof_15m_owner(
