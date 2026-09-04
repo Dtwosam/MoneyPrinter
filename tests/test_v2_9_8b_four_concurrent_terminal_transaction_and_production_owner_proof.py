@@ -17,6 +17,10 @@ from printer_v1.discovery.permanent_discovery_availability import (
     StageBudget,
     derive_campaign_source_request_key_root,
 )
+from printer_v1.discovery.persistence import (
+    DiscoveryPersistenceError,
+    merged_candidate_canonical_payload,
+)
 from printer_v1.discovery.pre_lifecycle_refresh_composition import (
     build_pre_lifecycle_refresh_stage,
 )
@@ -1094,6 +1098,55 @@ def test_real_pair_ready_atomic_consume_creates_exact_cycle2_once(
         )
     _integrity(connection)
     connection.close()
+
+
+@pytest.mark.parametrize(
+    "channel_label",
+    (
+        "LATEST_GRADUATED",
+        "PERSISTED_GRADUATED",
+        "FRESH_AGGREGATOR_PROTOCOL_CONFIRMED",
+    ),
+)
+def test_cycle2_materialization_accepts_truthful_operational_provenance(
+    channel_label: str,
+) -> None:
+    canonical, digest = merged_candidate_canonical_payload(
+        discovery_batch_id="cycle2-materialized-batch",
+        candidate_identity_key=(
+            "solana-mainnet:mint-21|market-21|PUMPSWAP_GRADUATED_CONFIRMED"
+        ),
+        mint_identity="mint-21",
+        market_identity="market-21",
+        lifecycle_identity="PUMPSWAP_GRADUATED_CONFIRMED",
+        channel_labels=(channel_label,),
+        identity_conflicts=(),
+        evidence_gaps=(),
+        origin_verification_state="CONFIRMED",
+        pumpswap_confirmation_state="CONFIRMED",
+        first_failed_eligibility_gate=None,
+    )
+    assert channel_label in canonical
+    assert len(digest) == 64
+
+
+def test_cycle2_materialization_still_rejects_invented_provenance() -> None:
+    with pytest.raises(DiscoveryPersistenceError, match="unsupported channel label"):
+        merged_candidate_canonical_payload(
+            discovery_batch_id="cycle2-materialized-batch",
+            candidate_identity_key=(
+                "solana-mainnet:mint-21|market-21|PUMPSWAP_GRADUATED_CONFIRMED"
+            ),
+            mint_identity="mint-21",
+            market_identity="market-21",
+            lifecycle_identity="PUMPSWAP_GRADUATED_CONFIRMED",
+            channel_labels=("INVENTED_CYCLE2_CHANNEL",),
+            identity_conflicts=(),
+            evidence_gaps=(),
+            origin_verification_state="CONFIRMED",
+            pumpswap_confirmation_state="CONFIRMED",
+            first_failed_eligibility_gate=None,
+        )
 
 
 def test_transition_helper_does_not_speculate_candidate_states() -> None:
