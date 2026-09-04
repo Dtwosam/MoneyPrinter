@@ -765,6 +765,7 @@ def test_real_factory_reuses_time_shifted_pair_ready_after_transient_defer(
     health_calls: list[bool] = []
     health_times: list[datetime] = []
     waits: list[float] = []
+    snapshot_calls: dict[str, int] = {}
 
     def discovery(_args):
         connection = sqlite3.connect(db)
@@ -939,6 +940,8 @@ def test_real_factory_reuses_time_shifted_pair_ready_after_transient_defer(
     def snapshot_factory(*, token_mint, timeout_seconds):
         del timeout_seconds
         row_id = int(token_mint.rsplit("-", 1)[1])
+        snapshot_calls[token_mint] = snapshot_calls.get(token_mint, 0) + 1
+        price = 1.0 + 0.015 * (snapshot_calls[token_mint] - 1)
         return build_fixture_source_adapter(
             "dexscreener",
             fixture_payload={
@@ -946,7 +949,7 @@ def test_real_factory_reuses_time_shifted_pair_ready_after_transient_defer(
                     "chain": "solana",
                     "token_mint": token_mint,
                     "pair_address": f"pool-{row_id}",
-                    "price_usd": 1.0,
+                    "price_usd": price,
                     "liquidity_usd": 10_000.0,
                     "volume_5m": 10.0,
                     "volume_1h": 20.0,
@@ -1039,11 +1042,28 @@ def test_real_factory_reuses_time_shifted_pair_ready_after_transient_defer(
                 "AND object_kind='CONTINUATION_4A'",
                 (CAMPAIGN_ID, CAMPAIGN_RUN_ID, cycle2_id),
             ).fetchone()[0])
+            successors = int(connection.execute(
+                "SELECT COUNT(*) FROM printer_memory_factory_campaign_windows "
+                "WHERE campaign_id=? AND run_id=? AND cycle_id=? "
+                "AND window_kind='WINDOW_1H' AND window_state='PLANNED'",
+                (CAMPAIGN_ID, CAMPAIGN_RUN_ID, cycle2_id),
+            ).fetchone()[0])
+            one_hour_work = int(connection.execute(
+                "SELECT COUNT(*) FROM printer_memory_factory_campaign_scheduler_work "
+                "WHERE campaign_id=? AND run_id=? AND cycle_id=? "
+                "AND stage_id='WINDOW_1H' AND work_scope='WINDOW_LIFECYCLE'",
+                (CAMPAIGN_ID, CAMPAIGN_RUN_ID, cycle2_id),
+            ).fetchone()[0])
         finally:
             connection.close()
         return (
-            "FOCUSED_CYCLE2_15M_HANDOFF"
-            if terminal_closes == 2 and decision_objects == 2
+            "FOCUSED_CYCLE2_1H_PLANNED"
+            if (
+                terminal_closes == 2
+                and decision_objects == 2
+                and successors == 2
+                and one_hour_work > 0
+            )
             else None
         )
 
@@ -1104,7 +1124,7 @@ def test_real_factory_reuses_time_shifted_pair_ready_after_transient_defer(
         cancellation_probe=stop_after_cycle2_handoff,
     )
 
-    assert report["stop_reason"] == "FOCUSED_CYCLE2_15M_HANDOFF", json.dumps(
+    assert report["stop_reason"] == "FOCUSED_CYCLE2_1H_PLANNED", json.dumps(
         report, sort_keys=True, default=str
     )
     assert supply_calls == 1
@@ -1203,11 +1223,18 @@ def test_real_factory_reuses_time_shifted_pair_ready_after_transient_defer(
         ).fetchall()
     ]
     assert len(cycle2_decisions) == 2
-    assert len(cycle2_successors) == sum(
-        1
+    assert {
+        str(decision.get("successor_window_kind") or "")
         for decision in cycle2_decisions
-        if str(decision.get("successor_window_kind") or "") == "WINDOW_1H"
-    )
+    } == {"WINDOW_1H"}
+    assert len(cycle2_successors) == 2
+    assert all(str(row[2]) == "PLANNED" for row in cycle2_successors)
+    assert int(connection.execute(
+        "SELECT COUNT(*) FROM printer_memory_factory_campaign_scheduler_work "
+        "WHERE campaign_id=? AND run_id=? AND cycle_id=? "
+        "AND stage_id='WINDOW_1H' AND work_scope='WINDOW_LIFECYCLE'",
+        (CAMPAIGN_ID, CAMPAIGN_RUN_ID, cycle2_id),
+    ).fetchone()[0]) > 0
     assert int(connection.execute(
         "SELECT COUNT(*) FROM printer_memory_factory_campaign_windows "
         "WHERE campaign_id=? AND run_id=? AND cycle_id=? "
