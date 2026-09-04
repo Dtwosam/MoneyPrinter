@@ -283,6 +283,7 @@ class SelectiveOneHourTrackingHandoffContractTests(unittest.TestCase):
                 row_id,
             ),
         )
+        self.connection.commit()
         expired_at = NOW + timedelta(seconds=TRACKING_COOLDOWN_SECONDS)
 
         with self.assertRaisesRegex(
