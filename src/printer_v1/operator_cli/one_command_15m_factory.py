@@ -436,12 +436,20 @@ def _pair_ready_post_discovery_projection(projection: Any) -> Any:
         discovery_capacity_available=True,
     )
     try:
-        return replace(projection, health=adjusted_health)
+        return replace(
+            projection,
+            health=adjusted_health,
+            # Provider readiness is prospective discovery timing. The exact pair
+            # is already frozen, so a provider cooldown is no longer a lawful
+            # admission rearm boundary.
+            recheck_at=None,
+        )
     except TypeError:
         class _ProjectionProxy:
             def __init__(self, base: Any, override_health: Any) -> None:
                 self._base = base
                 self.health = override_health
+                self.recheck_at = None
 
             def __getattr__(self, name: str) -> Any:
                 return getattr(self._base, name)
