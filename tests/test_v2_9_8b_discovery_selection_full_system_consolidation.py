@@ -15,6 +15,10 @@ from printer_v1.db.migrate import apply_migrations, canonical_migration_names
 from printer_v1.discovery.direct_migration_discovery import (
     run_direct_migration_discovery,
 )
+from printer_v1.discovery.combined_executor import (
+    DiscoverySelectionCandidate,
+    apply_existing_discovery_gate_and_selection,
+)
 from printer_v1.discovery.selection_authority import (
     SelectionCandidate,
     composition_label,
@@ -26,6 +30,7 @@ from printer_v1.operator_cli.unified_terminal_closure import (
     replay_campaign_terminal_report,
     write_campaign_terminal_report,
 )
+from printer_v1.lifecycle.contracts import TokenLifecycleState
 from printer_v1.sources.direct_pump_migration import (
     SIGNATURE_PAGE_REQUEST_KIND,
     TRANSACTION_REQUEST_KIND,
@@ -179,6 +184,61 @@ def test_one_solana_endpoint_override_propagates() -> None:
     ]
     assert cfg.url in holder_urls
     assert cfg.url in verifier_urls
+
+
+def test_later_cycle_tracking_gate_uses_exact_frozen_lane(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "exact-lane-gate.sqlite3"
+    apply_migrations(db)
+    connection = sqlite3.connect(db)
+    connection.row_factory = sqlite3.Row
+    candidate = DiscoverySelectionCandidate(
+        merged_candidate_id="pre-admission:mint-a",
+        mint="mint-a",
+        market_identity="solana-mainnet:pumpswap:pair-a",
+        lifecycle="PUMPSWAP_GRADUATED_CONFIRMED",
+        channels={"LATEST_GRADUATED"},
+        observation_ids=["pre-admission:mint-a"],
+        conflicts=[],
+        gaps=[],
+        origin_state="CONFIRMED",
+        pumpswap_state="CONFIRMED",
+        tracking_lane="TRACK_FAST",
+    )
+    observed: list[object] = []
+
+    def exact_handoff(*args, **kwargs):
+        observed.append(kwargs.get("tracking_lane"))
+        return type(
+            "Assessment",
+            (),
+            {"eligible": True, "reason_code": None},
+        )()
+
+    try:
+        with pytest.MonkeyPatch.context() as monkeypatch:
+            monkeypatch.setattr(
+                "printer_v1.lifecycle.tracking_queue."
+                "assess_possible_tracking_claim_by_identity",
+                exact_handoff,
+            )
+            outcome = apply_existing_discovery_gate_and_selection(
+                connection,
+                candidates=(candidate,),
+                discovery_batch_id="pre-admission:attempt-2",
+                evaluated_at=datetime(2026, 9, 4, tzinfo=timezone.utc),
+                mode="INITIAL",
+                vacant_slot_ordinals=(1, 2),
+                batch_seq=2,
+                cycle_seed="cycle-2-seed",
+                handoffs_used=0,
+            )
+    finally:
+        connection.close()
+
+    assert len(outcome.eligible) == 1
+    assert observed == [TokenLifecycleState.TRACK_FAST]
 
 
 def test_truthful_provenance_labels() -> None:
