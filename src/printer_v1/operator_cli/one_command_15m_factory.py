@@ -6981,11 +6981,46 @@ def _token_prefix(step_key: str) -> str:
     return f"t{parsed.slot_ordinal}_c{parsed.cycle_ordinal:04d}"
 
 
+def _run_request_ids(conn: sqlite3.Connection, run_id: str) -> set[int]:
+    return {
+        int(row[0])
+        for row in conn.execute(
+            "SELECT id FROM printer_source_requests WHERE request_key LIKE ?",
+            (f"{run_id}:%",),
+        ).fetchall()
+    }
+
+
 def _run_request_count(conn: sqlite3.Connection, run_id: str) -> int:
-    return int(conn.execute(
-        "SELECT COUNT(*) FROM printer_source_requests WHERE request_key LIKE ?",
-        (f"{run_id}:%",),
-    ).fetchone()[0])
+    return len(_run_request_ids(conn, run_id))
+
+
+def _later_cycle_discovery_request_ids(
+    conn: sqlite3.Connection, run_id: str
+) -> set[int]:
+    """Return exact pre-admission source requests owned by this factory run.
+
+    Source-link and attempt-evidence ledgers overlap by design. UNION them by
+    request identity so cooperative refresh/claim evidence is counted once.
+    """
+    return {
+        int(row[0])
+        for row in conn.execute(
+            """SELECT l.source_request_id
+               FROM printer_pre_admission_discovery_attempts AS a
+               JOIN printer_pre_admission_discovery_attempt_source_links AS l
+                 ON l.attempt_id=a.attempt_id
+               WHERE a.authoritative_factory_run_id=?
+               UNION
+               SELECT e.source_request_id
+               FROM printer_pre_admission_discovery_attempts AS a
+               JOIN printer_pre_admission_attempt_evidence AS e
+                 ON e.attempt_id=a.attempt_id
+               WHERE a.authoritative_factory_run_id=?
+                 AND e.source_request_id IS NOT NULL""",
+            (str(run_id), str(run_id)),
+        ).fetchall()
+    }
 
 
 def _run_request_count_for_step_ids(
@@ -7813,7 +7848,17 @@ def _run_budgets(
             "source_requests_attempted", discovery.get("source_request_delta", 0)
         ) or 0
     )
-    runtime_requests = _run_request_count(conn, run_id)
+    runtime_request_ids = _run_request_ids(conn, run_id)
+    runtime_requests = len(runtime_request_ids)
+    later_cycle_discovery_requests = 0
+    if bool(config.get("four_token_proof")):
+        later_cycle_request_ids = _later_cycle_discovery_request_ids(conn, run_id)
+        # Some governed pre-admission evidence may intentionally share the
+        # factory-run request namespace. Count each Source Governor request once.
+        later_cycle_discovery_requests = len(
+            later_cycle_request_ids - runtime_request_ids
+        )
+        discovery_requests += later_cycle_discovery_requests
     holder_fallbacks = int(conn.execute(
         "SELECT COUNT(*) FROM printer_source_requests "
         "WHERE source_name='solana_rpc' AND request_key LIKE ?",
@@ -7969,6 +8014,7 @@ def _run_budgets(
                     "scheduler_row_ceiling": None,
                     "scheduler_rows_within_ceiling": None,
                     "discovery_source_requests": discovery_requests,
+                    "later_cycle_discovery_source_requests": later_cycle_discovery_requests,
                     "runtime_source_requests": runtime_requests,
                     "budget_verdict": None,
                     "within_ceiling": None,
@@ -8041,6 +8087,7 @@ def _run_budgets(
             "scheduler_row_ceiling": int(cumulative["scheduler_ceiling"]),
             "scheduler_rows_within_ceiling": cumulative_jobs_ok,
             "discovery_source_requests": discovery_requests,
+            "later_cycle_discovery_source_requests": later_cycle_discovery_requests,
             "runtime_source_requests": runtime_requests,
             "request_components": cumulative["request_components"],
             "scheduler_components": cumulative["scheduler_components"],
