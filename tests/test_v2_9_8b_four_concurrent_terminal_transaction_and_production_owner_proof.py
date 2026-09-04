@@ -76,6 +76,7 @@ from printer_v1.operator_cli.multi_cycle_memory_growth import (
 )
 from printer_v1.operator_cli.one_command_15m_factory import (
     _advance_owned_proof_15m_window,
+    _cycle_targets_for_factory,
     _execute_close_evidence_phase,
     _execute_snapshot,
     _insert_step_and_job,
@@ -1191,6 +1192,94 @@ def test_real_pair_ready_atomic_consume_creates_exact_cycle2_once(
         now=admit_at + timedelta(seconds=1),
     )
     assert repeat_materialized == materialized
+
+    cycle2_targets = _cycle_targets_for_factory(
+        connection,
+        campaign_id="campaign-1",
+        campaign_run_id="campaign-run-1",
+        cycle_id="cycle-1-2",
+    )
+    assert [
+        (
+            int(target["token_id"]),
+            int(target["pair_id"]),
+            str(target["tracking_lane"]),
+        )
+        for target in cycle2_targets
+    ] == [
+        (21, 121, "TRACK_FAST"),
+        (22, 122, "TRACK_NORMAL"),
+    ]
+    _plan_opening_jobs(
+        connection,
+        "factory-1",
+        cycle2_targets,
+        admit_at,
+        cycle_ordinal=2,
+        four_token_proof=True,
+    )
+    connection.commit()
+
+    opening_steps = connection.execute(
+        """
+        SELECT step_key,step_status,token_id,pair_id,scheduler_job_id
+        FROM printer_memory_factory_run_steps
+        WHERE run_id='factory-1'
+          AND step_key IN ('t1_c0002_snapshot_00','t2_c0002_snapshot_00')
+        ORDER BY step_key
+        """
+    ).fetchall()
+    assert len(opening_steps) == 2
+    assert [
+        (
+            str(row["step_key"]),
+            str(row["step_status"]),
+            int(row["token_id"]),
+            int(row["pair_id"]),
+        )
+        for row in opening_steps
+    ] == [
+        ("t1_c0002_snapshot_00", "PENDING", 21, 121),
+        ("t2_c0002_snapshot_00", "PENDING", 22, 122),
+    ]
+    opening_job_ids = tuple(int(row["scheduler_job_id"]) for row in opening_steps)
+    assert len(set(opening_job_ids)) == 2
+
+    cycle2_windows = connection.execute(
+        """
+        SELECT token_slot_id,window_state,memory_window_row_id
+        FROM printer_memory_factory_campaign_windows
+        WHERE campaign_id='campaign-1'
+          AND run_id='campaign-run-1'
+          AND cycle_id='cycle-1-2'
+          AND window_kind='WINDOW_15M'
+        ORDER BY token_slot_id
+        """
+    ).fetchall()
+    assert len(cycle2_windows) == 2
+    assert all(str(row["window_state"]) == "PLANNED" for row in cycle2_windows)
+    assert all(row["memory_window_row_id"] is None for row in cycle2_windows)
+
+    scheduler_owners = connection.execute(
+        """
+        SELECT scheduler_job_id,cycle_id,work_scope,stage_id,work_state
+        FROM printer_memory_factory_campaign_scheduler_work
+        WHERE campaign_id='campaign-1'
+          AND run_id='campaign-run-1'
+          AND cycle_id='cycle-1-2'
+          AND scheduler_job_id IN (?,?)
+        ORDER BY scheduler_job_id
+        """,
+        opening_job_ids,
+    ).fetchall()
+    assert len(scheduler_owners) == 2
+    assert {int(row["scheduler_job_id"]) for row in scheduler_owners} == set(
+        opening_job_ids
+    )
+    assert all(str(row["cycle_id"]) == "cycle-1-2" for row in scheduler_owners)
+    assert all(str(row["work_scope"]) == "WINDOW_LIFECYCLE" for row in scheduler_owners)
+    assert all(str(row["stage_id"]) == "WINDOW_15M" for row in scheduler_owners)
+    assert all(str(row["work_state"]) == "PENDING" for row in scheduler_owners)
 
     with pytest.raises(
         MultiCycleCoordinatorError,
