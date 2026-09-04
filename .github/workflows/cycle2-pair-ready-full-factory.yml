@@ -1,0 +1,32 @@
+name: Cycle-2 PAIR_READY full-factory regression
+
+on:
+  push:
+    branches:
+      - agent/v2-9-8b-cycle2-frozen-lane-atomic-claim-proof
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -e . pytest
+      - name: Compile
+        run: |
+          python -m py_compile \
+            src/printer_v1/operator_cli/one_command_15m_factory.py \
+            tests/test_v2_9_8b_four_token_factory_wake_ordering.py
+      - name: Full-factory transient PAIR_READY recheck
+        env:
+          PYTHONPATH: ${{ github.workspace }}/src
+        run: |
+          timeout 180s python -m pytest -q \
+            tests/test_v2_9_8b_four_token_factory_wake_ordering.py \
+            -k "time_shifted_pair_ready or wakes_future_lifecycle or controlled_clock"
