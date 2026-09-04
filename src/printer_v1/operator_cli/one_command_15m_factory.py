@@ -11334,11 +11334,22 @@ def run_one_command_15m_factory(
         from printer_v1.operator_cli.tracking_lifecycle_reconciliation import (
             reconcile_factory_post_cycle_lifecycle,
         )
+        lifecycle_targets = _terminal_lifecycle_reconciliation_targets(
+            conn,
+            selected_tokens=report["selected_tokens"],
+            campaign_id=campaign_id,
+            campaign_run_id=campaign_run_id,
+            four_token_campaign=four_token_proof_controller is not None,
+        )
         lifecycle_reconciliation = reconcile_factory_post_cycle_lifecycle(
             conn,
             run_id=run_id,
-            selected_tokens=report["selected_tokens"],
-            discovery_results=discovery.get("discovery_results", []),
+            selected_tokens=lifecycle_targets,
+            discovery_results=(
+                lifecycle_targets
+                if four_token_proof_controller is not None
+                else discovery.get("discovery_results", [])
+            ),
             per_token_outcomes=report["per_token_outcomes"],
             stop_reason=report["stop_reason"],
             archive_policy="cooldown",
