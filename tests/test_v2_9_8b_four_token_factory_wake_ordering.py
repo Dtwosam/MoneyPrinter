@@ -1115,7 +1115,7 @@ def test_real_factory_reuses_time_shifted_pair_ready_after_transient_defer(
         START + timedelta(seconds=300),
         START + timedelta(seconds=300),
     ]
-    assert sum(waits) == 300.0
+    assert sum(waits) == 1_200.0
 
     connection = sqlite3.connect(db)
     connection.row_factory = sqlite3.Row
@@ -1186,6 +1186,28 @@ def test_real_factory_reuses_time_shifted_pair_ready_after_transient_defer(
     assert len(cycle2_objects) == 2
     assert {str(row[0]) for row in cycle2_objects} == {cycle2_id}
     assert {str(row[2]) for row in cycle2_objects} == {"CONTINUATION_4A"}
+    cycle2_successors = connection.execute(
+        "SELECT token_slot_id,window_id,window_state FROM "
+        "printer_memory_factory_campaign_windows "
+        "WHERE campaign_id=? AND run_id=? AND cycle_id=? "
+        "AND window_kind='WINDOW_1H' ORDER BY token_slot_id",
+        (CAMPAIGN_ID, CAMPAIGN_RUN_ID, cycle2_id),
+    ).fetchall()
+    cycle2_decisions = [
+        json.loads(str(row[0]))
+        for row in connection.execute(
+            "SELECT object_json FROM printer_memory_factory_campaign_objects "
+            "WHERE campaign_id=? AND run_id=? AND cycle_id=? "
+            "AND object_kind='CONTINUATION_4A' ORDER BY object_id",
+            (CAMPAIGN_ID, CAMPAIGN_RUN_ID, cycle2_id),
+        ).fetchall()
+    ]
+    assert len(cycle2_decisions) == 2
+    assert len(cycle2_successors) == sum(
+        1
+        for decision in cycle2_decisions
+        if str(decision.get("successor_window_kind") or "") == "WINDOW_1H"
+    )
     assert int(connection.execute(
         "SELECT COUNT(*) FROM printer_memory_factory_campaign_windows "
         "WHERE campaign_id=? AND run_id=? AND cycle_id=? "
