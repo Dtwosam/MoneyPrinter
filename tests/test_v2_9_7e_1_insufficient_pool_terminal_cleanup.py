@@ -400,6 +400,29 @@ class InsufficientPoolTerminalCleanupTests(unittest.TestCase):
             )
             # Assert report embeds zero activation without inventing slots.
             self.assertEqual(len(body["identity"]["two_token_slots"]), 0)
+
+            usage = body["source_scheduler_ceiling_usage"]
+            self.assertEqual(
+                len(usage["source_request_ids"]), int(discovery["source_calls"])
+            )
+            self.assertEqual(
+                len(usage["scheduler_job_ids"]), int(discovery["scheduler_work"])
+            )
+            budgets = usage["authoritative_run_budgets"]
+            self.assertEqual(
+                budgets["governed_requests_run"], int(discovery["source_calls"])
+            )
+            self.assertEqual(
+                budgets["scheduler_rows_total"], int(discovery["scheduler_work"])
+            )
+            self.assertEqual(
+                budgets["governed_requests_run_ceiling"],
+                int(self.configuration["ceilings"]["source_calls"]),
+            )
+            self.assertEqual(
+                budgets["scheduler_rows_ceiling"],
+                int(self.configuration["ceilings"]["scheduler_work"]),
+            )
         finally:
             connection.close()
 
