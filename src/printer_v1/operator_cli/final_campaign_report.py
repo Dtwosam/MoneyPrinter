@@ -297,7 +297,7 @@ def _attempt_owned_source_usage(
     connection: sqlite3.Connection,
     *,
     authoritative_run_id: str,
-) -> tuple[set[int], set[int], set[int]]:
+) -> tuple[set[int], set[int], set[int], set[int]]:
     """Return durable pre-admission source identities owned by one factory run."""
     request_ids = {
         int(row[0])
@@ -341,7 +341,17 @@ def _attempt_owned_source_usage(
             (authoritative_run_id,),
         ).fetchall()
     }
-    return request_ids, response_ids, failure_ids
+    scheduler_job_ids = {
+        int(row[0])
+        for row in connection.execute(
+            """SELECT DISTINCT scheduler_job_id
+               FROM printer_pre_admission_discovery_attempts
+               WHERE authoritative_factory_run_id=?
+                 AND scheduler_job_id IS NOT NULL""",
+            (authoritative_run_id,),
+        ).fetchall()
+    }
+    return request_ids, response_ids, failure_ids, scheduler_job_ids
 
 def _locked_capabilities(
     connection: sqlite3.Connection, authoritative_report: Mapping[str, Any],
@@ -487,6 +497,7 @@ def assemble_final_campaign_report(
             attempt_source_request_ids,
             attempt_source_response_ids,
             attempt_source_failure_ids,
+            attempt_scheduler_job_ids,
         ) = _attempt_owned_source_usage(
             connection,
             authoritative_run_id=str(root["authoritative_run_id"]),
@@ -548,10 +559,13 @@ def assemble_final_campaign_report(
             }
             | attempt_source_failure_ids
         ),
-        "scheduler_job_ids": sorted({
-            int(item["scheduler_job_id"]) for item in work
-            if item["scheduler_job_id"] is not None
-        }),
+        "scheduler_job_ids": sorted(
+            {
+                int(item["scheduler_job_id"]) for item in work
+                if item["scheduler_job_id"] is not None
+            }
+            | attempt_scheduler_job_ids
+        ),
         "campaign_scheduler_work_total": len(work),
         "automatic_retries": 0,
     }
