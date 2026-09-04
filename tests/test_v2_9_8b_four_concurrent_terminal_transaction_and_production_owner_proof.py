@@ -574,13 +574,18 @@ def test_pair_ready_admission_does_not_require_future_discovery_capacity(
     )
     projections = iter(
         (
-            SimpleNamespace(health=healthy),
-            SimpleNamespace(health=post_discovery),
+            SimpleNamespace(health=healthy, recheck_at=None),
+            SimpleNamespace(
+                health=post_discovery,
+                recheck_at=NOW + timedelta(minutes=1),
+            ),
         )
     )
     admitted_health: list[MultiCycleAdmissionHealth] = []
+    observed_rechecks: list[datetime | None] = []
 
     def evaluate(projection):
+        observed_rechecks.append(getattr(projection, "recheck_at", None))
         health = projection.health
         if not health.provider_budgets_available:
             return FourTokenAdmissionDisposition(
@@ -644,6 +649,7 @@ def test_pair_ready_admission_does_not_require_future_discovery_capacity(
     assert admitted_health[0].source_budget_available is True
     assert admitted_health[0].scheduler_budget_available is True
     assert admitted_health[0].close_reserve_available is True
+    assert observed_rechecks == [None, None]
     connection.close()
 
 
