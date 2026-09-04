@@ -35,6 +35,17 @@ from printer_v1.operator_cli.authoritative_live_operational_campaign import (
     _classify_pre_lifecycle_terminal,
 )
 from printer_v1.operator_cli.holder_reliability_budget_control import build_ledger
+from printer_v1.operator_cli.cadence_authority import (
+    claim_tracking_authority_for_slot_insert,
+)
+from printer_v1.operator_cli.multi_cycle_campaign_coordinator import (
+    _frozen_pair_requalification_authority,
+)
+from printer_v1.operator_cli.pre_admission_discovery_attempt import (
+    PreAdmissionAttemptError,
+    PreAdmissionAttemptItem,
+    attach_frozen_tracking_lane,
+)
 
 
 NOW = datetime(2026, 7, 28, 18, 0, tzinfo=timezone.utc)
@@ -232,6 +243,149 @@ class SelectiveOneHourTrackingHandoffContractTests(unittest.TestCase):
             fresh_evidence_requalification=True,
         )
         self.assertEqual(duplicate, (False, None))
+
+    def test_slot_claim_wrapper_forwards_frozen_fresh_requalification(self) -> None:
+        lineage = {
+            "pre_admission_attempt_id": "attempt-2",
+            "frozen_evidence_hash": "a" * 64,
+        }
+        with patch(
+            "printer_v1.operator_cli.cadence_authority.claim_tracking_item",
+            return_value=(True, 991),
+        ) as claimed:
+            queue_id = claim_tracking_authority_for_slot_insert(
+                self.connection,
+                token_row_id=self.token_id,
+                pair_row_id=self.pair_id,
+                tracking_lane="TRACK_NORMAL",
+                now=NOW,
+                priority_reason="later_cycle_slot_tracking_activation",
+                fresh_evidence_requalification=True,
+                requalification_lineage=lineage,
+            )
+
+        self.assertEqual(queue_id, 991)
+        kwargs = claimed.call_args.kwargs
+        self.assertEqual(kwargs["assessed_at"], NOW)
+        self.assertTrue(kwargs["fresh_evidence_requalification"])
+        self.assertEqual(kwargs["requalification_lineage"], lineage)
+
+    def test_frozen_pair_requalification_requires_current_holder_authority(self) -> None:
+        item = SimpleNamespace(
+            canonical_evidence_json=json.dumps(
+                {
+                    "candidate": {"provenance": "PERSISTED_GRADUATED"},
+                    "holder_evidence": {
+                        "eligible": True,
+                        "tracking_requalification_required": True,
+                        "source_name": "goplus",
+                        "reason": "CURRENT_HOLDER_EVIDENCE",
+                    },
+                },
+                sort_keys=True,
+            ),
+            canonical_evidence_hash="b" * 64,
+            observed_at=NOW,
+        )
+        allowed, lineage = _frozen_pair_requalification_authority(
+            item,
+            attempt_id="attempt-2",
+            campaign_id="campaign-1",
+            campaign_run_id="campaign-run-1",
+            cycle_id="cycle-1-2",
+        )
+        self.assertTrue(allowed)
+        self.assertIsNotNone(lineage)
+        self.assertEqual(lineage["pre_admission_attempt_id"], "attempt-2")
+        self.assertEqual(lineage["frozen_evidence_hash"], "b" * 64)
+
+        item_without_requalification = SimpleNamespace(
+            canonical_evidence_json=json.dumps(
+                {
+                    "candidate": {},
+                    "holder_evidence": {
+                        "eligible": True,
+                        "tracking_requalification_required": False,
+                    },
+                }
+            ),
+            canonical_evidence_hash="c" * 64,
+            observed_at=NOW,
+        )
+        allowed, lineage = _frozen_pair_requalification_authority(
+            item_without_requalification,
+            attempt_id="attempt-3",
+            campaign_id="campaign-1",
+            campaign_run_id="campaign-run-1",
+            cycle_id="cycle-1-2",
+        )
+        self.assertFalse(allowed)
+        self.assertIsNone(lineage)
+
+    def test_frozen_lane_checks_the_exact_classified_lane_claimability(self) -> None:
+        item = PreAdmissionAttemptItem(
+            attempt_id="attempt-2",
+            slot_ordinal=1,
+            token_identity="solana-mainnet:mint-a",
+            token_row_id=self.token_id,
+            mint_identity="mint-a",
+            pair_identity="pair-a",
+            pair_row_id=self.pair_id,
+            lifecycle_identity="PUMPSWAP_GRADUATED_CONFIRMED",
+            canonical_market_identity="pair-a",
+            canonical_pool_identity="pair-a",
+            canonical_evidence_json=json.dumps({"candidate": {}}),
+            canonical_evidence_hash="d" * 64,
+            evidence_version="test",
+            observed_at=NOW,
+            channel_labels=("PERSISTED_GRADUATED",),
+        )
+        classification = SimpleNamespace(
+            discovery_action=SimpleNamespace(value="TRACK_FAST"),
+            discovery_label=SimpleNamespace(value="ELIGIBLE"),
+            reason="fixture",
+        )
+        with (
+            patch(
+                "printer_v1.operator_cli.pre_admission_discovery_attempt."
+                "_linked_exact_market_candidate_evidence",
+                return_value=None,
+            ),
+            patch(
+                "printer_v1.operator_cli.pre_admission_discovery_attempt."
+                "_reject_liquidity_evidence_time_before_proving_response",
+                return_value=None,
+            ),
+            patch(
+                "printer_v1.operator_cli.pre_admission_discovery_attempt."
+                "project_classifier_candidate_from_pre_admission_evidence",
+                return_value={"token_mint": "mint-a"},
+            ),
+            patch(
+                "printer_v1.operator_cli.pre_admission_discovery_attempt."
+                "classify_tracking_lane_from_candidate_evidence",
+                return_value=("TRACK_FAST", classification),
+            ),
+            patch(
+                "printer_v1.lifecycle.tracking_queue."
+                "assess_possible_tracking_claim_by_identity",
+                return_value=SimpleNamespace(eligible=False),
+            ) as assessed,
+        ):
+            with self.assertRaisesRegex(
+                PreAdmissionAttemptError,
+                "FROZEN_TRACKING_LANE_UNCLAIMABLE",
+            ):
+                attach_frozen_tracking_lane(
+                    item,
+                    now=NOW,
+                    connection=self.connection,
+                )
+
+        self.assertEqual(
+            assessed.call_args.kwargs["tracking_lane"],
+            "TRACK_FAST",
+        )
 
     def test_future_cooldown_expiry_is_not_derived_or_reopened_early(self) -> None:
         row_id = self._row(QueueStatus.COOLDOWN)
