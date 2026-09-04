@@ -878,14 +878,41 @@ def _admit_two_token_cycle_in_transaction(
 
 
 def _frozen_pair_requalification_authority(
+    connection: sqlite3.Connection,
     item: Any,
     *,
     attempt_id: str,
     campaign_id: str,
     campaign_run_id: str,
     cycle_id: str,
+    tracking_lane: str,
+    assessed_at: datetime,
 ) -> tuple[bool, dict[str, object] | None]:
-    """Derive expired-cooldown requalification only from frozen current evidence."""
+    """Derive cooldown reopening from the exact frozen lane plus frozen evidence.
+
+    The earlier holder/tracking precheck is intentionally lane-agnostic.  It
+    therefore cannot own the final requalification decision for a later exact
+    FAST/NORMAL lane.  Re-read the exact frozen lane inside the same admission
+    transaction.  A fresh lane needs no requalification.  An expired cooldown
+    may reopen only when this PAIR_READY item carries current holder evidence
+    from the same durable attempt.
+    """
+    from printer_v1.lifecycle.tracking_queue import assess_tracking_handoff
+
+    exact = assess_tracking_handoff(
+        connection,
+        token_id=int(item.token_row_id),
+        pair_id=int(item.pair_row_id),
+        tracking_lane=tracking_lane,
+        assessed_at=assessed_at,
+    )
+    if not exact.eligible:
+        raise MultiCycleCoordinatorError(
+            "pre-admission frozen tracking lane is no longer claimable"
+        )
+    if not exact.requalification_eligible:
+        return False, None
+
     try:
         payload = json.loads(str(item.canonical_evidence_json))
     except (TypeError, ValueError, json.JSONDecodeError) as exc:
@@ -897,24 +924,17 @@ def _frozen_pair_requalification_authority(
             "pre-admission frozen holder evidence is invalid"
         )
     holder = payload.get("holder_evidence")
-    if holder is None:
-        # Fresh queue claims do not require cooldown-requalification evidence.
-        return False, None
-    if not isinstance(holder, Mapping):
+    if not isinstance(holder, Mapping) or holder.get("eligible") is not True:
         raise MultiCycleCoordinatorError(
-            "pre-admission frozen holder evidence is invalid"
+            "expired cooldown requires frozen current holder evidence"
         )
-    fresh_requalification = bool(
-        holder.get("eligible") is True
-        and holder.get("tracking_requalification_required") is True
-    )
-    if not fresh_requalification:
-        return False, None
     return True, {
         "campaign_id": campaign_id,
         "run_id": campaign_run_id,
         "cycle_id": cycle_id,
         "pre_admission_attempt_id": attempt_id,
+        "frozen_tracking_lane": tracking_lane,
+        "predecessor_queue_id": exact.queue_id,
         "frozen_evidence_hash": str(item.canonical_evidence_hash),
         "fresh_evidence_evaluated_at": item.observed_at.isoformat(),
         "holder_source_name": holder.get("source_name"),
@@ -987,11 +1007,14 @@ def admit_two_token_cycle_from_attempt(
                     fresh_requalification,
                     requalification_lineage,
                 ) = _frozen_pair_requalification_authority(
+                    connection,
                     item,
                     attempt_id=attempt_id,
                     campaign_id=binding.campaign_id,
                     campaign_run_id=binding.campaign_run_id,
                     cycle_id=attempt.proposed_cycle_id,
+                    tracking_lane=frozen_lane,
+                    assessed_at=now,
                 )
                 claimed_queue_ids.append(
                     claim_tracking_authority_for_slot_insert(
