@@ -7220,10 +7220,86 @@ def _standard_four_hour_cumulative_budget_for_run(
 def _standard_four_hour_reporting_budget_for_run(
     conn: sqlite3.Connection, run_id: str,
 ) -> dict[str, Any]:
-    """Resolve reporting from the same exact standard subset owner as execution."""
+    """Resolve report ceilings from the same exact standard subset owners."""
     try:
-        budget = _standard_four_hour_cumulative_budget_for_run(conn, run_id)
-    except ValueError as exc:
+        config = _load_run_config(conn, run_id)
+        four_token_standard = bool(
+            config.get("standard_four_hour_campaign")
+            and config.get("four_token_proof")
+        )
+        if not four_token_standard:
+            budget = _standard_four_hour_cumulative_budget_for_run(conn, run_id)
+        else:
+            campaign_id = str(config.get("campaign_id") or "").strip()
+            campaign_run_id = str(config.get("campaign_run_id") or "").strip()
+            if not campaign_id or not campaign_run_id:
+                raise ValueError(
+                    "four-token standard reporting requires campaign/run identity"
+                )
+            cycle_rows = conn.execute(
+                """SELECT cycle_id,cycle_ordinal
+                   FROM printer_memory_factory_campaign_cycles
+                   WHERE campaign_id=? AND run_id=?
+                   ORDER BY cycle_ordinal,cycle_id""",
+                (campaign_id, campaign_run_id),
+            ).fetchall()
+            if not cycle_rows:
+                raise ValueError(
+                    "four-token standard reporting found no admitted cycles"
+                )
+            if len(cycle_rows) > 2:
+                raise ValueError(
+                    "four-token standard reporting exceeded configured cycle capacity"
+                )
+
+            per_cycle: dict[str, dict[str, Any]] = {}
+            request_components: dict[str, int] = {}
+            scheduler_components: dict[str, int] = {}
+            for cycle_row in cycle_rows:
+                cycle_id = str(cycle_row[0])
+                ordinal = int(cycle_row[1])
+                if ordinal not in (1, 2) or cycle_id in per_cycle:
+                    raise ValueError(
+                        "four-token standard reporting cycle identity is invalid"
+                    )
+                cycle_budget = _standard_four_hour_cumulative_budget_for_run(
+                    conn, run_id, cycle_id=cycle_id
+                )
+                per_cycle[cycle_id] = dict(cycle_budget)
+                for key, value in cycle_budget["request_components"].items():
+                    request_components[f"cycle_{ordinal}:{key}"] = int(value)
+                for key, value in cycle_budget["scheduler_components"].items():
+                    scheduler_components[f"cycle_{ordinal}:{key}"] = int(value)
+
+            budget = {
+                "budget_scope": "ADMITTED_STANDARD_FOUR_HOUR_CYCLES",
+                "cycle_ids": tuple(per_cycle),
+                "per_cycle": per_cycle,
+                "expected_token_capacity": 2 * len(per_cycle),
+                "phase_request_ceiling": sum(
+                    int(item["phase_request_ceiling"])
+                    for item in per_cycle.values()
+                ),
+                "phase_scheduler_ceiling": sum(
+                    int(item["phase_scheduler_ceiling"])
+                    for item in per_cycle.values()
+                ),
+                "phase_holder_fallback_ceiling": sum(
+                    int(item["phase_holder_fallback_ceiling"])
+                    for item in per_cycle.values()
+                ),
+                "request_components": request_components,
+                "request_ceiling": sum(request_components.values()),
+                "scheduler_components": scheduler_components,
+                "scheduler_ceiling": sum(scheduler_components.values()),
+                "automatic_retries": 0,
+                "endpoint_rotation": False,
+                "real_collection_enabled": all(
+                    bool(item.get("real_collection_enabled"))
+                    for item in per_cycle.values()
+                ),
+            }
+    except (KeyError, TypeError, ValueError) as exc:
         return {
             "available": False,
             "reason": str(exc),
