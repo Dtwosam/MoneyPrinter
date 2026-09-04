@@ -133,6 +133,7 @@ def connection(tmp_path):
     )
     for slot in (1, 2):
         row_id = slot + 2
+        frozen_lane = "TRACK_FAST" if slot == 1 else "TRACK_NORMAL"
         connection.execute(
             """INSERT INTO printer_pre_admission_discovery_attempt_items(
                    attempt_id,slot_ordinal,token_identity,token_row_id,mint_identity,
@@ -148,7 +149,7 @@ def connection(tmp_path):
                 f"pair-{row_id}", 100 + row_id, f"lifecycle-{row_id}",
                 f"solana-mainnet:pumpswap:pair-{row_id}", f"pair-{row_id}",
                 '{"quality":"exact"}', str(row_id) * 64, "v1", NOW.isoformat(), NOW.isoformat(),
-                "TRACK_NORMAL", "TRACK_NORMAL", "TRACK_NORMAL_CANDIDATE",
+                frozen_lane, frozen_lane, f"{frozen_lane}_CANDIDATE",
                 "clean_solana_candidate_with_basic_market_fields",
                 "ab" * 32, NOW.isoformat(),
                 "classify_discovery_candidate+choose_tracking_lane",
@@ -187,6 +188,23 @@ def test_pair_ready_attempt_is_consumed_with_exact_cycle2_atomically(connection)
     )] == [
         ("slot-cycle-1-2-1", 1, "mint-3", "pair-3"),
         ("slot-cycle-1-2-2", 2, "mint-4", "pair-4"),
+    ]
+
+    assert [tuple(row) for row in connection.execute(
+        "SELECT s.slot_ordinal,q.tracking_lane,q.tracking_action,q.queue_status "
+        "FROM printer_memory_factory_campaign_token_slots AS s "
+        "JOIN printer_tracking_queue AS q ON q.id=s.tracking_queue_id "
+        "WHERE s.cycle_id='cycle-1-2' ORDER BY s.slot_ordinal"
+    )] == [
+        (1, "TRACK_FAST", "PROMOTE_TO_TRACK_FAST", "QUEUED"),
+        (2, "TRACK_NORMAL", "PROMOTE_TO_TRACK_NORMAL", "QUEUED"),
+    ]
+    assert [tuple(row) for row in connection.execute(
+        "SELECT token_mint,token_status FROM printer_tokens "
+        "WHERE id IN (3,4) ORDER BY id"
+    )] == [
+        ("mint-3", "TRACK_FAST"),
+        ("mint-4", "TRACK_NORMAL"),
     ]
 
 
@@ -240,6 +258,50 @@ def test_identity_reuse_or_persistence_fault_rolls_back_cycle_and_consumption(co
     assert connection.execute(
         "SELECT COUNT(*) FROM printer_memory_factory_campaign_cycles"
     ).fetchone()[0] == 1
+
+
+def test_frozen_lane_conflict_never_falls_back_and_rolls_back_first_claim(connection) -> None:
+    connection.execute(
+        """INSERT INTO printer_tracking_queue(
+               token_id,pair_id,tracking_lane,tracking_action,priority_reason,
+               next_check_at,queue_status,source_status,data_quality_label
+           ) VALUES (4,104,'TRACK_NORMAL','PROMOTE_TO_TRACK_NORMAL','fixture',
+                     ?,'ACTIVE','COMPLETE','CLEAN_DATA')""",
+        (NOW.isoformat(),),
+    )
+    connection.commit()
+
+    with pytest.raises(
+        MultiCycleCoordinatorError,
+        match="later-cycle tracking activation failed: TRACKING_QUEUE_CLAIM_FAILED",
+    ):
+        admit_two_token_cycle_from_attempt(
+            connection,
+            binding=BINDING,
+            policy=POLICY,
+            now=NOW,
+            attempt_id="attempt-1",
+            health=HEALTH,
+        )
+
+    assert connection.execute(
+        "SELECT COUNT(*) FROM printer_memory_factory_campaign_cycles "
+        "WHERE cycle_id='cycle-1-2'"
+    ).fetchone()[0] == 0
+    assert tuple(connection.execute(
+        "SELECT attempt_state,consumed_cycle_id,consumed_at "
+        "FROM printer_pre_admission_discovery_attempts"
+    ).fetchone()) == ("PAIR_READY", None, None)
+    assert [tuple(row) for row in connection.execute(
+        "SELECT token_id,pair_id,tracking_lane,queue_status "
+        "FROM printer_tracking_queue ORDER BY id"
+    )] == [
+        (4, 104, "TRACK_NORMAL", "ACTIVE"),
+    ]
+    assert connection.execute(
+        "SELECT token_status FROM printer_tokens WHERE id=3"
+    ).fetchone()[0] is None
+
 
 
 def test_second_slot_ownership_failure_rolls_back_cycle_and_attempt(connection) -> None:

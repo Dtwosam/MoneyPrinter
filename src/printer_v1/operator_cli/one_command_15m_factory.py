@@ -312,7 +312,12 @@ def _resolve_acquisition_quantum_bound(
 
 def _later_cycle_attempt_is_terminal(state: str | None) -> bool:
     value = str(state or "")
-    return bool(value) and value != "RUNNING"
+    # PAIR_READY is durable admission authority, not a terminal outcome.
+    # The same one-shot attempt may be reconsidered after a lawful REARM or
+    # lifecycle-state recheck, while the callback itself must not rerun supply.
+    if value in {"PLANNED", "RUNNING", "PAIR_READY"}:
+        return False
+    return bool(value)
 
 
 _CYCLE_LOCAL_MATERIALIZATION_REASONS = frozenset(
@@ -9936,9 +9941,10 @@ def run_one_command_15m_factory(
                         admission_attempt_finished = True
                         continue
                     if _later_cycle_attempt_is_terminal(boundary.attempt_state):
-                        # The one durable opportunity has run. PAIR_READY may
-                        # remain frozen after post-discovery health changed; no
-                        # retry/successor is permitted.
+                        # Terminal attempt states cannot reopen. PAIR_READY is
+                        # intentionally excluded: a lawful controller recheck may
+                        # later consume the same frozen pair without rerunning
+                        # supply or creating a retry/successor attempt.
                         admission_attempt_finished = True
                         if boundary.attempt_terminal_cause is not None:
                             four_token_attempt_terminal_cause = (
