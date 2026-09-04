@@ -43,6 +43,7 @@ from printer_v1.operator_cli.campaign_ownership import (
 )
 from printer_v1.operator_cli.four_token_factory_adapter import (
     parent_interrupted_attempt_cause,
+    reconcile_four_token_cycle_terminal,
     reconcile_parent_interrupted_open_pre_admission_attempts,
 )
 from printer_v1.operator_cli.four_token_operational_composition import (
@@ -383,6 +384,88 @@ def _assert_terminal_cleanup(
         )
         assert active == 0
         _integrity(connection)
+    finally:
+        connection.close()
+
+
+def test_successful_phase_a_preserves_completed_four_hour_slot_evidence(
+    tmp_path: Path,
+) -> None:
+    path = _seed_campaign(tmp_path / "phase-a-success.sqlite3")
+    connection = _open(path)
+    try:
+        for ordinal, token_id in ((1, 11), (2, 12)):
+            _insert_token_pair(
+                connection,
+                token_id=token_id,
+                pair_id=100 + token_id,
+            )
+            connection.execute(
+                """
+                INSERT INTO printer_memory_factory_campaign_token_slots(
+                    token_slot_id,campaign_id,run_id,cycle_id,slot_ordinal,
+                    token_identity,token_row_id,mint_identity,pair_identity,
+                    pair_row_id,lifecycle_identity,token_state,created_at,updated_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    f"slot-cycle-1-{ordinal}",
+                    "campaign-1",
+                    "campaign-run-1",
+                    "cycle-1",
+                    ordinal,
+                    f"solana-mainnet:mint-{token_id}",
+                    token_id,
+                    f"mint-{token_id}",
+                    f"pool-{token_id}",
+                    100 + token_id,
+                    LIFECYCLE,
+                    "WINDOW_4H_CLOSED",
+                    _iso(NOW),
+                    _iso(NOW),
+                ),
+            )
+        connection.commit()
+        with (
+            patch(
+                "printer_v1.operator_cli.four_token_factory_adapter."
+                "derive_cycle_terminal_accounting_result",
+                return_value={
+                    "execution_outcome": "TERMINAL_SUCCESS",
+                    "primary_fault": None,
+                },
+            ),
+            patch(
+                "printer_v1.operator_cli.four_token_factory_adapter."
+                "_validate_pre_lifecycle_zero_attempt_provenance_shape",
+                return_value=False,
+            ),
+            patch(
+                "printer_v1.operator_cli.four_token_proof_integration."
+                "cycle_scoped_factory_step_ids",
+                return_value=(),
+            ),
+        ):
+            result = reconcile_four_token_cycle_terminal(
+                connection,
+                campaign_id="campaign-1",
+                campaign_run_id="campaign-run-1",
+                factory_run_id="factory-1",
+                cycle_id="cycle-1",
+                configuration_id="configuration-1",
+                now=NOW + timedelta(hours=4),
+            )
+
+        assert result["cycle_state"] == "TERMINAL_COMPLETED"
+        states = [
+            str(row[0])
+            for row in connection.execute(
+                "SELECT token_state FROM printer_memory_factory_campaign_token_slots "
+                "WHERE campaign_id='campaign-1' AND run_id='campaign-run-1' "
+                "AND cycle_id='cycle-1' ORDER BY slot_ordinal"
+            ).fetchall()
+        ]
+        assert states == ["WINDOW_4H_CLOSED", "WINDOW_4H_CLOSED"]
     finally:
         connection.close()
 
