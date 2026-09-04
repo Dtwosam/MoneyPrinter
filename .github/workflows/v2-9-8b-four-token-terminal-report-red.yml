@@ -37,7 +37,8 @@ jobs:
             tests/test_v2_9_8b_four_token_terminal_report_replay.py \
             tests/test_v2_9_7d_6b_6_final_campaign_report.py \
             tests/test_v2_9_7d_6b_7_zero_source_read_only_replay.py \
-            tests/test_v2_9_8b_cycle2_discovery_budget_accounting.py
+            tests/test_v2_9_8b_cycle2_discovery_budget_accounting.py \
+            tests/test_v2_9_7e_1_insufficient_pool_terminal_cleanup.py
       - name: Check diff whitespace
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
