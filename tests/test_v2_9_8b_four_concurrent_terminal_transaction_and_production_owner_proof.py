@@ -562,6 +562,91 @@ def test_pair_ready_cycle2_attempt_survives_temporary_post_discovery_defer(
     connection.close()
 
 
+def test_pair_ready_admission_does_not_require_future_discovery_capacity(
+    tmp_path: Path,
+) -> None:
+    path = _seed_campaign(tmp_path / "pair-ready-discovery-budget.sqlite3")
+    connection = _open(path)
+    healthy = MultiCycleAdmissionHealth()
+    post_discovery = MultiCycleAdmissionHealth(
+        provider_budgets_available=False,
+        discovery_capacity_available=False,
+    )
+    projections = iter(
+        (
+            SimpleNamespace(health=healthy),
+            SimpleNamespace(health=post_discovery),
+        )
+    )
+    admitted_health: list[MultiCycleAdmissionHealth] = []
+
+    def evaluate(projection):
+        health = projection.health
+        if not health.provider_budgets_available:
+            return FourTokenAdmissionDisposition(
+                FourTokenAdmissionDispositionKind.REARM,
+                "provider_budget_unavailable",
+                NOW + timedelta(minutes=1),
+                False,
+            )
+        if not health.discovery_capacity_available:
+            return FourTokenAdmissionDisposition(
+                FourTokenAdmissionDispositionKind.REARM,
+                "discovery_capacity_unavailable",
+                NOW + timedelta(minutes=1),
+                False,
+            )
+        return FourTokenAdmissionDisposition(
+            FourTokenAdmissionDispositionKind.CYCLE_ADMISSION,
+            "ADMISSION_READY",
+            NOW,
+            True,
+        )
+
+    with patch(
+        "printer_v1.operator_cli.cadence_authority."
+        "require_cycle_slot_tracking_authorities",
+        return_value=None,
+    ):
+        result = _run_four_token_admission_boundary(
+            connection=connection,
+            controller=SimpleNamespace(policy=POLICY),
+            binding=BINDING,
+            first_cycle_id="cycle-1",
+            now=NOW,
+            next_due_work_at=NOW + timedelta(minutes=1),
+            proof_deadline=NOW + timedelta(hours=4),
+            project_health=lambda: next(projections),
+            evaluate=evaluate,
+            later_cycle_callback=lambda **kwargs: SimpleNamespace(
+                attempt_id=(
+                    "pre-admission:campaign-1:campaign-run-1:factory-1:c0002"
+                ),
+                state="PAIR_READY",
+                first_terminal_cause="",
+            ),
+            admit=lambda **kwargs: (
+                admitted_health.append(kwargs["health"])
+                or SimpleNamespace(
+                    mutation_performed=True,
+                    cycle_id="cycle-1-2",
+                )
+            ),
+            materialize=lambda **kwargs: None,
+            plan_opening=lambda **kwargs: None,
+        )
+
+    assert result.admitted is True
+    assert result.cycle_id == "cycle-1-2"
+    assert len(admitted_health) == 1
+    assert admitted_health[0].provider_budgets_available is True
+    assert admitted_health[0].discovery_capacity_available is True
+    assert admitted_health[0].source_budget_available is True
+    assert admitted_health[0].scheduler_budget_available is True
+    assert admitted_health[0].close_reserve_available is True
+    connection.close()
+
+
 def test_transition_helper_does_not_speculate_candidate_states() -> None:
     source = inspect.getsource(_transition)
     assert "for expected_state in" not in source
