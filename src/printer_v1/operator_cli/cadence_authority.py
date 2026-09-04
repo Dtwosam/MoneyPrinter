@@ -655,6 +655,8 @@ def claim_tracking_authority_for_slot_insert(
     tracking_lane: str,
     now: datetime | None = None,
     priority_reason: str = "campaign_slot_tracking_activation",
+    fresh_evidence_requalification: bool = False,
+    requalification_lineage: Mapping[str, Any] | None = None,
 ) -> int:
     """Claim exact tracking authority for a campaign slot INSERT.
 
@@ -695,6 +697,11 @@ def claim_tracking_authority_for_slot_insert(
         source_status=SourceStatus.COMPLETE,
         data_quality_label=DataQualityLabel.CLEAN_DATA,
         assessed_at=instant,
+        fresh_evidence_requalification=bool(fresh_evidence_requalification),
+        requalification_lineage=(
+            None if requalification_lineage is None
+            else dict(requalification_lineage)
+        ),
     )
     if not created or queue_id is None:
         raise CadenceAuthorityError("TRACKING_QUEUE_CLAIM_FAILED")
