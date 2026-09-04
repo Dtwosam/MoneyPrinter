@@ -45,10 +45,16 @@ CHANNELS = frozenset(
 )
 
 # Merged-candidate persistence has no observation-table CHECK. Keep the
-# provider-observation CHANNELS vocabulary untouched and admit the truthful
-# later-cycle fresh-aggregator promotion label here only.
+# provider-observation CHANNELS vocabulary untouched and admit only the
+# additional truthful later-cycle provenance labels produced by current
+# operational supply owners. These are audit/provenance facts, never rank or
+# selection criteria.
 MERGED_CANDIDATE_CHANNELS = CHANNELS | frozenset(
-    {"FRESH_AGGREGATOR_PROTOCOL_CONFIRMED"}
+    {
+        "FRESH_AGGREGATOR_PROTOCOL_CONFIRMED",
+        "LATEST_GRADUATED",
+        "PERSISTED_GRADUATED",
+    }
 )
 
 CONTINUITY_STATES = frozenset({"NONE", "CONTIGUOUS", "GAPPED", "UNKNOWN"})
