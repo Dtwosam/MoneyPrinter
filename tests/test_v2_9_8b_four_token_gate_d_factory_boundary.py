@@ -16,6 +16,7 @@ from printer_v1.operator_cli.multi_cycle_campaign_coordinator import (
     MultiCycleCampaignBinding,
 )
 from printer_v1.operator_cli.one_command_15m_factory import (
+    _later_cycle_attempt_is_terminal,
     _run_four_token_admission_boundary,
 )
 
@@ -191,3 +192,14 @@ def test_missing_post_materialization_cadence_authority_blocks_cycle2_opening(mo
         )
 
     assert calls == ["materialize", "cadence"]
+
+
+def test_pair_ready_remains_nonterminal_for_later_admission_recheck() -> None:
+    # PAIR_READY owns one frozen pair whose only lawful next state is CONSUMED.
+    # A temporary post-discovery defer must not discard that durable authority.
+    assert _later_cycle_attempt_is_terminal("PAIR_READY") is False
+    assert _later_cycle_attempt_is_terminal("RUNNING") is False
+    assert _later_cycle_attempt_is_terminal("PLANNED") is False
+
+    for terminal_state in ("NO_PAIR", "BLOCKED", "FAILED", "CANCELLED", "CONSUMED"):
+        assert _later_cycle_attempt_is_terminal(terminal_state) is True
