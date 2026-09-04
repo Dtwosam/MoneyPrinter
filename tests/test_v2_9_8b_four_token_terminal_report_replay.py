@@ -458,6 +458,100 @@ class FourTokenTerminalReportReplayTests(unittest.TestCase):
         )
         self.assertTrue(report["locked_capabilities"]["all_deltas_zero"])
 
+    def _seed_cycle_one_discovery_provenance(self) -> int:
+        with self.connection:
+            job = self.connection.execute(
+                """INSERT INTO printer_scheduler_jobs(
+                       job_name,job_kind,target_table,priority,status,
+                       scheduled_for,finished_at
+                   ) VALUES ('cycle1-discovery:terminal-report',
+                       'DISCOVERY_REFRESH','printer_discovery_batches',13,
+                       'SUCCEEDED',?,?)""",
+                (NOW, CUTOFF),
+            )
+            job_id = int(job.lastrowid)
+            self.connection.execute(
+                """INSERT INTO printer_source_requests(
+                       id,source_name,request_kind,request_key,requested_at,
+                       source_status,data_quality_label
+                   ) VALUES (6,'dexscreener','DISCOVERY',
+                       'campaign-a:cycle1:discovery:request-1',?,
+                       'COMPLETE','CLEAN_DATA')""",
+                (NOW,),
+            )
+            self.connection.execute(
+                """INSERT INTO printer_source_responses(
+                       id,source_request_id,source_name,received_at,
+                       source_status,data_quality_label
+                   ) VALUES (6,6,'dexscreener',?,'COMPLETE','CLEAN_DATA')""",
+                (NOW,),
+            )
+            self.connection.execute(
+                """INSERT INTO printer_discovery_batches(
+                       discovery_batch_id,campaign_id,configuration_id,run_id,
+                       cycle_id,cycle_cutoff,policy_version,
+                       provider_contract_versions_json,git_provenance_identity,
+                       campaign_selection_seed_identity,cycle_seed_hash,
+                       pump_continuity_state,batch_state,canonical_hash,
+                       first_terminal_cause,created_at,terminal_at
+                   ) VALUES ('cycle1-terminal-report-batch','campaign-a',
+                       'configuration-a','run-a','cycle-a',?,'v2-9.8b','{}',
+                       'git-cycle1','seed-cycle1',?,'NONE','TERMINAL_COMPLETED',
+                       ?,'DISCOVERY_COMPLETE',?,?)""",
+                (CUTOFF, "d" * 64, "e" * 64, NOW, CUTOFF),
+            )
+            self.connection.execute(
+                """INSERT INTO printer_discovery_work(
+                       discovery_work_id,discovery_batch_id,campaign_id,run_id,
+                       cycle_id,scheduler_job_id,work_type,work_state,deadline_at,
+                       first_terminal_cause,terminal_at,created_at,updated_at
+                   ) VALUES ('cycle1-terminal-report-work',
+                       'cycle1-terminal-report-batch','campaign-a','run-a',
+                       'cycle-a',?,'DISCOVERY_DEXSCREENER_ACTIVE','SUCCEEDED',?,
+                       'DISCOVERY_COMPLETE',?,?,?)""",
+                (job_id, CUTOFF, CUTOFF, NOW, CUTOFF),
+            )
+            self.connection.execute(
+                """INSERT INTO printer_discovery_work_source_links(
+                       discovery_work_id,link_ordinal,source_request_id,
+                       source_response_id,source_failure_id,created_at
+                   ) VALUES ('cycle1-terminal-report-work',1,6,6,NULL,?)""",
+                (NOW,),
+            )
+            row = self.connection.execute(
+                """SELECT final_report_json FROM printer_memory_factory_runs
+                   WHERE run_id='authority-run'"""
+            ).fetchone()
+            authority = json.loads(str(row[0]))
+            budgets = authority["run_budgets"]
+            budgets["governed_requests_run"] = 6
+            budgets["scheduler_rows_total"] = 6
+            cumulative = budgets["cumulative_lifecycle_usage"]
+            cumulative["source_requests"] = 6
+            cumulative["scheduler_rows"] = 6
+            cumulative["discovery_source_requests"] = 2
+            cumulative["request_components"]["discovery"] = 2
+            self.connection.execute(
+                """UPDATE printer_memory_factory_runs
+                   SET final_report_json=? WHERE run_id='authority-run'""",
+                (json.dumps(authority, sort_keys=True),),
+            )
+        return job_id
+
+    def test_cycle_one_discovery_source_and_scheduler_provenance_is_reported(
+        self,
+    ) -> None:
+        discovery_job_id = self._seed_cycle_one_discovery_provenance()
+        report = self._assemble().report
+        usage = report["source_scheduler_ceiling_usage"]
+
+        self.assertEqual(usage["source_request_ids"], [1, 2, 3, 4, 5, 6])
+        self.assertEqual(usage["source_response_ids"], [1, 2, 3, 4, 5, 6])
+        self.assertEqual(
+            usage["scheduler_job_ids"],
+            [1, 2, 3, 4, 5, discovery_job_id],
+        )
+
     def _leave_consumed_attempt_job_active(self) -> None:
         with self.connection:
             self.connection.execute(
