@@ -51,7 +51,7 @@ def _job_has_exact_scope_owner(
             """SELECT 1 FROM printer_pre_admission_discovery_attempts
                WHERE scheduler_job_id=? AND campaign_id=?
                  AND campaign_run_id=? AND proposed_cycle_id=?
-                 AND attempt_state IN ('PLANNED','RUNNING','PAIR_READY') LIMIT 1""",
+               LIMIT 1""",
             (scheduler_job_id, campaign_id, run_id, cycle_id),
         ).fetchone()
         if row is not None:
@@ -214,8 +214,7 @@ def campaign_scoped_job_ids(
             connection,
             "SELECT scheduler_job_id FROM "
             "printer_pre_admission_discovery_attempts "
-            f"WHERE ({' OR '.join(clauses)}) "
-            "AND attempt_state IN ('PLANNED','RUNNING','PAIR_READY')",
+            f"WHERE ({' OR '.join(clauses)})",
             tuple(params),
         )
     if exact_scope and _table_exists(
