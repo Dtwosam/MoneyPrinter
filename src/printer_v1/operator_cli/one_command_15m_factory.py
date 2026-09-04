@@ -595,7 +595,8 @@ def _run_four_token_admission_boundary(
         and current >= acquisition_deadline_at
     )
     if (
-        not acquisition_deadline_due
+        existing_pair_ready_attempt_id is None
+        and not acquisition_deadline_due
         and _later_cycle_acquisition_deadline_conflict(
             now=now,
             earliest_lifecycle_deadline=next_due_work_at,
