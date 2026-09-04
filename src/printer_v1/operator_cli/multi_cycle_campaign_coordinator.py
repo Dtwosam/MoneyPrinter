@@ -897,9 +897,12 @@ def _frozen_pair_requalification_authority(
             "pre-admission frozen holder evidence is invalid"
         )
     holder = payload.get("holder_evidence")
+    if holder is None:
+        # Fresh queue claims do not require cooldown-requalification evidence.
+        return False, None
     if not isinstance(holder, Mapping):
         raise MultiCycleCoordinatorError(
-            "pre-admission frozen holder evidence is missing"
+            "pre-admission frozen holder evidence is invalid"
         )
     fresh_requalification = bool(
         holder.get("eligible") is True
