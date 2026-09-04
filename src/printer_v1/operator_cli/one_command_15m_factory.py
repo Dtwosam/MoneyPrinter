@@ -8243,8 +8243,8 @@ def _run_budgets(
         "scheduler_rows_total": cumulative_scheduler_rows,
         "scheduler_rows_ceiling": scheduler_ceiling,
         "scheduler_rows_within_ceiling": (
-            _run_step_job_count(conn, run_id) + handoffs
-        ) <= scheduler_ceiling,
+            cumulative_scheduler_rows <= scheduler_ceiling
+        ),
         "discovery_requests_ceiling": _MAX_DISCOVERY_REQUESTS,
         "automatic_retries": 0,
         "continuous_first_hour": continuous,
