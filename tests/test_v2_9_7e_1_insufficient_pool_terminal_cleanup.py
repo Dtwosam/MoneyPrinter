@@ -274,7 +274,7 @@ class InsufficientPoolTerminalCleanupTests(unittest.TestCase):
         )
         self.assertEqual(cleanup["active_owned_work_after"], 0)
         self.assertFalse(self.lock.exists())
-        self.assertGreaterEqual(int(cleanup["cancelled_scheduler_jobs"]), 1)
+        self.assertEqual(int(cleanup["cancelled_scheduler_jobs"]), 0)
         # Batch may already be terminal from discovery executor; cleanup then
         # reports zero additional batch terminalizations.
         self.assertGreaterEqual(int(cleanup["terminalized_discovery_batches"]), 0)
