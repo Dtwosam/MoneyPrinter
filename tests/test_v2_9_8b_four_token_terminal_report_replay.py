@@ -403,6 +403,7 @@ class FourTokenTerminalReportReplayTests(unittest.TestCase):
         # to campaign Scheduler work, but it is still governed campaign usage.
         self.assertEqual(usage["source_request_ids"], [1, 2, 3, 4, 5])
         self.assertEqual(usage["source_response_ids"], [1, 2, 3, 4, 5])
+        self.assertEqual(usage["scheduler_job_ids"], [1, 2, 3, 4, 5])
 
         persisted = persist_final_campaign_report(
             self.db,
