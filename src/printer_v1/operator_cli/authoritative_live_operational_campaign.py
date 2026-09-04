@@ -2653,31 +2653,70 @@ class AuthoritativeLiveOperationalCampaignOwner:
                             if item.admission_authority.value
                             == "MARKET_PRESENT_POOL"
                         )
-                        gate_candidates = tuple(
-                            DiscoverySelectionCandidate(
-                                merged_candidate_id=f"pre-admission:{item.mint_identity}",
-                                mint=item.mint_identity,
-                                market_identity=item.canonical_market_identity,
-                                lifecycle=item.lifecycle_identity,
-                                channels=set(item.channels),
-                                observation_ids=[f"pre-admission:{item.mint_identity}"],
-                                conflicts=[],
-                                gaps=([] if item.holder_evidence_eligible else [
-                                    {"kind": "HOLDER_EVIDENCE_INELIGIBLE"}
-                                ]),
-                                origin_state=(
-                                    "NOT_REQUIRED"
-                                    if item.mint_identity in market_authority_mints
-                                    else "CONFIRMED"
+                        frozen_by_mint: dict[str, PreAdmissionAttemptItem] = {}
+                        gate_candidates_list: list[DiscoverySelectionCandidate] = []
+                        for candidate_ordinal, item in enumerate(
+                            supply.candidates, start=1
+                        ):
+                            frozen = attach_frozen_tracking_lane(
+                                PreAdmissionAttemptItem(
+                                    attempt_id=attempt_id,
+                                    slot_ordinal=candidate_ordinal,
+                                    token_identity=item.token_identity,
+                                    token_row_id=item.token_row_id,
+                                    mint_identity=item.mint_identity,
+                                    pair_identity=item.pair_identity,
+                                    pair_row_id=item.pair_row_id,
+                                    lifecycle_identity=item.lifecycle_identity,
+                                    canonical_market_identity=item.canonical_market_identity,
+                                    canonical_pool_identity=item.canonical_pool_identity,
+                                    canonical_evidence_json=item.canonical_evidence_json,
+                                    canonical_evidence_hash=item.canonical_evidence_hash,
+                                    evidence_version=item.evidence_version,
+                                    observed_at=item.observed_at,
+                                    channel_labels=_canonical_pre_admission_channel_labels(
+                                        item
+                                    ),
                                 ),
-                                pumpswap_state=(
-                                    "NOT_REQUIRED"
-                                    if item.mint_identity in market_authority_mints
-                                    else "CONFIRMED"
-                                ),
+                                now=instant,
+                                connection=connection,
+                                require_claimable=False,
                             )
-                            for item in supply.candidates
-                        )
+                            frozen_by_mint[item.mint_identity] = frozen
+                            gate_candidates_list.append(
+                                DiscoverySelectionCandidate(
+                                    merged_candidate_id=(
+                                        f"pre-admission:{item.mint_identity}"
+                                    ),
+                                    mint=item.mint_identity,
+                                    market_identity=item.canonical_market_identity,
+                                    lifecycle=item.lifecycle_identity,
+                                    channels=set(item.channels),
+                                    observation_ids=[
+                                        f"pre-admission:{item.mint_identity}"
+                                    ],
+                                    conflicts=[],
+                                    gaps=(
+                                        []
+                                        if item.holder_evidence_eligible
+                                        else [{"kind": "HOLDER_EVIDENCE_INELIGIBLE"}]
+                                    ),
+                                    origin_state=(
+                                        "NOT_REQUIRED"
+                                        if item.mint_identity
+                                        in market_authority_mints
+                                        else "CONFIRMED"
+                                    ),
+                                    pumpswap_state=(
+                                        "NOT_REQUIRED"
+                                        if item.mint_identity
+                                        in market_authority_mints
+                                        else "CONFIRMED"
+                                    ),
+                                    tracking_lane=frozen.frozen_tracking_lane,
+                                )
+                            )
+                        gate_candidates = tuple(gate_candidates_list)
                         selected_outcome = apply_existing_discovery_gate_and_selection(
                             connection,
                             candidates=gate_candidates,
@@ -2690,38 +2729,20 @@ class AuthoritativeLiveOperationalCampaignOwner:
                             handoffs_used=0,
                             market_authority_mints=market_authority_mints,
                         )
-                        by_mint = {item.mint_identity: item for item in supply.candidates}
-                        selected = [by_mint[item.mint] for item in selected_outcome.selected]
+                        selected = [
+                            frozen_by_mint[item.mint]
+                            for item in selected_outcome.selected
+                        ]
                         blocked_domain = None
                         if len(selected) == 2:
                             persist_pre_admission_pair(
                                 connection,
                                 attempt_id=attempt_id,
                                 items=tuple(
-                                    attach_frozen_tracking_lane(
-                                        PreAdmissionAttemptItem(
-                                            attempt_id=attempt_id,
-                                            slot_ordinal=ordinal,
-                                            token_identity=item.token_identity,
-                                            token_row_id=item.token_row_id,
-                                            mint_identity=item.mint_identity,
-                                            pair_identity=item.pair_identity,
-                                            pair_row_id=item.pair_row_id,
-                                            lifecycle_identity=item.lifecycle_identity,
-                                            canonical_market_identity=item.canonical_market_identity,
-                                            canonical_pool_identity=item.canonical_pool_identity,
-                                            canonical_evidence_json=item.canonical_evidence_json,
-                                            canonical_evidence_hash=item.canonical_evidence_hash,
-                                            evidence_version=item.evidence_version,
-                                            observed_at=item.observed_at,
-                                            channel_labels=_canonical_pre_admission_channel_labels(
-                                                item
-                                            ),
-                                        ),
-                                        now=instant,
-                                        connection=connection,
+                                    replace(item, slot_ordinal=ordinal)
+                                    for ordinal, item in enumerate(
+                                        selected, start=1
                                     )
-                                    for ordinal, item in enumerate(selected, start=1)
                                 ),
                                 now=instant,
                             )
