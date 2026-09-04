@@ -9080,11 +9080,17 @@ def _standard_campaign_four_hour_terminal_validation(
             if owned_count:
                 reasons.append(f"ineligible_slot_owned_4h_work:{slot_id}:{owned_count}")
 
-    total_long = int(conn.execute(
-        """SELECT COUNT(*) FROM printer_memory_factory_run_steps
-           WHERE run_id=? AND step_kind LIKE 'LONG_CONTINUATION_%'""",
-        (str(factory_run_id),),
-    ).fetchone()[0])
+    from printer_v1.operator_cli.one_token_4h_runtime import (
+        _standard_campaign_cycle_long_step_count,
+    )
+
+    total_long = _standard_campaign_cycle_long_step_count(
+        conn,
+        campaign_id=str(campaign_id),
+        campaign_run_id=str(run_id),
+        cycle_id=str(cycle_id),
+        factory_run_id=str(factory_run_id),
+    )
     total_owned = int(conn.execute(
         """SELECT COUNT(*) FROM printer_memory_factory_campaign_scheduler_work
            WHERE campaign_id=? AND run_id=? AND cycle_id=? AND factory_run_id=?
