@@ -292,6 +292,67 @@ def _lifecycle(
     return results
 
 
+def _attempt_owned_source_usage(
+    connection: sqlite3.Connection,
+    *,
+    authoritative_run_id: str,
+) -> tuple[set[int], set[int], set[int], set[int]]:
+    """Return durable pre-admission source identities owned by one factory run."""
+    request_ids = {
+        int(row[0])
+        for row in connection.execute(
+            """SELECT l.source_request_id
+               FROM printer_pre_admission_discovery_attempts AS a
+               JOIN printer_pre_admission_discovery_attempt_source_links AS l
+                 ON l.attempt_id=a.attempt_id
+               WHERE a.authoritative_factory_run_id=?
+               UNION
+               SELECT e.source_request_id
+               FROM printer_pre_admission_discovery_attempts AS a
+               JOIN printer_pre_admission_attempt_evidence AS e
+                 ON e.attempt_id=a.attempt_id
+               WHERE a.authoritative_factory_run_id=?
+                 AND e.source_request_id IS NOT NULL""",
+            (authoritative_run_id, authoritative_run_id),
+        ).fetchall()
+    }
+    response_ids = {
+        int(row[0])
+        for row in connection.execute(
+            """SELECT DISTINCT e.source_response_id
+               FROM printer_pre_admission_discovery_attempts AS a
+               JOIN printer_pre_admission_attempt_evidence AS e
+                 ON e.attempt_id=a.attempt_id
+               WHERE a.authoritative_factory_run_id=?
+                 AND e.source_response_id IS NOT NULL""",
+            (authoritative_run_id,),
+        ).fetchall()
+    }
+    failure_ids = {
+        int(row[0])
+        for row in connection.execute(
+            """SELECT DISTINCT e.source_failure_id
+               FROM printer_pre_admission_discovery_attempts AS a
+               JOIN printer_pre_admission_attempt_evidence AS e
+                 ON e.attempt_id=a.attempt_id
+               WHERE a.authoritative_factory_run_id=?
+                 AND e.source_failure_id IS NOT NULL""",
+            (authoritative_run_id,),
+        ).fetchall()
+    }
+    scheduler_job_ids = {
+        int(row[0])
+        for row in connection.execute(
+            """SELECT DISTINCT scheduler_job_id
+               FROM printer_pre_admission_discovery_attempts
+               WHERE authoritative_factory_run_id=?
+                 AND scheduler_job_id IS NOT NULL""",
+            (authoritative_run_id,),
+        ).fetchall()
+    }
+    return request_ids, response_ids, failure_ids, scheduler_job_ids
+
+
 def _locked_capabilities(
     connection: sqlite3.Connection, authoritative_report: Mapping[str, Any],
 ) -> dict[str, Any]:
@@ -432,6 +493,15 @@ def assemble_final_campaign_report(
             slots=slots,
         )
         locked = _locked_capabilities(connection, authoritative_report)
+        (
+            attempt_source_request_ids,
+            attempt_source_response_ids,
+            attempt_source_failure_ids,
+            attempt_scheduler_job_ids,
+        ) = _attempt_owned_source_usage(
+            connection,
+            authoritative_run_id=str(root["authoritative_run_id"]),
+        )
 
     main_windows = [
         window for window in windows
@@ -468,22 +538,34 @@ def assemble_final_campaign_report(
         }
     usage = {
         "authoritative_run_budgets": authoritative_report.get("run_budgets"),
-        "source_request_ids": sorted({
-            int(item["source_request_id"]) for item in work
-            if item["source_request_id"] is not None
-        }),
-        "source_response_ids": sorted({
-            int(item["source_response_id"]) for item in work
-            if item["source_response_id"] is not None
-        }),
-        "source_failure_ids": sorted({
-            int(item["source_failure_id"]) for item in work
-            if item["source_failure_id"] is not None
-        }),
-        "scheduler_job_ids": sorted({
-            int(item["scheduler_job_id"]) for item in work
-            if item["scheduler_job_id"] is not None
-        }),
+        "source_request_ids": sorted(
+            {
+                int(item["source_request_id"]) for item in work
+                if item["source_request_id"] is not None
+            }
+            | attempt_source_request_ids
+        ),
+        "source_response_ids": sorted(
+            {
+                int(item["source_response_id"]) for item in work
+                if item["source_response_id"] is not None
+            }
+            | attempt_source_response_ids
+        ),
+        "source_failure_ids": sorted(
+            {
+                int(item["source_failure_id"]) for item in work
+                if item["source_failure_id"] is not None
+            }
+            | attempt_source_failure_ids
+        ),
+        "scheduler_job_ids": sorted(
+            {
+                int(item["scheduler_job_id"]) for item in work
+                if item["scheduler_job_id"] is not None
+            }
+            | attempt_scheduler_job_ids
+        ),
         "campaign_scheduler_work_total": len(work),
         "automatic_retries": 0,
     }
