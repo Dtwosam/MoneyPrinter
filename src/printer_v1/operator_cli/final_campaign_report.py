@@ -654,6 +654,35 @@ def assemble_final_campaign_report(
     }
     if not isinstance(usage["authoritative_run_budgets"], Mapping):
         raise FinalCampaignReportError("authoritative source/scheduler ceilings missing")
+    if not insufficient_pool:
+        budgets = usage["authoritative_run_budgets"]
+        reported_requests = budgets.get("governed_requests_run")
+        if (
+            isinstance(reported_requests, bool)
+            or not isinstance(reported_requests, int)
+            or reported_requests < 0
+        ):
+            raise FinalCampaignReportError(
+                "authoritative source request total is missing or invalid"
+            )
+        if reported_requests != len(usage["source_request_ids"]):
+            raise FinalCampaignReportError(
+                "source request identity/total mismatch"
+            )
+
+        reported_scheduler_rows = budgets.get("scheduler_rows_total")
+        if (
+            isinstance(reported_scheduler_rows, bool)
+            or not isinstance(reported_scheduler_rows, int)
+            or reported_scheduler_rows < 0
+        ):
+            raise FinalCampaignReportError(
+                "authoritative Scheduler total is missing or invalid"
+            )
+        if reported_scheduler_rows != len(usage["scheduler_job_ids"]):
+            raise FinalCampaignReportError(
+                "Scheduler identity/total mismatch"
+            )
 
     opportunity_layers = [
         {
