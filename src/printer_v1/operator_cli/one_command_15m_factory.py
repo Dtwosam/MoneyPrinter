@@ -7023,7 +7023,6 @@ def _later_cycle_discovery_request_ids(
     }
 
 
-
 def _later_cycle_discovery_scheduler_job_ids(
     conn: sqlite3.Connection, run_id: str
 ) -> set[int]:
@@ -8062,9 +8061,9 @@ def _run_budgets(
                 "holder_rpc_fallbacks_ceiling": None,
                 "scheduler_run_step_jobs": all_step_jobs,
                 "scheduler_cancelled_discovery_handoffs": handoffs,
-                "scheduler_later_cycle_discovery_jobs": len(
-                    later_cycle_discovery_scheduler_job_ids
-                ),
+            "scheduler_later_cycle_discovery_jobs": len(
+                later_cycle_discovery_scheduler_job_ids
+            ),
                 "scheduler_rows_total": cumulative_scheduler_rows,
                 "scheduler_rows_ceiling": None,
                 "scheduler_rows_within_ceiling": None,
@@ -8186,9 +8185,9 @@ def _run_budgets(
             ),
             "scheduler_run_step_jobs": all_step_jobs,
             "scheduler_cancelled_discovery_handoffs": handoffs,
-                "scheduler_later_cycle_discovery_jobs": len(
-                    later_cycle_discovery_scheduler_job_ids
-                ),
+            "scheduler_later_cycle_discovery_jobs": len(
+                later_cycle_discovery_scheduler_job_ids
+            ),
             "scheduler_rows_total": cumulative_scheduler_rows,
             "scheduler_rows_ceiling": int(cumulative["scheduler_ceiling"]),
             "scheduler_rows_within_ceiling": cumulative_jobs_ok,
@@ -8236,12 +8235,12 @@ def _run_budgets(
         "holder_rpc_fallbacks_ceiling": (
             _MAX_HOLDER_RPC_REQUESTS_PER_TOKEN * max(1, len(prefixes))
         ),
-        "scheduler_run_step_jobs": _run_step_job_count(conn, run_id),
+        "scheduler_run_step_jobs": all_step_jobs,
         "scheduler_cancelled_discovery_handoffs": handoffs,
-                "scheduler_later_cycle_discovery_jobs": len(
-                    later_cycle_discovery_scheduler_job_ids
-                ),
-        "scheduler_rows_total": _run_step_job_count(conn, run_id) + handoffs,
+        "scheduler_later_cycle_discovery_jobs": len(
+            later_cycle_discovery_scheduler_job_ids
+        ),
+        "scheduler_rows_total": cumulative_scheduler_rows,
         "scheduler_rows_ceiling": scheduler_ceiling,
         "scheduler_rows_within_ceiling": (
             _run_step_job_count(conn, run_id) + handoffs
