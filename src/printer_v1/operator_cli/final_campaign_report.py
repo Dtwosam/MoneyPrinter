@@ -720,6 +720,41 @@ def assemble_final_campaign_report(
             "Scheduler identity/total mismatch"
         )
 
+    cumulative = budgets.get("cumulative_lifecycle_usage")
+    if cumulative is not None and not isinstance(cumulative, Mapping):
+        raise FinalCampaignReportError(
+            "cumulative lifecycle usage is malformed"
+        )
+    if isinstance(cumulative, Mapping):
+        if "source_requests" in cumulative:
+            cumulative_requests = cumulative.get("source_requests")
+            if (
+                isinstance(cumulative_requests, bool)
+                or not isinstance(cumulative_requests, int)
+                or cumulative_requests < 0
+            ):
+                raise FinalCampaignReportError(
+                    "cumulative source request total is missing or invalid"
+                )
+            if cumulative_requests != len(usage["source_request_ids"]):
+                raise FinalCampaignReportError(
+                    "cumulative source request identity/total mismatch"
+                )
+        if "scheduler_rows" in cumulative:
+            cumulative_scheduler_rows = cumulative.get("scheduler_rows")
+            if (
+                isinstance(cumulative_scheduler_rows, bool)
+                or not isinstance(cumulative_scheduler_rows, int)
+                or cumulative_scheduler_rows < 0
+            ):
+                raise FinalCampaignReportError(
+                    "cumulative Scheduler total is missing or invalid"
+                )
+            if cumulative_scheduler_rows != len(usage["scheduler_job_ids"]):
+                raise FinalCampaignReportError(
+                    "cumulative Scheduler identity/total mismatch"
+                )
+
     opportunity_layers = [
         {
             "object_id": item["object_id"],
