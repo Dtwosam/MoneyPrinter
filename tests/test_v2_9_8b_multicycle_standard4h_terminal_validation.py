@@ -129,7 +129,7 @@ def test_final_report_requires_standard_4h_terminal_truth_for_both_cycles(
     _db, conn, config = _seed(tmp_path)
     calls: list[str] = []
 
-    def validate(**kwargs):
+    def validate(_connection, **kwargs):
         cycle_id = str(kwargs["cycle_id"])
         calls.append(cycle_id)
         return _validation(complete=(cycle_id == CYCLE_1), cycle_id=cycle_id)
