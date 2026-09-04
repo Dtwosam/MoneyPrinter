@@ -494,7 +494,7 @@ def test_cycle_scoped_4h_counts_ignore_peer_cycle_but_keep_current_orphans() -> 
             INSERT INTO printer_memory_factory_run_steps(
                 id,run_id,token_id,pair_id,tracking_lane,step_kind,step_status,
                 step_key,scheduler_job_id
-            ) VALUES (11,?,?,?,?, 'SUCCEEDED',?,NULL)
+            ) VALUES (11,?,?,?,?,?,'SUCCEEDED',?,NULL)
             """,
             (
                 RUN_ID,
@@ -525,7 +525,7 @@ def test_cycle2_4h_budget_does_not_charge_cycle1_requests() -> None:
             INSERT INTO printer_memory_factory_run_steps(
                 id,run_id,token_id,pair_id,tracking_lane,step_kind,step_status,
                 step_key,scheduler_job_id
-            ) VALUES (10,?,?,?,?, 'SUCCEEDED',?,?)
+            ) VALUES (10,?,?,?,?,?,'SUCCEEDED',?,?)
             """,
             (
                 RUN_ID,
