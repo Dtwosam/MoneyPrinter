@@ -569,14 +569,15 @@ def reconcile_campaign_terminal(
             connection, "printer_memory_factory_campaign_token_slots"
         ):
             slot_rows = connection.execute(
-                """SELECT token_slot_id,tracking_queue_id,token_state
+                """SELECT cycle_id,token_slot_id,tracking_queue_id,token_state
                    FROM printer_memory_factory_campaign_token_slots
-                   WHERE campaign_id=? AND run_id=? AND cycle_id=?
-                   ORDER BY slot_ordinal,token_slot_id""",
-                (campaign_id, run_id, cycle_id),
+                   WHERE campaign_id=? AND run_id=?
+                   ORDER BY cycle_id,slot_ordinal,token_slot_id""",
+                (campaign_id, run_id),
             ).fetchall()
             dispositions: list[dict[str, Any]] = []
             for slot in slot_rows:
+                slot_cycle_id = str(slot["cycle_id"])
                 slot_id = str(slot["token_slot_id"])
                 queue_id = slot["tracking_queue_id"]
                 slot_result = "already_terminal"
@@ -591,7 +592,7 @@ def reconcile_campaign_terminal(
                            'ALREADY_EXISTS_IDEMPOTENT'
                          )
                        ORDER BY window_id""",
-                    (campaign_id, run_id, cycle_id, slot_id),
+                    (campaign_id, run_id, slot_cycle_id, slot_id),
                 ).fetchall()
                 has_exact_owned_terminal = len(owned_terminal) == 1
                 if queue_id is not None:
@@ -658,6 +659,7 @@ def reconcile_campaign_terminal(
                     )
                 dispositions.append(
                     {
+                        "cycle_id": slot_cycle_id,
                         "token_slot_id": slot_id,
                         "slot_disposition": slot_result,
                         "tracking_queue_id": queue_id,
