@@ -93,11 +93,38 @@ def database(tmp_path):
         "VALUES ('dexscreener','fresh_profiles',?,'COMPLETE','CLEAN_DATA')",
         (NOW.isoformat(),),
     ).lastrowid
+    market_payload = json.dumps(
+        {
+            "pairs": [
+                {
+                    "token_mint": f"mint-{slot}",
+                    "candidate_mint": f"mint-{slot}",
+                    "base_mint": f"mint-{slot}",
+                    "quote_mint": "So11111111111111111111111111111111111111112",
+                    "pair_address": f"pool-{slot}",
+                    "chain": "solana",
+                    "dex_id": "pumpswap",
+                    "liquidity_usd": 10_000.0,
+                    "price_usd": 1.0,
+                    "volume_5m": 2_000.0,
+                    "volume_1h": 7_000.0,
+                    "volume_24h": 22_000.0,
+                    "txns_5m": 21,
+                    "txns_1h": 55,
+                    "txns_24h": 140,
+                    "captured_at": NOW.isoformat(),
+                }
+                for slot in (1, 2)
+            ]
+        },
+        sort_keys=True,
+    )
     response_id = connection.execute(
         "INSERT INTO printer_source_responses("
-        "source_request_id,source_name,received_at,source_status,data_quality_label) "
-        "VALUES (?,'dexscreener',?,'COMPLETE','CLEAN_DATA')",
-        (request_id, NOW.isoformat()),
+        "source_request_id,source_name,received_at,source_status,data_quality_label,"
+        "normalized_payload_json) "
+        "VALUES (?,'dexscreener',?,'COMPLETE','CLEAN_DATA',?)",
+        (request_id, NOW.isoformat(), market_payload),
     ).lastrowid
     connection.commit()
     connection.close()
