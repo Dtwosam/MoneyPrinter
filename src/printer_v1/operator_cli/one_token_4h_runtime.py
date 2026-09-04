@@ -268,6 +268,37 @@ def _standard_campaign_cycle_long_step_count(
     )
 
 
+def _standard_campaign_cycle_scheduler_step_count(
+    connection: sqlite3.Connection,
+    *,
+    campaign_id: str,
+    campaign_run_id: str,
+    cycle_id: str,
+    factory_run_id: str,
+) -> int:
+    """Count Scheduler-backed lifecycle steps for exactly one campaign cycle."""
+    return int(
+        connection.execute(
+            """SELECT COUNT(DISTINCT rs.scheduler_job_id)
+               FROM printer_memory_factory_run_steps AS rs
+               JOIN printer_memory_factory_campaign_token_slots AS slot
+                 ON slot.campaign_id=?
+                AND slot.run_id=?
+                AND slot.cycle_id=?
+                AND slot.token_row_id=rs.token_id
+                AND slot.pair_row_id=rs.pair_id
+               WHERE rs.run_id=?
+                 AND rs.scheduler_job_id IS NOT NULL""",
+            (
+                str(campaign_id),
+                str(campaign_run_id),
+                str(cycle_id),
+                str(factory_run_id),
+            ),
+        ).fetchone()[0]
+    )
+
+
 def _plan_token_4h_phase(
     connection: sqlite3.Connection,
     *,
@@ -279,6 +310,7 @@ def _plan_token_4h_phase(
     tracking_lane: str,
     current_close_step_id: int | None = None,
     cumulative_scheduler_ceiling: int | None = None,
+    cumulative_scheduler_current: int | None = None,
     allow_enabled_successor_planning: bool = False,
 ) -> dict[str, Any]:
     """Plan/replay one exact token's existing WINDOW_4H phase primitives."""
@@ -364,11 +396,20 @@ def _plan_token_4h_phase(
     )
     if effective_cumulative_ceiling < int(cumulative["scheduler_ceiling"]):
         raise ValueError("four-hour cumulative scheduler ceiling is too small")
-    existing_jobs = int(connection.execute(
-        "SELECT COUNT(DISTINCT scheduler_job_id) FROM printer_memory_factory_run_steps "
-        "WHERE run_id=? AND scheduler_job_id IS NOT NULL",
-        (run_id,),
-    ).fetchone()[0])
+    existing_jobs = (
+        int(cumulative_scheduler_current)
+        if cumulative_scheduler_current is not None
+        else int(
+            connection.execute(
+                "SELECT COUNT(DISTINCT scheduler_job_id) "
+                "FROM printer_memory_factory_run_steps "
+                "WHERE run_id=? AND scheduler_job_id IS NOT NULL",
+                (run_id,),
+            ).fetchone()[0]
+        )
+    )
+    if existing_jobs < 0:
+        raise ValueError("cumulative scheduler current count is invalid")
     require_projected_capacity(
         current=existing_jobs + 1,
         projected=expected + 3,
@@ -1250,6 +1291,15 @@ def plan_standard_campaign_4h_handoff(
             token_id = int(candidate["token_row_id"])
             pair_id = int(candidate["pair_row_id"])
             lane = str(candidate["tracking_lane"])
+            cycle_scheduler_current = (
+                _standard_campaign_cycle_scheduler_step_count(
+                    connection,
+                    campaign_id=campaign_id,
+                    campaign_run_id=run_id,
+                    cycle_id=cycle_id,
+                    factory_run_id=factory_run_id,
+                )
+            )
             plan = _plan_token_4h_phase(
                 connection,
                 run_id=factory_run_id,
@@ -1259,6 +1309,7 @@ def plan_standard_campaign_4h_handoff(
                 pair_address=str(candidate["pair_identity"]),
                 tracking_lane=lane,
                 cumulative_scheduler_ceiling=int(budget["scheduler_ceiling"]),
+                cumulative_scheduler_current=cycle_scheduler_current,
                 allow_enabled_successor_planning=True,
             )
             if not plan.get("planned") or plan.get("replay"):
