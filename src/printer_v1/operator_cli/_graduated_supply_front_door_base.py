@@ -463,12 +463,31 @@ def run_fresh_profile_locator(
         enabled=True,
         fixture_transport=transport,
     )
+    observation_opportunity_identity = (
+        build_campaign_stage_id(
+            campaign_id=str(campaign_id),
+            run_id=str(run_id),
+            cycle_id=str(cycle_id),
+            stage_kind=STAGE_KIND_LOCATOR,
+            stage_sequence=int(stage_sequence),
+        )
+        if campaign_id and run_id and cycle_id
+        else None
+    )
+    request_payload: dict[str, Any] = {
+        "request_kind": "dexscreener_fresh_profiles",
+        "chain": "solana",
+    }
+    if observation_opportunity_identity is not None:
+        request_payload["observation_opportunity_identity"] = (
+            observation_opportunity_identity
+        )
     request = build_governed_source_request(
         DEXSCREENER_SOURCE_NAME,
         "dexscreener_fresh_profiles",
         request_key=request_key,
         tracking_priority=0,
-        payload={"request_kind": "dexscreener_fresh_profiles", "chain": "solana"},
+        payload=request_payload,
     )
     from printer_v1.db.sqlite_write_contracts import connect_operational
 

@@ -492,7 +492,6 @@ def build_dexscreener_fresh_profiles_transport(
     cap = max(1, min(int(max_tokens), _DEXSCREENER_FRESH_PROFILES_MAX_TOKENS))
 
     def transport(context: SourceAdapterContext) -> Mapping[str, Any]:
-        del context
         from printer_v1.sources.measured_transport import (
             BYTE_CEILINGS,
             MeasuredTransportError,
@@ -501,6 +500,23 @@ def build_dexscreener_fresh_profiles_transport(
             enforce_normalized_row_ceiling,
             measured_payload_fields,
         )
+
+        request = None if context is None else getattr(context, "request", None)
+        request_payload = {} if request is None else getattr(request, "payload", None)
+        raw_opportunity_identity = (request_payload or {}).get(
+            "observation_opportunity_identity"
+        )
+        if raw_opportunity_identity is None:
+            observation_opportunity_identity = None
+        elif (
+            not isinstance(raw_opportunity_identity, str)
+            or not raw_opportunity_identity.strip()
+        ):
+            raise ValueError(
+                "DEXSCREENER_FRESH_PROFILES_INVALID_OBSERVATION_OPPORTUNITY_IDENTITY"
+            )
+        else:
+            observation_opportunity_identity = raw_opportunity_identity.strip()
 
         identities = []
         profiles_bytes = 0
@@ -532,6 +548,7 @@ def build_dexscreener_fresh_profiles_transport(
                         method_or_endpoint="GET /token-profiles/latest/v1",
                         within_request_ordinal=1,
                         target_category="fresh_profiles",
+                        target_identity=observation_opportunity_identity,
                         response_bytes=int(step1_bytes),
                         normalized_rows=int(step1_rows),
                         result=step1_result,
@@ -547,6 +564,7 @@ def build_dexscreener_fresh_profiles_transport(
                         method_or_endpoint="GET /tokens/v1/solana/{mints}",
                         within_request_ordinal=2,
                         target_category="token_pairs",
+                        target_identity=observation_opportunity_identity,
                         response_bytes=int(step2_bytes),
                         normalized_rows=int(step2_rows),
                         result=step2_result,
@@ -635,6 +653,7 @@ def build_dexscreener_fresh_profiles_transport(
                 method_or_endpoint="GET /token-profiles/latest/v1",
                 within_request_ordinal=1,
                 target_category="fresh_profiles",
+                target_identity=observation_opportunity_identity,
                 response_bytes=profiles_bytes,
                 normalized_rows=len(solana_addrs),
                 result="OK",
@@ -732,6 +751,7 @@ def build_dexscreener_fresh_profiles_transport(
                 method_or_endpoint="GET /tokens/v1/solana/{mints}",
                 within_request_ordinal=2,
                 target_category="token_pairs",
+                target_identity=observation_opportunity_identity,
                 response_bytes=pairs_bytes,
                 normalized_rows=len(pairs),
                 result="OK",
