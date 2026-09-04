@@ -55,6 +55,28 @@ def test_later_cycle_discovery_request_ids_reduce_exact_attempt_scope() -> None:
     conn.close()
 
 
+
+def test_later_cycle_discovery_scheduler_job_ids_reduce_exact_attempt_scope() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        "CREATE TABLE printer_pre_admission_discovery_attempts("
+        "attempt_id TEXT PRIMARY KEY,authoritative_factory_run_id TEXT NOT NULL,"
+        "scheduler_job_id INTEGER NOT NULL)"
+    )
+    conn.executemany(
+        "INSERT INTO printer_pre_admission_discovery_attempts("
+        "attempt_id,authoritative_factory_run_id,scheduler_job_id) VALUES (?,?,?)",
+        [
+            ("attempt-cycle2", RUN_ID, 31),
+            ("attempt-cycle2-repeat", RUN_ID, 32),
+            ("attempt-other", "other-run", 99),
+        ],
+    )
+
+    assert factory._later_cycle_discovery_scheduler_job_ids(conn, RUN_ID) == {31, 32}
+    conn.close()
+
 def test_run_budget_includes_cycle2_discovery_without_runtime_double_count(
     monkeypatch,
 ) -> None:
@@ -121,6 +143,12 @@ def test_run_budget_includes_cycle2_discovery_without_runtime_double_count(
         lambda *_: {21, 22},
         raising=False,
     )
+    monkeypatch.setattr(
+        factory,
+        "_later_cycle_discovery_scheduler_job_ids",
+        lambda *_: {31},
+        raising=False,
+    )
 
     report = factory._run_budgets(
         conn,
@@ -142,4 +170,6 @@ def test_run_budget_includes_cycle2_discovery_without_runtime_double_count(
     ] == 1
     assert report["cumulative_lifecycle_usage"]["source_requests"] == 4
     assert report["governed_requests_run"] == 4
+    assert report["scheduler_rows_total"] == 1
+    assert report["cumulative_lifecycle_usage"]["scheduler_rows"] == 1
     conn.close()
