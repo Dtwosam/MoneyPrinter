@@ -6,11 +6,18 @@ Scheduler runtime, authoritative DB mutation, retrieval, decisions, positions, o
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import pytest
 
 from printer_v1.operator_cli import one_command_15m_factory as factory
+from printer_v1.operator_cli.multi_cycle_memory_growth import (
+    AdmissionDecision,
+    MultiCycleAdmissionState,
+    MultiCycleCapacityPolicy,
+    evaluate_cycle_admission,
+)
 
 
 RUN_ID = "factory-run"
@@ -308,3 +315,57 @@ def test_true_four_hour_numeric_ceiling_still_safe_stops_as_budget() -> None:
 
     assert raised.value.reason == factory.STOP_BUDGET
     assert raised.value.scope == "FOUR_HOUR_PHASE"
+
+
+def test_both_eligible_slots_keep_the_existing_two_token_subset_budget() -> None:
+    connection = _connection()
+    try:
+        _insert_close(
+            connection,
+            step_id=1,
+            token_id=101,
+            pair_id=201,
+            lane="TRACK_FAST",
+        )
+        _insert_close(
+            connection,
+            step_id=2,
+            token_id=102,
+            pair_id=202,
+            lane="TRACK_NORMAL",
+        )
+        budget = _budget(
+            connection,
+            manifests=_manifest(slot_1=True, slot_2=True),
+            scoped_step_ids=(1, 2),
+        )
+    finally:
+        connection.close()
+
+    assert budget["tracking_lanes"] == ("TRACK_FAST", "TRACK_NORMAL")
+    assert budget["continuing_mask"] == (True, True)
+    assert budget["continuation_count"] == 2
+    assert "token_1_window_4h_phase" in budget["request_components"]
+    assert "token_2_window_4h_phase" in budget["request_components"]
+
+
+def test_cycle2_capacity_remains_available_after_one_cycle1_token_stops_locally() -> None:
+    started = datetime(2026, 9, 4, 13, 0, tzinfo=timezone.utc)
+    policy = MultiCycleCapacityPolicy(
+        configured_through_4h_token_ceiling=4,
+        configured_active_cycle_ceiling=2,
+        total_cycle_admission_ceiling=2,
+        intake_duration_seconds=18_000,
+    )
+    state = MultiCycleAdmissionState(
+        now=started + timedelta(minutes=10),
+        intake_started_at=started,
+        active_through_4h_tokens=1,
+        active_cycles=1,
+        admissions_completed=1,
+        last_cycle_admitted_at=started,
+    )
+
+    result = evaluate_cycle_admission(policy, state)
+
+    assert result.decision == AdmissionDecision.ADMIT_TWO_TOKEN_CYCLE
