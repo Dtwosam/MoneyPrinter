@@ -321,6 +321,7 @@ class FourTokenTerminalReportReplayTests(unittest.TestCase):
                     "scheduler_row_ceiling": 100,
                     "discovery_source_requests": 1,
                     "later_cycle_discovery_source_requests": 1,
+                    "later_cycle_discovery_scheduler_rows": 1,
                     "runtime_source_requests": 4,
                     "request_components": {
                         "discovery": 1,
@@ -389,6 +390,7 @@ class FourTokenTerminalReportReplayTests(unittest.TestCase):
         cumulative = budgets["cumulative_lifecycle_usage"]
         self.assertEqual(cumulative["source_requests"], 5)
         self.assertEqual(cumulative["later_cycle_discovery_source_requests"], 1)
+        self.assertEqual(cumulative["later_cycle_discovery_scheduler_rows"], 1)
         self.assertEqual(cumulative["runtime_source_requests"], 4)
         self.assertEqual(
             cumulative["request_components"],
