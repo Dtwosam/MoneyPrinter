@@ -693,6 +693,22 @@ def attach_frozen_tracking_lane(
             observed_at=item.observed_at,
             supplemental_candidate_evidence=supplemental,
         )
+        if connection is not None:
+            from printer_v1.lifecycle.tracking_queue import (
+                assess_possible_tracking_claim_by_identity,
+            )
+
+            exact_claim = assess_possible_tracking_claim_by_identity(
+                connection,
+                token_mint=item.mint_identity,
+                pair_address=item.pair_identity,
+                tracking_lane=lane_value,
+                assessed_at=_utc(now, "now"),
+            )
+            if not exact_claim.eligible:
+                raise PreAdmissionAttemptError(
+                    "FROZEN_TRACKING_LANE_UNCLAIMABLE"
+                )
     except PreAdmissionAttemptError as exc:
         raise _annotate_persistence_error(
             exc,
