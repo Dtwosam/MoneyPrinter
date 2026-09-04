@@ -143,13 +143,50 @@ def _root(
     )
     if insufficient_pool and not root["authoritative_run_id"]:
         # Discovery-only insufficient-pool campaigns never open an
-        # authoritative memory-factory run. Synthesize a zero-delta envelope
-        # from locked-capability tables without inventing activations.
+        # authoritative memory-factory run. Preserve the real discovery
+        # accounting while synthesizing only the missing factory-run envelope.
         zero = {table: 0 for table in LOCKED_CAPABILITY_TABLES}
         for table in LOCKED_CAPABILITY_TABLES:
             zero[table] = int(
                 connection.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
             )
+        (
+            discovery_request_ids,
+            _,
+            _,
+            discovery_scheduler_job_ids,
+        ) = _discovery_owned_source_usage(
+            connection,
+            campaign_id=campaign_id,
+            run_id=run_id,
+        )
+        configuration = _json_object(
+            root["configuration_json"], "campaign configuration"
+        )
+        ceilings = configuration.get("ceilings")
+        if not isinstance(ceilings, Mapping):
+            raise FinalCampaignReportError(
+                "campaign source/scheduler ceilings are missing"
+            )
+        source_ceiling = ceilings.get("source_calls")
+        scheduler_ceiling = ceilings.get("scheduler_work")
+        if (
+            isinstance(source_ceiling, bool)
+            or not isinstance(source_ceiling, int)
+            or source_ceiling < 0
+        ):
+            raise FinalCampaignReportError(
+                "campaign source-call ceiling is missing or invalid"
+            )
+        if (
+            isinstance(scheduler_ceiling, bool)
+            or not isinstance(scheduler_ceiling, int)
+            or scheduler_ceiling < 0
+        ):
+            raise FinalCampaignReportError(
+                "campaign Scheduler ceiling is missing or invalid"
+            )
+
         root["authoritative_run_id"] = f"synthetic-insufficient-pool:{campaign_id}:{run_id}"
         root["authoritative_run_status"] = "FAILED"
         root["authoritative_stop_reason"] = "INSUFFICIENT_ELIGIBLE_TWO_SLOT_POOL"
@@ -159,10 +196,10 @@ def _root(
                 "counts_after": zero,
                 "forbidden_deltas": {table: 0 for table in LOCKED_CAPABILITY_TABLES},
                 "run_budgets": {
-                    "governed_requests_run": 0,
-                    "governed_requests_run_ceiling": 0,
-                    "scheduler_rows_total": 0,
-                    "scheduler_rows_ceiling": 0,
+                    "governed_requests_run": len(discovery_request_ids),
+                    "governed_requests_run_ceiling": source_ceiling,
+                    "scheduler_rows_total": len(discovery_scheduler_job_ids),
+                    "scheduler_rows_ceiling": scheduler_ceiling,
                     "automatic_retries": 0,
                 },
                 "selected_token_count": 0,
@@ -654,35 +691,34 @@ def assemble_final_campaign_report(
     }
     if not isinstance(usage["authoritative_run_budgets"], Mapping):
         raise FinalCampaignReportError("authoritative source/scheduler ceilings missing")
-    if not insufficient_pool:
-        budgets = usage["authoritative_run_budgets"]
-        reported_requests = budgets.get("governed_requests_run")
-        if (
-            isinstance(reported_requests, bool)
-            or not isinstance(reported_requests, int)
-            or reported_requests < 0
-        ):
-            raise FinalCampaignReportError(
-                "authoritative source request total is missing or invalid"
-            )
-        if reported_requests != len(usage["source_request_ids"]):
-            raise FinalCampaignReportError(
-                "source request identity/total mismatch"
-            )
+    budgets = usage["authoritative_run_budgets"]
+    reported_requests = budgets.get("governed_requests_run")
+    if (
+        isinstance(reported_requests, bool)
+        or not isinstance(reported_requests, int)
+        or reported_requests < 0
+    ):
+        raise FinalCampaignReportError(
+            "authoritative source request total is missing or invalid"
+        )
+    if reported_requests != len(usage["source_request_ids"]):
+        raise FinalCampaignReportError(
+            "source request identity/total mismatch"
+        )
 
-        reported_scheduler_rows = budgets.get("scheduler_rows_total")
-        if (
-            isinstance(reported_scheduler_rows, bool)
-            or not isinstance(reported_scheduler_rows, int)
-            or reported_scheduler_rows < 0
-        ):
-            raise FinalCampaignReportError(
-                "authoritative Scheduler total is missing or invalid"
-            )
-        if reported_scheduler_rows != len(usage["scheduler_job_ids"]):
-            raise FinalCampaignReportError(
-                "Scheduler identity/total mismatch"
-            )
+    reported_scheduler_rows = budgets.get("scheduler_rows_total")
+    if (
+        isinstance(reported_scheduler_rows, bool)
+        or not isinstance(reported_scheduler_rows, int)
+        or reported_scheduler_rows < 0
+    ):
+        raise FinalCampaignReportError(
+            "authoritative Scheduler total is missing or invalid"
+        )
+    if reported_scheduler_rows != len(usage["scheduler_job_ids"]):
+        raise FinalCampaignReportError(
+            "Scheduler identity/total mismatch"
+        )
 
     opportunity_layers = [
         {
