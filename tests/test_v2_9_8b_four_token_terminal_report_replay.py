@@ -5,11 +5,17 @@ from __future__ import annotations
 import hashlib
 import json
 import unittest
+from datetime import datetime
 
 from printer_v1.operator_cli.campaign_ownership import (
     create_cycle_with_two_slots,
     persist_scheduler_work,
     persist_window,
+)
+from printer_v1.operator_cli.campaign_active_work import campaign_active_work_report
+from printer_v1.operator_cli.four_token_factory_adapter import (
+    FourTokenFactoryAdapterError,
+    finalize_four_token_shared_terminal,
 )
 from printer_v1.operator_cli.final_campaign_report import (
     FinalCampaignReportError,
@@ -384,6 +390,34 @@ class FourTokenTerminalReportReplayTests(unittest.TestCase):
         self.assertTrue(
             all(item["active_associated_work_after"] == 0 for item in report["lifecycle_b3"])
         )
+        active = campaign_active_work_report(
+            self.connection,
+            factory_run_id="authority-run",
+            campaign_id="campaign-a",
+            run_id="run-a",
+        )
+        self.assertEqual(active["active_jobs"], 0)
+        self.assertEqual(active["active_work_rows"], 0)
+        self.assertEqual(active["terminal_work_with_active_job"], 0)
+        self.assertEqual(active["pending_or_running_run_steps"], 0)
+        self.assertEqual(active["active_pre_lifecycle_refresh_waits"], 0)
+        self.assertEqual(active["active_pre_admission_attempts"], 0)
+        self.assertEqual(active["active_factory_runs"], 0)
+        self.assertTrue(active["clean_terminal"])
+        terminal = finalize_four_token_shared_terminal(
+            self.connection,
+            campaign_id="campaign-a",
+            campaign_run_id="run-a",
+            factory_run_id="authority-run",
+            configuration_id="configuration-a",
+            now=datetime.fromisoformat(CUTOFF),
+            shared_terminalizer=lambda **_: {
+                "clean_terminal": True,
+                "lease_released": True,
+            },
+        )
+        self.assertTrue(terminal["already_terminal"])
+        self.assertEqual(terminal["admitted_shape"], "TWO_CYCLE_COMPLETION")
 
         usage = report["source_scheduler_ceiling_usage"]
         budgets = usage["authoritative_run_budgets"]
@@ -454,6 +488,32 @@ class FourTokenTerminalReportReplayTests(unittest.TestCase):
             )
         )
         self.assertTrue(report["locked_capabilities"]["all_deltas_zero"])
+
+    def test_two_cycle_shared_terminal_rejects_orphan_lifecycle_work(self) -> None:
+        with self.connection:
+            self.connection.execute(
+                """UPDATE printer_memory_factory_campaign_scheduler_work
+                   SET work_state='PENDING',first_terminal_cause=NULL,
+                       terminal_at=NULL,updated_at=?
+                   WHERE scheduler_work_id='work-4'""",
+                (CUTOFF,),
+            )
+        with self.assertRaisesRegex(
+            FourTokenFactoryAdapterError,
+            "shared terminal requires zero active or orphan lifecycle work",
+        ):
+            finalize_four_token_shared_terminal(
+                self.connection,
+                campaign_id="campaign-a",
+                campaign_run_id="run-a",
+                factory_run_id="authority-run",
+                configuration_id="configuration-a",
+                now=datetime.fromisoformat(CUTOFF),
+                shared_terminalizer=lambda **_: {
+                    "clean_terminal": True,
+                    "lease_released": True,
+                },
+            )
 
     def test_missing_cycle_two_b3_lifecycle_fails_closed(self) -> None:
         with self.connection:
