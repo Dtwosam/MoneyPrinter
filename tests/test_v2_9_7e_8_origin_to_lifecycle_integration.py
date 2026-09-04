@@ -24,6 +24,7 @@ from printer_v1.discovery.combined_executor import (
     CombinedPumpfunCampaignExecutor,
     FixtureOriginProof,
     FixturePumpSwapProof,
+    FixtureSourceFact,
 )
 from printer_v1.operator_cli.abstract_campaign_command import (
     AbstractCampaignCommand,
@@ -186,15 +187,50 @@ class _IntegrationBase(unittest.TestCase):
             )
             for origin in origins
         }
+        # Current Cycle-1 cadence authority is persisted from exact current-batch
+        # provider observations before handoff. Keep this older integration fixture
+        # classifier-sufficient instead of relying on the historical implicit
+        # TRACK_NORMAL default.
+        dex_body = [
+            {
+                "chainId": "solana",
+                "baseToken": {"address": origin.mint},
+                "quoteToken": {
+                    "address": "So11111111111111111111111111111111111111112"
+                },
+                "pairAddress": origin.bonding_curve,
+                "dexId": "pumpswap",
+                "priceUsd": 0.01,
+                "liquidity": {"usd": 10_000},
+                "volume": {"m5": 500, "h1": 2_000, "h24": 10_000},
+                "txns": {
+                    "m5": {"buys": 7, "sells": 3},
+                    "h1": 50,
+                    "h24": 500,
+                },
+            }
+            for origin in origins
+        ]
         return CombinedDiscoveryFixtures(
             cycle_id="cyc",
             cycle_cutoff=CUTOFF,
             campaign_selection_seed=SEED,
-            provider_contract_versions={"direct": "V2-9.7D.7B.3A"},
+            provider_contract_versions={
+                "direct": "V2-9.7D.7B.3A",
+                "dexscreener": "fixture-current-cadence-authority",
+            },
             git_provenance_identity="git-integration",
             evaluated_at=NOW,
             direct_observations=origins,
             pumpswap_proofs=pumpswap_proofs,
+            dexscreener_ops=(
+                FixtureSourceFact(
+                    request_kind="dexscreener_fresh_profiles",
+                    source_name="dexscreener",
+                    body=dex_body,
+                    receipt_time=NOW,
+                ),
+            ),
         )
 
     def _two_origin_fixtures(self) -> CombinedDiscoveryFixtures:
