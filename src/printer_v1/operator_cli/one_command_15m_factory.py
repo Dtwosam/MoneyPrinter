@@ -942,6 +942,95 @@ def _cycle_targets_for_factory(
     return targets
 
 
+def _terminal_lifecycle_reconciliation_targets(
+    conn: sqlite3.Connection,
+    *,
+    selected_tokens: list[dict[str, Any]],
+    campaign_id: str | None,
+    campaign_run_id: str | None,
+    four_token_campaign: bool,
+) -> list[dict[str, Any]]:
+    """Resolve B.3 terminal targets from durable campaign ownership."""
+    if not four_token_campaign:
+        return list(selected_tokens)
+    if not campaign_id or not campaign_run_id:
+        raise ValueError(
+            "four-token terminal lifecycle reconciliation requires campaign/run identity"
+        )
+
+    rows = conn.execute(
+        """SELECT y.cycle_ordinal,s.slot_ordinal,s.cycle_id,s.token_slot_id,
+                  s.token_row_id AS token_id,s.pair_row_id AS pair_id,
+                  s.mint_identity AS token_mint,s.pair_identity AS pair_address,
+                  s.tracking_queue_id,q.tracking_lane,
+                  q.token_id AS queue_token_id,q.pair_id AS queue_pair_id
+           FROM printer_memory_factory_campaign_cycles AS y
+           JOIN printer_memory_factory_campaign_token_slots AS s
+             ON s.campaign_id=y.campaign_id AND s.run_id=y.run_id
+            AND s.cycle_id=y.cycle_id
+           LEFT JOIN printer_tracking_queue AS q
+             ON q.id=s.tracking_queue_id
+           WHERE y.campaign_id=? AND y.run_id=?
+           ORDER BY y.cycle_ordinal,s.slot_ordinal""",
+        (str(campaign_id), str(campaign_run_id)),
+    ).fetchall()
+    if not rows:
+        raise ValueError(
+            "four-token terminal lifecycle reconciliation found no admitted slots"
+        )
+
+    targets: list[dict[str, Any]] = []
+    seen: set[tuple[int, int]] = set()
+    cycle_slots: dict[str, list[int]] = {}
+    for row in rows:
+        cycle = str(row[2])
+        cycle_slots.setdefault(cycle, []).append(int(row[1]))
+        queue_id = row[8]
+        lane = None if row[9] is None else str(row[9])
+        token_id = int(row[4])
+        pair_id = int(row[5])
+        identity = (token_id, pair_id)
+        if identity in seen:
+            raise ValueError(
+                "four-token terminal lifecycle reconciliation found duplicate token/pair"
+            )
+        seen.add(identity)
+        if queue_id is None or lane not in {"TRACK_FAST", "TRACK_NORMAL"}:
+            raise ValueError(
+                "campaign slot missing exact tracking cadence authority before "
+                "terminal lifecycle reconciliation"
+            )
+        if row[10] is None or int(row[10]) != token_id or (
+            row[11] is not None and int(row[11]) != pair_id
+        ):
+            raise ValueError(
+                "campaign slot tracking queue identity mismatch before "
+                "terminal lifecycle reconciliation"
+            )
+        targets.append(
+            {
+                "token_id": token_id,
+                "pair_id": pair_id,
+                "token_mint": str(row[6]),
+                "pair_address": str(row[7]),
+                "tracking_lane": lane,
+                "tracking_queue_id": int(queue_id),
+                "cycle_id": cycle,
+                "token_slot_id": str(row[3]),
+            }
+        )
+
+    if any(tuple(ordinals) != (1, 2) for ordinals in cycle_slots.values()):
+        raise ValueError(
+            "four-token terminal lifecycle reconciliation found incomplete cycle slots"
+        )
+    if len(cycle_slots) > 2 or len(targets) > 4:
+        raise ValueError(
+            "four-token terminal lifecycle reconciliation exceeded configured capacity"
+        )
+    return targets
+
+
 def _cancel_discovery_handoffs(conn: sqlite3.Connection, discovery: dict[str, Any]) -> None:
     for item in discovery.get("discovery_results", []):
         job_id = item.get("scheduler_job_id")
@@ -11245,11 +11334,35 @@ def run_one_command_15m_factory(
         from printer_v1.operator_cli.tracking_lifecycle_reconciliation import (
             reconcile_factory_post_cycle_lifecycle,
         )
+        lifecycle_targets = _terminal_lifecycle_reconciliation_targets(
+            conn,
+            selected_tokens=report["selected_tokens"],
+            campaign_id=campaign_id,
+            campaign_run_id=campaign_run_id,
+            four_token_campaign=four_token_proof_controller is not None,
+        )
+        lifecycle_discovery_results = discovery.get("discovery_results", [])
+        if four_token_proof_controller is not None:
+            historical_discovery_by_target = {
+                (int(item["token_id"]), int(item["pair_id"])): item
+                for item in lifecycle_discovery_results
+                if item.get("token_id") is not None
+                and item.get("pair_id") is not None
+            }
+            lifecycle_discovery_results = [
+                {
+                    **historical_discovery_by_target.get(
+                        (int(target["token_id"]), int(target["pair_id"])), {}
+                    ),
+                    **target,
+                }
+                for target in lifecycle_targets
+            ]
         lifecycle_reconciliation = reconcile_factory_post_cycle_lifecycle(
             conn,
             run_id=run_id,
-            selected_tokens=report["selected_tokens"],
-            discovery_results=discovery.get("discovery_results", []),
+            selected_tokens=lifecycle_targets,
+            discovery_results=lifecycle_discovery_results,
             per_token_outcomes=report["per_token_outcomes"],
             stop_reason=report["stop_reason"],
             archive_policy="cooldown",
