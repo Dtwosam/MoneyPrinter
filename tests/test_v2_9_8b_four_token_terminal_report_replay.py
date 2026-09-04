@@ -6,6 +6,9 @@ import hashlib
 import json
 import unittest
 
+from printer_v1.operator_cli.campaign_active_work import (
+    campaign_active_work_report,
+)
 from printer_v1.operator_cli.campaign_ownership import (
     create_cycle_with_two_slots,
     persist_scheduler_work,
@@ -454,6 +457,36 @@ class FourTokenTerminalReportReplayTests(unittest.TestCase):
             )
         )
         self.assertTrue(report["locked_capabilities"]["all_deltas_zero"])
+
+    def _leave_consumed_attempt_job_active(self) -> None:
+        with self.connection:
+            self.connection.execute(
+                """UPDATE printer_scheduler_jobs
+                   SET status='RUNNING',finished_at=NULL
+                   WHERE job_name='pre-admission:terminal-report-cycle2'"""
+            )
+
+    def test_consumed_attempt_with_active_scheduler_job_is_not_clean_work(self) -> None:
+        self._leave_consumed_attempt_job_active()
+        active = campaign_active_work_report(
+            self.connection,
+            factory_run_id="authority-run",
+            campaign_id="campaign-a",
+            run_id="run-a",
+        )
+        self.assertFalse(active["clean_terminal"])
+        self.assertEqual(active["active_jobs"], 1)
+        self.assertEqual(
+            active["attributable_job_counts"]["pre_admission_attempt_jobs"], 1
+        )
+
+    def test_terminal_report_rejects_active_consumed_attempt_scheduler_job(self) -> None:
+        self._leave_consumed_attempt_job_active()
+        with self.assertRaisesRegex(
+            FinalCampaignReportError,
+            "campaign active-work cleanup is incomplete",
+        ):
+            self._assemble()
 
     def test_missing_cycle_two_b3_lifecycle_fails_closed(self) -> None:
         with self.connection:
