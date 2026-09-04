@@ -10,6 +10,9 @@ from pathlib import Path
 import sqlite3
 from typing import Any, Iterator, Mapping
 
+from printer_v1.operator_cli.campaign_active_work import (
+    campaign_active_work_report,
+)
 from printer_v1.operator_cli.campaign_authority_adapters import (
     load_authoritative_checkpoint_safety,
     load_authoritative_promotion_outcome,
@@ -493,6 +496,16 @@ def assemble_final_campaign_report(
             slots=slots,
         )
         locked = _locked_capabilities(connection, authoritative_report)
+        active_work = campaign_active_work_report(
+            connection,
+            factory_run_id=str(root["authoritative_run_id"]),
+            campaign_id=campaign_id,
+            run_id=run_id,
+        )
+        if not active_work["clean_terminal"]:
+            raise FinalCampaignReportError(
+                "campaign active-work cleanup is incomplete"
+            )
         (
             attempt_source_request_ids,
             attempt_source_response_ids,
