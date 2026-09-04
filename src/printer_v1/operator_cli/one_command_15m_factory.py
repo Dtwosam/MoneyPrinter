@@ -379,6 +379,41 @@ def _later_cycle_attempt_is_terminal(state: str | None) -> bool:
     }
 
 
+def _pair_ready_post_discovery_projection(projection: Any) -> Any:
+    """Project admission health after exact Cycle-2 discovery is already frozen.
+
+    Provider/discovery capacity are prospective acquisition gates. Once the one
+    durable attempt is PAIR_READY, no further discovery is needed to consume it.
+    Every lifecycle, Scheduler, close-reserve, supervision, lease, database,
+    terminal-state and cancellation gate remains untouched.
+    """
+    from dataclasses import replace
+    from printer_v1.operator_cli.multi_cycle_campaign_coordinator import (
+        MultiCycleAdmissionHealth,
+    )
+
+    health = getattr(projection, "health", None)
+    if not isinstance(health, MultiCycleAdmissionHealth):
+        raise ValueError("PAIR_READY post-discovery health projection is invalid")
+    adjusted_health = replace(
+        health,
+        provider_budgets_available=True,
+        discovery_capacity_available=True,
+    )
+    try:
+        return replace(projection, health=adjusted_health)
+    except TypeError:
+        class _ProjectionProxy:
+            def __init__(self, base: Any, override_health: Any) -> None:
+                self._base = base
+                self.health = override_health
+
+            def __getattr__(self, name: str) -> Any:
+                return getattr(self._base, name)
+
+        return _ProjectionProxy(projection, adjusted_health)
+
+
 _CYCLE_LOCAL_MATERIALIZATION_REASONS = frozenset(
     {"UNSUPPORTED_MERGED_CANDIDATE_CHANNEL"}
 )
@@ -588,7 +623,7 @@ def _run_four_token_admission_boundary(
         )
 
     post_now = (clock or (lambda: now))()
-    post = project_health()
+    post = _pair_ready_post_discovery_projection(project_health())
     post_disposition = evaluate(post)
     if post_disposition.kind is not FourTokenAdmissionDispositionKind.CYCLE_ADMISSION:
         return FourTokenAdmissionBoundaryResult(
