@@ -231,6 +231,43 @@ def _token_long_steps(
     ).fetchall())
 
 
+def _standard_campaign_cycle_long_step_count(
+    connection: sqlite3.Connection,
+    *,
+    campaign_id: str,
+    campaign_run_id: str,
+    cycle_id: str,
+    factory_run_id: str,
+) -> int:
+    """Count long-window run steps for exactly one campaign cycle's slots.
+
+    Cycle 1 and Cycle 2 intentionally share one factory run.  Scoping only by
+    factory_run_id therefore mixes peer-cycle 4h work.  Slot identity is the
+    durable cycle authority and still counts orphan/unowned run steps for those
+    exact token/pair identities, so this does not weaken fail-closed ownership.
+    """
+    return int(
+        connection.execute(
+            """SELECT COUNT(*)
+               FROM printer_memory_factory_run_steps AS rs
+               JOIN printer_memory_factory_campaign_token_slots AS slot
+                 ON slot.campaign_id=?
+                AND slot.run_id=?
+                AND slot.cycle_id=?
+                AND slot.token_row_id=rs.token_id
+                AND slot.pair_row_id=rs.pair_id
+               WHERE rs.run_id=?
+                 AND rs.step_kind LIKE 'LONG_CONTINUATION_%'""",
+            (
+                str(campaign_id),
+                str(campaign_run_id),
+                str(cycle_id),
+                str(factory_run_id),
+            ),
+        ).fetchone()[0]
+    )
+
+
 def _plan_token_4h_phase(
     connection: sqlite3.Connection,
     *,
@@ -1010,11 +1047,13 @@ def _standard_campaign_4h_plan_state(
            WHERE campaign_id=? AND run_id=? AND cycle_id=? AND window_kind='WINDOW_4H'""",
         (campaign_id, run_id, cycle_id),
     ).fetchone()[0])
-    total_steps = int(connection.execute(
-        """SELECT COUNT(*) FROM printer_memory_factory_run_steps
-           WHERE run_id=? AND step_kind LIKE 'LONG_CONTINUATION_%'""",
-        (factory_run_id,),
-    ).fetchone()[0])
+    total_steps = _standard_campaign_cycle_long_step_count(
+        connection,
+        campaign_id=campaign_id,
+        campaign_run_id=run_id,
+        cycle_id=cycle_id,
+        factory_run_id=factory_run_id,
+    )
     total_owned = int(connection.execute(
         """SELECT COUNT(*) FROM printer_memory_factory_campaign_scheduler_work
            WHERE campaign_id=? AND run_id=? AND cycle_id=? AND factory_run_id=?
@@ -1124,11 +1163,13 @@ def plan_standard_campaign_4h_handoff(
            WHERE campaign_id=? AND run_id=? AND cycle_id=? AND window_kind='WINDOW_4H'""",
         (campaign_id, run_id, cycle_id),
     ).fetchone()[0])
-    existing_steps = int(connection.execute(
-        """SELECT COUNT(*) FROM printer_memory_factory_run_steps
-           WHERE run_id=? AND step_kind LIKE 'LONG_CONTINUATION_%'""",
-        (factory_run_id,),
-    ).fetchone()[0])
+    existing_steps = _standard_campaign_cycle_long_step_count(
+        connection,
+        campaign_id=campaign_id,
+        campaign_run_id=run_id,
+        cycle_id=cycle_id,
+        factory_run_id=factory_run_id,
+    )
     existing_owned = int(connection.execute(
         """SELECT COUNT(*) FROM printer_memory_factory_campaign_scheduler_work
            WHERE campaign_id=? AND run_id=? AND cycle_id=? AND factory_run_id=?
