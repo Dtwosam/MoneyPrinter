@@ -7,11 +7,13 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
 from printer_v1.operator_cli import one_command_15m_factory as factory
+from printer_v1.operator_cli import one_token_4h_runtime as four_hour_runtime
 from printer_v1.operator_cli.multi_cycle_memory_growth import (
     AdmissionDecision,
     MultiCycleAdmissionState,
@@ -26,6 +28,9 @@ CAMPAIGN_RUN_ID = "campaign-run"
 CYCLE_ID = "cycle-1"
 SLOT_1 = "cycle-1-slot-1"
 SLOT_2 = "cycle-1-slot-2"
+CYCLE_2_ID = "cycle-2"
+CYCLE_2_SLOT_1 = "cycle-2-slot-1"
+CYCLE_2_SLOT_2 = "cycle-2-slot-2"
 
 
 def _connection() -> sqlite3.Connection:
@@ -56,7 +61,9 @@ def _connection() -> sqlite3.Connection:
             pair_id INTEGER NOT NULL,
             tracking_lane TEXT NOT NULL,
             step_kind TEXT NOT NULL,
-            step_status TEXT NOT NULL
+            step_status TEXT NOT NULL,
+            step_key TEXT,
+            scheduler_job_id INTEGER
         );
         CREATE TABLE printer_source_requests(
             id INTEGER PRIMARY KEY,
@@ -85,6 +92,47 @@ def _connection() -> sqlite3.Connection:
         ),
     )
     return connection
+
+
+def _add_cycle2_slots(connection: sqlite3.Connection) -> None:
+    connection.executemany(
+        "INSERT INTO printer_tracking_queue(id,token_id,pair_id,tracking_lane) "
+        "VALUES (?,?,?,?)",
+        (
+            (13, 103, 203, "TRACK_FAST"),
+            (14, 104, 204, "TRACK_NORMAL"),
+        ),
+    )
+    connection.executemany(
+        """
+        INSERT INTO printer_memory_factory_campaign_token_slots(
+            token_slot_id,campaign_id,run_id,cycle_id,slot_ordinal,
+            token_row_id,pair_row_id,tracking_queue_id
+        ) VALUES (?,?,?,?,?,?,?,?)
+        """,
+        (
+            (
+                CYCLE_2_SLOT_1,
+                CAMPAIGN_ID,
+                CAMPAIGN_RUN_ID,
+                CYCLE_2_ID,
+                1,
+                103,
+                203,
+                13,
+            ),
+            (
+                CYCLE_2_SLOT_2,
+                CAMPAIGN_ID,
+                CAMPAIGN_RUN_ID,
+                CYCLE_2_ID,
+                2,
+                104,
+                204,
+                14,
+            ),
+        ),
+    )
 
 
 def _run_config() -> dict[str, object]:
@@ -369,3 +417,171 @@ def test_cycle2_capacity_remains_available_after_one_cycle1_token_stops_locally(
     result = evaluate_cycle_admission(policy, state)
 
     assert result.decision == AdmissionDecision.ADMIT_TWO_TOKEN_CYCLE
+
+
+def test_cycle_scoped_4h_counts_ignore_peer_cycle_but_keep_current_orphans() -> None:
+    connection = _connection()
+    try:
+        _add_cycle2_slots(connection)
+        connection.executemany(
+            """
+            INSERT INTO printer_memory_factory_run_steps(
+                id,run_id,token_id,pair_id,tracking_lane,step_kind,step_status,
+                step_key,scheduler_job_id
+            ) VALUES (?,?,?,?,?,'LONG_CONTINUATION_SNAPSHOT','SUCCEEDED',?,?)
+            """,
+            (
+                (10, RUN_ID, 101, 201, "TRACK_FAST", "t101_p201_4h_snapshot_000", 1010),
+                (20, RUN_ID, 103, 203, "TRACK_FAST", "t103_p203_4h_snapshot_000", 2020),
+            ),
+        )
+        connection.executemany(
+            "INSERT INTO printer_source_requests(id,request_key) VALUES (?,?)",
+            (
+                (100, f"{RUN_ID}:t101_p201_4h_snapshot_000"),
+                (101, f"{RUN_ID}:t101_p201_4h_snapshot_000:fallback"),
+                (200, f"{RUN_ID}:t103_p203_4h_snapshot_000"),
+            ),
+        )
+
+        assert four_hour_runtime._standard_campaign_cycle_long_step_count(
+            connection,
+            campaign_id=CAMPAIGN_ID,
+            campaign_run_id=CAMPAIGN_RUN_ID,
+            cycle_id=CYCLE_ID,
+            factory_run_id=RUN_ID,
+        ) == 1
+        assert four_hour_runtime._standard_campaign_cycle_long_step_count(
+            connection,
+            campaign_id=CAMPAIGN_ID,
+            campaign_run_id=CAMPAIGN_RUN_ID,
+            cycle_id=CYCLE_2_ID,
+            factory_run_id=RUN_ID,
+        ) == 1
+        assert four_hour_runtime._standard_campaign_cycle_scheduler_step_count(
+            connection,
+            campaign_id=CAMPAIGN_ID,
+            campaign_run_id=CAMPAIGN_RUN_ID,
+            cycle_id=CYCLE_ID,
+            factory_run_id=RUN_ID,
+        ) == 1
+        assert four_hour_runtime._standard_campaign_cycle_scheduler_step_count(
+            connection,
+            campaign_id=CAMPAIGN_ID,
+            campaign_run_id=CAMPAIGN_RUN_ID,
+            cycle_id=CYCLE_2_ID,
+            factory_run_id=RUN_ID,
+        ) == 1
+        assert factory._standard_campaign_cycle_request_count(
+            connection,
+            factory_run_id=RUN_ID,
+            campaign_id=CAMPAIGN_ID,
+            campaign_run_id=CAMPAIGN_RUN_ID,
+            cycle_id=CYCLE_ID,
+            long_only=True,
+        ) == 2
+        assert factory._standard_campaign_cycle_request_count(
+            connection,
+            factory_run_id=RUN_ID,
+            campaign_id=CAMPAIGN_ID,
+            campaign_run_id=CAMPAIGN_RUN_ID,
+            cycle_id=CYCLE_2_ID,
+            long_only=True,
+        ) == 1
+
+        connection.execute(
+            """
+            INSERT INTO printer_memory_factory_run_steps(
+                id,run_id,token_id,pair_id,tracking_lane,step_kind,step_status,
+                step_key,scheduler_job_id
+            ) VALUES (11,?,?,?,?, 'SUCCEEDED',?,NULL)
+            """,
+            (
+                RUN_ID,
+                102,
+                202,
+                "TRACK_NORMAL",
+                "LONG_CONTINUATION_SNAPSHOT",
+                "t102_p202_4h_orphan",
+            ),
+        )
+        assert four_hour_runtime._standard_campaign_cycle_long_step_count(
+            connection,
+            campaign_id=CAMPAIGN_ID,
+            campaign_run_id=CAMPAIGN_RUN_ID,
+            cycle_id=CYCLE_ID,
+            factory_run_id=RUN_ID,
+        ) == 2
+    finally:
+        connection.close()
+
+
+def test_cycle2_4h_budget_does_not_charge_cycle1_requests() -> None:
+    connection = _connection()
+    try:
+        _add_cycle2_slots(connection)
+        connection.execute(
+            """
+            INSERT INTO printer_memory_factory_run_steps(
+                id,run_id,token_id,pair_id,tracking_lane,step_kind,step_status,
+                step_key,scheduler_job_id
+            ) VALUES (10,?,?,?,?, 'SUCCEEDED',?,?)
+            """,
+            (
+                RUN_ID,
+                101,
+                201,
+                "TRACK_FAST",
+                "LONG_CONTINUATION_SNAPSHOT",
+                "t101_p201_4h_snapshot_000",
+                1010,
+            ),
+        )
+        connection.executemany(
+            "INSERT INTO printer_source_requests(id,request_key) VALUES (?,?)",
+            tuple(
+                (
+                    1000 + index,
+                    f"{RUN_ID}:t101_p201_4h_snapshot_000:peer-{index}",
+                )
+                for index in range(20)
+            ),
+        )
+        step = {
+            "step_kind": "LONG_CONTINUATION_SNAPSHOT",
+            "step_key": "t103_p203_4h_snapshot_000",
+            "tracking_lane": "TRACK_FAST",
+            "scheduler_job_id": 2020,
+        }
+        config = {
+            "campaign_id": CAMPAIGN_ID,
+            "campaign_run_id": CAMPAIGN_RUN_ID,
+            "standard_four_hour_campaign": True,
+            "four_token_proof": True,
+        }
+        budget = {
+            "phase_request_ceiling": 1,
+            "request_components": {"discovery": 2},
+            "request_ceiling": 3,
+        }
+        with (
+            patch.object(factory, "_load_run_config", return_value=config),
+            patch.object(
+                factory,
+                "_standard_four_hour_cumulative_budget_for_run",
+                return_value=budget,
+            ),
+            patch(
+                "printer_v1.operator_cli.four_token_proof_integration."
+                "resolve_owned_cycle_for_scheduler_job",
+                return_value=SimpleNamespace(cycle_id=CYCLE_2_ID),
+            ),
+        ):
+            factory._enforce_budgets_before_step(
+                connection,
+                RUN_ID,
+                step,
+                projected_requests=1,
+            )
+    finally:
+        connection.close()
