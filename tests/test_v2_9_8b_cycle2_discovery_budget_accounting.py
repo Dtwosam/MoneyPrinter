@@ -171,5 +171,9 @@ def test_run_budget_includes_cycle2_discovery_without_runtime_double_count(
     assert report["cumulative_lifecycle_usage"]["source_requests"] == 4
     assert report["governed_requests_run"] == 4
     assert report["scheduler_rows_total"] == 1
+    assert report["scheduler_later_cycle_discovery_jobs"] == 1
     assert report["cumulative_lifecycle_usage"]["scheduler_rows"] == 1
+    assert report["cumulative_lifecycle_usage"][
+        "later_cycle_discovery_scheduler_rows"
+    ] == 1
     conn.close()
