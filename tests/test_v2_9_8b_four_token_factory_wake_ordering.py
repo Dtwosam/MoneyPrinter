@@ -756,6 +756,7 @@ def test_real_factory_reuses_time_shifted_pair_ready_after_transient_defer(
     source_ids: dict[str, int] = {}
     supply_calls = 0
     health_calls: list[bool] = []
+    health_times: list[datetime] = []
     waits: list[float] = []
 
     def discovery(_args):
@@ -885,6 +886,7 @@ def test_real_factory_reuses_time_shifted_pair_ready_after_transient_defer(
         index = len(health_calls)
         healthy = index != 1
         health_calls.append(healthy)
+        health_times.append(clock.now())
         base = _healthy_projection()
         if healthy:
             return base
@@ -1038,7 +1040,13 @@ def test_real_factory_reuses_time_shifted_pair_ready_after_transient_defer(
     )
     assert supply_calls == 1
     assert health_calls[:4] == [True, False, True, True]
-    assert waits and waits[0] == 300.0
+    assert health_times[:4] == [
+        START,
+        START,
+        START + timedelta(seconds=300),
+        START + timedelta(seconds=300),
+    ]
+    assert sum(waits) == 300.0
 
     connection = sqlite3.connect(db)
     connection.row_factory = sqlite3.Row
