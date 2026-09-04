@@ -379,6 +379,41 @@ def _later_cycle_attempt_is_terminal(state: str | None) -> bool:
     }
 
 
+def _existing_later_cycle_pair_ready_attempt(
+    connection: sqlite3.Connection,
+    *,
+    campaign_id: str,
+    campaign_run_id: str,
+    authoritative_factory_run_id: str,
+    cycle_ordinal: int,
+) -> str | None:
+    """Return the exact unconsumed durable PAIR_READY attempt, if present."""
+    if cycle_ordinal != 2:
+        raise ValueError("later-cycle PAIR_READY lookup requires cycle ordinal 2")
+    attempt_id = (
+        f"pre-admission:{campaign_id}:{campaign_run_id}:"
+        f"{authoritative_factory_run_id}:c{cycle_ordinal:04d}"
+    )
+    row = connection.execute(
+        """SELECT attempt_state,consumed_cycle_id,consumed_at
+           FROM printer_pre_admission_discovery_attempts
+           WHERE attempt_id=?""",
+        (attempt_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    state = str(row["attempt_state"] if isinstance(row, sqlite3.Row) else row[0])
+    consumed_cycle_id = (
+        row["consumed_cycle_id"] if isinstance(row, sqlite3.Row) else row[1]
+    )
+    consumed_at = row["consumed_at"] if isinstance(row, sqlite3.Row) else row[2]
+    if state != "PAIR_READY":
+        return None
+    if consumed_cycle_id is not None or consumed_at is not None:
+        raise ValueError("PAIR_READY attempt carries consumed identity")
+    return attempt_id
+
+
 def _pair_ready_post_discovery_projection(projection: Any) -> Any:
     """Project admission health after exact Cycle-2 discovery is already frozen.
 
@@ -525,9 +560,18 @@ def _run_four_token_admission_boundary(
         FourTokenAdmissionDispositionKind,
     )
 
-    pre = project_health()
-    disposition = evaluate(pre)
     later_cycle_id = f"{first_cycle_id}-2"
+    existing_pair_ready_attempt_id = _existing_later_cycle_pair_ready_attempt(
+        connection,
+        campaign_id=str(binding.campaign_id),
+        campaign_run_id=str(binding.campaign_run_id),
+        authoritative_factory_run_id=str(binding.authoritative_factory_run_id),
+        cycle_ordinal=2,
+    )
+    pre = project_health()
+    if existing_pair_ready_attempt_id is not None:
+        pre = _pair_ready_post_discovery_projection(pre)
+    disposition = evaluate(pre)
     wait_projection = _active_later_cycle_refresh_wait(
         connection,
         campaign_id=str(binding.campaign_id),
