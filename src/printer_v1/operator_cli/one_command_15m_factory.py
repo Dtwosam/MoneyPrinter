@@ -7023,6 +7023,22 @@ def _later_cycle_discovery_request_ids(
     }
 
 
+
+def _later_cycle_discovery_scheduler_job_ids(
+    conn: sqlite3.Connection, run_id: str
+) -> set[int]:
+    """Return exact pre-admission Scheduler jobs owned by this factory run."""
+    return {
+        int(row[0])
+        for row in conn.execute(
+            """SELECT DISTINCT scheduler_job_id
+               FROM printer_pre_admission_discovery_attempts
+               WHERE authoritative_factory_run_id=?
+                 AND scheduler_job_id IS NOT NULL""",
+            (str(run_id),),
+        ).fetchall()
+    }
+
 def _run_request_count_for_step_ids(
     conn: sqlite3.Connection,
     run_id: str,
@@ -7839,10 +7855,12 @@ def _run_budgets(
 ) -> dict[str, Any]:
     config = _load_run_config(conn, run_id)
     continuous = bool(config.get("continuous_first_hour"))
-    handoffs = sum(
-        1 for item in discovery.get("discovery_results", [])
+    handoff_job_ids = {
+        int(item["scheduler_job_id"])
+        for item in discovery.get("discovery_results", [])
         if item.get("scheduler_job_id") is not None
-    )
+    }
+    handoffs = len(handoff_job_ids)
     discovery_requests = int(
         discovery.get("source_budget_report", {}).get(
             "source_requests_attempted", discovery.get("source_request_delta", 0)
@@ -7851,8 +7869,12 @@ def _run_budgets(
     runtime_request_ids = _run_request_ids(conn, run_id)
     runtime_requests = len(runtime_request_ids)
     later_cycle_discovery_requests = 0
+    later_cycle_discovery_scheduler_job_ids: set[int] = set()
     if bool(config.get("four_token_proof")):
         later_cycle_request_ids = _later_cycle_discovery_request_ids(conn, run_id)
+        later_cycle_discovery_scheduler_job_ids = (
+            _later_cycle_discovery_scheduler_job_ids(conn, run_id)
+        )
         # Some governed pre-admission evidence may intentionally share the
         # factory-run request namespace. Count each Source Governor request once.
         later_cycle_discovery_requests = len(
@@ -7864,13 +7886,21 @@ def _run_budgets(
         "WHERE source_name='solana_rpc' AND request_key LIKE ?",
         (f"{run_id}:%",),
     ).fetchone()[0])
-    all_step_jobs = int(conn.execute(
-        "SELECT COUNT(DISTINCT scheduler_job_id) "
-        "FROM printer_memory_factory_run_steps "
-        "WHERE run_id=? AND scheduler_job_id IS NOT NULL",
-        (run_id,),
-    ).fetchone()[0])
-    cumulative_scheduler_rows = all_step_jobs + handoffs
+    all_step_job_ids = {
+        int(row[0])
+        for row in conn.execute(
+            "SELECT DISTINCT scheduler_job_id "
+            "FROM printer_memory_factory_run_steps "
+            "WHERE run_id=? AND scheduler_job_id IS NOT NULL",
+            (run_id,),
+        ).fetchall()
+    }
+    all_step_jobs = len(all_step_job_ids)
+    cumulative_scheduler_rows = len(
+        all_step_job_ids
+        | handoff_job_ids
+        | later_cycle_discovery_scheduler_job_ids
+    )
 
     if config.get("continuous_four_hour"):
         from printer_v1.operator_cli.one_token_4h_runtime import (
@@ -8015,6 +8045,9 @@ def _run_budgets(
                     "scheduler_rows_within_ceiling": None,
                     "discovery_source_requests": discovery_requests,
                     "later_cycle_discovery_source_requests": later_cycle_discovery_requests,
+                    "later_cycle_discovery_scheduler_rows": len(
+                        later_cycle_discovery_scheduler_job_ids
+                    ),
                     "runtime_source_requests": runtime_requests,
                     "budget_verdict": None,
                     "within_ceiling": None,
@@ -8029,6 +8062,9 @@ def _run_budgets(
                 "holder_rpc_fallbacks_ceiling": None,
                 "scheduler_run_step_jobs": all_step_jobs,
                 "scheduler_cancelled_discovery_handoffs": handoffs,
+                "scheduler_later_cycle_discovery_jobs": len(
+                    later_cycle_discovery_scheduler_job_ids
+                ),
                 "scheduler_rows_total": cumulative_scheduler_rows,
                 "scheduler_rows_ceiling": None,
                 "scheduler_rows_within_ceiling": None,
@@ -8088,6 +8124,9 @@ def _run_budgets(
             "scheduler_rows_within_ceiling": cumulative_jobs_ok,
             "discovery_source_requests": discovery_requests,
             "later_cycle_discovery_source_requests": later_cycle_discovery_requests,
+            "later_cycle_discovery_scheduler_rows": len(
+                later_cycle_discovery_scheduler_job_ids
+            ),
             "runtime_source_requests": runtime_requests,
             "request_components": cumulative["request_components"],
             "scheduler_components": cumulative["scheduler_components"],
@@ -8147,6 +8186,9 @@ def _run_budgets(
             ),
             "scheduler_run_step_jobs": all_step_jobs,
             "scheduler_cancelled_discovery_handoffs": handoffs,
+                "scheduler_later_cycle_discovery_jobs": len(
+                    later_cycle_discovery_scheduler_job_ids
+                ),
             "scheduler_rows_total": cumulative_scheduler_rows,
             "scheduler_rows_ceiling": int(cumulative["scheduler_ceiling"]),
             "scheduler_rows_within_ceiling": cumulative_jobs_ok,
@@ -8196,6 +8238,9 @@ def _run_budgets(
         ),
         "scheduler_run_step_jobs": _run_step_job_count(conn, run_id),
         "scheduler_cancelled_discovery_handoffs": handoffs,
+                "scheduler_later_cycle_discovery_jobs": len(
+                    later_cycle_discovery_scheduler_job_ids
+                ),
         "scheduler_rows_total": _run_step_job_count(conn, run_id) + handoffs,
         "scheduler_rows_ceiling": scheduler_ceiling,
         "scheduler_rows_within_ceiling": (
