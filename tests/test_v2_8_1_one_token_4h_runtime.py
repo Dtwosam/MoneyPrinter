@@ -1,4 +1,9 @@
-"""V2-8.1 deterministic one-token 1h-to-4h runtime verification."""
+"""V2-8.1 deterministic one-token 1h-to-4h runtime verification.
+
+WINDOW_4H is now operationally enabled only through the approved Standard-4H
+authority.  These tests retain explicit proof-mode entry where appropriate and
+seed canonical campaign-slot cadence authority for production-quality gates.
+"""
 
 from __future__ import annotations
 
@@ -92,6 +97,120 @@ class OneToken4hRuntimeTests(unittest.TestCase):
             (token_id, pair_id, at.isoformat(), lane),
         ).lastrowid)
 
+    def _bind_campaign_cadence_authority(
+        self,
+        *,
+        run_id: str,
+        token_id: int,
+        pair_id: int,
+        lane: str,
+        memory_window_id: int,
+    ) -> None:
+        """Seed the exact Lane-Q cadence authority graph for this proof window."""
+        stamp = T0.isoformat()
+        campaign_id = f"campaign-{run_id}"
+        campaign_run_id = f"campaign-run-{run_id}"
+        cycle_id = f"cycle-{run_id}"
+        slot_id = f"slot-{run_id}"
+        campaign_window_id = f"campaign-window-{run_id}-4h"
+        queue_id = int(
+            self.conn.execute(
+                """
+                INSERT INTO printer_tracking_queue(
+                    token_id,pair_id,tracking_lane,tracking_action,priority_reason,
+                    queue_status,source_status,data_quality_label
+                ) VALUES (?,?,?,'TRACK','proof-cadence-authority','ACTIVE',
+                          'COMPLETE','CLEAN_DATA')
+                """,
+                (token_id, pair_id, lane),
+            ).lastrowid
+        )
+        self.conn.execute(
+            """
+            INSERT INTO printer_memory_factory_campaigns(
+                campaign_id,campaign_state,db_mode,db_target_identity,
+                proof_source_db_identity,policy_version,created_at,updated_at
+            ) VALUES (?,'RUNNING','PROOF_ISOLATED',?,?,?, ?,?)
+            """,
+            (
+                campaign_id,
+                f"proof:{run_id}",
+                f"source:{run_id}",
+                "v2-8.1-proof",
+                stamp,
+                stamp,
+            ),
+        )
+        self.conn.execute(
+            """
+            INSERT INTO printer_memory_factory_campaign_runs(
+                run_id,campaign_id,run_ordinal,run_state,authoritative_run_id,
+                created_at,updated_at
+            ) VALUES (?,?,1,'RUNNING',?,?,?)
+            """,
+            (campaign_run_id, campaign_id, run_id, stamp, stamp),
+        )
+        self.conn.execute(
+            """
+            INSERT INTO printer_memory_factory_campaign_cycles(
+                cycle_id,campaign_id,run_id,cycle_ordinal,cycle_state,
+                created_at,updated_at
+            ) VALUES (?,?,?,1,'TRACKING',?,?)
+            """,
+            (cycle_id, campaign_id, campaign_run_id, stamp, stamp),
+        )
+        self.conn.execute(
+            """
+            INSERT INTO printer_memory_factory_campaign_token_slots(
+                token_slot_id,campaign_id,run_id,cycle_id,slot_ordinal,
+                token_identity,token_row_id,mint_identity,pair_identity,
+                pair_row_id,lifecycle_identity,tracking_queue_id,token_state,
+                created_at,updated_at
+            ) VALUES (?,?,?,?,1,?,?,?,?,?,?,?,'WINDOW_4H_CONTINUING',?,?)
+            """,
+            (
+                slot_id,
+                campaign_id,
+                campaign_run_id,
+                cycle_id,
+                f"solana-mainnet:{MINT}",
+                token_id,
+                MINT,
+                PAIR,
+                pair_id,
+                "PUMPSWAP_GRADUATED_CONFIRMED",
+                queue_id,
+                stamp,
+                stamp,
+            ),
+        )
+        self.conn.execute(
+            """
+            INSERT INTO printer_memory_factory_campaign_windows(
+                window_id,campaign_id,run_id,cycle_id,token_slot_id,
+                token_row_id,pair_row_id,window_kind,window_state,
+                root_15m_lifecycle_identity,memory_window_row_id,
+                checkpoint_cutoff,support_only,created_at,updated_at
+            ) VALUES (?,?,?,?,?,?,?,'WINDOW_4H','CLOSE_PENDING',?,?,?,0,?,?)
+            """,
+            (
+                campaign_window_id,
+                campaign_id,
+                campaign_run_id,
+                cycle_id,
+                slot_id,
+                token_id,
+                pair_id,
+                "PUMPSWAP_GRADUATED_CONFIRMED",
+                memory_window_id,
+                (T0 + timedelta(seconds=10800)).isoformat(),
+                stamp,
+                stamp,
+            ),
+        )
+        self.conn.commit()
+
+
     def test_budget_and_plans_are_exact_and_real_collection_is_explicit(self) -> None:
         for lane, expected, interval, requests, scheduler in (
             ("TRACK_FAST", 61, 180, 69, 64),
@@ -103,7 +222,7 @@ class OneToken4hRuntimeTests(unittest.TestCase):
                 self.assertEqual(budget["snapshot_interval_seconds"], interval)
                 self.assertEqual(budget["full_run_request_ceiling"], requests)
                 self.assertEqual(budget["full_run_scheduler_ceiling"], scheduler)
-                self.assertFalse(budget["enabled_for_real_collection"])
+                self.assertTrue(budget["enabled_for_real_collection"])
 
     def test_current_run_plan_is_exact_fixed_and_replay_safe(self) -> None:
         run_id, token_id, pair_id, predecessor_id, _ = self._foundation()
@@ -267,7 +386,13 @@ class OneToken4hRuntimeTests(unittest.TestCase):
             "UPDATE printer_memory_windows SET supporting_context_json=? WHERE id=?",
             (json.dumps(context, sort_keys=True), result["window_id"]),
         )
-        self.conn.commit()
+        self._bind_campaign_cadence_authority(
+            run_id=run_id,
+            token_id=token_id,
+            pair_id=pair_id,
+            lane="TRACK_FAST",
+            memory_window_id=int(result["window_id"]),
+        )
         outcome_owner = getattr(factory, "_derive_and_persist_four_hour_outcome", None)
         self.assertIsNotNone(
             outcome_owner,
