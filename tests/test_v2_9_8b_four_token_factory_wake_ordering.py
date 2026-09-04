@@ -753,6 +753,13 @@ def test_real_factory_reuses_time_shifted_pair_ready_after_transient_defer(
             self.instant += timedelta(seconds=float(seconds))
 
     clock = Clock()
+
+    class ClockDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            value = clock.now()
+            return value if tz is None else value.astimezone(tz)
+
     source_ids: dict[str, int] = {}
     supply_calls = 0
     health_calls: list[bool] = []
@@ -960,27 +967,88 @@ def test_real_factory_reuses_time_shifted_pair_ready_after_transient_defer(
             },
         )
 
+    context_factories = {
+        "coingecko": lambda **_kwargs: build_fixture_source_adapter(
+            "coingecko",
+            fixture_payload={
+                "captured_at": clock.now().isoformat(),
+                "assets": {
+                    "bitcoin": {"price_usd": 65_000, "change_24h": 2.5},
+                    "ethereum": {"price_usd": 3_500, "change_24h": 1.5},
+                    "solana": {
+                        "price_usd": 150,
+                        "change_24h": 4.0,
+                        "volume_24h": 2_000_000_000,
+                    },
+                },
+            },
+        ),
+        "goplus": lambda **kwargs: build_fixture_source_adapter(
+            "goplus",
+            fixture_payload={
+                "token_mint": kwargs.get("token_mint"),
+                "mint_authority": None,
+                "freeze_authority": None,
+                "metadata_mutable": False,
+                "total_supply": "1000000000",
+                "top_10_holders": [{"percent": "3"} for _ in range(10)],
+                "lp_info": [{"locked": True}],
+                "risk_flags": [],
+            },
+        ),
+        "jupiter_quote": lambda **kwargs: build_fixture_source_adapter(
+            "jupiter_quote",
+            fixture_payload={
+                "route_available": True,
+                "route_plan_present": True,
+                "slippage_bps": 50,
+                "price_impact_bps": 5,
+                "freshness_label": "QUOTE_FRESH",
+                "target_status": "TARGET_MATCH",
+                "paper_only_context": True,
+                "liquidity_context_label": "LIQUIDITY_CONTEXT_ACCEPTABLE",
+                "input_mint": kwargs["input_mint"],
+                "output_mint": kwargs["output_mint"],
+            },
+        ),
+    }
+
     def sleep(seconds):
         waits.append(float(seconds))
         clock.sleep(seconds)
 
     cycle2_id = f"{CYCLE_ID}-2"
 
-    def stop_after_cycle2_opening():
+    def stop_after_cycle2_handoff():
         connection = sqlite3.connect(db)
         try:
-            complete = int(connection.execute(
-                "SELECT COUNT(*) FROM printer_memory_factory_run_steps "
-                "WHERE run_id=? AND step_key IN "
-                "('t1_c0002_snapshot_00','t2_c0002_snapshot_00') "
-                "AND step_status='SUCCEEDED'",
-                (FACTORY_RUN_ID,),
+            terminal_closes = int(connection.execute(
+                "SELECT COUNT(*) FROM printer_memory_factory_run_steps AS s "
+                "JOIN printer_memory_factory_campaign_scheduler_work AS w "
+                "ON w.scheduler_job_id=s.scheduler_job_id "
+                "AND w.ownership_contract_version='V2_STAGE_SCOPED' "
+                "AND w.work_scope='WINDOW_LIFECYCLE' "
+                "WHERE s.run_id=? AND w.cycle_id=? "
+                "AND s.step_kind IN ('WINDOW_CLOSE','WINDOW_CLOSE_AUDIT') "
+                "AND s.step_status='SUCCEEDED' AND s.memory_window_id IS NOT NULL",
+                (FACTORY_RUN_ID, cycle2_id),
+            ).fetchone()[0])
+            decision_objects = int(connection.execute(
+                "SELECT COUNT(*) FROM printer_memory_factory_campaign_objects "
+                "WHERE campaign_id=? AND run_id=? AND cycle_id=? "
+                "AND object_kind='CONTINUATION_4A'",
+                (CAMPAIGN_ID, CAMPAIGN_RUN_ID, cycle2_id),
             ).fetchone()[0])
         finally:
             connection.close()
-        return "FOCUSED_CYCLE2_OPENED" if complete == 2 else None
+        return (
+            "FOCUSED_CYCLE2_15M_HANDOFF"
+            if terminal_closes == 2 and decision_objects == 2
+            else None
+        )
 
     monkeypatch.setattr(factory, "_now", clock.now)
+    monkeypatch.setattr(source_contracts, "datetime", ClockDateTime)
     monkeypatch.setattr(factory, "_plan_opening_jobs", plan_opening)
     monkeypatch.setattr(
         four_token_adapter,
@@ -1030,12 +1098,13 @@ def test_real_factory_reuses_time_shifted_pair_ready_after_transient_defer(
         source_governor_owner=OwnerPort(SOURCE_GOVERNOR_OWNER, True),
         central_scheduler_owner=OwnerPort(CENTRAL_SCHEDULER_OWNER, True),
         snapshot_adapter_factory=snapshot_factory,
+        context_adapter_factories=context_factories,
         _sleep=sleep,
         _monotonic=clock.monotonic,
-        cancellation_probe=stop_after_cycle2_opening,
+        cancellation_probe=stop_after_cycle2_handoff,
     )
 
-    assert report["stop_reason"] == "FOCUSED_CYCLE2_OPENED", json.dumps(
+    assert report["stop_reason"] == "FOCUSED_CYCLE2_15M_HANDOFF", json.dumps(
         report, sort_keys=True, default=str
     )
     assert supply_calls == 1
@@ -1093,4 +1162,36 @@ def test_real_factory_reuses_time_shifted_pair_ready_after_transient_defer(
         "AND work_scope='WINDOW_LIFECYCLE'",
         (cycle2_id,),
     ).fetchone()[0]) >= 2
+    terminal_cycle2_closes = connection.execute(
+        "SELECT s.step_key,s.step_status,s.memory_window_id "
+        "FROM printer_memory_factory_run_steps AS s "
+        "JOIN printer_memory_factory_campaign_scheduler_work AS w "
+        "ON w.scheduler_job_id=s.scheduler_job_id "
+        "AND w.ownership_contract_version='V2_STAGE_SCOPED' "
+        "AND w.work_scope='WINDOW_LIFECYCLE' "
+        "WHERE s.run_id=? AND w.cycle_id=? "
+        "AND s.step_kind IN ('WINDOW_CLOSE','WINDOW_CLOSE_AUDIT') "
+        "AND s.step_status='SUCCEEDED' ORDER BY s.step_key",
+        (FACTORY_RUN_ID, cycle2_id),
+    ).fetchall()
+    assert len(terminal_cycle2_closes) == 2
+    assert all(row[2] is not None for row in terminal_cycle2_closes)
+    cycle2_objects = connection.execute(
+        "SELECT cycle_id,token_slot_id,object_kind FROM "
+        "printer_memory_factory_campaign_objects "
+        "WHERE campaign_id=? AND run_id=? AND object_kind='CONTINUATION_4A' "
+        "ORDER BY cycle_id,token_slot_id",
+        (CAMPAIGN_ID, CAMPAIGN_RUN_ID),
+    ).fetchall()
+    assert len(cycle2_objects) == 2
+    assert {str(row[0]) for row in cycle2_objects} == {cycle2_id}
+    assert {str(row[2]) for row in cycle2_objects} == {"CONTINUATION_4A"}
+    assert int(connection.execute(
+        "SELECT COUNT(*) FROM printer_memory_factory_campaign_windows "
+        "WHERE campaign_id=? AND run_id=? AND cycle_id=? "
+        "AND window_kind='WINDOW_15M' "
+        "AND memory_window_row_id IS NOT NULL "
+        "AND window_state IN ('CLEAN_PROMOTED','DIRTY','NO_PROMOTION','BLOCKED')",
+        (CAMPAIGN_ID, CAMPAIGN_RUN_ID, cycle2_id),
+    ).fetchone()[0]) == 2
     connection.close()
