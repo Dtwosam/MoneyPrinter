@@ -7220,19 +7220,144 @@ def _standard_four_hour_cumulative_budget_for_run(
 def _standard_four_hour_reporting_budget_for_run(
     conn: sqlite3.Connection, run_id: str,
 ) -> dict[str, Any]:
-    """Resolve reporting from the same exact standard subset owner as execution."""
+    """Resolve exact standard-budget reporting for every admitted cycle.
+
+    Execution budgets are cycle-local in a four-token campaign, while the final
+    factory report is run-wide. Aggregate the same exact per-cycle budget owner
+    here so peer-cycle work is neither charged to Cycle 1 nor omitted.
+    """
+    config = _load_run_config(conn, run_id)
+    if not bool(config.get("four_token_proof")):
+        try:
+            budget = _standard_four_hour_cumulative_budget_for_run(conn, run_id)
+        except ValueError as exc:
+            return {
+                "available": False,
+                "reason": str(exc),
+                "budget": None,
+            }
+        return {
+            "available": True,
+            "reason": None,
+            "budget": budget,
+        }
+
+    campaign_id = str(config.get("campaign_id") or "").strip()
+    campaign_run_id = str(config.get("campaign_run_id") or "").strip()
+    if not campaign_id or not campaign_run_id:
+        return {
+            "available": False,
+            "reason": "four-token standard reporting budget identity is incomplete",
+            "budget": None,
+        }
+    cycle_rows = conn.execute(
+        """SELECT cycle_id
+           FROM printer_memory_factory_campaign_cycles
+           WHERE campaign_id=? AND run_id=?
+           ORDER BY cycle_ordinal,cycle_id""",
+        (campaign_id, campaign_run_id),
+    ).fetchall()
+    cycle_ids = [str(row[0]) for row in cycle_rows]
+    if not cycle_ids:
+        return {
+            "available": False,
+            "reason": "four-token standard reporting budget has no admitted cycles",
+            "budget": None,
+        }
+
+    per_cycle: dict[str, dict[str, Any]] = {}
     try:
-        budget = _standard_four_hour_cumulative_budget_for_run(conn, run_id)
+        for cycle_id in cycle_ids:
+            per_cycle[cycle_id] = _standard_four_hour_cumulative_budget_for_run(
+                conn, run_id, cycle_id=cycle_id
+            )
     except ValueError as exc:
         return {
             "available": False,
             "reason": str(exc),
             "budget": None,
         }
+
+    if len(per_cycle) == 1:
+        return {
+            "available": True,
+            "reason": None,
+            "budget": next(iter(per_cycle.values())),
+        }
+
+    def _sum_components(key: str) -> dict[str, int]:
+        totals: dict[str, int] = {}
+        for cycle_budget in per_cycle.values():
+            components = cycle_budget.get(key)
+            if not isinstance(components, Mapping):
+                raise ValueError(
+                    f"standard four-hour reporting budget {key} is malformed"
+                )
+            for component, value in components.items():
+                totals[str(component)] = totals.get(str(component), 0) + int(value)
+        return totals
+
+    try:
+        request_components = _sum_components("request_components")
+        scheduler_components = _sum_components("scheduler_components")
+    except (TypeError, ValueError) as exc:
+        return {
+            "available": False,
+            "reason": str(exc),
+            "budget": None,
+        }
+
+    continuation_count = sum(
+        int(budget.get("continuation_count", 0) or 0)
+        for budget in per_cycle.values()
+    )
+    tracking_lanes = tuple(
+        str(lane)
+        for budget in per_cycle.values()
+        for lane in budget.get("tracking_lanes", ())
+    )
+    continuing_mask = tuple(
+        bool(flag)
+        for budget in per_cycle.values()
+        for flag in budget.get("continuing_mask", ())
+    )
+    aggregate = {
+        "cycle_count": len(cycle_ids),
+        "cycle_ids": cycle_ids,
+        "per_cycle": per_cycle,
+        "tracking_lanes": tracking_lanes,
+        "continuing_mask": continuing_mask,
+        "continuation_count": continuation_count,
+        "phase_request_ceiling": sum(
+            int(budget["phase_request_ceiling"]) for budget in per_cycle.values()
+        ),
+        "phase_scheduler_ceiling": sum(
+            int(budget["phase_scheduler_ceiling"]) for budget in per_cycle.values()
+        ),
+        "phase_holder_fallback_ceiling": sum(
+            int(budget["phase_holder_fallback_ceiling"])
+            for budget in per_cycle.values()
+        ),
+        "request_components": request_components,
+        "request_ceiling": sum(
+            int(budget["request_ceiling"]) for budget in per_cycle.values()
+        ),
+        "scheduler_components": scheduler_components,
+        "scheduler_ceiling": sum(
+            int(budget["scheduler_ceiling"]) for budget in per_cycle.values()
+        ),
+        "automatic_retries": 0,
+        "endpoint_rotation": False,
+        "real_collection_enabled": bool(continuation_count) and all(
+            bool(budget.get("real_collection_enabled"))
+            or int(budget.get("continuation_count", 0) or 0) == 0
+            for budget in per_cycle.values()
+        ),
+    }
     return {
         "available": True,
         "reason": None,
-        "budget": budget,
+        "budget": aggregate,
     }
 
 
