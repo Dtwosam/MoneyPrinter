@@ -2,38 +2,70 @@
 
 ## Current HEAD
 
-Use `git rev-parse HEAD`. This file is committed with engineering changes, so
-the repository is the authoritative current commit.
+Use `git rev-parse HEAD`. This handoff is committed with the verified
+engineering change, so the containing repository commit is the authoritative
+current identity. The repair review was verified from
+`fa2c6cf5a0adfd86e6349966e6ecb283c3395819`.
 
 ## Authoritative DB
 
 `data/printer_v1.sqlite3`
 
-SHA-256: `9ac31309c4f7a6233bc9f5d77944f88cd15a16a1659f98db665524f18dcb7a23`
+SHA-256: `3b88aa9a0ffb8c4f8beca09b78d7e56c5f1bd1a51706f280c3f3a145771af7fe`
+
+Verified read-only state: size `167223296`, inode `1230526`, mtime_ns
+`1788530617119879531`; `PRAGMA integrity_check=ok`; zero FK violations; 62
+migrations through `062_pre_admission_attempt_evidence.sql`; no SQLite
+sidecars; and every required active-work, supervision, lease, refresh-wait,
+and Scheduler domain is zero.
+
+## DB identity reconciliation
+
+The prior handoff SHA
+`9ac31309c4f7a6233bc9f5d77944f88cd15a16a1659f98db665524f18dcb7a23` was the
+pre-state of consumed one-shot application
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260904T104053Z_9463ab6e`. That run wrote its
+durable campaign history and terminated at source-request reconciliation,
+leaving the proven intermediate SHA
+`bfb7eb12db3107cdec5f47c80745da103cca3800c320954c3936ccde6f85e603`.
+
+That intermediate SHA is the exact pre-campaign backup and bound DB identity
+for consumed one-shot application
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260904T125630Z_001904ef`, whose campaign
+`20260904T130245Z-34072c98e685-campaign` terminalized at its bounded safe
+stop. It produced the current SHA. Both application markers record one use;
+no retry, restart, resume, successor, or authorization reuse occurred.
+Cleanup and lease release terminalized, migrations did not change, and
+financial/retrieval capability tables did not change. The identity difference
+is therefore expected, fully accounted durable history, not DB drift.
 
 ## Current working capability
 
-The bounded Solana-only, paper-only memory-factory path preserves governed
+The bounded Solana-only, paper-only memory-factory path retains governed
 source acquisition, strict measured-transport accounting, clean-memory gates,
-and the 4/2/2 Standard-4H capability locks. Operational execution remains
-separately protected by code/preflight, exact HEAD/DB binding, one-shot
-authorization, zero-active-work checks, and explicit operator approval.
+and the 4/2/2 Standard-4H capability locks. `WINDOW_5M_MICRO_EVENT` remains
+support-only; `WINDOW_12H` and `WINDOW_24H` remain locked. Retrieval,
+financial, position, and trading capability remain locked.
 
 ## Latest meaningful result
 
-The initial Cycle-1 Pump refresh owner now propagates the canonical typed
-campaign request root. Its focused disposable-SQLite regression proves an
-already-completed Pump `before=HEAD` transport is seen before a second governed
-request can be made.
+The repair review confirms token-local Standard-4H eligibility budgets,
+cycle-scoped request accounting, canonical Pump refresh-root propagation,
+later-cycle replay, and terminal accounting retain their owner boundaries and
+fail-closed evidence semantics. The legacy V2.4 compressed-time test now
+asserts the current contract: impossible pre-close timing is
+`TIMELY_ACQUISITION_NOT_PRODUCIBLE`, creates no context evidence, and cannot
+create clean memory or financial/retrieval effects.
 
 ## Known blocker
 
-No proven code blocker is open. The next operational execution, if ever
-requested, still requires the existing exact preflight and explicit operator
-approval; no authorization is implied here.
+No active orphan or proven code defect is open. Retained terminal campaign
+history is evidence, not a live blocker. No authorization is implied by this
+handoff.
 
-## Next useful action
+## Next permitted action
 
-Perform an actual independent diff/proof review of the latest Pump root repair,
-or select the smallest proven capability blocker. Normal work follows:
-`understand -> build/fix -> focused verification -> actual code review -> done`.
+A new task may independently review the committed local diff or select a
+separately proven development repair. Any operational execution remains
+separately subject to exact preflight, explicit operator approval, and its own
+one-shot authorization; this handoff neither prepares nor consumes one.

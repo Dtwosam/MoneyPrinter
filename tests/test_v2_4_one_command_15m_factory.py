@@ -203,6 +203,21 @@ class OneCommand15mFactoryTests(unittest.TestCase):
         options.update(overrides)
         return run_one_command_15m_factory(self.db, self.backup, **options), calls
 
+    def _assert_unproducible_close_context(self, close_result):
+        collection = close_result["governed_context_collection"]
+        self.assertEqual(collection["source_request_budget"], 0)
+        self.assertEqual(collection["source_requests_attempted"], 0)
+        self.assertEqual(close_result["governed_context_persistence"], {})
+        self.assertTrue(collection["unit_results"])
+        self.assertTrue(all(
+            item["state"] == "CANCELLED_BEFORE_ATTEMPT"
+            and item["terminal_reason"] == "TIMELY_ACQUISITION_NOT_PRODUCIBLE"
+            for item in collection["unit_results"]
+        ))
+        shared = close_result["context_quality"]["shared_context_evidence"]
+        self.assertFalse(shared["clean_memory_context_ready"])
+        return collection, shared
+
     def test_rejects_unsupported_window_and_persistent_mode(self):
         result = run_one_command_15m_factory(
             self.db, self.backup, operator_approved=True, proof_mode=True,
@@ -225,12 +240,16 @@ class OneCommand15mFactoryTests(unittest.TestCase):
         result, calls = self._run()
         self.assertEqual(result["run_status"], "COMPLETED")
         self.assertEqual(result["running_jobs_after_stop"], 0)
-        # V2-6.1a authoritative cadence: 15m FAST = 16 snapshots + 5 context = 21.
+        # The compressed fixture cannot make the required pre-close lead time,
+        # so only the 16 snapshot requests are governed and context is skipped.
         self.assertEqual(len(calls), 16)
-        self.assertEqual(result["table_deltas"]["printer_source_requests"], 21)
+        self.assertEqual(result["table_deltas"]["printer_source_requests"], 16)
         self.assertEqual(result["table_deltas"]["printer_token_snapshots"], 16)
         self.assertEqual(len(result["selected_tokens"]), 1)
-        self.assertTrue(all(step["step_status"] == "SUCCEEDED" for step in result["steps"]))
+        self.assertTrue(all(
+            step["step_status"] in {"SUCCEEDED", "SKIPPED"}
+            for step in result["steps"]
+        ))
         close_phases = [
             step for step in result["steps"]
             if str(step["step_kind"]).startswith("WINDOW_CLOSE_")
@@ -238,23 +257,26 @@ class OneCommand15mFactoryTests(unittest.TestCase):
         self.assertEqual(
             [step["step_kind"] for step in close_phases],
             [
+                "WINDOW_CLOSE_PRE_CLOSE_CRITICAL",
                 "WINDOW_CLOSE_EVIDENCE",
                 "WINDOW_CLOSE_CONTEXT",
                 "WINDOW_CLOSE_AUDIT",
             ],
         )
-        self.assertIsNotNone(close_phases[0]["snapshot_id"])
-        self.assertIsNone(close_phases[1]["snapshot_id"])
+        self.assertEqual(close_phases[0]["step_status"], "SKIPPED")
+        self.assertIsNotNone(close_phases[1]["snapshot_id"])
         self.assertIsNone(close_phases[2]["snapshot_id"])
-        self.assertIsNotNone(close_phases[2]["memory_window_id"])
-        evidence_result = json.loads(close_phases[0]["result_json"])
-        audit_result = json.loads(close_phases[2]["result_json"])
+        self.assertIsNone(close_phases[3]["snapshot_id"])
+        self.assertIsNotNone(close_phases[3]["memory_window_id"])
+        evidence_result = json.loads(close_phases[1]["result_json"])
+        audit_result = json.loads(close_phases[3]["result_json"])
+        self._assert_unproducible_close_context(audit_result)
         self.assertEqual(
             audit_result["evidence_captured_at"],
             evidence_result["evidence_captured_at"],
         )
         self.assertEqual(
-            len({int(step["scheduler_job_id"]) for step in close_phases}), 3
+            len({int(step["scheduler_job_id"]) for step in close_phases}), 4
         )
         self.assertTrue(
             all(step["started_at"] and step["finished_at"] for step in close_phases)
@@ -297,7 +319,17 @@ class OneCommand15mFactoryTests(unittest.TestCase):
         token = lifecycle["tokens"][0]
         self.assertEqual(len(token["window_15m"]["snapshots"]), 16)
         self.assertEqual(len(token["continuation_1h"]["snapshots"]), 24)
-        self.assertEqual(token["continuation_1h"]["step_status"], "SUCCEEDED")
+        self.assertEqual(token["continuation_1h"]["step_status"], "FAILED")
+        continuation_close = next(
+            step for step in result["steps"]
+            if step["step_kind"] == "CONTINUATION_CLOSE_AUDIT"
+        )
+        continuation_result = json.loads(continuation_close["result_json"])
+        self.assertTrue(
+            continuation_result["blocked_reason"].startswith(
+                "closing_snapshot_precedes_fixed_deadline"
+            )
+        )
         self.assertEqual(token["continuity"]["continuity_status"], "CONTINUITY_BLOCKED")
         self.assertFalse(token["continuity"]["can_be_quality_memory"])
         self.assertEqual(result["table_deltas"]["printer_paper_decisions"], 0)
@@ -476,7 +508,7 @@ class OneCommand15mFactoryTests(unittest.TestCase):
         self.assertEqual(close_result["window_audit"]["e2q_status"], "E2Q_AUDIT_DIRTY")
         self.assertFalse(quality["clean_promotion_candidate"])
 
-    def test_governed_close_context_reaches_exact_target_and_side_aware_flow(self):
+    def test_compressed_close_does_not_fabricate_governed_context(self):
         with patch("printer_v1.context_evidence.window_15m.WINDOW_SECONDS", 0):
             result, _calls = self._run(
                 context_adapter_factories=self._clean_context_factories()
@@ -486,62 +518,16 @@ class OneCommand15mFactoryTests(unittest.TestCase):
             if step["step_kind"] == "WINDOW_CLOSE_AUDIT"
         )
         close_result = json.loads(close["result_json"])
-        collection = close_result["governed_context_collection"]
-        self.assertEqual(collection["source_request_budget"], 5)
-        self.assertEqual(collection["source_requests_attempted"], 4)
+        _collection, shared = self._assert_unproducible_close_context(close_result)
         self.assertEqual(result["config"]["context_source_request_budget"], 5)
-        self.assertTrue(all(
-            item["source_response_id"] is not None
-            for item in collection["items"].values()
-        ))
-        persisted = close_result["governed_context_persistence"]
-        self.assertIsNotNone(persisted["market_regime_row_id"])
-        self.assertIsNotNone(persisted["chain_heat_row_id"])
-        self.assertTrue(persisted["safety"]["inserted"])
-        self.assertIsNotNone(persisted["safety_composite"]["composite_id"])
-        self.assertEqual(
-            persisted["safety_composite"]["safety_contract_label"],
-            "SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY",
+        self.assertIn(
+            "CLOSING_SAFETY_EVIDENCE_ABSENT_FOR_EXACT_SNAPSHOT",
+            shared["blockers"],
         )
-        self.assertTrue(persisted["entry_quote"]["inserted"])
-        self.assertTrue(persisted["exit_quote"]["inserted"])
-
-        shared = close_result["context_quality"]["shared_context_evidence"]
-        self.assertEqual(
-            shared["snapshot_end_id"], close_result["closing_snapshot_id"]
-        )
-        self.assertEqual(shared["sections"]["market_regime"]["status"], "READY")
-        self.assertEqual(shared["sections"]["solana_chain_heat"]["status"], "READY")
-        self.assertEqual(shared["sections"]["safety_rug"]["status"], "READY")
-        self.assertEqual(
-            shared["sections"]["safety_rug"]["labels"]["safety_status_label"],
-            "SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY",
-        )
-        self.assertEqual(
-            shared["sections"]["safety_rug"]["labels"][
-                "effective_safety_context_result"
-            ],
-            "SAFETY_CONTEXT_ACCEPTABLE",
-        )
-        self.assertEqual(
-            shared["sections"]["safety_rug"]["effective_context"]["window_kind"],
-            "WINDOW_15M",
-        )
-        self.assertEqual(
-            close_result["context_quality"]["context_labels"]["safety_status_label"],
-            "SAFETY_ACCEPTABLE_FOR_15M_MEMORY_ONLY",
-        )
-        self.assertEqual(
-            shared["sections"]["liquidity_exit_realism"]["status"], "READY"
-        )
-        flow = shared["sections"]["trading_flow"]
-        self.assertEqual(flow["status"], "READY")
-        self.assertNotEqual(flow["labels"]["flow_direction_label"], "FLOW_UNKNOWN")
-        self.assertNotEqual(flow["labels"]["flow_pressure_label"], "PRESSURE_UNKNOWN")
         self.assertEqual(result["running_jobs_after_stop"], 0)
         self.assertTrue(all(value == 0 for value in result["forbidden_deltas"].values()))
 
-    def test_missing_goplus_holders_use_governed_rpc_fallback(self):
+    def test_compressed_close_does_not_start_holder_fallback(self):
         factories = self._clean_context_factories()
         factories["goplus"] = lambda **_kwargs: build_fixture_source_adapter(
             "goplus",
@@ -568,23 +554,16 @@ class OneCommand15mFactoryTests(unittest.TestCase):
             if step["step_kind"] == "WINDOW_CLOSE_AUDIT"
         )
         close_result = json.loads(close["result_json"])
-        collection = close_result["governed_context_collection"]
-        self.assertEqual(collection["source_requests_attempted"], 5)
-        self.assertIsNotNone(collection["items"]["holder"]["source_response_id"])
-        composite = close_result["governed_context_persistence"]["safety_composite"]
-        self.assertEqual(composite["contribution_count"], 2)
-        self.assertEqual(
-            composite["holder_concentration_label"],
-            "HOLDER_CONCENTRATION_HEALTHY",
-        )
-        self.assertEqual(
-            close_result["context_quality"]["shared_context_evidence"]["sections"]["safety_rug"]["status"],
-            "READY",
-        )
+        collection, _shared = self._assert_unproducible_close_context(close_result)
+        holder_units = [
+            item for item in collection["unit_results"]
+            if item["source_unit_identity"] in {"HOLDER_PRIMARY", "HOLDER_BACKUP"}
+        ]
+        self.assertEqual(len(holder_units), 2)
         self.assertEqual(result["running_jobs_after_stop"], 0)
         self.assertTrue(all(value == 0 for value in result["forbidden_deltas"].values()))
 
-    def test_mismatched_safety_and_quotes_fail_closed_without_exact_evidence(self):
+    def test_compressed_close_does_not_fabricate_mismatched_evidence(self):
         factories = self._clean_context_factories()
         factories["goplus"] = lambda **_kwargs: build_fixture_source_adapter(
             "goplus",
@@ -616,28 +595,11 @@ class OneCommand15mFactoryTests(unittest.TestCase):
             if step["step_kind"] == "WINDOW_CLOSE_AUDIT"
         )
         close_result = json.loads(close["result_json"])
-        persisted = close_result["governed_context_persistence"]
-        self.assertEqual(
-            persisted["safety"]["audit_status"], "REJECTED_TARGET_MINT_MISMATCH"
-        )
-        self.assertEqual(
-            persisted["entry_quote"]["audit_status"],
-            "REJECTED_TARGET_MINT_MISMATCH",
-        )
-        self.assertEqual(
-            persisted["exit_quote"]["audit_status"],
-            "REJECTED_TARGET_MINT_MISMATCH",
-        )
+        _collection, shared = self._assert_unproducible_close_context(close_result)
         self.assertEqual(result["table_deltas"]["printer_solana_safety_evidence"], 0)
         self.assertEqual(result["table_deltas"]["printer_paper_quote_evidence"], 0)
-        shared = close_result["context_quality"]["shared_context_evidence"]
-        self.assertFalse(shared["clean_memory_context_ready"])
-        # V2-9.4.6 replaced the generic "no valid evidence" name with the precise
-        # cause. A safety composite bound to this exact closing snapshot does
-        # exist and records target_status=TARGET_MISMATCH, so the evidence is
-        # present but targets the wrong mint -- it is not absent.
         self.assertIn(
-            "CLOSING_EVIDENCE_TARGET_MISMATCH", shared["blockers"]
+            "NO_VALID_EXACT_TARGET_ENTRY_QUOTE_EVIDENCE", shared["blockers"]
         )
 
 
