@@ -551,7 +551,7 @@ def test_pair_ready_cycle2_attempt_survives_temporary_post_discovery_defer(
             binding=BINDING,
             first_cycle_id="cycle-1",
             now=NOW + timedelta(seconds=1),
-            next_due_work_at=NOW + timedelta(minutes=1),
+            next_due_work_at=NOW + timedelta(minutes=2),
             proof_deadline=NOW + timedelta(hours=4),
             project_health=lambda: SimpleNamespace(health=HEALTH),
             evaluate=lambda projection: next(second_evaluations),
