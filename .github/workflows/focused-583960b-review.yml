@@ -11,6 +11,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -35,4 +37,4 @@ jobs:
             tests/test_v2_9_8b_selective_1h_tracking_handoff_contract.py \
             tests/test_v2_9_8b_discovery_selection_full_system_consolidation.py
       - name: Diff check
-        run: git diff --check "origin/$GITHUB_BASE_REF...HEAD"
+        run: git diff --check HEAD^1 HEAD^2
