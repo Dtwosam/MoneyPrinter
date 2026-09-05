@@ -35,4 +35,6 @@ jobs:
             tests/test_v2_9_8b_selective_1h_tracking_handoff_contract.py \
             tests/test_v2_9_8b_discovery_selection_full_system_consolidation.py
       - name: Diff check
-        run: git diff --check ceeff92e0e4293cbccbca6f671579425034a2f8a..583960b17609b13c6c609d48ead769ac41236bf9
+        run: |
+          git fetch --no-tags --depth=40 origin "$GITHUB_BASE_REF"
+          git diff --check ceeff92e0e4293cbccbca6f671579425034a2f8a..583960b17609b13c6c609d48ead769ac41236bf9
