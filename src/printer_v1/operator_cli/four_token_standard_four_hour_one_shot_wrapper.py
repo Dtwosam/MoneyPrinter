@@ -178,6 +178,39 @@ def fixture_authorization_document(
     prior_authorizations_non_reusable: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Build one offline fixture-shaped document. This creates no authority."""
+    return _authorization_document(
+        branch=branch,
+        head=head,
+        database=database,
+        authorization_id=authorization_id,
+        migration_execution_id=migration_execution_id,
+        verdict=verdict,
+        authorized_at=authorized_at,
+        expires_at=expires_at,
+        validity_seconds=validity_seconds,
+        prior_authorizations_non_reusable=prior_authorizations_non_reusable,
+    )
+
+
+def _authorization_document(
+    *,
+    branch: str,
+    head: str,
+    database: Mapping[str, Any],
+    authorization_id: str,
+    migration_execution_id: str,
+    verdict: str,
+    authorized_at: str | None,
+    expires_at: str | None,
+    validity_seconds: int,
+    prior_authorizations_non_reusable: Sequence[str],
+) -> dict[str, Any]:
+    """Build the canonical four-token authorization schema without I/O.
+
+    The fixture helper remains explicitly non-authoritative. Production
+    preparation calls this internal constructor only after its filesystem,
+    Git, profile, and historical-non-reuse checks have passed.
+    """
     issued = (
         datetime.fromisoformat(authorized_at)
         if authorized_at is not None

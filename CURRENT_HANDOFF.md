@@ -59,13 +59,18 @@ create clean memory or financial/retrieval effects.
 
 ## Known blocker
 
-No active orphan or proven code defect is open. Retained terminal campaign
-history is evidence, not a live blocker. No authorization is implied by this
-handoff.
+No active orphan or proven code defect is open. Canonical production
+preparation now exists for the four-token Standard-4H authorization profile,
+but it is strictly non-consuming: it writes only a final authorization package,
+validates manifest/pre-marker parity, and creates no application marker or
+runtime. Development used disposable repositories/databases only; no real
+authorization or operational execution occurred. Retained terminal campaign
+history is evidence, not a live blocker.
 
 ## Next permitted action
 
-A new task may independently review the committed local diff or select a
-separately proven development repair. Any operational execution remains
-separately subject to exact preflight, explicit operator approval, and its own
-one-shot authorization; this handoff neither prepares nor consumes one.
+After this code commit, a new task must begin with fresh sync, exact-HEAD and
+exact-DB identity, migration/integrity/zero-work/non-reuse preflight, then
+prepare exactly one real authorization and independently review it. Stop before
+consumption. Any operational execution remains separately subject to explicit
+operator approval and its own one-shot authorization.
