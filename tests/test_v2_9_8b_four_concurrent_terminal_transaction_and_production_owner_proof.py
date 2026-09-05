@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import inspect
 import json
 import sqlite3
@@ -521,7 +522,9 @@ def test_pair_ready_cycle2_attempt_survives_temporary_post_discovery_defer(
         binding=BINDING,
         first_cycle_id="cycle-1",
         now=NOW,
-        next_due_work_at=NOW,
+        # Leave enough time for the bounded discovery quantum; the temporary
+        # lifecycle defer is introduced by the post-discovery recheck below.
+        next_due_work_at=NOW + timedelta(minutes=2),
         proof_deadline=NOW + timedelta(hours=4),
         project_health=lambda: SimpleNamespace(health=HEALTH),
         evaluate=lambda projection: next(first_evaluations),
@@ -633,7 +636,9 @@ def test_pair_ready_admission_does_not_require_future_discovery_capacity(
             binding=BINDING,
             first_cycle_id="cycle-1",
             now=NOW,
-            next_due_work_at=NOW + timedelta(minutes=1),
+            # Default discovery quantum is 60s; keep this fixture outside that
+            # pre-discovery fail-closed guard so it reaches the PAIR_READY post-check.
+            next_due_work_at=NOW + timedelta(minutes=2),
             proof_deadline=NOW + timedelta(hours=4),
             project_health=lambda: next(projections),
             evaluate=evaluate,
