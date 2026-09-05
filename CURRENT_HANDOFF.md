@@ -5,39 +5,29 @@
 Use `git rev-parse HEAD`. This handoff is committed with the verified
 engineering change, so the containing repository commit is the authoritative
 current identity. The repair review was verified from
-`fa2c6cf5a0adfd86e6349966e6ecb283c3395819`.
+starting HEAD `7461198883351ef985a056a959ad5a57167d4290`.
 
 ## Authoritative DB
 
 `data/printer_v1.sqlite3`
 
-SHA-256: `3b88aa9a0ffb8c4f8beca09b78d7e56c5f1bd1a51706f280c3f3a145771af7fe`
+SHA-256: `e01c509fc37909e300b148169c7b117ccad1505d4813d5e8a4d5a9efa9aed29c`
 
-Verified read-only state: size `167223296`, inode `1230526`, mtime_ns
-`1788530617119879531`; `PRAGMA integrity_check=ok`; zero FK violations; 62
-migrations through `062_pre_admission_attempt_evidence.sql`; no SQLite
-sidecars; and every required active-work, supervision, lease, refresh-wait,
-and Scheduler domain is zero.
+Verified read-only identity: size `167768064`, inode `1230526`, mtime_ns
+`1788614471640591606`. Development and regression tests did not mutate this
+database.
 
 ## DB identity reconciliation
 
-The prior handoff SHA
-`9ac31309c4f7a6233bc9f5d77944f88cd15a16a1659f98db665524f18dcb7a23` was the
-pre-state of consumed one-shot application
-`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260904T104053Z_9463ab6e`. That run wrote its
-durable campaign history and terminated at source-request reconciliation,
-leaving the proven intermediate SHA
-`bfb7eb12db3107cdec5f47c80745da103cca3800c320954c3936ccde6f85e603`.
-
-That intermediate SHA is the exact pre-campaign backup and bound DB identity
-for consumed one-shot application
-`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260904T125630Z_001904ef`, whose campaign
-`20260904T130245Z-34072c98e685-campaign` terminalized at its bounded safe
-stop. It produced the current SHA. Both application markers record one use;
-no retry, restart, resume, successor, or authorization reuse occurred.
-Cleanup and lease release terminalized, migrations did not change, and
-financial/retrieval capability tables did not change. The identity difference
-is therefore expected, fully accounted durable history, not DB drift.
+The prior SHA
+`3b88aa9a0ffb8c4f8beca09b78d7e56c5f1bd1a51706f280c3f3a145771af7fe` is the
+historical pre-run identity for consumed one-shot authorization
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260905T121103Z_69a40595`. Its campaign
+`20260905T131106Z-c212affa13ae-campaign` failed closed in
+`CAMPAIGN_PRE_LIFECYCLE`: durable requests 4928/4929 were absent from both the
+stage-reported set and manifest. The marker is consumed and permanently
+non-reusable; no retry, restart, resume, successor, or authorization reuse is
+implied.
 
 ## Current working capability
 
@@ -49,28 +39,23 @@ financial, position, and trading capability remain locked.
 
 ## Latest meaningful result
 
-The repair review confirms token-local Standard-4H eligibility budgets,
-cycle-scoped request accounting, canonical Pump refresh-root propagation,
-later-cycle replay, and terminal accounting retain their owner boundaries and
-fail-closed evidence semantics. The legacy V2.4 compressed-time test now
-asserts the current contract: impossible pre-close timing is
-`TIMELY_ACQUISITION_NOT_PRODUCIBLE`, creates no context evidence, and cannot
-create clean memory or financial/retrieval effects.
+The repair binds each initial/refresh GeckoTerminal fresh-pool transport to its
+truthful `FRESH_POOL_NOMINATION` opportunity identity, then carries completed
+pre-lifecycle refresh request IDs and coverage independently through the
+acquisition ledger into final campaign reconciliation. The reproduced branch
+now proves durable IDs equal stage-reported IDs equal manifest IDs without
+weakening duplicate transport or reconciliation guards.
 
 ## Known blocker
 
-No active orphan or proven code defect is open. Canonical production
-preparation now exists for the four-token Standard-4H authorization profile,
-but it is strictly non-consuming: it writes only a final authorization package,
-validates manifest/pre-marker parity, and creates no application marker or
-runtime. Development used disposable repositories/databases only; no real
-authorization or operational execution occurred. Retained terminal campaign
-history is evidence, not a live blocker.
+The consumed campaign cannot be rerun. This repair used disposable databases
+only and performed no operational execution, provider call, or Central
+Scheduler runtime. Retained terminal campaign history is evidence, not an
+authorization.
 
 ## Next permitted action
 
-After this code commit, a new task must begin with fresh sync, exact-HEAD and
-exact-DB identity, migration/integrity/zero-work/non-reuse preflight, then
-prepare exactly one real authorization and independently review it. Stop before
-consumption. Any operational execution remains separately subject to explicit
-operator approval and its own one-shot authorization.
+Begin a new task with fresh sync and exact HEAD/DB identity verification. Any
+further preparation requires migration/integrity/zero-work/non-reuse preflight;
+any operational execution requires a newly prepared and independently reviewed
+one-shot authorization plus separate explicit operator approval.

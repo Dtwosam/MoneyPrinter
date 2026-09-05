@@ -168,13 +168,19 @@ def build_geckoterminal_pools_transport(
     endpoint: str = GECKOTERMINAL_NEW_POOLS_URL,
 ) -> Callable[[SourceAdapterContext], Mapping[str, Any]]:
     def transport(context: SourceAdapterContext) -> Mapping[str, Any]:
-        del context
+        raw_target = context.request.payload.get("observation_opportunity_identity")
+        if raw_target is not None and (
+            not isinstance(raw_target, str) or not raw_target.strip()
+        ):
+            raise ValueError("GECKOTERMINAL_FRESH_OPPORTUNITY_IDENTITY_INVALID")
+        target_identity = None if raw_target is None else raw_target.strip()
         payload = dict(_load_public_json(endpoint, timeout_seconds=timeout_seconds))
         return _attach_measured_geckoterminal_transport(
             payload,
             request_kind="geckoterminal_new_pool_discovery",
             endpoint="GET /api/v2/networks/solana/new_pools",
             target_category="fresh_solana_pools",
+            target_identity=target_identity,
         )
 
     return transport

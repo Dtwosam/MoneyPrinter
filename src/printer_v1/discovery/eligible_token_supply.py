@@ -298,6 +298,26 @@ def merge_cumulative_source_request_coverage(
     return [by_request[key][1] for key in sorted(by_request)]
 
 
+def temporal_refresh_source_request_evidence(
+    acquisition_ledger: AcquisitionLedger | None,
+) -> tuple[list[int], list[dict[str, Any]]]:
+    """Return independently reported IDs and manifests from refresh outcomes."""
+    if acquisition_ledger is None:
+        return [], []
+    request_ids = [
+        int(request_id)
+        for outcome in acquisition_ledger.outcomes
+        for request_id in (outcome.get("source_request_ids") or ())
+    ]
+    coverage = [
+        dict(entry)
+        for outcome in acquisition_ledger.outcomes
+        for entry in (outcome.get("source_request_coverage") or ())
+        if isinstance(entry, Mapping)
+    ]
+    return request_ids, coverage
+
+
 ACQUISITION_QUANTUM_YIELDED = "ACQUISITION_QUANTUM_YIELDED"
 COOPERATIVE_QUANTUM_MAX_DIRECT_CANDIDATES = 5
 
@@ -2219,6 +2239,12 @@ def run_persistent_eligible_token_supply(
             "freeze_ready_depth": 0,
         }
 
+        def _final_refresh_source_request_ids() -> list[int]:
+            return temporal_refresh_source_request_evidence(acquisition_ledger)[0]
+
+        def _final_refresh_source_request_coverage() -> list[dict[str, Any]]:
+            return temporal_refresh_source_request_evidence(acquisition_ledger)[1]
+
         def _current_source_request_coverage() -> list[dict[str, Any]]:
             discovery_coverage = list(
                 discovery.get("source_request_coverage")
@@ -2243,6 +2269,7 @@ def run_persistent_eligible_token_supply(
                     for report in permanent_market_reports
                     for entry in (report.get("source_request_coverage") or ())
                 ]
+                + _final_refresh_source_request_coverage()
             )
             return merge_cumulative_source_request_coverage(
                 prior_source_request_coverage_rows,
@@ -2285,6 +2312,18 @@ def run_persistent_eligible_token_supply(
             coverage = _current_source_request_coverage()
             diagnostics: dict[str, Any] = {
                 "campaign_source_request_coverage": coverage,
+                "dexscreener_locator": locator,
+                "direct_migration_discovery": discovery,
+                "geckoterminal_nomination": geckoterminal_nomination_report,
+                "liquidity_backup": liquidity_backup_report,
+                "protocol_confirmation": protocol_report,
+                "permanent_market_reports": permanent_market_reports,
+                "final_refresh_source_request_ids": (
+                    _final_refresh_source_request_ids()
+                ),
+                "final_refresh_source_request_coverage": (
+                    _final_refresh_source_request_coverage()
+                ),
             }
             if campaign_source_request_scope is not None:
                 if hasattr(campaign_source_request_scope, "as_dict"):
@@ -4015,6 +4054,10 @@ def run_persistent_eligible_token_supply(
             },
             "geckoterminal_nomination": dict(geckoterminal_nomination_report),
             "permanent_market_reports": list(permanent_market_reports),
+            "final_refresh_source_request_ids": _final_refresh_source_request_ids(),
+            "final_refresh_source_request_coverage": (
+                _final_refresh_source_request_coverage()
+            ),
             "campaign_source_request_coverage": _current_source_request_coverage(),
             "discovery_request_key_prefix": discovery_request_key_prefix,
             **(

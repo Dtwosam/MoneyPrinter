@@ -137,6 +137,27 @@ def _refresh_stage_source_request_coverage(
     return tuple(dict(item) for item in coverage)
 
 
+def _refresh_stage_source_request_ids(stage: Mapping[str, Any]) -> tuple[int, ...]:
+    """Collect producer-reported IDs independently from coverage manifests."""
+    from printer_v1.discovery.permanent_discovery_availability import (
+        collect_stage_reported_request_ids,
+    )
+
+    reports = stage.get("stage_reports") or {}
+    if not isinstance(reports, Mapping):
+        raise PreLifecycleTemporalRefreshError(
+            "PRE_LIFECYCLE_REFRESH_STAGE_REPORTS_INVALID"
+        )
+    request_ids: list[int] = []
+    for report in reports.values():
+        if not isinstance(report, Mapping):
+            raise PreLifecycleTemporalRefreshError(
+                "PRE_LIFECYCLE_REFRESH_STAGE_REPORT_INVALID"
+            )
+        request_ids.extend(collect_stage_reported_request_ids(report))
+    return tuple(request_ids)
+
+
 class PreLifecycleTemporalRefreshOwner:
     """One existing authorization may request multiple bounded refresh ordinals."""
     def __init__(self, db_path: str | Path, *, campaign_id: str, run_id: str,
@@ -312,6 +333,7 @@ class PreLifecycleTemporalRefreshOwner:
             ops=_nonneg_int(stage.get('source_operations'),'source_operations')
             failures=_nonneg_int(stage.get('provider_failures'),'provider_failures')
             unavailable=tuple(str(x) for x in stage.get('channels_unavailable',()))
+            source_request_ids=_refresh_stage_source_request_ids(stage)
             coverage=_refresh_stage_source_request_coverage(stage)
             for key,expected in (('campaign_id',self.campaign_id),('run_id',self.run_id),('cycle_id',self.cycle_id)):
                 if key in stage and str(stage[key])!=str(expected):
@@ -331,10 +353,10 @@ class PreLifecycleTemporalRefreshOwner:
                 self._terminalize(c,wait_id,refresh_work_id,int(job_id),False,'PRE_LIFECYCLE_REFRESH_NEXT_REQUEST_BOUND_MISSING',woke)
                 return TemporalRefreshOutcome(status=INTERNAL_INVARIANT,wait_id=wait_id,scheduler_job_id=int(job_id),refresh_ordinal=ordinal,scheduled_for=scheduled,claimed=True,source_operations=ops,reserve_depth_before=reserve_depth,reserve_depth_after=reserve_depth,detail='cooperative refresh did not declare its next governed-request bound',failure_domain=FAILURE_DOMAIN_INTERNAL)
             yield_job(c,job_id=int(job_id),scheduled_for=parse_iso(woke),now=parse_iso(woke)); c.commit()
-            return TemporalRefreshOutcome(status=WAITING_FOR_ELIGIBLE_SUPPLY,wait_id=wait_id,scheduler_job_id=int(job_id),refresh_ordinal=ordinal,scheduled_for=scheduled,claimed=True,source_operations=ops,provider_failures=failures,channels_unavailable=unavailable,channels_attempted=tuple(str(x) for x in stage.get('channels_attempted',())),channels_skipped=tuple(dict(x) for x in stage.get('channels_skipped',()) if isinstance(x,Mapping)),source_request_coverage=coverage,reserve_depth_before=reserve_depth,reserve_depth_after=reserve_depth,detail='cooperative refresh yielded after one governed request',next_governed_request_kind=(None if stage.get('next_governed_request_kind') is None else str(stage.get('next_governed_request_kind'))),next_governed_request_worst_case_seconds=float(next_bound))
+            return TemporalRefreshOutcome(status=WAITING_FOR_ELIGIBLE_SUPPLY,wait_id=wait_id,scheduler_job_id=int(job_id),refresh_ordinal=ordinal,scheduled_for=scheduled,claimed=True,source_operations=ops,provider_failures=failures,channels_unavailable=unavailable,channels_attempted=tuple(str(x) for x in stage.get('channels_attempted',())),channels_skipped=tuple(dict(x) for x in stage.get('channels_skipped',()) if isinstance(x,Mapping)),source_request_ids=source_request_ids,source_request_coverage=coverage,reserve_depth_before=reserve_depth,reserve_depth_after=reserve_depth,detail='cooperative refresh yielded after one governed request',next_governed_request_kind=(None if stage.get('next_governed_request_kind') is None else str(stage.get('next_governed_request_kind'))),next_governed_request_worst_case_seconds=float(next_bound))
         self._terminalize(c,wait_id,refresh_work_id,int(job_id),True,'PRE_LIFECYCLE_REFRESH_COMPLETED',woke)
         self._publish(REFRESH_COMPLETED,wait_id=wait_id,scheduler_job_id=int(job_id),refresh_ordinal=ordinal,source_operations=ops)
-        return TemporalRefreshOutcome(status=REFRESH_COMPLETED,wait_id=wait_id,scheduler_job_id=int(job_id),refresh_ordinal=ordinal,scheduled_for=scheduled,claimed=True,source_operations=ops,provider_failures=failures,channels_unavailable=unavailable,channels_attempted=tuple(str(x) for x in stage.get('channels_attempted',())),channels_skipped=tuple(dict(x) for x in stage.get('channels_skipped',()) if isinstance(x,Mapping)),source_request_coverage=coverage,newly_observed_exact_identities=tuple(dict(x) for x in stage.get('newly_observed_exact_identities',()) if isinstance(x,Mapping)),promoted_observation_eligible=tuple(dict(x) for x in stage.get('promoted_observation_eligible',())),reserve_depth_before=reserve_depth,reserve_depth_after=reserve_depth,detail='bounded Source-Governed refresh stage completed')
+        return TemporalRefreshOutcome(status=REFRESH_COMPLETED,wait_id=wait_id,scheduler_job_id=int(job_id),refresh_ordinal=ordinal,scheduled_for=scheduled,claimed=True,source_operations=ops,provider_failures=failures,channels_unavailable=unavailable,channels_attempted=tuple(str(x) for x in stage.get('channels_attempted',())),channels_skipped=tuple(dict(x) for x in stage.get('channels_skipped',()) if isinstance(x,Mapping)),source_request_ids=source_request_ids,source_request_coverage=coverage,newly_observed_exact_identities=tuple(dict(x) for x in stage.get('newly_observed_exact_identities',()) if isinstance(x,Mapping)),promoted_observation_eligible=tuple(dict(x) for x in stage.get('promoted_observation_eligible',())),reserve_depth_before=reserve_depth,reserve_depth_after=reserve_depth,detail='bounded Source-Governed refresh stage completed')
     def _require_claim(self,c,job_id,job_name,lock_owner):
         r=c.execute('SELECT id,job_name,job_kind,status,lock_owner FROM printer_scheduler_jobs WHERE id=?',(job_id,)).fetchone()
         if r is None or int(r['id'])!=job_id or str(r['job_name'])!=job_name or str(r['job_kind'])!=JobKind.DISCOVERY_REFRESH.value or str(r['status'])!=JobStatus.RUNNING.value or str(r['lock_owner'] or '')!=lock_owner:

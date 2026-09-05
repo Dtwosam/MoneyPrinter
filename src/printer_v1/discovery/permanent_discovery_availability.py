@@ -2439,6 +2439,11 @@ def run_geckoterminal_fresh_nomination(
         record_payload_transports,
     )
 
+    stage_opportunity_identity = (
+        f"{campaign_id}|{run_id}|{cycle_id}|FRESH_POOL_NOMINATION|{int(stage_sequence)}"
+        if campaign_id and run_id and cycle_id
+        else f"FRESH_POOL_NOMINATION|{int(stage_sequence)}|{request_key}"
+    )
     actual_transport = transport or build_geckoterminal_pools_transport()
     adapter = build_geckoterminal_adapter(
         enabled=True, fixture_transport=actual_transport
@@ -2451,6 +2456,7 @@ def run_geckoterminal_fresh_nomination(
         payload={
             "request_kind": "geckoterminal_new_pool_discovery",
             "chain": "solana",
+            "observation_opportunity_identity": stage_opportunity_identity,
         },
     )
     ledger = MeasuredTransportLedger(
@@ -2556,11 +2562,7 @@ def run_geckoterminal_fresh_nomination(
         "source_request_id": request_id,
         "source_name": GECKOTERMINAL_SOURCE_NAME,
         "request_kind": "geckoterminal_new_pool_discovery",
-        "logical_stage_id": (
-            f"{campaign_id}|{run_id}|{cycle_id}|FRESH_POOL_NOMINATION|{int(stage_sequence)}"
-            if campaign_id and run_id and cycle_id
-            else f"FRESH_POOL_NOMINATION|{int(stage_sequence)}|{request_key}"
-        ),
+        "logical_stage_id": stage_opportunity_identity,
         "transport_identity_count": transport_identity_count,
         "transport_identity_keys": gecko_transport_keys,
         "normalized_member_count": len(observations),

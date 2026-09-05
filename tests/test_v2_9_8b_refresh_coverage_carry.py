@@ -46,7 +46,10 @@ def test_completed_refresh_carries_stage_coverage_out_of_existing_owner(tmp_path
             "channels_attempted": ("dexscreener",),
             "channels_skipped": (),
             "stage_reports": {
-                "dex": {"source_request_coverage": [entry]},
+                "dex": {
+                    "source_request_ids": [42],
+                    "source_request_coverage": [entry],
+                },
             },
         }
 
@@ -75,6 +78,7 @@ def test_completed_refresh_carries_stage_coverage_out_of_existing_owner(tmp_path
 
     assert outcome.status == REFRESH_COMPLETED
     payload = outcome.to_dict()
+    assert payload["source_request_ids"] == [42]
     assert [
         int(row["source_request_id"])
         for row in payload["source_request_coverage"]
@@ -109,6 +113,36 @@ def test_completed_refresh_progress_merges_prior_and_current_coverage():
         for row in updated["source_request_coverage"]
     ] == [51, 52]
     assert progress_by_cycle["cycle-2"] is updated
+
+
+def test_acquisition_ledger_preserves_refresh_ids_and_manifest_independently():
+    from printer_v1.discovery.eligible_token_supply import (
+        temporal_refresh_source_request_evidence,
+    )
+    from printer_v1.discovery.pre_lifecycle_temporal_acquisition import (
+        AcquisitionLedger,
+        REFRESH_COMPLETED,
+        TemporalRefreshOutcome,
+    )
+
+    entry = _coverage(61)
+    ledger = AcquisitionLedger(
+        started_at="2026-09-01T00:00:00+00:00",
+        acquisition_deadline_at="2026-09-01T00:10:00+00:00",
+        acquisition_duration_seconds=600,
+        refresh_interval_seconds=60,
+    )
+    ledger.record(
+        TemporalRefreshOutcome(
+            status=REFRESH_COMPLETED,
+            source_request_ids=(61,),
+            source_request_coverage=(entry,),
+        )
+    )
+
+    request_ids, coverage = temporal_refresh_source_request_evidence(ledger)
+    assert request_ids == [61]
+    assert coverage == [entry]
 
 
 def test_cooperative_waiting_branch_carries_partial_refresh_coverage_before_yield():
