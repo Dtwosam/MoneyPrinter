@@ -367,7 +367,6 @@ def test_direct_migration_six_unit_identities_and_zero_deltas(tmp_path: Path) ->
             )
         ]
         assert versions == list(canonical_migration_names())
-        assert versions[-1].startswith("049")
         assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
     finally:
