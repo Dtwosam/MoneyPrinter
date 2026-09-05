@@ -21,9 +21,11 @@ trades/audits/PnL, no retry/restart/resume/successor, no paid API.
 
 from __future__ import annotations
 
+import copy
 import json
 import sqlite3
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Callable, Mapping, Sequence
 
 from printer_v1.discovery.combined_executor import ensure_cycle_discovery_batch
@@ -58,8 +60,135 @@ _PUMP_WORST_CASE_SOURCE_OPERATIONS = (
 )
 
 
+def _freeze_partial_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return MappingProxyType(
+            {key: _freeze_partial_value(item) for key, item in value.items()}
+        )
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_partial_value(item) for item in value)
+    return value
+
+
 class PreLifecycleRefreshCompositionError(RuntimeError):
-    """Fail-closed pre-lifecycle refresh composition fault."""
+    """Fail-closed fault carrying immutable producer-owned partial evidence."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        partial_stage: Mapping[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.partial_stage = _freeze_partial_value(dict(partial_stage or {}))
+
+
+class _RefreshStageEvidenceCollector:
+    """Capture producer-sealed evidence before forwarding it to accounting."""
+
+    def __init__(
+        self,
+        sink: Callable[[Mapping[str, Any]], None],
+    ) -> None:
+        self._sink = sink
+        self.blocks: list[dict[str, Any]] = []
+
+    def __call__(self, evidence: Mapping[str, Any]) -> None:
+        if isinstance(evidence, Mapping):
+            self.blocks.append(copy.deepcopy(dict(evidence)))
+        self._sink(evidence)
+
+    def next_stage_sequence(self, stage_kind: str) -> int:
+        resolver = getattr(self._sink, "next_stage_sequence", None)
+        if not callable(resolver):
+            raise PreLifecycleRefreshCompositionError(
+                "STAGE_SEQUENCE_OWNER_UNAVAILABLE"
+            )
+        return int(resolver(stage_kind))
+
+
+def _next_stage_sequence(
+    stage_evidence_sink: Any | None,
+    *,
+    stage_kind: str,
+    fallback: int,
+) -> int:
+    resolver = getattr(stage_evidence_sink, "next_stage_sequence", None)
+    sequence = int(resolver(stage_kind)) if callable(resolver) else int(fallback)
+    if sequence < 1:
+        raise PreLifecycleRefreshCompositionError(
+            f"INVALID_OWNED_STAGE_SEQUENCE:{stage_kind}:{sequence}"
+        )
+    return sequence
+
+
+def _partial_refresh_stage(
+    state: Mapping[str, Any],
+    collector: _RefreshStageEvidenceCollector | None,
+) -> Mapping[str, Any]:
+    """Build the exact producer evidence available when composition failed."""
+    from printer_v1.discovery.permanent_discovery_availability import (
+        collect_stage_reported_request_ids,
+        collect_stage_source_request_coverage,
+    )
+
+    reports = copy.deepcopy(dict(state.get("stage_reports") or {}))
+    seen_exact_coverage = {
+        json.dumps(
+            entry,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+        for report in reports.values()
+        if isinstance(report, Mapping)
+        for entry in collect_stage_source_request_coverage(report)
+    }
+    if collector is not None:
+        for index, block in enumerate(collector.blocks, 1):
+            block_coverage = collect_stage_source_request_coverage(block)
+            block_coverage_keys = {
+                json.dumps(
+                    entry,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    default=str,
+                )
+                for entry in block_coverage
+            }
+            if block_coverage_keys and block_coverage_keys.issubset(
+                seen_exact_coverage
+            ):
+                continue
+            stage_id = str(block.get("stage_id") or f"sealed-stage-{index}")
+            reports[f"sealed:{stage_id}"] = copy.deepcopy(block)
+            seen_exact_coverage.update(block_coverage_keys)
+
+    coverage = [
+        dict(entry)
+        for report in reports.values()
+        if isinstance(report, Mapping)
+        for entry in collect_stage_source_request_coverage(report)
+    ]
+    request_ids = [
+        int(request_id)
+        for report in reports.values()
+        if isinstance(report, Mapping)
+        for request_id in collect_stage_reported_request_ids(report)
+    ]
+    unique_request_ids = tuple(dict.fromkeys(request_ids))
+    return {
+        "source_operations": max(
+            int(state.get("source_operations") or 0), len(unique_request_ids)
+        ),
+        "provider_failures": int(state.get("provider_failures") or 0),
+        "channels_unavailable": tuple(state.get("channels_unavailable") or ()),
+        "channels_attempted": tuple(state.get("channels_attempted") or ()),
+        "channels_skipped": tuple(state.get("channels_skipped") or ()),
+        "stage_reports": reports,
+        "source_request_ids": unique_request_ids,
+        "source_request_coverage": tuple(coverage),
+    }
 
 
 def build_cycle_discovery_batch_resolver(
@@ -328,7 +457,7 @@ def build_pre_lifecycle_refresh_stage(
     """Build one bounded, ordinal-rotated, Source-Governed refresh stage."""
     refresh_db_path = Path(db_path)
 
-    def refresh_stage(
+    def _refresh_stage_impl(
         connection: sqlite3.Connection,
         *,
         campaign_id: str,
@@ -341,6 +470,9 @@ def build_pre_lifecycle_refresh_stage(
         now: str,
         cooperative_yield: bool = False,
         cooperative_stage_budget: StageBudget | None = None,
+        _partial_state: dict[str, Any],
+        _stage_evidence_sink: Callable[[Mapping[str, Any]], None] | None,
+        _backup_stage_evidence_sink: Callable[[Mapping[str, Any]], None] | None,
         **_ignored: Any,
     ) -> Mapping[str, Any]:
         del discovery_work_id, scheduler_job_id
@@ -357,6 +489,16 @@ def build_pre_lifecycle_refresh_stage(
         observed_identities: list[Mapping[str, Any]] = []
         promoted: list[dict[str, Any]] = []
         stage_reports: dict[str, Any] = {}
+        _partial_state.update(
+            {
+                "source_operations": source_operations,
+                "provider_failures": provider_failures,
+                "channels_unavailable": channels_unavailable,
+                "channels_attempted": channels_attempted,
+                "channels_skipped": channels_skipped,
+                "stage_reports": stage_reports,
+            }
+        )
 
         if remaining == 0:
             return {
@@ -406,7 +548,14 @@ def build_pre_lifecycle_refresh_stage(
                     f"REFRESH_SOURCE_OPERATION_BUDGET_MISMATCH:{channel}:{used}:{budget_left()}"
                 )
             source_operations += used
+            _partial_state["source_operations"] = source_operations
             return used
+
+        def record_provider_failure(channel: str, count: int = 1) -> None:
+            nonlocal provider_failures
+            provider_failures += int(count)
+            _partial_state["provider_failures"] = provider_failures
+            channels_unavailable.append(channel)
 
         def cooperative_result(next_kind: str) -> Mapping[str, Any]:
             return {
@@ -493,7 +642,7 @@ def build_pre_lifecycle_refresh_stage(
                         settle_seconds=0.0,
                         reverify_on_transient=False,
                         reverify_settle_seconds=0.0,
-                        stage_evidence_sink=stage_evidence_sink,
+                        stage_evidence_sink=_stage_evidence_sink,
                         transport_identity_observer=transport_identity_observer,
                         local_validation_identity_observer=(
                             local_validation_identity_observer
@@ -538,8 +687,7 @@ def build_pre_lifecycle_refresh_stage(
                         "DIRECT_PUMP_REFRESH_ACCOUNTING_BLOCKED"
                     )
                 if report.get("status") == "PROVIDER_FAILURE":
-                    provider_failures += 1
-                    channels_unavailable.append(channel)
+                    record_provider_failure(channel)
                 for item in report.get("verifications") or ():
                     if isinstance(item, Mapping) and item.get("verified") is True:
                         observed_identities.append(item)
@@ -575,7 +723,7 @@ def build_pre_lifecycle_refresh_stage(
                         transport=locator_transport,
                         request_key=dex_request_key,
                         now=now,
-                        stage_evidence_sink=stage_evidence_sink,
+                        stage_evidence_sink=_stage_evidence_sink,
                         transport_identity_observer=transport_identity_observer,
                         campaign_id=campaign_id,
                         run_id=run_id,
@@ -590,8 +738,7 @@ def build_pre_lifecycle_refresh_stage(
                         "DEXSCREENER_REFRESH_ACCOUNTING_BLOCKED"
                     )
                 if report.get("status") not in {"ok", "empty"}:
-                    provider_failures += 1
-                    channels_unavailable.append(channel)
+                    record_provider_failure(channel)
                 observations = [
                     dict(item)
                     for item in report.get("pool_observations") or ()
@@ -644,7 +791,7 @@ def build_pre_lifecycle_refresh_stage(
                         run_id=run_id,
                         cycle_id=cycle_id,
                         transport=geckoterminal_nomination_transport,
-                        stage_evidence_sink=stage_evidence_sink,
+                        stage_evidence_sink=_stage_evidence_sink,
                         transport_identity_observer=transport_identity_observer,
                         stage_sequence=refresh_stage_sequence,
                     )
@@ -656,8 +803,7 @@ def build_pre_lifecycle_refresh_stage(
                         "GECKOTERMINAL_REFRESH_ACCOUNTING_BLOCKED"
                     )
                 if report.get("failure_type"):
-                    provider_failures += 1
-                    channels_unavailable.append(channel)
+                    record_provider_failure(channel)
                 observed_identities.extend(
                     dict(item)
                     for item in report.get("nominations") or ()
@@ -711,9 +857,16 @@ def build_pre_lifecycle_refresh_stage(
                         geckoterminal_backup_transport_factory
                     ),
                     transport_identity_observer=transport_identity_observer,
-                    stage_evidence_sink=stage_evidence_sink,
+                    stage_evidence_sink=_backup_stage_evidence_sink,
                     max_backups=1,
-                    stage_sequence_base=int(refresh_ordinal),
+                    stage_sequence_base=(
+                        _next_stage_sequence(
+                            _stage_evidence_sink,
+                            stage_kind="UNKNOWN_LIQUIDITY_BACKUP",
+                            fallback=int(refresh_ordinal) + 1,
+                        )
+                        - 1
+                    ),
                 )
             )
             charge(report, channel=UNKNOWN_LIQUIDITY_BACKUP_CHANNEL)
@@ -771,7 +924,7 @@ def build_pre_lifecycle_refresh_stage(
                     account_batch_transport_factory=(
                         protocol_account_batch_transport_factory
                     ),
-                    stage_evidence_sink=stage_evidence_sink,
+                    stage_evidence_sink=_stage_evidence_sink,
                     transport_identity_observer=transport_identity_observer,
                     local_validation_identity_observer=(
                         local_validation_identity_observer
@@ -795,8 +948,10 @@ def build_pre_lifecycle_refresh_stage(
                 if isinstance(item, Mapping)
             ]
             if int(report.get("shared_source_failures") or 0) > 0:
-                provider_failures += int(report.get("shared_source_failures") or 0)
-                channels_unavailable.append(PROTOCOL_CONFIRMATION_CHANNEL)
+                record_provider_failure(
+                    PROTOCOL_CONFIRMATION_CHANNEL,
+                    int(report.get("shared_source_failures") or 0),
+                )
         else:
             channels_skipped.append(
                 {
@@ -826,6 +981,28 @@ def build_pre_lifecycle_refresh_stage(
             "stage_reports": stage_reports,
             "budget_exhausted_before_refresh": False,
         }
+
+    def refresh_stage(*args: Any, **kwargs: Any) -> Mapping[str, Any]:
+        partial_state: dict[str, Any] = {}
+        collector = (
+            _RefreshStageEvidenceCollector(stage_evidence_sink)
+            if stage_evidence_sink is not None
+            else None
+        )
+        try:
+            return _refresh_stage_impl(
+                *args,
+                **kwargs,
+                _partial_state=partial_state,
+                _stage_evidence_sink=stage_evidence_sink,
+                _backup_stage_evidence_sink=collector,
+            )
+        except Exception as exc:
+            partial_stage = _partial_refresh_stage(partial_state, collector)
+            raise PreLifecycleRefreshCompositionError(
+                f"REFRESH_SUBSTAGE_FAILED:{type(exc).__name__}:{exc}",
+                partial_stage=partial_stage,
+            ) from exc
 
     return refresh_stage
 

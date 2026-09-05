@@ -325,8 +325,33 @@ class PreLifecycleTemporalRefreshOwner:
             raw_stage=self._refresh_stage(c,campaign_id=self.campaign_id,run_id=self.run_id,cycle_id=self.cycle_id,refresh_work_id=refresh_work_id,discovery_work_id=refresh_work_id,scheduler_job_id=int(job_id),refresh_ordinal=ordinal,source_operations_remaining=source_operations_remaining,now=woke,cooperative_yield=self._cooperative_yield,cooperative_stage_budget=cooperative_stage_budget)
         except Exception as exc:
             status,domain,cause=classify_refresh_stage_exception(exc)
+            from printer_v1.discovery.pre_lifecycle_refresh_composition import (
+                PreLifecycleRefreshCompositionError,
+            )
+            partial=(
+                exc.partial_stage
+                if isinstance(exc,PreLifecycleRefreshCompositionError)
+                else None
+            )
+            ops=0; failures=0; unavailable=(); attempted=(); skipped=()
+            source_request_ids=(); coverage=()
+            if isinstance(partial,Mapping):
+                try:
+                    stage=_as_refresh_stage_mapping(partial)
+                    ops=_nonneg_int(stage.get('source_operations'),'source_operations')
+                    failures=_nonneg_int(stage.get('provider_failures'),'provider_failures')
+                    unavailable=tuple(str(x) for x in stage.get('channels_unavailable',()))
+                    attempted=tuple(str(x) for x in stage.get('channels_attempted',()))
+                    skipped=tuple(dict(x) for x in stage.get('channels_skipped',()) if isinstance(x,Mapping))
+                    source_request_ids=_refresh_stage_source_request_ids(stage)
+                    coverage=_refresh_stage_source_request_coverage(stage)
+                except Exception:
+                    ops=0; failures=0; unavailable=(); attempted=(); skipped=()
+                    source_request_ids=(); coverage=()
+            if domain==FAILURE_DOMAIN_SOURCE:
+                failures=max(1,failures)
             self._terminalize(c,wait_id,refresh_work_id,int(job_id),False,cause,woke)
-            return TemporalRefreshOutcome(status=status,wait_id=wait_id,scheduler_job_id=int(job_id),refresh_ordinal=ordinal,scheduled_for=scheduled,claimed=True,source_operations=0,provider_failures=(1 if domain==FAILURE_DOMAIN_SOURCE else 0),reserve_depth_before=reserve_depth,reserve_depth_after=reserve_depth,detail=f'refresh stage failed: {type(exc).__name__}',failure_domain=domain)
+            return TemporalRefreshOutcome(status=status,wait_id=wait_id,scheduler_job_id=int(job_id),refresh_ordinal=ordinal,scheduled_for=scheduled,claimed=True,source_operations=ops,provider_failures=failures,channels_unavailable=unavailable,channels_attempted=attempted,channels_skipped=skipped,source_request_ids=source_request_ids,source_request_coverage=coverage,reserve_depth_before=reserve_depth,reserve_depth_after=reserve_depth,detail=f'refresh stage failed: {type(exc).__name__}',failure_domain=domain)
         ops=0; failures=0
         try:
             stage=_as_refresh_stage_mapping(raw_stage)

@@ -557,6 +557,22 @@ class CampaignSixUnitOwner:
             ],
         }
 
+    def next_stage_sequence(self, stage_kind: str) -> int:
+        """Allocate the next sequence from this exact cycle owner's evidence.
+
+        Stage identity is cycle-scoped accounting state.  Refresh ordinals and
+        durable source-request rows are deliberately not sequence authorities.
+        """
+        canonical_kind = _require_nonempty_text(
+            stage_kind, field_name="stage_kind"
+        )
+        sequences = [
+            int(item["stage_sequence"])
+            for item in self.sealed_stage_diagnostics
+            if str(item.get("stage_kind") or "") == canonical_kind
+        ]
+        return max(sequences, default=0) + 1
+
     def ingest_stage_evidence(self, evidence: Mapping[str, Any] | None) -> None:
         """Aggregate one active stage's durable evidence onto this owner.
 
@@ -1194,6 +1210,33 @@ class CampaignSixUnitProjection:
         return evidence
 
 
+class _CycleStageEvidenceSink:
+    """Callable cycle router that also exposes its owner's sequence allocator."""
+
+    def __init__(
+        self, registry: "CampaignCycleAccountingRegistry", cycle_id: str
+    ) -> None:
+        self._registry = registry
+        self._cycle_id = cycle_id
+
+    def __call__(self, evidence: Mapping[str, Any]) -> None:
+        if not isinstance(evidence, Mapping):
+            self._registry.ingest_stage_evidence(evidence)
+            return
+        evidence_cycle_id = str(evidence.get("cycle_id") or "")
+        if evidence_cycle_id != self._cycle_id:
+            raise CampaignSixUnitError(
+                "SIX_UNIT_STAGE_EVIDENCE_IDENTITY_MISMATCH:"
+                f"cycle_id:{evidence_cycle_id!r}!={self._cycle_id!r}"
+            )
+        self._registry.ingest_stage_evidence(evidence)
+
+    def next_stage_sequence(self, stage_kind: str) -> int:
+        return self._registry.owner_for_cycle(self._cycle_id).next_stage_sequence(
+            stage_kind
+        )
+
+
 class CampaignCycleAccountingRegistry:
     """Explicit registry and fail-closed router for cycle-bound owners."""
 
@@ -1294,19 +1337,7 @@ class CampaignCycleAccountingRegistry:
         )
         self.owner_for_cycle(canonical_cycle_id)
 
-        def sink(evidence: Mapping[str, Any]) -> None:
-            if not isinstance(evidence, Mapping):
-                self.ingest_stage_evidence(evidence)
-                return
-            evidence_cycle_id = str(evidence.get("cycle_id") or "")
-            if evidence_cycle_id != canonical_cycle_id:
-                raise CampaignSixUnitError(
-                    "SIX_UNIT_STAGE_EVIDENCE_IDENTITY_MISMATCH:"
-                    f"cycle_id:{evidence_cycle_id!r}!={canonical_cycle_id!r}"
-                )
-            self.ingest_stage_evidence(evidence)
-
-        return sink
+        return _CycleStageEvidenceSink(self, canonical_cycle_id)
 
     def registered_stage_evidence_sink(
         self,
