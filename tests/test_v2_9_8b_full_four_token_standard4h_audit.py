@@ -127,6 +127,24 @@ def test_two_cycle_four_token_real_factory_reaches_shared_terminal_standard4h(
     )
 
     supply_calls = 0
+    aggregate_observations = []
+
+    from printer_v1.operator_cli import campaign_full_run_accounting as full_accounting
+
+    real_derive_campaign_terminal = (
+        full_accounting.derive_two_cycle_campaign_terminal_accounting
+    )
+
+    def observe_campaign_terminal(*args, **kwargs):
+        result = real_derive_campaign_terminal(*args, **kwargs)
+        aggregate_observations.append(result)
+        return result
+
+    monkeypatch.setattr(
+        full_accounting,
+        "derive_two_cycle_campaign_terminal_accounting",
+        observe_campaign_terminal,
+    )
 
     def four_token_setup(db):
         connection = sqlite3.connect(db)
@@ -266,13 +284,46 @@ def test_two_cycle_four_token_real_factory_reaches_shared_terminal_standard4h(
         "printer_v1.operator_cli.one_token_4h_runtime.datetime",
         _FactoryLoopDateTime,
     )
-    db, report = _run_standard_factory_loop(
-        tmp_path,
-        monkeypatch,
-        operational_binding="VALID",
-        disposable_binding=None,
-        four_token_setup=four_token_setup,
-    )
+    try:
+        db, report = _run_standard_factory_loop(
+            tmp_path,
+            monkeypatch,
+            operational_binding="VALID",
+            disposable_binding=None,
+            four_token_setup=four_token_setup,
+        )
+    except Exception as exc:
+        latest = aggregate_observations[-1] if aggregate_observations else {}
+        diagnostic = [
+            {
+                "cycle_id": item.get("cycle_id"),
+                "cycle_ordinal": item.get("cycle_ordinal"),
+                "execution_outcome": item.get("execution_outcome"),
+                "persisted_cycle_state": item.get("persisted_cycle_state"),
+                "primary_fault": item.get("primary_fault"),
+                "incomplete_reasons": item.get("incomplete_reasons"),
+                "standard_four_hour_terminal": item.get(
+                    "standard_four_hour_terminal"
+                ),
+            }
+            for item in latest.get("cycles", [])
+            if isinstance(item, dict)
+        ]
+        raise AssertionError(
+            json.dumps(
+                {
+                    "aggregate_execution_outcome": latest.get(
+                        "execution_outcome"
+                    ),
+                    "aggregate_accounting_complete": latest.get(
+                        "accounting_complete"
+                    ),
+                    "cycles": diagnostic,
+                },
+                sort_keys=True,
+                default=str,
+            )
+        ) from exc
 
     assert supply_calls == 1
     terminal = dict(report.get("four_token_terminal") or {})
