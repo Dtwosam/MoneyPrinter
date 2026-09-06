@@ -46,10 +46,27 @@ jobs:
             tests/test_v2_9_8b_four_token_standard_four_hour_one_shot_wrapper.py \
             tests/test_v2_9_8b_window_15m_checkpoint8_public_composition_boundary.py \
             tests/test_v2_9_8b_window_15m_checkpoint8_owner_invocation_wiring.py \
+            tests/test_v2_9_8b_discovery_selection_full_system_consolidation.py \
+            tests/test_v2_9_7e_8_origin_to_lifecycle_integration.py \
+            tests/test_v2_9_8b_first_hour_safety_provenance_repair.py \
+            tests/test_post_dtw100_first_hour_lifecycle_policy.py \
             --deselect tests/test_v2_9_7e_44_full_pilot_supply_integration.py::WiringTests::test_closed_supply_stage_flows_to_top_accounting_owner \
             --deselect tests/test_v2_9_7e_44_full_pilot_supply_integration.py::WiringTests::test_e46_holder_reserve_writes_readiness_before_lifecycle
       - name: Compile affected modules
         run: |
-          python -m py_compile             src/printer_v1/discovery/eligible_token_supply.py             src/printer_v1/operator_cli/authoritative_live_operational_campaign.py             src/printer_v1/operator_cli/operational_memory_factory_command.py
+          python -m py_compile \
+            src/printer_v1/discovery/combined_executor.py \
+            src/printer_v1/discovery/eligible_token_supply.py \
+            src/printer_v1/operator_cli/authoritative_live_operational_campaign.py \
+            src/printer_v1/operator_cli/origin_lifecycle_campaign.py \
+            src/printer_v1/operator_cli/operational_memory_factory_command.py \
+            src/printer_v1/operator_cli/operational_selective_1h.py \
+            src/printer_v1/operator_cli/operational_standard_4h.py \
+            src/printer_v1/operator_cli/standard_4h_progression.py \
+            src/printer_v1/operator_cli/one_token_4h_runtime.py \
+            src/printer_v1/operator_cli/four_token_proof_integration.py \
+            src/printer_v1/operator_cli/four_token_factory_adapter.py \
+            src/printer_v1/operator_cli/campaign_full_run_accounting.py \
+            src/printer_v1/operator_cli/unified_terminal_closure.py
       - name: Diff whitespace check
         run: git diff --check dae64903a2c2b8cd9a09c81cf6267fb53324e729..HEAD
