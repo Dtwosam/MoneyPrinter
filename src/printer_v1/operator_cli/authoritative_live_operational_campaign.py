@@ -202,6 +202,20 @@ def _carry_post_holder_refresh_evidence(
     return updated
 
 
+def _replace_supply_post_holder_refresh_evidence(
+    supply: Any,
+    outcome: Any,
+) -> Any:
+    """Return the immutable supply carrier with exact refresh evidence attached."""
+    return replace(
+        supply,
+        diagnostics=_carry_post_holder_refresh_evidence(
+            supply.diagnostics,
+            outcome,
+        ),
+    )
+
+
 def _merge_later_cycle_refresh_source_request_coverage(
     progress: Mapping[str, Any],
     completed: Sequence[Mapping[str, Any]] | None,
@@ -5210,8 +5224,8 @@ class AuthoritativeLiveOperationalCampaignOwner:
                                 provider_terminal_failure=False,
                                 now=datetime.now(timezone.utc).isoformat(),
                             )
-                            supply.diagnostics = _carry_post_holder_refresh_evidence(
-                                supply.diagnostics,
+                            supply = _replace_supply_post_holder_refresh_evidence(
+                                supply,
                                 refresh_outcome,
                             )
                         supply.diagnostics["freeze_depth_enforcement"][

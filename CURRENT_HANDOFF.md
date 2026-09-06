@@ -2,29 +2,31 @@
 
 ## Current HEAD
 
-This handoff is committed with the post-holder refresh evidence-carrier repair.
-The repair started from `b3b6e3d5ffa80d9bee65ec26990f0e11eb45a065`; use
-`git rev-parse HEAD` for the committed final HEAD.
+This handoff is committed with the frozen post-holder refresh carrier repair.
+Use `git rev-parse HEAD` for the committed final HEAD.
 
 ## Authoritative DB
 
 `data/printer_v1.sqlite3`
 
-Current post-run identity, derived read-only: SHA-256
-`400f63ef7286a71bb751e8b7b2ecfd50cb3c03ccd66e91f55479195e2e1ab769`, size
-`169398272`, inode `1230526`, mtime_ns `1788690300902508255`. `integrity_check`
-is `ok`, `foreign_key_check` has zero rows, and no WAL, SHM, or journal sidecars
-are present. The historical pre-run identity remains non-current evidence only.
+Latest post-run identity from the consumed child terminal: SHA-256
+`f6e07ca0f32a70e60f6821f44074c73356f57b0d56e98d81e48e92a4f05f46b4`,
+size `170061824`, inode `1230526`, mtime_ns `1788696345906968820`.
+The child reported cleanup complete, lease released, and zero active/locked
+scheduler work. Re-derive integrity/FK health read-only before any future
+authorization preparation.
 
-## DB identity reconciliation
+## Latest consumed authorization
 
 One-shot authorization
-`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260906T100937Z_10850240` was consumed exactly
-once. Its execution `20260906T101455Z-cbbcf503d01b`, campaign
-`20260906T101455Z-cbbcf503d01b-campaign`, returned a pre-lifecycle terminal with
-first cause `CAMPAIGN_SOURCE_REQUEST_RECONCILIATION_MISMATCH` and
-`lifecycle_started=False`. The authorization is permanently non-reusable; no
-retry, rerun, restart, resume, successor, or reuse is implied.
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260906T111524Z_28455922` was consumed exactly
+once. Execution `20260906T114531Z-8cc313cae90d`, campaign
+`20260906T114531Z-8cc313cae90d-campaign`, exited 1 in
+`CAMPAIGN_PRE_LIFECYCLE` after 22 source calls and 6 DB writes. The durable
+first terminal cause was
+`FrozenInstanceError:cannot assign to field 'diagnostics'`. The authorization
+is permanently non-reusable; no retry, rerun, restart, resume, successor, or
+reuse is implied.
 
 ## Current working capability
 
@@ -36,30 +38,25 @@ financial, position, and trading capability remain locked.
 
 ## Latest meaningful result
 
-The preceding SQLite writer-release repair allowed the latest run to progress
-past the former `database is locked` blocker. That run then exposed a separate
-terminal-semantics defect: a normally returned pre-lifecycle campaign block had
-`campaign_pass=False`, yet the public CLI unconditionally wrote child exit 0
-with `success=True`. The repair now requires an explicit boolean
-`campaign_pass` for wrapper-bound campaign modes and maps it directly to child
-exit truth: pass -> 0, blocked -> 1; missing/invalid truth fails closed. Campaign
-ownership, reconciliation, Source Governor, Central Scheduler, timeout, retry,
-and accounting policy are unchanged.
+The prior post-holder reconciliation repair reached its intended live branch,
+but tried to assign a replacement diagnostics mapping directly onto
+`GraduatedSupply`, which is a frozen dataclass. The repair now preserves that
+immutable carrier with `dataclasses.replace(..., diagnostics=...)`. The focused
+regression uses the real frozen `GraduatedSupply` type so this exact failure
+cannot pass through a helper-only test again. Source Governor, Central
+Scheduler, retry, request-budget, reconciliation, and capability policy are
+unchanged.
 
 ## Known blocker
 
-The consumed authorization cannot be rerun. Its exact source reconciliation
-defect is repaired in development only: the post-holder freeze-coverage wait
-called the temporal refresh owner but dropped its completed outcome. Durable
-refresh IDs `4979,4980,4981,4982` then had no stage-reported or manifest
-coverage. The repair carries that exact owner-produced evidence into the existing
-final-refresh reconciliation fields; it does not weaken reconciliation or add
-requests. No authorization may be prepared yet.
+The repair has not yet been executed in the local development environment.
+No new authorization may be prepared until the focused regression and affected
+reconciliation tests pass and the exact repair diff is reviewed.
 
 ## Next permitted action
 
-Focused verification passed: the new disposable regression plus the affected
-refresh/reconciliation tests (`13 passed`), wrapper terminal tests (`56 passed,
-7 subtests`), `py_compile`, and `git diff --check`. Review the exact repair diff
-only. Then hard stop before any authorization preparation, provider call, or
+Sync this repair HEAD locally. Run the focused frozen-carrier regression plus
+the affected post-holder refresh/reconciliation tests on disposable state,
+`py_compile`, and `git diff --check`; then review this exact repair diff.
+Hard stop before any new authorization preparation, provider call, or
 operational execution.

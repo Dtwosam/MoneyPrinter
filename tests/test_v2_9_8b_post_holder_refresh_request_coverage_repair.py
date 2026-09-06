@@ -14,6 +14,7 @@ from printer_v1.discovery.pre_lifecycle_temporal_acquisition import (
     TemporalRefreshOutcome,
 )
 from printer_v1.operator_cli import authoritative_live_operational_campaign as campaign
+from printer_v1.operator_cli.graduated_supply_front_door import GraduatedSupply
 
 
 EXECUTION = "exact-post-holder-refresh-execution"
@@ -116,3 +117,49 @@ def test_post_holder_completed_refresh_evidence_reconciles_exactly(tmp_path) -> 
     )
     assert blocked["status"] == "BLOCKED"
     assert blocked["missing_from_manifest"] == [904]
+
+def test_post_holder_refresh_evidence_replaces_frozen_supply_carrier() -> None:
+    request_ids = (901, 902, 903, 904)
+    supply = GraduatedSupply(
+        ready=False,
+        terminal="WAITING_FOR_ELIGIBLE_SUPPLY",
+        graduated_supply=(),
+        graduation_proofs={},
+        candidate_a=None,
+        candidate_b=None,
+        two_candidate_selection={},
+        handoff_readiness={},
+        discovery_report={},
+        front_door_report={},
+        diagnostics={
+            "freeze_depth_enforcement": {
+                "terminal": None,
+                "continuation": None,
+            }
+        },
+    )
+    outcome = TemporalRefreshOutcome(
+        status=REFRESH_COMPLETED,
+        source_request_ids=request_ids,
+        source_request_coverage=tuple(
+            _coverage(request_id) for request_id in request_ids
+        ),
+    )
+
+    updated = campaign._replace_supply_post_holder_refresh_evidence(
+        supply,
+        outcome,
+    )
+
+    assert updated is not supply
+    assert updated.diagnostics["final_refresh_source_request_ids"] == list(request_ids)
+    assert [
+        item["source_request_id"]
+        for item in updated.diagnostics["final_refresh_source_request_coverage"]
+    ] == list(request_ids)
+    assert "final_refresh_source_request_ids" not in supply.diagnostics
+    assert updated.diagnostics["freeze_depth_enforcement"] == {
+        "terminal": None,
+        "continuation": None,
+    }
+
