@@ -19,6 +19,9 @@ import sqlite3
 from typing import Any, Mapping, Sequence
 
 from printer_v1.discovery.memory_observation_activation import AdmissionAuthority
+from printer_v1.discovery.pre_lifecycle_temporal_acquisition import (
+    PRE_LIFECYCLE_ACQUISITION_DURATION_SECONDS,
+)
 from printer_v1.operator_cli.authoritative_admission_health import (
     AdmissionHealthProjection,
 )
@@ -34,6 +37,9 @@ from printer_v1.operator_cli.multi_cycle_memory_growth import (
     MultiCycleCapacityPolicy,
     scaled_standard_four_hour_capacity_contract,
 )
+from printer_v1.operator_cli.operational_standard_4h import (
+    POST_SUPPLY_DURATION_SECONDS as STANDARD_FOUR_HOUR_POST_SUPPLY_DURATION_SECONDS,
+)
 
 
 FOUR_TOKEN_PROOF_THROUGH_4H_TOKENS = 4
@@ -41,6 +47,15 @@ FOUR_TOKEN_PROOF_ACTIVE_CYCLES = 2
 FOUR_TOKEN_PROOF_TOTAL_CYCLES = 2
 FOUR_TOKEN_PROOF_TOKENS_PER_CYCLE = 2
 FOUR_TOKEN_PROOF_MIN_SPACING_SECONDS = MIN_CYCLE_ADMISSION_SPACING_SECONDS
+
+# A brand-new later-cycle acquisition may start only while the outer factory
+# deadline still reserves its complete bounded acquisition horizon plus the
+# entire standard 15m -> 1h -> 4h lifecycle. Existing RUNNING/PAIR_READY
+# attempts keep their original acquisition cutoff and are not restarted.
+FOUR_TOKEN_LATER_CYCLE_COMPLETION_RESERVE_SECONDS = (
+    PRE_LIFECYCLE_ACQUISITION_DURATION_SECONDS
+    + STANDARD_FOUR_HOUR_POST_SUPPLY_DURATION_SECONDS
+)
 
 _STEP_KEY_RE = re.compile(
     r"^t(?P<slot>[12])_(?:(?:c(?P<cycle>[0-9]{4})_))?(?P<suffix>[A-Za-z0-9][A-Za-z0-9_.:-]*)$"
