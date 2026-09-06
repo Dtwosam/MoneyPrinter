@@ -1527,6 +1527,7 @@ def commit_standard_4h_progression_handoff(
             authoritative_factory_run_id=factory_run_id,
         ),
         first_cycle_id=cycle_id,
+        shared_admitted_cycle_scope=True,
     )
     lanes = tuple(str(token["tracking_lane"]) for token in aggregate["tokens"])
     mask = tuple(
@@ -1682,6 +1683,7 @@ def commit_standard_4h_progression_handoff(
                 authoritative_factory_run_id=factory_run_id,
             ),
             first_cycle_id=cycle_id,
+            shared_admitted_cycle_scope=True,
         )
         atomic_persisted_cancellation = (
             "CAMPAIGN_STOP_REQUESTED"
