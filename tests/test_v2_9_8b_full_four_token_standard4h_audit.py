@@ -9,6 +9,7 @@ from __future__ import annotations
 import sqlite3
 
 from tests.test_v2_9_8b_lane3_standard_4h_progression import (
+    _FactoryLoopDateTime,
     _run_standard_factory_loop,
 )
 
@@ -17,6 +18,14 @@ def test_single_cycle_real_factory_reaches_two_terminal_four_hour_closes(
     tmp_path,
     monkeypatch,
 ) -> None:
+    # The legacy Lane-3 harness binds the factory and source contracts to its
+    # accelerated clock. Bind the long-window planner too so this audit proves
+    # production control flow rather than mixing fake August time with the
+    # runner's real wall clock.
+    monkeypatch.setattr(
+        "printer_v1.operator_cli.one_token_4h_runtime.datetime",
+        _FactoryLoopDateTime,
+    )
     db, report = _run_standard_factory_loop(
         tmp_path,
         monkeypatch,
