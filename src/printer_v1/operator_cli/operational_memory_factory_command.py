@@ -102,6 +102,7 @@ from printer_v1.operator_cli.unified_terminal_closure import (
     assert_runtime_dependency_preflight,
     build_campaign_terminal_report,
     build_campaign_terminal_summary,
+    reconcile_admitted_campaign_terminal,
     reconcile_campaign_terminal,
     replay_campaign_terminal_report,
     write_campaign_terminal_report,
@@ -4052,11 +4053,11 @@ def _run_operational_campaign(
                 )
             if heartbeat is not None:
                 heartbeat.stop()
-            reconciliation_result = reconcile_campaign_terminal(
+            reconciliation_result = reconcile_admitted_campaign_terminal(
                 command.db_path,
                 campaign_id=command.campaign_id,
                 run_id=command.run_id,
-                cycle_id=cycle_id,
+                primary_cycle_id=cycle_id,
                 terminal_cause=terminal_cause,
                 run_status=run_status,
                 factory_run_id=initialized_factory_run_id,
@@ -4084,6 +4085,7 @@ def _run_operational_campaign(
                 "clean_terminal": bool(
                     cleanup_result.get("cleanup_completed") is True
                     and reconciliation_result.get("reconciled") is True
+                    and reconciliation_result.get("clean_terminal") is True
                 ),
                 "lease_released": bool(
                     cleanup_result.get("lease_released") is True

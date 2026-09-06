@@ -765,6 +765,167 @@ def reconcile_campaign_terminal(
     return report
 
 
+def reconcile_admitted_campaign_terminal(
+    db_path: str | Path,
+    *,
+    campaign_id: str,
+    run_id: str,
+    primary_cycle_id: str,
+    terminal_cause: str,
+    run_status: str | None = None,
+    factory_run_id: str | None = None,
+    lifecycle_started: bool = False,
+    now: str | None = None,
+) -> dict[str, Any]:
+    """Reconcile every exact durably admitted cycle through the existing owner.
+
+    This is the four-token shared-terminal composer.  It does not invent a new
+    terminal authority: it first proves the durable admitted shape, then invokes
+    :func:`reconcile_campaign_terminal` once for each admitted cycle.  Ordinary
+    single-cycle callers keep their existing semantics unchanged.
+    """
+    instant = now or _utc_now()
+    primary = str(primary_cycle_id or "").strip()
+    if not primary:
+        raise TerminalClosureError("SHARED_TERMINAL_PRIMARY_CYCLE_REQUIRED")
+
+    connection = sqlite3.connect(str(db_path))
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
+    try:
+        if not _table_exists(
+            connection, "printer_memory_factory_campaign_cycles"
+        ) or not _table_exists(
+            connection, "printer_memory_factory_campaign_token_slots"
+        ):
+            raise TerminalClosureError(
+                "SHARED_TERMINAL_ADMITTED_OWNERSHIP_TABLE_MISSING"
+            )
+        cycle_rows = connection.execute(
+            """SELECT cycle_id,cycle_ordinal
+               FROM printer_memory_factory_campaign_cycles
+               WHERE campaign_id=? AND run_id=?
+               ORDER BY cycle_ordinal,cycle_id""",
+            (campaign_id, run_id),
+        ).fetchall()
+        admitted_cycles = tuple(
+            (str(row["cycle_id"]), int(row["cycle_ordinal"]))
+            for row in cycle_rows
+        )
+        ordinals = tuple(item[1] for item in admitted_cycles)
+        if ordinals not in {(1,), (1, 2)}:
+            raise TerminalClosureError(
+                "SHARED_TERMINAL_ADMITTED_CYCLE_SHAPE_INVALID:"
+                + ",".join(str(item) for item in ordinals)
+            )
+        cycle_ids = tuple(item[0] for item in admitted_cycles)
+        if len(set(cycle_ids)) != len(cycle_ids):
+            raise TerminalClosureError(
+                "SHARED_TERMINAL_ADMITTED_CYCLE_IDENTITY_DUPLICATED"
+            )
+        if not admitted_cycles or admitted_cycles[0][0] != primary:
+            raise TerminalClosureError(
+                "SHARED_TERMINAL_PRIMARY_CYCLE_MISMATCH"
+            )
+        for admitted_cycle_id, _ordinal in admitted_cycles:
+            slot_ordinals = [
+                int(row["slot_ordinal"])
+                for row in connection.execute(
+                    """SELECT slot_ordinal
+                       FROM printer_memory_factory_campaign_token_slots
+                       WHERE campaign_id=? AND run_id=? AND cycle_id=?
+                       ORDER BY slot_ordinal,token_slot_id""",
+                    (campaign_id, run_id, admitted_cycle_id),
+                ).fetchall()
+            ]
+            if slot_ordinals != [1, 2]:
+                raise TerminalClosureError(
+                    "SHARED_TERMINAL_SLOT_SHAPE_INVALID:"
+                    f"{admitted_cycle_id}:{slot_ordinals}"
+                )
+    finally:
+        connection.close()
+
+    cycle_reconciliations: list[dict[str, Any]] = []
+    flattened_dispositions: list[dict[str, Any]] = []
+    for admitted_cycle_id, cycle_ordinal in admitted_cycles:
+        cycle_report = reconcile_campaign_terminal(
+            db_path,
+            campaign_id=campaign_id,
+            run_id=run_id,
+            cycle_id=admitted_cycle_id,
+            terminal_cause=terminal_cause,
+            run_status=run_status,
+            factory_run_id=factory_run_id,
+            lifecycle_started=lifecycle_started,
+            now=instant,
+        )
+        cycle_reconciliations.append(
+            {
+                "cycle_id": admitted_cycle_id,
+                "cycle_ordinal": cycle_ordinal,
+                "reconciliation": cycle_report,
+            }
+        )
+        flattened_dispositions.extend(
+            dict(item)
+            for item in cycle_report.get("pre_lifecycle_dispositions", ())
+            if isinstance(item, Mapping)
+        )
+
+    verification = sqlite3.connect(str(db_path))
+    verification.row_factory = sqlite3.Row
+    verification.execute("PRAGMA foreign_keys = ON")
+    try:
+        active_work = campaign_active_work_report(
+            verification,
+            factory_run_id=factory_run_id,
+            campaign_id=campaign_id,
+            run_id=run_id,
+            cycle_id=None,
+        )
+        slot_rows = verification.execute(
+            """SELECT cycle_id,slot_ordinal,token_state
+               FROM printer_memory_factory_campaign_token_slots
+               WHERE campaign_id=? AND run_id=?
+               ORDER BY cycle_id,slot_ordinal""",
+            (campaign_id, run_id),
+        ).fetchall()
+    finally:
+        verification.close()
+
+    expected_slot_keys = {
+        (cycle_id, slot_ordinal)
+        for cycle_id, _cycle_ordinal in admitted_cycles
+        for slot_ordinal in (1, 2)
+    }
+    actual_slot_keys = {
+        (str(row["cycle_id"]), int(row["slot_ordinal"]))
+        for row in slot_rows
+    }
+    terminal_slot_states = {"COOLDOWN", "ARCHIVED", "MANUAL_REVIEW", "FAILED"}
+    slots_terminal = bool(
+        actual_slot_keys == expected_slot_keys
+        and all(str(row["token_state"]) in terminal_slot_states for row in slot_rows)
+    )
+    per_cycle_reconciled = all(
+        item["reconciliation"].get("reconciled") is True
+        for item in cycle_reconciliations
+    )
+    reconciled = bool(per_cycle_reconciled and slots_terminal)
+
+    primary_report = dict(cycle_reconciliations[0]["reconciliation"])
+    primary_report["admitted_cycle_ids"] = list(cycle_ids)
+    primary_report["cycle_reconciliations"] = cycle_reconciliations
+    primary_report["pre_lifecycle_dispositions"] = flattened_dispositions
+    primary_report["active_work"] = active_work
+    primary_report["reconciled"] = reconciled
+    primary_report["clean_terminal"] = bool(
+        reconciled and active_work.get("clean_terminal") is True
+    )
+    return primary_report
+
+
 # ---------------------------------------------------------------------------
 # A5 — exactly one persistent campaign report row and one durable artifact
 # ---------------------------------------------------------------------------

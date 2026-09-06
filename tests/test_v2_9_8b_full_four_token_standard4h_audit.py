@@ -109,7 +109,7 @@ def test_two_cycle_four_token_real_factory_reaches_shared_terminal_standard4h(
         LaterCycleSourceEvidence,
     )
     from printer_v1.operator_cli.unified_terminal_closure import (
-        reconcile_campaign_terminal,
+        reconcile_admitted_campaign_terminal,
     )
     from tests.test_v2_9_8b_callback_consume_materialize_integration import (
         GOVERNOR,
@@ -237,11 +237,11 @@ def test_two_cycle_four_token_real_factory_reaches_shared_terminal_standard4h(
         )
 
         def shared_terminalizer(*, terminal_cause, run_status):
-            reconciliation = reconcile_campaign_terminal(
+            reconciliation = reconcile_admitted_campaign_terminal(
                 db,
                 campaign_id=CAMPAIGN_ID,
                 run_id=CAMPAIGN_RUN_ID,
-                cycle_id=CYCLE_ID,
+                primary_cycle_id=CYCLE_ID,
                 terminal_cause=str(terminal_cause),
                 run_status=run_status,
                 factory_run_id=FACTORY_RUN_ID,
@@ -351,6 +351,23 @@ def test_two_cycle_four_token_real_factory_reaches_shared_terminal_standard4h(
     assert [
         int(item["cycle_ordinal"]) for item in accounting.get("admitted_cycles", [])
     ] == [1, 2]
+    pre_terminal_tokens = [
+        token
+        for cycle in accounting.get("cycles", [])
+        if isinstance(cycle, dict)
+        for token in cycle.get("tokens", [])
+        if isinstance(token, dict)
+    ]
+    assert len(pre_terminal_tokens) == 4, pre_terminal_tokens
+    assert all(
+        str(token.get("persisted_slot_state")) == "WINDOW_4H_CLOSED"
+        for token in pre_terminal_tokens
+    ), pre_terminal_tokens
+    assert all(
+        dict(token.get("standard_four_hour_progression") or {}).get("outcome")
+        == "SUCCEEDED"
+        for token in pre_terminal_tokens
+    ), pre_terminal_tokens
 
     connection = sqlite3.connect(db)
     connection.row_factory = sqlite3.Row
@@ -364,7 +381,8 @@ def test_two_cycle_four_token_real_factory_reaches_shared_terminal_standard4h(
         assert all(str(row["cycle_state"]) == "TERMINAL_COMPLETED" for row in cycles)
 
         targets = connection.execute(
-            "SELECT cycle_id,slot_ordinal,token_row_id,pair_row_id,token_state "
+            "SELECT cycle_id,slot_ordinal,token_row_id,pair_row_id,token_state,"
+            "first_terminal_cause,terminal_at,tracking_queue_id "
             "FROM printer_memory_factory_campaign_token_slots "
             "ORDER BY cycle_id,slot_ordinal"
         ).fetchall()
@@ -372,26 +390,29 @@ def test_two_cycle_four_token_real_factory_reaches_shared_terminal_standard4h(
         assert len(
             {(int(row["token_row_id"]), int(row["pair_row_id"])) for row in targets}
         ) == 4
+        assert all(str(row["token_state"]) == "COOLDOWN" for row in targets), [
+            dict(row) for row in targets
+        ]
         assert all(
-            str(row["token_state"]) == "WINDOW_4H_CLOSED" for row in targets
-        ), json.dumps(
-            {
-                "targets": [dict(row) for row in targets],
-                "cycles": [
-                    {
-                        "cycle_id": item.get("cycle_id"),
-                        "execution_outcome": item.get("execution_outcome"),
-                        "standard_four_hour_terminal": item.get(
-                            "standard_four_hour_terminal"
-                        ),
-                    }
-                    for item in accounting.get("cycles", [])
-                    if isinstance(item, dict)
-                ],
-            },
-            sort_keys=True,
-            default=str,
-        )
+            str(row["first_terminal_cause"]) == "OWNED_TERMINAL_WINDOW_COOLDOWN"
+            and row["terminal_at"] is not None
+            and row["tracking_queue_id"] is not None
+            for row in targets
+        ), [dict(row) for row in targets]
+        queues = connection.execute(
+            "SELECT id,queue_status,tracking_action FROM printer_tracking_queue "
+            "WHERE id IN ("
+            "SELECT tracking_queue_id FROM printer_memory_factory_campaign_token_slots "
+            "WHERE campaign_id=? AND run_id=? AND tracking_queue_id IS NOT NULL"
+            ") ORDER BY id",
+            (CAMPAIGN_ID, CAMPAIGN_RUN_ID),
+        ).fetchall()
+        assert len(queues) == 4
+        assert all(
+            (str(row["queue_status"]), str(row["tracking_action"]))
+            == ("COOLDOWN", "COOLDOWN")
+            for row in queues
+        ), [dict(row) for row in queues]
 
         attempt = connection.execute(
             "SELECT attempt_state,consumed_cycle_id FROM "
