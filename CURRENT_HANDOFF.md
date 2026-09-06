@@ -2,22 +2,19 @@
 
 ## Current HEAD
 
-Use `git rev-parse HEAD`. This handoff is committed with the wrapper-bound
-returned-campaign terminal truth repair. The repair started from
-`b0ecbcb8830c55bb6242647cda23335201a3981e`.
+This handoff is committed with the post-holder refresh evidence-carrier repair.
+The repair started from `b3b6e3d5ffa80d9bee65ec26990f0e11eb45a065`; use
+`git rev-parse HEAD` for the committed final HEAD.
 
 ## Authoritative DB
 
 `data/printer_v1.sqlite3`
 
-The last exact identity verified before the latest consumed operational run was
-SHA-256 `e244ed70c8b3c413191255c496b328042d7192a23ea667d5061c87eda13aa5f8`,
-size `168710144`, inode `1230526`, mtime_ns `1788639431417133892`.
-
-That identity is now historical pre-run evidence. The latest child terminal did
-not carry a post-run database identity, so the current authoritative DB identity
-must be re-derived read-only from the local checkout before any further
-preflight or authorization work.
+Current post-run identity, derived read-only: SHA-256
+`400f63ef7286a71bb751e8b7b2ecfd50cb3c03ccd66e91f55479195e2e1ab769`, size
+`169398272`, inode `1230526`, mtime_ns `1788690300902508255`. `integrity_check`
+is `ok`, `foreign_key_check` has zero rows, and no WAL, SHM, or journal sidecars
+are present. The historical pre-run identity remains non-current evidence only.
 
 ## DB identity reconciliation
 
@@ -51,18 +48,18 @@ and accounting policy are unchanged.
 
 ## Known blocker
 
-The exact durable source-request reconciliation defect from execution
-`20260906T101455Z-cbbcf503d01b` has not been repaired. Its source-request IDs,
-stage-reported coverage, manifest coverage, and earliest ownership mismatch must
-be audited from the retained local stdout/DB evidence before changing
-reconciliation or source-accounting code. The consumed authorization cannot be
-rerun.
+The consumed authorization cannot be rerun. Its exact source reconciliation
+defect is repaired in development only: the post-holder freeze-coverage wait
+called the temporal refresh owner but dropped its completed outcome. Durable
+refresh IDs `4979,4980,4981,4982` then had no stage-reported or manifest
+coverage. The repair carries that exact owner-produced evidence into the existing
+final-refresh reconciliation fields; it does not weaken reconciliation or add
+requests. No authorization may be prepared yet.
 
 ## Next permitted action
 
-First run focused development verification for this terminal-semantics repair
-and re-derive the current authoritative DB identity read-only. Then audit the
-latest campaign's exact durable reconciliation mismatch from retained
-`child-stdout.txt` and DB rows. Do not prepare a new authorization or run
-operational code until that proven reconciliation defect is repaired, verified,
-and reviewed.
+Focused verification passed: the new disposable regression plus the affected
+refresh/reconciliation tests (`13 passed`), wrapper terminal tests (`56 passed,
+7 subtests`), `py_compile`, and `git diff --check`. Review the exact repair diff
+only. Then hard stop before any authorization preparation, provider call, or
+operational execution.

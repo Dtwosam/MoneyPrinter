@@ -179,6 +179,29 @@ def _request_temporal_refresh_after_releasing_campaign_write(
     return temporal_refresh_owner.request_temporal_refresh(**refresh_kwargs)
 
 
+def _carry_post_holder_refresh_evidence(
+    diagnostics: Mapping[str, Any],
+    outcome: Any,
+) -> dict[str, Any]:
+    """Carry the refresh owner's exact evidence into final reconciliation."""
+    from printer_v1.discovery.eligible_token_supply import (
+        merge_cumulative_source_request_coverage,
+    )
+
+    updated = dict(diagnostics)
+    updated["final_refresh_source_request_ids"] = [
+        *list(updated.get("final_refresh_source_request_ids") or ()),
+        *list(getattr(outcome, "source_request_ids", ()) or ()),
+    ]
+    updated["final_refresh_source_request_coverage"] = (
+        merge_cumulative_source_request_coverage(
+            updated.get("final_refresh_source_request_coverage") or (),
+            getattr(outcome, "source_request_coverage", ()) or (),
+        )
+    )
+    return updated
+
+
 def _merge_later_cycle_refresh_source_request_coverage(
     progress: Mapping[str, Any],
     completed: Sequence[Mapping[str, Any]] | None,
@@ -5165,7 +5188,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     )
                     if continuation.status == WAITING_FOR_ELIGIBLE_SUPPLY:
                         if pre_lifecycle_temporal_refresh_owner is not None:
-                            _request_temporal_refresh_after_releasing_campaign_write(
+                            refresh_outcome = _request_temporal_refresh_after_releasing_campaign_write(
                                 connection,
                                 pre_lifecycle_temporal_refresh_owner,
                                 reserve_depth=freeze_ready_depth,
@@ -5186,6 +5209,10 @@ class AuthoritativeLiveOperationalCampaignOwner:
                                 ),
                                 provider_terminal_failure=False,
                                 now=datetime.now(timezone.utc).isoformat(),
+                            )
+                            supply.diagnostics = _carry_post_holder_refresh_evidence(
+                                supply.diagnostics,
+                                refresh_outcome,
                             )
                         supply.diagnostics["freeze_depth_enforcement"][
                             "terminal"
