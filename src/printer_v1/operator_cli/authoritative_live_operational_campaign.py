@@ -271,6 +271,17 @@ def _resume_post_holder_supply_after_refresh(
         + int(getattr(outcome, "source_operations", 0) or 0)
     )
     prior_coverage = _post_holder_supply_resume_coverage(prior_diagnostics)
+    from printer_v1.discovery.permanent_discovery_availability import StageBudget
+
+    try:
+        resumed_stage_budget = StageBudget.from_snapshot(
+            prior_diagnostics.get("stage_capacity")
+        )
+    except (TypeError, ValueError) as exc:
+        raise LiveOperationalError(
+            "POST_HOLDER_REFRESH_STAGE_BUDGET_INVALID",
+            str(exc),
+        ) from exc
 
     resume_kwargs = dict(supply_kwargs)
     resume_kwargs.pop("now", None)
@@ -307,6 +318,7 @@ def _resume_post_holder_supply_after_refresh(
         {
             "temporal_refresh_owner": temporal_refresh_owner,
             "cooperative_resume": True,
+            "cooperative_stage_budget": resumed_stage_budget,
             "prior_source_operations_used": prior_operations,
             "prior_source_request_coverage": prior_coverage,
         }

@@ -14,11 +14,14 @@ from unittest.mock import patch
 
 import pytest
 
+from printer_v1.db import apply_migrations
+from printer_v1.discovery import eligible_token_supply as eligible_supply_module
 from printer_v1.discovery.eligible_token_supply import (
     temporal_refresh_terminal_cause,
 )
 from printer_v1.discovery.permanent_discovery_availability import (
     FrozenEligibleReserve,
+    StageBudget,
     freeze_eligible_reserve_for_campaign,
 )
 from printer_v1.discovery.pre_lifecycle_temporal_acquisition import (
@@ -182,6 +185,95 @@ def test_supply_resume_coverage_excludes_holder_owned_stage_evidence() -> None:
 
     assert [entry["source_request_id"] for entry in coverage] == [11, 12]
 
+
+def test_stage_budget_snapshot_round_trip_preserves_consumed_capacity() -> None:
+    budget = StageBudget.permanent_discovery_default()
+    budget.consume("intake", 2)
+    budget.seal("intake")
+    budget.consume("market_batching", 1)
+
+    restored = StageBudget.from_snapshot(budget.snapshot())
+
+    assert restored.snapshot() == budget.snapshot()
+    assert restored.available("market_batching") == budget.available(
+        "market_batching"
+    )
+
+
+def test_non_quantum_resume_rehydrates_inventory_before_campaign_start_acquisition(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db = tmp_path / "post-holder-resume.sqlite3"
+    apply_migrations(db)
+
+    class ReachedDurableInventory(RuntimeError):
+        pass
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError(
+            "non-quantum cooperative resume must not re-enter campaign-start acquisition"
+        )
+
+    monkeypatch.setattr(
+        eligible_supply_module,
+        "run_direct_migration_discovery",
+        forbidden,
+    )
+    monkeypatch.setattr(
+        eligible_supply_module,
+        "run_geckoterminal_fresh_nomination",
+        forbidden,
+    )
+
+    from printer_v1.discovery import permanent_discovery_availability as permanent
+
+    monkeypatch.setattr(
+        permanent,
+        "run_bounded_unknown_liquidity_backup",
+        forbidden,
+    )
+    monkeypatch.setattr(
+        permanent,
+        "process_protocol_confirmation_queue",
+        forbidden,
+    )
+
+    def reached_inventory(_connection):
+        raise ReachedDurableInventory("durable inventory reached")
+
+    monkeypatch.setattr(
+        eligible_supply_module,
+        "export_graduated_candidates",
+        reached_inventory,
+    )
+
+    prior_budget = StageBudget.permanent_discovery_default()
+    prior_budget.consume("intake", 2)
+    prior_budget.seal("intake")
+    prior_budget.consume("market_batching", 1)
+    resumed_budget = StageBudget.from_snapshot(prior_budget.snapshot())
+
+    with pytest.raises(ReachedDurableInventory, match="durable inventory reached"):
+        eligible_supply_module.run_persistent_eligible_token_supply(
+            db,
+            cycle_seed="post-holder-existing-inventory",
+            migration_transport=lambda _context: {},
+            now="2026-09-06T15:45:12+00:00",
+            permanent_availability=True,
+            cooperative_resume=True,
+            cooperative_stage_budget=resumed_budget,
+            prior_source_operations_used=3,
+            run_geckoterminal_nomination=True,
+            campaign_id="campaign",
+            execution_id="execution",
+            run_id="run",
+            cycle_id="cycle",
+            discovery_request_key_prefix="resume-root",
+            front_door_request_key_prefix="resume-root",
+        )
+
+
 def test_four_token_standard4h_disposable_rehearsal_uses_proof_preflight(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -230,6 +322,11 @@ def test_post_holder_completed_refresh_resumes_canonical_supply_and_refreezes() 
         diagnostics = dict(supply.diagnostics)
         diagnostics["discovery_operations_used"] = 0
         diagnostics["discovery_operations_remaining"] = 10
+        initial_stage_budget = StageBudget.permanent_discovery_default()
+        initial_stage_budget.consume("intake", 2)
+        initial_stage_budget.seal("intake")
+        initial_stage_budget.consume("market_batching", 1)
+        diagnostics["stage_capacity"] = initial_stage_budget.snapshot()
         supply = replace(supply, diagnostics=diagnostics)
 
         initial_manifest = list(
@@ -370,6 +467,10 @@ def test_post_holder_completed_refresh_resumes_canonical_supply_and_refreezes() 
             resume_calls["count"] += 1
             assert resume_calls["count"] == 1
             assert kwargs["cooperative_resume"] is True
+            assert isinstance(kwargs["cooperative_stage_budget"], StageBudget)
+            assert kwargs["cooperative_stage_budget"].snapshot() == (
+                initial_stage_budget.snapshot()
+            )
             assert kwargs["prior_source_operations_used"] == 1
             assert kwargs["permanent_availability"] is True
             assert kwargs["tracking_precheck"] is True

@@ -2,7 +2,7 @@
 
 ## Current HEAD
 
-This handoff is committed with the same-scope holder-resume collision repair.
+This handoff is committed with the post-holder non-quantum resume repair.
 Use `git rev-parse HEAD` for the exact committed HEAD.
 
 ## Authoritative DB
@@ -10,24 +10,24 @@ Use `git rev-parse HEAD` for the exact committed HEAD.
 `data/printer_v1.sqlite3`
 
 Latest post-run identity from the consumed child terminal:
-SHA-256 `f0f33ec8deaf8d7bc7ef40a587dcf43537c96efc2871328dddd0651c3fa2aad6`,
-size `170545152`, inode `1230526`, mtime_ns
-`1788706298562345817`.
+SHA-256 `6cd6e9c3135ba92fd9c5490ffb76f827a3989cb60f829c36d41da619f311c180`,
+size `171319296`, inode `1230526`, mtime_ns
+`1788709511519326180`.
 
 The child reported cleanup complete, lease released, zero locked Scheduler work,
-and zero pending/running Scheduler work. Re-derive exact DB identity,
-integrity/FK health, sidecars, and zero-active-work locally before any future
-authorization package is prepared.
+zero pending/running Scheduler work, and zero Scheduler runtime calls.
+Re-derive exact DB identity, integrity/FK health, sidecars, and zero-active-work
+locally before any future authorization package is prepared.
 
 ## Latest consumed authorization
 
 One-shot authorization
-`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260906T143909Z_23f8f65e` was consumed exactly
-once by execution `20260906T144132Z-14d9e450d867`, campaign
-`20260906T144132Z-14d9e450d867-campaign`. It exited 1 in
-`CAMPAIGN_PRE_LIFECYCLE` after 20 source calls and 6 DB writes. The durable
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260906T151614Z_ea7f69c4` was consumed exactly
+once by execution `20260906T152505Z-1c1ea941dc1c`, campaign
+`20260906T152505Z-1c1ea941dc1c-campaign`. It exited 1 in
+`CAMPAIGN_PRE_LIFECYCLE` after 23 source calls and 6 DB writes. The durable
 first terminal cause was
-`CAMPAIGN_SOURCE_REQUEST_SCOPE_ALREADY_EXISTS:CAMPAIGN_SOURCE_REQUEST_SCOPE_ALREADY_EXISTS`.
+`CampaignSixUnitError:SIX_UNIT_STAGE_EVIDENCE_DUPLICATE_STAGE_ID:20260906T152505Z-1c1ea941dc1c-campaign|20260906T152505Z-1c1ea941dc1c-campaign-run|20260906T152505Z-1c1ea941dc1c-cycle|DIRECT_MIGRATION|1`.
 The authorization is permanently non-reusable. No retry, rerun, restart,
 resume, successor, or reuse is permitted or implied.
 
@@ -43,23 +43,25 @@ financial, position, and live-trading capabilities remain locked.
 
 ## Latest meaningful result
 
-The post-holder canonical supply resume now distinguishes two separate
-contracts correctly:
+The failed run proved that post-holder canonical resume reached beyond the
+same-scope holder-collision repair but then re-entered campaign-start direct
+migration and attempted to seal deterministic `DIRECT_MIGRATION|1` a second
+time.
 
-- discovery resume coverage contains only discovery/supply-owned evidence plus
-  post-holder refresh evidence; holder-owned coverage is not re-owned by
-  discovery;
-- the cooperative same-root collision validator recognizes the exact lawful
-  terminal holder request shapes that may already occupy the campaign root:
-  GoPlus safety, Solana core safety, Solana holder concentration, and the
-  single Solana/Helius holder backup.
+The repair keeps the six-unit duplicate guard unchanged and fixes the resume
+owner instead:
 
-The validator remains exact and fail-closed for foreign sources, wrong request
-kinds, out-of-range holder ordinals, malformed keys, non-terminal rows, missing
-terminal artifacts, and foreign scope identity.
+- non-quantum cooperative resume is explicitly existing-inventory continuation;
+- it skips campaign-start direct migration, fresh nomination, unknown-liquidity
+  backup, and early protocol-confirmation stages;
+- it rehydrates the canonical graduated registry and continues through the
+  durable-sequenced market path;
+- the first pass's exact `StageBudget` snapshot is restored and required, so
+  resume cannot regain already-spent stage-specific capacity;
+- later-cycle cooperative quantums remain phase-driven and unchanged.
 
 Verification on GitHub Actions for the repair code:
-- focused post-holder/reconciliation/holder-scope suite: 23 passed;
+- focused post-holder/reconciliation/holder-scope/resume suite: 25 passed;
 - shared-boundary suite: 127 passed + 7 subtests, with two legacy E.44
   assertions deselected because both fail on the pre-repair HEAD under
   superseded contracts;

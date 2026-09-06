@@ -987,6 +987,82 @@ class StageBudget:
     def permanent_discovery_default(cls) -> "StageBudget":
         return cls(STAGE_RESERVATIONS)
 
+    @classmethod
+    def from_snapshot(cls, snapshot: Mapping[str, Any]) -> "StageBudget":
+        """Restore one exact canonical stage-budget snapshot.
+
+        Cooperative resume must continue the first pass's bounded stage capacity;
+        it may never receive a fresh reservation set merely because control
+        re-enters the canonical supply owner.
+        """
+        if not isinstance(snapshot, Mapping):
+            raise ValueError("STAGE_BUDGET_SNAPSHOT_INVALID")
+        reservations_raw = snapshot.get("reservations")
+        used_raw = snapshot.get("used_by_stage")
+        sealed_raw = snapshot.get("sealed_stages")
+        if (
+            not isinstance(reservations_raw, Mapping)
+            or not isinstance(used_raw, Mapping)
+            or isinstance(sealed_raw, (str, bytes))
+            or not isinstance(sealed_raw, Sequence)
+        ):
+            raise ValueError("STAGE_BUDGET_SNAPSHOT_INVALID")
+
+        canonical_reservations = {name: int(value) for name, value in STAGE_RESERVATIONS}
+        supplied_reservations = {
+            str(name): int(value) for name, value in reservations_raw.items()
+        }
+        if supplied_reservations != canonical_reservations:
+            raise ValueError("STAGE_BUDGET_SNAPSHOT_RESERVATION_MISMATCH")
+
+        stage_names = tuple(canonical_reservations)
+        if set(str(name) for name in used_raw) != set(stage_names):
+            raise ValueError("STAGE_BUDGET_SNAPSHOT_STAGE_SET_MISMATCH")
+        used_by_stage: dict[str, int] = {}
+        for name in stage_names:
+            value = used_raw.get(name)
+            if type(value) is not int or value < 0:
+                raise ValueError("STAGE_BUDGET_SNAPSHOT_USED_INVALID")
+            used_by_stage[name] = int(value)
+        if sum(used_by_stage.values()) > sum(canonical_reservations.values()):
+            raise ValueError("STAGE_BUDGET_SNAPSHOT_TOTAL_EXCEEDED")
+
+        sealed = {str(name) for name in sealed_raw}
+        if not sealed.issubset(set(stage_names)):
+            raise ValueError("STAGE_BUDGET_SNAPSHOT_SEALED_STAGE_INVALID")
+
+        restored = cls(
+            STAGE_RESERVATIONS,
+            used_by_stage=used_by_stage,
+            sealed=sealed,
+        )
+        active_indexes = [
+            index
+            for index, name in enumerate(stage_names)
+            if used_by_stage[name] > 0 or name in sealed
+        ]
+        restored.current_index = max(active_indexes, default=0)
+
+        if snapshot.get("remaining_by_stage") is not None:
+            remaining = snapshot.get("remaining_by_stage")
+            if not isinstance(remaining, Mapping) or {
+                str(name): int(value) for name, value in remaining.items()
+            } != restored.remaining_by_stage():
+                raise ValueError("STAGE_BUDGET_SNAPSHOT_REMAINING_MISMATCH")
+        if snapshot.get("total_ceiling") is not None and int(
+            snapshot["total_ceiling"]
+        ) != restored.total_ceiling:
+            raise ValueError("STAGE_BUDGET_SNAPSHOT_TOTAL_CEILING_MISMATCH")
+        if snapshot.get("total_used") is not None and int(
+            snapshot["total_used"]
+        ) != sum(restored.used_by_stage.values()):
+            raise ValueError("STAGE_BUDGET_SNAPSHOT_TOTAL_USED_MISMATCH")
+        if snapshot.get("total_remaining") is not None and int(
+            snapshot["total_remaining"]
+        ) != restored.total_ceiling - sum(restored.used_by_stage.values()):
+            raise ValueError("STAGE_BUDGET_SNAPSHOT_TOTAL_REMAINING_MISMATCH")
+        return restored
+
     @property
     def total_ceiling(self) -> int:
         return sum(value for _, value in self.reservations)

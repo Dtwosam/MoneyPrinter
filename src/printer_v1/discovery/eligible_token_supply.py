@@ -1339,6 +1339,15 @@ def run_persistent_eligible_token_supply(
         raise EligibleTokenSupplyError("INVALID_PRIOR_SOURCE_OPERATIONS")
     if cooperative_resume and not permanent_availability:
         raise EligibleTokenSupplyError("COOPERATIVE_RESUME_REQUIRES_PERMANENT_AVAILABILITY")
+    resume_existing_inventory_only = bool(
+        cooperative_resume and not cooperative_quantum
+    )
+    if cooperative_stage_budget is not None and not isinstance(
+        cooperative_stage_budget, StageBudget
+    ):
+        raise EligibleTokenSupplyError("COOPERATIVE_STAGE_BUDGET_INVALID")
+    if resume_existing_inventory_only and cooperative_stage_budget is None:
+        raise EligibleTokenSupplyError("COOPERATIVE_RESUME_STAGE_BUDGET_REQUIRED")
     if (
         cooperative_quantum
         and max_candidates > COOPERATIVE_QUANTUM_MAX_DIRECT_CANDIDATES
@@ -1358,8 +1367,6 @@ def run_persistent_eligible_token_supply(
             raise EligibleTokenSupplyError("COOPERATIVE_QUANTUM_PHASE_INVALID")
         if cooperative_stage_budget is None:
             raise EligibleTokenSupplyError("COOPERATIVE_STAGE_BUDGET_REQUIRED")
-        if not isinstance(cooperative_stage_budget, StageBudget):
-            raise EligibleTokenSupplyError("COOPERATIVE_STAGE_BUDGET_INVALID")
     if prior_source_request_coverage is None:
         prior_source_request_coverage_rows: list[dict[str, Any]] = []
     else:
@@ -1405,7 +1412,8 @@ def run_persistent_eligible_token_supply(
         not cooperative_quantum or cooperative_phase == "AUXILIARY_FRESH_INTAKE"
     )
     run_direct_this_quantum = (
-        not cooperative_quantum or cooperative_phase == "DIRECT_MIGRATION"
+        (not cooperative_quantum or cooperative_phase == "DIRECT_MIGRATION")
+        and not resume_existing_inventory_only
     )
     if cooperative_resume or not run_locator_this_quantum:
         locator = {
@@ -1553,7 +1561,7 @@ def run_persistent_eligible_token_supply(
     liquidity_failure_ids: set[int] = set()
     channels_attempted: list[str] = []
     channels_unavailable: list[str] = []
-    if run_locator:
+    if run_locator and not cooperative_resume:
         channels_attempted.append("dexscreener_fresh_profiles_locator")
         if str(locator.get("status") or "").upper() not in {
             "OK",
@@ -1563,8 +1571,9 @@ def run_persistent_eligible_token_supply(
             # Non-ok locator status with a request is treated as soft unavailability.
             if locator.get("status") not in (None, "ok", "OK"):
                 pass
-    channels_attempted.append("direct_pump_finalized_live_tail")
-    channels_attempted.append("exact_pump_pumpswap_graduation_verify")
+    if not resume_existing_inventory_only:
+        channels_attempted.append("direct_pump_finalized_live_tail")
+        channels_attempted.append("exact_pump_pumpswap_graduation_verify")
     channels_attempted.append(
         "dexscreener_mint_market_batch"
         if permanent_availability
@@ -1588,9 +1597,11 @@ def run_persistent_eligible_token_supply(
     permanent_market_reports: list[dict[str, Any]] = []
     stage_budget = (
         cooperative_stage_budget
-        if cooperative_quantum
+        if cooperative_quantum or resume_existing_inventory_only
         else StageBudget.permanent_discovery_default()
     )
+    if not isinstance(stage_budget, StageBudget):
+        raise EligibleTokenSupplyError("COOPERATIVE_STAGE_BUDGET_INVALID")
     protocol_stage_charged = False
     direct_protocol_confirmation_calls = 0
     protocol_confirmation_outcomes: list[dict[str, Any]] = []
@@ -1724,9 +1735,13 @@ def run_persistent_eligible_token_supply(
                 campaign_eligible[mint] = accepted
                 all_candidates.append(accepted)
 
-        if permanent_availability and (
-            not cooperative_quantum
-            or cooperative_phase == "AUXILIARY_FRESH_INTAKE"
+        if (
+            permanent_availability
+            and not resume_existing_inventory_only
+            and (
+                not cooperative_quantum
+                or cooperative_phase == "AUXILIARY_FRESH_INTAKE"
+            )
         ):
             locator_intake = int(locator.get("source_requests") or 0)
             if locator_intake:
@@ -1841,9 +1856,13 @@ def run_persistent_eligible_token_supply(
                 and stage_budget.available("intake") >= 1
             )
 
-        if permanent_availability and (
-            not cooperative_quantum
-            or cooperative_phase == "AUXILIARY_LIQUIDITY_BACKUP"
+        if (
+            permanent_availability
+            and not resume_existing_inventory_only
+            and (
+                not cooperative_quantum
+                or cooperative_phase == "AUXILIARY_LIQUIDITY_BACKUP"
+            )
         ):
 
             # One bounded opposite-source backup for fresh LIQUIDITY_UNKNOWN
@@ -1898,9 +1917,13 @@ def run_persistent_eligible_token_supply(
                     )
                 )
 
-        if permanent_availability and (
-            not cooperative_quantum
-            or cooperative_phase == "AUXILIARY_PROTOCOL_CONFIRMATION"
+        if (
+            permanent_availability
+            and not resume_existing_inventory_only
+            and (
+                not cooperative_quantum
+                or cooperative_phase == "AUXILIARY_PROTOCOL_CONFIRMATION"
+            )
         ):
             # V2-9.8B: process above-floor protocol confirmation before market
             # batches consume residual promotion capacity. Confirmed rows promote
