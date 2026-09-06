@@ -532,6 +532,43 @@ def test_two_cycle_four_token_real_factory_reaches_shared_terminal_standard4h(
             }
             assert all(row["memory_window_row_id"] is not None for row in owned)
 
+        physical_four_hour = connection.execute(
+            """SELECT cw.cycle_id,slot.slot_ordinal,cw.memory_window_row_id,
+                      mw.id AS physical_id,mw.token_id,mw.pair_id,
+                      mw.window_kind AS physical_window_kind,mw.window_status,
+                      mw.supporting_context_json,slot.token_row_id,slot.pair_row_id
+                 FROM printer_memory_factory_campaign_windows AS cw
+                 JOIN printer_memory_factory_campaign_token_slots AS slot
+                   ON slot.campaign_id=cw.campaign_id
+                  AND slot.run_id=cw.run_id
+                  AND slot.cycle_id=cw.cycle_id
+                  AND slot.token_slot_id=cw.token_slot_id
+                 JOIN printer_memory_windows AS mw
+                   ON mw.id=cw.memory_window_row_id
+                WHERE cw.window_kind='WINDOW_4H'
+                ORDER BY cw.cycle_id,slot.slot_ordinal"""
+        ).fetchall()
+        assert len(physical_four_hour) == 4
+        assert len({int(row["physical_id"]) for row in physical_four_hour}) == 4
+        for row in physical_four_hour:
+            assert int(row["memory_window_row_id"]) == int(row["physical_id"])
+            assert int(row["token_id"]) == int(row["token_row_id"])
+            assert int(row["pair_id"]) == int(row["pair_row_id"])
+            assert str(row["physical_window_kind"]) == "WINDOW_4H"
+            assert str(row["window_status"]) == "WINDOW_CLOSED"
+            context = json.loads(str(row["supporting_context_json"] or "{}"))
+            assert (
+                context.get("full_four_hour_outcome_source")
+                == "EXACT_CURRENT_RUN_MAIN_LIFECYCLE"
+            ), context
+            snapshot_ids = list(context.get("full_four_hour_outcome_snapshot_ids") or [])
+            assert snapshot_ids, context
+            assert int(context.get("full_four_hour_outcome_snapshot_count") or 0) == len(
+                snapshot_ids
+            ), context
+            assert context.get("full_four_hour_outcome_path_start_at"), context
+            assert context.get("full_four_hour_outcome_path_end_at"), context
+
         long_closes = connection.execute(
             """SELECT cw.cycle_id,slot.slot_ordinal,rs.step_key,rs.step_status,
                       rs.scheduler_job_id,cw.scheduler_work_id,cw.work_state
