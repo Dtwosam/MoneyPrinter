@@ -280,7 +280,22 @@ def test_two_cycle_four_token_real_factory_reaches_shared_terminal_standard4h(
     assert terminal.get("shared_cleanup_count") == 1, terminal
     assert terminal.get("admitted_shape") == "TWO_CYCLE_COMPLETION", terminal
     accounting = dict(terminal.get("terminal_accounting") or {})
-    assert accounting.get("execution_outcome") == "TERMINAL_SUCCESS", accounting
+    cycle_diagnostics = [
+        {
+            "cycle_id": item.get("cycle_id"),
+            "cycle_ordinal": item.get("cycle_ordinal"),
+            "execution_outcome": item.get("execution_outcome"),
+            "persisted_cycle_state": item.get("persisted_cycle_state"),
+            "primary_fault": item.get("primary_fault"),
+            "incomplete_reasons": item.get("incomplete_reasons"),
+            "standard_four_hour_terminal": item.get("standard_four_hour_terminal"),
+        }
+        for item in accounting.get("cycles", [])
+        if isinstance(item, dict)
+    ]
+    assert accounting.get("execution_outcome") == "TERMINAL_SUCCESS", json.dumps(
+        cycle_diagnostics, sort_keys=True, default=str
+    )
     assert accounting.get("accounting_complete") is True, accounting
     assert [
         int(item["cycle_ordinal"]) for item in accounting.get("admitted_cycles", [])
