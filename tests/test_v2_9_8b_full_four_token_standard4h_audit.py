@@ -14,6 +14,96 @@ from tests.test_v2_9_8b_lane3_standard_4h_progression import (
 )
 
 
+def test_shared_terminal_rejects_third_admitted_cycle_before_mutation(
+    tmp_path,
+) -> None:
+    import pytest
+
+    from printer_v1.db.migrate import apply_migrations
+    from printer_v1.operator_cli.unified_terminal_closure import (
+        TerminalClosureError,
+        reconcile_admitted_campaign_terminal,
+    )
+
+    db = tmp_path / "shared-terminal-shape.sqlite3"
+    apply_migrations(db)
+    connection = sqlite3.connect(db)
+    try:
+        with connection:
+            connection.execute(
+                """INSERT INTO printer_memory_factory_campaigns(
+                       campaign_id,campaign_state,db_mode,db_target_identity,
+                       proof_source_db_identity,policy_version,created_at,updated_at
+                   ) VALUES (
+                       'camp','RUNNING','PROOF_ISOLATED','isolated','source',
+                       'audit',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP
+                   )"""
+            )
+            connection.execute(
+                """INSERT INTO printer_memory_factory_campaign_configurations(
+                       configuration_id,campaign_id,configuration_hash,
+                       configuration_json,launch_provenance_json,created_at
+                   ) VALUES (
+                       'cfg','camp',?,'{}','{}',CURRENT_TIMESTAMP
+                   )""",
+                ("c" * 64,),
+            )
+            connection.execute(
+                """INSERT INTO printer_memory_factory_campaign_runs(
+                       run_id,campaign_id,run_ordinal,run_state,created_at,updated_at
+                   ) VALUES (
+                       'run','camp',1,'RUNNING',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP
+                   )"""
+            )
+            for ordinal in (1, 2, 3):
+                connection.execute(
+                    """INSERT INTO printer_memory_factory_campaign_cycles(
+                           cycle_id,campaign_id,run_id,cycle_ordinal,cycle_state,
+                           created_at,updated_at
+                       ) VALUES (
+                           ?,'camp','run',?,'PLANNED',
+                           CURRENT_TIMESTAMP,CURRENT_TIMESTAMP
+                       )""",
+                    (f"cycle-{ordinal}", ordinal),
+                )
+    finally:
+        connection.close()
+
+    with pytest.raises(
+        TerminalClosureError,
+        match="SHARED_TERMINAL_ADMITTED_CYCLE_SHAPE_INVALID:1,2,3",
+    ):
+        reconcile_admitted_campaign_terminal(
+            db,
+            campaign_id="camp",
+            run_id="run",
+            primary_cycle_id="cycle-1",
+            terminal_cause="SHOULD_NOT_MUTATE",
+            run_status="FAILED",
+            lifecycle_started=True,
+        )
+
+    connection = sqlite3.connect(db)
+    try:
+        assert connection.execute(
+            "SELECT campaign_state FROM printer_memory_factory_campaigns "
+            "WHERE campaign_id='camp'"
+        ).fetchone()[0] == "RUNNING"
+        assert connection.execute(
+            "SELECT run_state FROM printer_memory_factory_campaign_runs "
+            "WHERE run_id='run'"
+        ).fetchone()[0] == "RUNNING"
+        assert [
+            str(row[0])
+            for row in connection.execute(
+                "SELECT cycle_state FROM printer_memory_factory_campaign_cycles "
+                "ORDER BY cycle_ordinal"
+            ).fetchall()
+        ] == ["PLANNED", "PLANNED", "PLANNED"]
+    finally:
+        connection.close()
+
+
 def test_single_cycle_real_factory_reaches_two_terminal_four_hour_closes(
     tmp_path,
     monkeypatch,
@@ -265,6 +355,7 @@ def test_two_cycle_four_token_real_factory_reaches_shared_terminal_standard4h(
                 "clean_terminal": bool(
                     cleanup.get("cleanup_completed") is True
                     and reconciliation.get("reconciled") is True
+                    and reconciliation.get("clean_terminal") is True
                 ),
                 "lease_released": cleanup.get("lease_released") is True,
             }
