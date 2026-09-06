@@ -298,8 +298,17 @@ def project_scheduler_health(
     *,
     binding: MultiCycleCampaignBinding,
     first_cycle_id: str,
+    shared_admitted_cycle_scope: bool = False,
 ) -> SchedulerHealthProjection:
-    """Project exact attributable Scheduler capacity and integrity read-only."""
+    """Project exact attributable Scheduler capacity and integrity read-only.
+
+    Admission keeps the original Cycle-1-only scope. Standard-4H progression may
+    opt into the durable admitted-cycle scope so legitimate peer-cycle work in
+    the shared factory run is verified as owned instead of misclassified as
+    orphaned. The shared scope never trusts a peer implicitly: every peer cycle
+    must be a durable campaign/run cycle and every Scheduler job must still have
+    an exact V2-stage-scoped owner.
+    """
     base = standard_four_hour_capacity_contract()
     scaled = scaled_standard_four_hour_capacity_contract(4)
     cycle_one_ceiling = int(base["lifecycle_scheduler_outer_ceiling"])
@@ -308,6 +317,33 @@ def project_scheduler_health(
     reasons: list[str] = []
 
     try:
+        scope_cycle_ids = (str(first_cycle_id),)
+        if shared_admitted_cycle_scope:
+            admitted_cycle_rows = connection.execute(
+                """SELECT cycle_id,cycle_ordinal
+                   FROM printer_memory_factory_campaign_cycles
+                   WHERE campaign_id=? AND run_id=?
+                   ORDER BY cycle_ordinal,cycle_id""",
+                (binding.campaign_id, binding.campaign_run_id),
+            ).fetchall()
+            admitted_cycle_ids = tuple(
+                str(row["cycle_id"]) for row in admitted_cycle_rows
+            )
+            admitted_ordinals = tuple(
+                int(row["cycle_ordinal"]) for row in admitted_cycle_rows
+            )
+            valid_shared_scope = bool(
+                admitted_cycle_ids
+                and str(first_cycle_id) in admitted_cycle_ids
+                and len(admitted_cycle_ids) <= 2
+                and admitted_ordinals
+                == tuple(range(1, len(admitted_cycle_ids) + 1))
+            )
+            if not valid_shared_scope:
+                reasons.append("ADMITTED_CYCLE_SCHEDULER_SCOPE_INVALID")
+            else:
+                scope_cycle_ids = admitted_cycle_ids
+
         raw_step_rows = connection.execute(
             """SELECT step_status,scheduler_job_id
                FROM printer_memory_factory_run_steps
@@ -326,15 +362,18 @@ def project_scheduler_health(
         ):
             reasons.append("ORPHAN_FACTORY_RUN_STEP_SCHEDULER_JOB")
 
-        groups = campaign_scoped_job_ids(
-            connection,
-            factory_run_id=binding.authoritative_factory_run_id,
-            campaign_id=binding.campaign_id,
-            run_id=binding.campaign_run_id,
-            cycle_id=first_cycle_id,
-            exact_scope=True,
-        )
-        attributable_ids = set().union(*groups.values()) if groups else set()
+        attributable_ids: set[int] = set()
+        for scope_cycle_id in scope_cycle_ids:
+            groups = campaign_scoped_job_ids(
+                connection,
+                factory_run_id=binding.authoritative_factory_run_id,
+                campaign_id=binding.campaign_id,
+                run_id=binding.campaign_run_id,
+                cycle_id=scope_cycle_id,
+                exact_scope=True,
+            )
+            if groups:
+                attributable_ids.update(set().union(*groups.values()))
         if not raw_step_job_ids.issubset(attributable_ids):
             reasons.append("ORPHAN_FACTORY_RUN_STEP_SCHEDULER_JOB")
 
@@ -373,29 +412,37 @@ def project_scheduler_health(
             }:
                 reasons.append("SCHEDULER_STATUS_UNRECOGNIZED")
 
+        scope_placeholders = ",".join("?" for _ in scope_cycle_ids)
+        scope_params = (
+            binding.campaign_id,
+            binding.campaign_run_id,
+            *scope_cycle_ids,
+        )
         duplicate_rows = connection.execute(
-            """SELECT scheduler_job_id
-               FROM printer_memory_factory_campaign_scheduler_work
-               WHERE campaign_id=? AND run_id=? AND cycle_id=?
-                 AND ownership_contract_version='V2_STAGE_SCOPED'
-                 AND scheduler_job_id IS NOT NULL
-               GROUP BY scheduler_job_id HAVING COUNT(*) > 1""",
-            (binding.campaign_id, binding.campaign_run_id, first_cycle_id),
+            f"""SELECT scheduler_job_id
+                FROM printer_memory_factory_campaign_scheduler_work
+                WHERE campaign_id=? AND run_id=?
+                  AND cycle_id IN ({scope_placeholders})
+                  AND ownership_contract_version='V2_STAGE_SCOPED'
+                  AND scheduler_job_id IS NOT NULL
+                GROUP BY scheduler_job_id HAVING COUNT(*) > 1""",
+            scope_params,
         ).fetchall()
         if duplicate_rows:
             reasons.append("AMBIGUOUS_SCHEDULER_OWNERSHIP")
 
         terminal_work_active = int(
             connection.execute(
-                """SELECT COUNT(*)
-                   FROM printer_memory_factory_campaign_scheduler_work AS w
-                   JOIN printer_scheduler_jobs AS j ON j.id=w.scheduler_job_id
-                   WHERE w.campaign_id=? AND w.run_id=? AND w.cycle_id=?
-                     AND w.ownership_contract_version='V2_STAGE_SCOPED'
-                     AND w.work_state NOT IN ('PENDING','RUNNING','COOLDOWN')
-                     AND (j.status IN ('PENDING','RUNNING','COOLDOWN')
-                          OR j.locked_at IS NOT NULL OR j.lock_owner IS NOT NULL)""",
-                (binding.campaign_id, binding.campaign_run_id, first_cycle_id),
+                f"""SELECT COUNT(*)
+                    FROM printer_memory_factory_campaign_scheduler_work AS w
+                    JOIN printer_scheduler_jobs AS j ON j.id=w.scheduler_job_id
+                    WHERE w.campaign_id=? AND w.run_id=?
+                      AND w.cycle_id IN ({scope_placeholders})
+                      AND w.ownership_contract_version='V2_STAGE_SCOPED'
+                      AND w.work_state NOT IN ('PENDING','RUNNING','COOLDOWN')
+                      AND (j.status IN ('PENDING','RUNNING','COOLDOWN')
+                           OR j.locked_at IS NOT NULL OR j.lock_owner IS NOT NULL)""",
+                scope_params,
             ).fetchone()[0]
         )
         if terminal_work_active:
@@ -403,14 +450,15 @@ def project_scheduler_health(
 
         active_work_terminal = int(
             connection.execute(
-                """SELECT COUNT(*)
-                   FROM printer_memory_factory_campaign_scheduler_work AS w
-                   JOIN printer_scheduler_jobs AS j ON j.id=w.scheduler_job_id
-                   WHERE w.campaign_id=? AND w.run_id=? AND w.cycle_id=?
-                     AND w.ownership_contract_version='V2_STAGE_SCOPED'
-                     AND w.work_state IN ('PENDING','RUNNING','COOLDOWN')
-                     AND j.status IN ('SUCCEEDED','FAILED','SKIPPED','CANCELLED')""",
-                (binding.campaign_id, binding.campaign_run_id, first_cycle_id),
+                f"""SELECT COUNT(*)
+                    FROM printer_memory_factory_campaign_scheduler_work AS w
+                    JOIN printer_scheduler_jobs AS j ON j.id=w.scheduler_job_id
+                    WHERE w.campaign_id=? AND w.run_id=?
+                      AND w.cycle_id IN ({scope_placeholders})
+                      AND w.ownership_contract_version='V2_STAGE_SCOPED'
+                      AND w.work_state IN ('PENDING','RUNNING','COOLDOWN')
+                      AND j.status IN ('SUCCEEDED','FAILED','SKIPPED','CANCELLED')""",
+                scope_params,
             ).fetchone()[0]
         )
         if active_work_terminal:
@@ -421,7 +469,9 @@ def project_scheduler_health(
             factory_run_id=binding.authoritative_factory_run_id,
             campaign_id=binding.campaign_id,
             run_id=binding.campaign_run_id,
-            cycle_id=first_cycle_id,
+            cycle_id=(
+                None if shared_admitted_cycle_scope else str(first_cycle_id)
+            ),
         )
         if int(report["terminal_work_with_active_job"]):
             reasons.append("TERMINAL_WORK_ACTIVE_SCHEDULER_JOB")
@@ -439,21 +489,32 @@ def project_scheduler_health(
         )
 
     attributable_count = len(attributable_ids)
-    scheduler_budget_available = _fits(
-        current=attributable_count,
-        projected=0,
-        ceiling=cycle_one_ceiling,
-        label="cycle-one Scheduler",
-    ) and _fits(
-        current=attributable_count,
-        projected=second_cycle_envelope,
-        ceiling=four_token_ceiling,
-        label="four-token Scheduler",
-    )
-    if not scheduler_budget_available:
-        reasons.append("CYCLE_ONE_SCHEDULER_ENVELOPE_EXCEEDED")
+    if shared_admitted_cycle_scope:
+        scheduler_budget_available = _fits(
+            current=attributable_count,
+            projected=0,
+            ceiling=four_token_ceiling,
+            label="four-token shared Scheduler",
+        )
+        if not scheduler_budget_available:
+            reasons.append("FOUR_TOKEN_SCHEDULER_ENVELOPE_EXCEEDED")
+    else:
+        scheduler_budget_available = _fits(
+            current=attributable_count,
+            projected=0,
+            ceiling=cycle_one_ceiling,
+            label="cycle-one Scheduler",
+        ) and _fits(
+            current=attributable_count,
+            projected=second_cycle_envelope,
+            ceiling=four_token_ceiling,
+            label="four-token Scheduler",
+        )
+        if not scheduler_budget_available:
+            reasons.append("CYCLE_ONE_SCHEDULER_ENVELOPE_EXCEEDED")
 
     integrity_reasons = {
+        "ADMITTED_CYCLE_SCHEDULER_SCOPE_INVALID",
         "ORPHAN_FACTORY_RUN_STEP_SCHEDULER_JOB",
         "ATTRIBUTABLE_SCHEDULER_JOB_MISSING",
         "SCHEDULER_LOCK_STATUS_CONTRADICTION",
@@ -478,7 +539,6 @@ def project_scheduler_health(
         ),
         reasons=tuple(dict.fromkeys(reasons)),
     )
-
 
 def _aware_utc(value: object) -> datetime:
     parsed = datetime.fromisoformat(str(value))

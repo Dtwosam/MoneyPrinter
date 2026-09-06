@@ -245,6 +245,15 @@ def _scheduler_connection() -> sqlite3.Connection:
             step_status TEXT NOT NULL,
             scheduler_job_id INTEGER
         );
+        CREATE TABLE printer_memory_factory_campaign_cycles(
+            cycle_id TEXT PRIMARY KEY,
+            campaign_id TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            cycle_ordinal INTEGER NOT NULL
+        );
+        INSERT INTO printer_memory_factory_campaign_cycles(
+            cycle_id,campaign_id,run_id,cycle_ordinal
+        ) VALUES ('cycle-1','campaign-1','campaign-run-1',1);
         CREATE TABLE printer_memory_factory_campaign_scheduler_work(
             scheduler_work_id TEXT PRIMARY KEY,
             campaign_id TEXT NOT NULL,
@@ -276,6 +285,7 @@ def _insert_scheduler_owner(
     locked_at: str | None = None,
     lock_owner: str | None = None,
     work_state: str = "PENDING",
+    cycle_id: str = "cycle-1",
 ) -> None:
     connection.execute(
         """
@@ -298,10 +308,10 @@ def _insert_scheduler_owner(
         INSERT INTO printer_memory_factory_campaign_scheduler_work(
             scheduler_work_id,campaign_id,run_id,cycle_id,work_state,
             scheduler_job_id,ownership_contract_version
-        ) VALUES (?,'campaign-1','campaign-run-1','cycle-1',?,?,
+        ) VALUES (?,'campaign-1','campaign-run-1',?,?,?,
                   'V2_STAGE_SCOPED')
         """,
-        (f"work-{job_id}", work_state, job_id),
+        (f"work-{job_id}", cycle_id, work_state, job_id),
     )
     connection.commit()
 
@@ -342,6 +352,56 @@ def test_due_and_claimed_scheduler_work_is_healthy_and_capacity_is_derived() -> 
         ]
         assert result.recheck_on_lifecycle_change is False
         assert connection.total_changes == changes_before
+    finally:
+        connection.close()
+
+
+def test_shared_scheduler_scope_accepts_exact_peer_cycle_and_rejects_orphan() -> None:
+    owner = _projection_owner()
+    connection = _scheduler_connection()
+    try:
+        connection.execute(
+            """INSERT INTO printer_memory_factory_campaign_cycles(
+                   cycle_id,campaign_id,run_id,cycle_ordinal
+               ) VALUES ('cycle-2','campaign-1','campaign-run-1',2)"""
+        )
+        connection.commit()
+        _insert_scheduler_owner(connection, job_id=1, cycle_id="cycle-1")
+        _insert_scheduler_owner(connection, job_id=2, cycle_id="cycle-2")
+
+        cycle_one_only = owner.project_scheduler_health(
+            connection,
+            binding=_binding(),
+            first_cycle_id="cycle-1",
+        )
+        assert cycle_one_only.scheduler_due_work_healthy is False
+        assert "ORPHAN_FACTORY_RUN_STEP_SCHEDULER_JOB" in cycle_one_only.reasons
+
+        shared = owner.project_scheduler_health(
+            connection,
+            binding=_binding(),
+            first_cycle_id="cycle-1",
+            shared_admitted_cycle_scope=True,
+        )
+        assert shared.scheduler_due_work_healthy is True
+        assert shared.scheduler_budget_available is True
+        assert shared.attributable_job_ids == (1, 2)
+        assert "ORPHAN_FACTORY_RUN_STEP_SCHEDULER_JOB" not in shared.reasons
+
+        connection.execute(
+            """INSERT INTO printer_memory_factory_run_steps(
+                   run_id,step_key,step_kind,step_status,scheduler_job_id
+               ) VALUES ('factory-1','t1_c0002_orphan','WINDOW_CLOSE','PENDING',99)"""
+        )
+        connection.commit()
+        orphaned_shared = owner.project_scheduler_health(
+            connection,
+            binding=_binding(),
+            first_cycle_id="cycle-1",
+            shared_admitted_cycle_scope=True,
+        )
+        assert orphaned_shared.scheduler_due_work_healthy is False
+        assert "ORPHAN_FACTORY_RUN_STEP_SCHEDULER_JOB" in orphaned_shared.reasons
     finally:
         connection.close()
 

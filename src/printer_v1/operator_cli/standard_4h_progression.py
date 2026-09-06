@@ -948,7 +948,10 @@ def evaluate_standard_4h_progression(
         authoritative_factory_run_id=factory_run_id,
     )
     scheduler = project_scheduler_health(
-        connection, binding=health_binding, first_cycle_id=cycle_id
+        connection,
+        binding=health_binding,
+        first_cycle_id=cycle_id,
+        shared_admitted_cycle_scope=True,
     )
     active_work = campaign_active_work_report(
         connection,
