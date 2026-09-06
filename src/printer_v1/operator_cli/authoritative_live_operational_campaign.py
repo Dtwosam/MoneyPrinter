@@ -224,6 +224,25 @@ def _replace_supply_post_holder_refresh_evidence(
     )
 
 
+def _post_holder_supply_resume_coverage(
+    diagnostics: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Return only discovery/supply-owned coverage for canonical supply resume."""
+    from printer_v1.discovery.eligible_token_supply import (
+        merge_cumulative_source_request_coverage,
+    )
+
+    diag = dict(diagnostics)
+    coverage: list[dict[str, Any]] = []
+    for raw in (
+        diag.get("campaign_source_request_coverage") or (),
+        diag.get("source_request_coverage") or (),
+        diag.get("final_refresh_source_request_coverage") or (),
+    ):
+        coverage = merge_cumulative_source_request_coverage(coverage, raw)
+    return coverage
+
+
 def _resume_post_holder_supply_after_refresh(
     *,
     db_path: str | Path,
@@ -235,9 +254,6 @@ def _resume_post_holder_supply_after_refresh(
     temporal_refresh_owner: Any,
 ) -> Any:
     """Resume the canonical supply owner after a completed post-holder refresh."""
-    from printer_v1.discovery.permanent_discovery_availability import (
-        collect_stage_source_request_coverage,
-    )
     from printer_v1.operator_cli.graduated_supply_front_door import (
         build_graduated_supply,
     )
@@ -254,7 +270,7 @@ def _resume_post_holder_supply_after_refresh(
         int(prior_diagnostics.get("discovery_operations_used") or 0)
         + int(getattr(outcome, "source_operations", 0) or 0)
     )
-    prior_coverage = collect_stage_source_request_coverage(prior_diagnostics)
+    prior_coverage = _post_holder_supply_resume_coverage(prior_diagnostics)
 
     resume_kwargs = dict(supply_kwargs)
     resume_kwargs.pop("now", None)

@@ -35,6 +35,7 @@ from printer_v1.operator_cli.authoritative_live_operational_campaign import (
     AuthoritativeLiveOperationalCampaignOwner,
     PILOT_INPUT_READINESS,
     _carry_post_holder_refresh_evidence,
+    _post_holder_supply_resume_coverage,
 )
 from printer_v1.operator_cli.graduated_supply_front_door import GraduatedSupply
 
@@ -107,6 +108,79 @@ def test_refresh_evidence_carry_is_idempotent() -> None:
     assert twice["final_refresh_source_request_ids"] == [77]
     assert len(twice["final_refresh_source_request_coverage"]) == 1
 
+
+
+def test_supply_resume_coverage_excludes_holder_owned_stage_evidence() -> None:
+    discovery = {
+        "source_request_id": 11,
+        "source_name": "dexscreener",
+        "request_kind": "candidate_market_batch",
+        "logical_stage_id": "campaign|run|cycle|MINT_MARKET_BATCH|1",
+        "terminal_status": "COMPLETED",
+        "transport_identity_count": 1,
+        "normalized_member_count": 1,
+        "transport_identity_keys": [
+            [
+                "MARKET_DISCOVERY",
+                "dexscreener",
+                "candidate_market_batch",
+                "fixture",
+                1,
+                "MINT",
+                "mint-a",
+            ]
+        ],
+    }
+    refresh = {
+        "source_request_id": 12,
+        "source_name": "dexscreener",
+        "request_kind": "dexscreener_fresh_profiles",
+        "logical_stage_id": "campaign|run|cycle|POST_HOLDER_REFRESH|1",
+        "terminal_status": "COMPLETED",
+        "transport_identity_count": 1,
+        "normalized_member_count": 1,
+        "transport_identity_keys": [
+            [
+                "POST_HOLDER_REFRESH",
+                "dexscreener",
+                "dexscreener_fresh_profiles",
+                "fixture",
+                1,
+                "MINT",
+                "mint-b",
+            ]
+        ],
+    }
+    holder = {
+        "source_request_id": 13,
+        "source_name": "goplus",
+        "request_kind": "token_security",
+        "logical_stage_id": "campaign|run|cycle|HOLDER_SAFETY|1",
+        "terminal_status": "COMPLETED",
+        "transport_identity_count": 1,
+        "normalized_member_count": 1,
+        "transport_identity_keys": [
+            [
+                "HOLDER_SAFETY",
+                "goplus",
+                "token_security",
+                "fixture",
+                1,
+                "MINT",
+                "mint-a",
+            ]
+        ],
+    }
+
+    coverage = _post_holder_supply_resume_coverage(
+        {
+            "campaign_source_request_coverage": [discovery],
+            "final_refresh_source_request_coverage": [refresh],
+            "holder_source_request_coverage": [holder],
+        }
+    )
+
+    assert [entry["source_request_id"] for entry in coverage] == [11, 12]
 
 def test_four_token_standard4h_disposable_rehearsal_uses_proof_preflight(
     monkeypatch: pytest.MonkeyPatch,
