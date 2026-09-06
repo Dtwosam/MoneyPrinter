@@ -372,7 +372,9 @@ def test_two_cycle_four_token_real_factory_reaches_shared_terminal_standard4h(
         assert len(
             {(int(row["token_row_id"]), int(row["pair_row_id"])) for row in targets}
         ) == 4
-        assert all(str(row["token_state"]) == "WINDOW_4H_CLOSED" for row in targets)
+        assert all(
+            str(row["token_state"]) == "WINDOW_4H_CLOSED" for row in targets
+        ), [dict(row) for row in targets]
 
         attempt = connection.execute(
             "SELECT attempt_state,consumed_cycle_id FROM "
