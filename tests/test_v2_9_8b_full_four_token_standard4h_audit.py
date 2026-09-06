@@ -374,7 +374,7 @@ def test_two_cycle_four_token_real_factory_reaches_shared_terminal_standard4h(
         ) == 4
         assert all(
             str(row["token_state"]) == "WINDOW_4H_CLOSED" for row in targets
-        ), [dict(row) for row in targets]
+        ), json.dumps([dict(row) for row in targets], sort_keys=True)
 
         attempt = connection.execute(
             "SELECT attempt_state,consumed_cycle_id FROM "
