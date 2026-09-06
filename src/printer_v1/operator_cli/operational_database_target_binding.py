@@ -149,8 +149,18 @@ def load_durable_operational_database_target_expectation(
     campaign_run_id: str,
     cycle_id: str,
     configuration_id: str,
+    shared_admitted_cycle_scope: bool = False,
 ) -> Mapping[str, Any] | None:
-    """Load the configuration-owned expectation without consulting a binding."""
+    """Load configuration-owned DB authority without consulting the binding.
+
+    The immutable one-shot binding/expectation is anchored to the authorization
+    origin cycle.  Callers remain exact-cycle by default.  Standard-4H may
+    explicitly reuse that same campaign invocation authority for its already
+    admitted Cycle 2 only when the durable graph proves exactly two cycles:
+    ordinal 1 is the bound root and ordinal 2 is the requested cycle, with the
+    exact two-slot shape for both.  This does not create a second invocation,
+    retry, resume, restart, successor, or arbitrary cycle authority.
+    """
     connection = sqlite3.connect(Path(db_path))
     connection.row_factory = sqlite3.Row
     try:
@@ -160,28 +170,75 @@ def load_durable_operational_database_target_expectation(
                 WHERE configuration_id=? AND campaign_id=?""",
             (configuration_id, campaign_id),
         ).fetchone()
+        if row is None:
+            return None
+        try:
+            configuration = json.loads(str(row["configuration_json"]))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+        expectation = configuration.get("operational_database_target_expectation")
+        if not isinstance(expectation, Mapping):
+            return None
+
+        shared_ownership = {
+            "campaign_id": campaign_id,
+            "campaign_run_id": campaign_run_id,
+            "configuration_id": configuration_id,
+        }
+        if any(
+            str(expectation.get(field) or "") != value
+            for field, value in shared_ownership.items()
+        ):
+            return None
+
+        bound_cycle_id = str(expectation.get("cycle_id") or "")
+        if not bound_cycle_id:
+            return None
+        if bound_cycle_id == cycle_id:
+            return dict(expectation)
+        if not shared_admitted_cycle_scope:
+            return None
+
+        cycle_rows = connection.execute(
+            """SELECT cycle_id,cycle_ordinal
+                 FROM printer_memory_factory_campaign_cycles
+                WHERE campaign_id=? AND run_id=?
+                ORDER BY cycle_ordinal,cycle_id""",
+            (campaign_id, campaign_run_id),
+        ).fetchall()
+        if [
+            (str(item["cycle_id"]), int(item["cycle_ordinal"]))
+            for item in cycle_rows
+        ] != [(bound_cycle_id, 1), (cycle_id, 2)]:
+            return None
+
+        slot_rows = connection.execute(
+            """SELECT cycle_id,slot_ordinal
+                 FROM printer_memory_factory_campaign_token_slots
+                WHERE campaign_id=? AND run_id=?
+                  AND cycle_id IN (?,?)
+                ORDER BY cycle_id,slot_ordinal""",
+            (campaign_id, campaign_run_id, bound_cycle_id, cycle_id),
+        ).fetchall()
+        slots_by_cycle: dict[str, list[int]] = {
+            bound_cycle_id: [],
+            cycle_id: [],
+        }
+        for slot in slot_rows:
+            owner = str(slot["cycle_id"])
+            if owner not in slots_by_cycle:
+                return None
+            slots_by_cycle[owner].append(int(slot["slot_ordinal"]))
+        if any(
+            ordinals != [1, 2]
+            for ordinals in slots_by_cycle.values()
+        ):
+            return None
+        return dict(expectation)
     except sqlite3.Error:
         return None
     finally:
         connection.close()
-    if row is None:
-        return None
-    try:
-        configuration = json.loads(str(row["configuration_json"]))
-    except (TypeError, ValueError, json.JSONDecodeError):
-        return None
-    expectation = configuration.get("operational_database_target_expectation")
-    if not isinstance(expectation, Mapping):
-        return None
-    ownership = {
-        "campaign_id": campaign_id,
-        "campaign_run_id": campaign_run_id,
-        "cycle_id": cycle_id,
-        "configuration_id": configuration_id,
-    }
-    if any(str(expectation.get(field) or "") != value for field, value in ownership.items()):
-        return None
-    return dict(expectation)
 
 
 @dataclass(frozen=True)
