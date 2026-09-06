@@ -83,7 +83,7 @@ def _factory_loop_snapshot_adapter(*, token_mint, timeout_seconds):
                 {
                     "chain": "solana",
                     "token_mint": token_mint,
-                    "pair_address": "pool-1" if token_mint == "mint-1" else "pool-2",
+                    "pair_address": f"pool-{str(token_mint).rsplit('-', 1)[-1]}",
                     "price_usd": 1.0,
                     "liquidity_usd": 10_000.0,
                     "volume_5m": 500.0,
@@ -1515,6 +1515,7 @@ def _run_standard_factory_loop(
     disposable_binding,
     fail_progression_binding=False,
     progression_predecessor_observations=None,
+    four_token_setup=None,
 ):
     from printer_v1.operator_cli import one_command_15m_factory as factory
     from printer_v1.operator_cli import operational_standard_4h as standard
@@ -1532,6 +1533,9 @@ def _run_standard_factory_loop(
     )
 
     db, backup, prepared_disposable = _prepare(tmp_path)
+    four_token_kwargs = (
+        dict(four_token_setup(db)) if four_token_setup is not None else {}
+    )
     if disposable_binding == "PREPARED":
         disposable_binding = prepared_disposable
     if operational_binding == "VALID":
@@ -1752,6 +1756,7 @@ def _run_standard_factory_loop(
         factory_run_id=FACTORY_RUN_ID,
         _sleep=clock.sleep,
         _monotonic=clock.monotonic,
+        **four_token_kwargs,
     )
     return db, report
 
