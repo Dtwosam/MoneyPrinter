@@ -189,10 +189,18 @@ def _carry_post_holder_refresh_evidence(
     )
 
     updated = dict(diagnostics)
-    updated["final_refresh_source_request_ids"] = [
+    request_ids: list[int] = []
+    seen_ids: set[int] = set()
+    for raw in (
         *list(updated.get("final_refresh_source_request_ids") or ()),
         *list(getattr(outcome, "source_request_ids", ()) or ()),
-    ]
+    ):
+        request_id = int(raw)
+        if request_id in seen_ids:
+            continue
+        seen_ids.add(request_id)
+        request_ids.append(request_id)
+    updated["final_refresh_source_request_ids"] = request_ids
     updated["final_refresh_source_request_coverage"] = (
         merge_cumulative_source_request_coverage(
             updated.get("final_refresh_source_request_coverage") or (),
@@ -214,6 +222,203 @@ def _replace_supply_post_holder_refresh_evidence(
             outcome,
         ),
     )
+
+
+def _resume_post_holder_supply_after_refresh(
+    *,
+    db_path: str | Path,
+    supply: Any,
+    outcome: Any,
+    cycle_seed: str,
+    migration_transport: Any,
+    supply_kwargs: Mapping[str, Any],
+    temporal_refresh_owner: Any,
+) -> Any:
+    """Resume the canonical supply owner after a completed post-holder refresh."""
+    from printer_v1.discovery.permanent_discovery_availability import (
+        collect_stage_source_request_coverage,
+    )
+    from printer_v1.operator_cli.graduated_supply_front_door import (
+        build_graduated_supply,
+    )
+
+    if migration_transport is None:
+        raise LiveOperationalError(
+            "POST_HOLDER_REFRESH_CANONICAL_RESUME_UNAVAILABLE",
+            "migration transport is required for canonical supply resume",
+        )
+
+    carried = _replace_supply_post_holder_refresh_evidence(supply, outcome)
+    prior_diagnostics = dict(carried.diagnostics)
+    prior_operations = (
+        int(prior_diagnostics.get("discovery_operations_used") or 0)
+        + int(getattr(outcome, "source_operations", 0) or 0)
+    )
+    prior_coverage = collect_stage_source_request_coverage(prior_diagnostics)
+
+    resume_kwargs = dict(supply_kwargs)
+    resume_kwargs.pop("now", None)
+    scope_raw = prior_diagnostics.get("campaign_source_request_scope")
+    scope_map: dict[str, Any] = {}
+    if scope_raw is not None:
+        if hasattr(scope_raw, "as_dict"):
+            scope_map = dict(scope_raw.as_dict())
+        elif isinstance(scope_raw, Mapping):
+            scope_map = dict(scope_raw)
+        else:
+            raise LiveOperationalError(
+                "POST_HOLDER_REFRESH_SCOPE_INVALID",
+                type(scope_raw).__name__,
+            )
+        resume_kwargs.setdefault("campaign_source_request_scope", scope_raw)
+    for key in ("campaign_id", "execution_id", "run_id", "cycle_id"):
+        if not resume_kwargs.get(key) and scope_map.get(key):
+            resume_kwargs[key] = scope_map[key]
+    request_root = str(
+        scope_map.get("request_key_root")
+        or prior_diagnostics.get("request_key_root")
+        or ""
+    ).strip()
+    if request_root:
+        resume_kwargs.setdefault("discovery_request_key_prefix", request_root)
+        resume_kwargs.setdefault("front_door_request_key_prefix", request_root)
+    resume_kwargs.setdefault("permanent_availability", True)
+    resume_kwargs.setdefault("tracking_precheck", True)
+    owner_deadline = getattr(temporal_refresh_owner, "acquisition_deadline_at", None)
+    if owner_deadline is not None:
+        resume_kwargs.setdefault("deadline_at", str(owner_deadline))
+    resume_kwargs.update(
+        {
+            "temporal_refresh_owner": temporal_refresh_owner,
+            "cooperative_resume": True,
+            "prior_source_operations_used": prior_operations,
+            "prior_source_request_coverage": prior_coverage,
+        }
+    )
+
+    resumed = build_graduated_supply(
+        db_path,
+        cycle_seed=cycle_seed,
+        migration_transport=migration_transport,
+        now=datetime.now(timezone.utc).isoformat(),
+        **resume_kwargs,
+    )
+    diagnostics = dict(resumed.diagnostics)
+    for key in (
+        "holder_context",
+        "holder_source_request_ids",
+        "holder_source_request_coverage",
+        "pre_holder_source_request_reconciliation",
+        "pre_holder_budget_snapshot",
+        "final_refresh_source_request_ids",
+        "final_refresh_source_request_coverage",
+    ):
+        if key in prior_diagnostics:
+            diagnostics[key] = prior_diagnostics[key]
+    diagnostics = _carry_post_holder_refresh_evidence(diagnostics, outcome)
+    diagnostics["post_holder_refresh_resume"] = {
+        "status": "CANONICAL_SUPPLY_RESUMED",
+        "prior_discovery_operations_used": prior_operations,
+        "prior_source_request_coverage_count": len(prior_coverage),
+    }
+    return replace(resumed, diagnostics=diagnostics)
+
+
+def _attach_post_holder_refresh_provenance_snapshot(
+    connection: sqlite3.Connection,
+    supply: Any,
+    *,
+    campaign_id: str,
+    pre_holder_accounting_projection: Callable[[], Mapping[str, Any]] | None,
+) -> Any:
+    """Bind resumed supply to current request and independent transport truth."""
+    from printer_v1.discovery.permanent_discovery_availability import (
+        assemble_and_reconcile_campaign_source_requests,
+    )
+    from printer_v1.operator_cli.holder_reliability_budget_control import (
+        build_pre_holder_budget_snapshot,
+    )
+
+    diagnostics = dict(supply.diagnostics)
+    prefixes: list[str] = []
+    scope_root = diagnostics.get("request_key_root")
+    if scope_root:
+        prefixes.append(str(scope_root))
+    for key in (
+        "discovery_request_key_prefix",
+        "front_door_request_key_prefix",
+        "request_key_prefix",
+    ):
+        value = diagnostics.get(key)
+        if value and str(value) not in prefixes:
+            prefixes.append(str(value))
+    reconciliation = assemble_and_reconcile_campaign_source_requests(
+        connection,
+        diagnostics=diagnostics,
+        request_key_prefixes=prefixes,
+        request_key_root=str(scope_root) if scope_root else None,
+        campaign_source_request_scope=diagnostics.get(
+            "campaign_source_request_scope"
+        ),
+    )
+    diagnostics["post_holder_source_request_reconciliation"] = reconciliation
+    if reconciliation.get("status") != "OK":
+        diagnostics["post_holder_budget_snapshot"] = {}
+        return replace(supply, diagnostics=diagnostics)
+    if pre_holder_accounting_projection is None:
+        raise LiveOperationalError(
+            "POST_HOLDER_REFRESH_ACCOUNTING_PROJECTION_MISSING"
+        )
+    projection = dict(pre_holder_accounting_projection())
+    snapshot = build_pre_holder_budget_snapshot(
+        campaign_id=str(campaign_id),
+        governed_request_ids=tuple(
+            reconciliation.get("durable_campaign_request_ids") or ()
+        ),
+        request_manifest=tuple(
+            reconciliation.get("campaign_source_request_manifest") or ()
+        ),
+        campaign_transport_identities=tuple(
+            projection.get("campaign_transport_identities") or ()
+        ),
+        action_local_transport_identities=tuple(
+            projection.get("action_local_transport_identities") or ()
+        ),
+    )
+    diagnostics["post_holder_budget_snapshot"] = {
+        "governed_request_ids": list(snapshot.governed_request_ids),
+        "measured_transport_identity_keys": [
+            list(key) for key in snapshot.measured_transport_identity_keys
+        ],
+        "governed_request_count": snapshot.governed_request_count,
+        "measured_transport_count": snapshot.measured_transport_count,
+        "zero_transport_operations": snapshot.zero_transport_operations,
+        "reserved_snapshot_operations": snapshot.reserved_snapshot_operations,
+        "reserved_snapshot_completion_operations": (
+            snapshot.reserved_snapshot_completion_operations
+        ),
+    }
+    return replace(supply, diagnostics=diagnostics)
+
+
+def _post_holder_resumed_supply_terminal_cause(
+    supply: Any,
+    *,
+    fallback: str,
+) -> str:
+    """Surface the canonical resumed supply terminal without another refresh call."""
+    diagnostics = dict(getattr(supply, "diagnostics", {}) or {})
+    last_stop_reason = str(diagnostics.get("last_stop_reason") or "").strip()
+    if last_stop_reason and last_stop_reason != "ELIGIBLE_CAPACITY_MET":
+        return last_stop_reason
+    terminal = str(getattr(supply, "terminal", "") or "").strip()
+    if terminal and terminal not in {
+        "GRADUATED_SUPPLY_READY",
+        "CANDIDATE_SUPPLY_READY",
+    }:
+        return terminal
+    shortage = str(diagnostics.get("shortage_classification") or "").strip()
+    return shortage or str(fallback)
 
 
 def _merge_later_cycle_refresh_source_request_coverage(
@@ -4237,6 +4442,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
         # mixed pair; only floor-passing front-door-selected candidates become
         # graduation proofs and admission-universe carriers. Reuses the adopted
         # owners verbatim (no new gate, score, ranking, selector or provider).
+        supply_kwargs = dict(graduated_supply_kwargs or {})
         supply = graduated_supply
         # Prebuilt permanent supplies must already carry validated current-run
         # CampaignSourceRequestScope and pre-holder reconciliation. Do not
@@ -4249,7 +4455,6 @@ class AuthoritativeLiveOperationalCampaignOwner:
             from printer_v1.operator_cli.graduated_supply_front_door import (
                 build_graduated_supply,
             )
-            supply_kwargs = dict(graduated_supply_kwargs or {})
             # The V2-9.8B operational path applies exact tracking feasibility
             # before exact-pool market work. Other front-door consumers retain
             # their explicit default until they opt into this campaign contract.
@@ -4402,6 +4607,8 @@ class AuthoritativeLiveOperationalCampaignOwner:
         frozen_eligible_reserve = None
         memory_activation_set = None
         memory_activation_contract_blocker = None
+        selection_terminal = None
+        post_holder_refresh_resumed = False
         try:
             # V2-9.7E.41 pending-discovery population: stage every confirmed
             # origin from this cycle into the durable prospective-origin registry
@@ -4750,6 +4957,19 @@ class AuthoritativeLiveOperationalCampaignOwner:
                 )
                 stage_used["holder_safety"] = holder_transport_used
                 supply.diagnostics["stage_operations_used"] = stage_used
+            if supply is not None:
+                holder_diagnostics = dict(supply.diagnostics)
+                holder_diagnostics["holder_context"] = (
+                    holder_result.as_holder_context_diagnostics()
+                )
+                holder_diagnostics["holder_source_request_ids"] = list(
+                    holder_result.source_request_ids
+                )
+                holder_diagnostics["holder_source_request_coverage"] = [
+                    dict(entry)
+                    for entry in holder_result.source_request_coverage
+                ]
+                supply = replace(supply, diagnostics=holder_diagnostics)
             if (
                 supply is not None
                 and bool(supply.diagnostics.get("permanent_availability"))
@@ -4764,189 +4984,162 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     upsert_reserve_layer,
                 )
 
-                # Memory observation is independent of holder pass/fail.
-                # Holder concentration and unavailable evidence remain context.
-                observation_rows = []
-                tracking_exclusions: list[dict[str, Any]] = []
-                from printer_v1.lifecycle.tracking_queue import (
-                    assess_possible_tracking_claim_by_identity,
-                )
-                for proof in graduated_candidates:
-                    mint_key = proof.mint.lower()
-                    fact = holder_facts.get(mint_key, {})
-                    item = dict(supply.holder_reserve_candidates.get(mint_key, {}))
-                    if not item and not getattr(proof, "mint", None):
-                        continue
-                    expiry = item.get("evidence_expires_at")
-                    if not expiry:
-                        # No alternate can exist without an explicit current
-                        # evidence boundary. Selected candidates remain governed
-                        # by the same rule; this never fabricates freshness.
-                        continue
-                    holder_context = _holder_observation_context(fact)
-                    exact_pool = str(
-                        item.get("pool")
-                        or item.get("pumpswap_pool")
-                        or proof.bonding_curve
+                while True:
+                    # Memory observation is independent of holder pass/fail.
+                    # Holder concentration and unavailable evidence remain context.
+                    observation_rows = []
+                    tracking_exclusions: list[dict[str, Any]] = []
+                    from printer_v1.lifecycle.tracking_queue import (
+                        assess_possible_tracking_claim_by_identity,
                     )
-                    # Lane unknown pre-freeze: dual-lane possible-claim only.
-                    # Exact FAST/NORMAL is frozen later from classification.
-                    tracking_assessment = assess_possible_tracking_claim_by_identity(
-                        connection,
-                        token_mint=proof.mint,
-                        pair_address=exact_pool,
-                        assessed_at=evaluated,
-                    )
-                    tracking_eligible = bool(tracking_assessment.eligible)
-                    tracking_requalification_required = bool(
-                        tracking_assessment.requalification_eligible
-                    )
-                    if not tracking_eligible or tracking_requalification_required:
-                        tracking_reason = str(
-                            tracking_assessment.reason_code
-                            or "TRACKING_HANDOFF_INELIGIBLE"
-                        )
-                        tracking_assessment_evidence = {
-                            "eligible": tracking_eligible,
-                            "reason_code": tracking_reason,
-                            "category": str(
-                                getattr(tracking_assessment, "category", None)
-                                or tracking_reason
-                            ),
-                            "queue_id": tracking_assessment.queue_id,
-                            "queue_status": tracking_assessment.queue_status,
-                            "requalification_required": (
-                                tracking_requalification_required
-                            ),
-                            "cooldown_until": tracking_assessment.cooldown_until,
-                            "assessed_at": evaluated.isoformat(),
-                        }
-                        exclusion = {
-                            "mint": proof.mint,
-                            "pool": exact_pool,
-                            "reason": tracking_reason,
-                            "tracking_handoff_eligible": tracking_eligible,
-                            "tracking_requalification_required": (
-                                tracking_requalification_required
-                            ),
-                            "tracking_handoff": dict(tracking_assessment_evidence),
-                            "holder_safety": dict(fact),
-                        }
-                        tracking_exclusions.append(exclusion)
-                        upsert_reserve_layer(
-                            connection,
-                            network=NETWORK,
-                            mint=exclusion["mint"],
-                            pool=exclusion["pool"],
-                            layer=MEMORY_OBSERVATION_ELIGIBLE,
-                            reserve_state="EXCLUDED",
-                            reason=tracking_reason,
-                            observed_at=evaluated.isoformat(),
-                            next_lawful_action_at=(
-                                tracking_assessment.cooldown_until
-                            ),
-                            evidence_expires_at=str(expiry),
-                            source_provenance={"market": item.get("provenance")},
-                            evidence={
-                                "tracking_handoff": dict(
-                                    tracking_assessment_evidence
-                                ),
-                                "holder_safety": dict(fact),
-                                "memory_observation_eligible": False,
-                            },
-                            campaign_id=command.campaign_id,
-                        )
-                        continue
-                    holder_actually_eligible = bool(
-                        holder_context["fully_eligible"]
-                    ) and not bool(holder_result.accounting_blocker)
-                    holder_condition = str(holder_context["holder_condition"])
-                    holder_evidence_status = str(
-                        holder_context["holder_evidence_status"]
-                    )
-                    future_action = str(
-                        holder_context["future_action_eligibility"]
-                    )
-                    observation = {
-                        **item,
-                        "mint": proof.mint,
-                        "pool": str(
+                    for proof in graduated_candidates:
+                        mint_key = proof.mint.lower()
+                        fact = holder_facts.get(mint_key, {})
+                        item = dict(supply.holder_reserve_candidates.get(mint_key, {}))
+                        if not item and not getattr(proof, "mint", None):
+                            continue
+                        expiry = item.get("evidence_expires_at")
+                        if not expiry:
+                            # No alternate can exist without an explicit current
+                            # evidence boundary. Selected candidates remain governed
+                            # by the same rule; this never fabricates freshness.
+                            continue
+                        holder_context = _holder_observation_context(fact)
+                        exact_pool = str(
                             item.get("pool")
                             or item.get("pumpswap_pool")
                             or proof.bonding_curve
-                        ),
-                        "memory_observation_eligible": True,
-                        # fully_eligible reflects actual holder pass only; it is
-                        # never a memory admission input.
-                        "fully_eligible": holder_actually_eligible,
-                        "evidence_expires_at": expiry,
-                        "holder_safety": dict(fact),
-                        "holder_condition": holder_condition,
-                        "holder_evidence_status": holder_evidence_status,
-                        "future_action_eligibility": future_action,
-                        "liquidity_observed_at": str(
-                            item.get("liquidity_observed_at")
-                            or (item.get("liquidity") or {}).get(
-                                "liquidity_observed_at"
+                        )
+                        # Lane unknown pre-freeze: dual-lane possible-claim only.
+                        # Exact FAST/NORMAL is frozen later from classification.
+                        tracking_assessment = assess_possible_tracking_claim_by_identity(
+                            connection,
+                            token_mint=proof.mint,
+                            pair_address=exact_pool,
+                            assessed_at=evaluated,
+                        )
+                        tracking_eligible = bool(tracking_assessment.eligible)
+                        tracking_requalification_required = bool(
+                            tracking_assessment.requalification_eligible
+                        )
+                        if not tracking_eligible or tracking_requalification_required:
+                            tracking_reason = str(
+                                tracking_assessment.reason_code
+                                or "TRACKING_HANDOFF_INELIGIBLE"
                             )
-                            or ""
-                        ),
-                        "activation_route": _memory_observation_activation_route(
-                            admission_authority=item.get("admission_authority"),
-                            carried_route=(
-                                item.get("activation_route")
-                                or getattr(proof, "origin_route", None)
+                            tracking_assessment_evidence = {
+                                "eligible": tracking_eligible,
+                                "reason_code": tracking_reason,
+                                "category": str(
+                                    getattr(tracking_assessment, "category", None)
+                                    or tracking_reason
+                                ),
+                                "queue_id": tracking_assessment.queue_id,
+                                "queue_status": tracking_assessment.queue_status,
+                                "requalification_required": (
+                                    tracking_requalification_required
+                                ),
+                                "cooldown_until": tracking_assessment.cooldown_until,
+                                "assessed_at": evaluated.isoformat(),
+                            }
+                            exclusion = {
+                                "mint": proof.mint,
+                                "pool": exact_pool,
+                                "reason": tracking_reason,
+                                "tracking_handoff_eligible": tracking_eligible,
+                                "tracking_requalification_required": (
+                                    tracking_requalification_required
+                                ),
+                                "tracking_handoff": dict(tracking_assessment_evidence),
+                                "holder_safety": dict(fact),
+                            }
+                            tracking_exclusions.append(exclusion)
+                            upsert_reserve_layer(
+                                connection,
+                                network=NETWORK,
+                                mint=exclusion["mint"],
+                                pool=exclusion["pool"],
+                                layer=MEMORY_OBSERVATION_ELIGIBLE,
+                                reserve_state="EXCLUDED",
+                                reason=tracking_reason,
+                                observed_at=evaluated.isoformat(),
+                                next_lawful_action_at=(
+                                    tracking_assessment.cooldown_until
+                                ),
+                                evidence_expires_at=str(expiry),
+                                source_provenance={"market": item.get("provenance")},
+                                evidence={
+                                    "tracking_handoff": dict(
+                                        tracking_assessment_evidence
+                                    ),
+                                    "holder_safety": dict(fact),
+                                    "memory_observation_eligible": False,
+                                },
+                                campaign_id=command.campaign_id,
+                            )
+                            continue
+                        holder_actually_eligible = bool(
+                            holder_context["fully_eligible"]
+                        ) and not bool(holder_result.accounting_blocker)
+                        holder_condition = str(holder_context["holder_condition"])
+                        holder_evidence_status = str(
+                            holder_context["holder_evidence_status"]
+                        )
+                        future_action = str(
+                            holder_context["future_action_eligibility"]
+                        )
+                        observation = {
+                            **item,
+                            "mint": proof.mint,
+                            "pool": str(
+                                item.get("pool")
+                                or item.get("pumpswap_pool")
+                                or proof.bonding_curve
                             ),
-                        ),
-                        "tracking_handoff_eligible": tracking_eligible,
-                        "tracking_handoff_reason": str(
-                            tracking_assessment.reason_code or "ELIGIBLE"
-                        ),
-                        "tracking_queue_id": tracking_assessment.queue_id,
-                        "tracking_queue_status": (
-                            tracking_assessment.queue_status
-                        ),
-                        "tracking_requalification_required": False,
-                        "cooldown_until": tracking_assessment.cooldown_until,
-                        "tracking_assessed_at": evaluated.isoformat(),
-                    }
-                    observation_rows.append(observation)
-                    upsert_reserve_layer(
-                        connection,
-                        network=NETWORK,
-                        mint=observation["mint"],
-                        pool=observation["pool"],
-                        layer=MEMORY_OBSERVATION_ELIGIBLE,
-                        reserve_state="ACTIVE",
-                        reason="IDENTITY_POOL_LIQUIDITY_MEMORY_OBSERVATION_PASS",
-                        observed_at=evaluated.isoformat(),
-                        next_lawful_action_at=None,
-                        evidence_expires_at=str(expiry),
-                        source_provenance={
-                            "market": item.get("provenance"),
-                            "holder_source": fact.get("source_name"),
-                        },
-                        evidence={
-                            "liquidity": dict(item.get("liquidity") or {}),
+                            "memory_observation_eligible": True,
+                            # fully_eligible reflects actual holder pass only; it is
+                            # never a memory admission input.
+                            "fully_eligible": holder_actually_eligible,
+                            "evidence_expires_at": expiry,
                             "holder_safety": dict(fact),
                             "holder_condition": holder_condition,
                             "holder_evidence_status": holder_evidence_status,
                             "future_action_eligibility": future_action,
-                            "memory_observation_eligible": True,
-                        },
-                        campaign_id=command.campaign_id,
-                    )
-                    # FULLY_ELIGIBLE retained only for future action-specific
-                    # policy when holder actually passes. Never for memory path.
-                    if holder_actually_eligible:
+                            "liquidity_observed_at": str(
+                                item.get("liquidity_observed_at")
+                                or (item.get("liquidity") or {}).get(
+                                    "liquidity_observed_at"
+                                )
+                                or ""
+                            ),
+                            "activation_route": _memory_observation_activation_route(
+                                admission_authority=item.get("admission_authority"),
+                                carried_route=(
+                                    item.get("activation_route")
+                                    or getattr(proof, "origin_route", None)
+                                ),
+                            ),
+                            "tracking_handoff_eligible": tracking_eligible,
+                            "tracking_handoff_reason": str(
+                                tracking_assessment.reason_code or "ELIGIBLE"
+                            ),
+                            "tracking_queue_id": tracking_assessment.queue_id,
+                            "tracking_queue_status": (
+                                tracking_assessment.queue_status
+                            ),
+                            "tracking_requalification_required": False,
+                            "cooldown_until": tracking_assessment.cooldown_until,
+                            "tracking_assessed_at": evaluated.isoformat(),
+                        }
+                        observation_rows.append(observation)
                         upsert_reserve_layer(
                             connection,
                             network=NETWORK,
                             mint=observation["mint"],
                             pool=observation["pool"],
-                            layer=FULLY_ELIGIBLE,
+                            layer=MEMORY_OBSERVATION_ELIGIBLE,
                             reserve_state="ACTIVE",
-                            reason="IDENTITY_MARKET_HOLDER_SAFETY_PASS",
+                            reason="IDENTITY_POOL_LIQUIDITY_MEMORY_OBSERVATION_PASS",
                             observed_at=evaluated.isoformat(),
                             next_lawful_action_at=None,
                             evidence_expires_at=str(expiry),
@@ -4957,251 +5150,295 @@ class AuthoritativeLiveOperationalCampaignOwner:
                             evidence={
                                 "liquidity": dict(item.get("liquidity") or {}),
                                 "holder_safety": dict(fact),
+                                "holder_condition": holder_condition,
+                                "holder_evidence_status": holder_evidence_status,
+                                "future_action_eligibility": future_action,
+                                "memory_observation_eligible": True,
                             },
                             campaign_id=command.campaign_id,
                         )
-                supply.diagnostics["memory_observation_tracking_exclusions"] = (
-                    tracking_exclusions
-                )
-                # Retained-evidence role completeness is binary eligibility before
-                # the neutral seeded freeze. Incomplete DIRECT_PUMP / MARKET
-                # nominees must never reach select-then-reject activation build.
-                #
-                # Current-run provenance authority is ONLY the already-produced
-                # pre-holder reconciliation plus the validated
-                # CampaignSourceRequestScope. Never reassemble / reconstruct
-                # either after holder evaluation.
-                from printer_v1.discovery.memory_observation_activation import (
-                    RETAINED_EVIDENCE_ROLE_INCOMPLETE_PRE_FREEZE,
-                )
-                from printer_v1.discovery.permanent_discovery_availability import (
-                    validate_campaign_source_request_scope,
-                )
+                        # FULLY_ELIGIBLE retained only for future action-specific
+                        # policy when holder actually passes. Never for memory path.
+                        if holder_actually_eligible:
+                            upsert_reserve_layer(
+                                connection,
+                                network=NETWORK,
+                                mint=observation["mint"],
+                                pool=observation["pool"],
+                                layer=FULLY_ELIGIBLE,
+                                reserve_state="ACTIVE",
+                                reason="IDENTITY_MARKET_HOLDER_SAFETY_PASS",
+                                observed_at=evaluated.isoformat(),
+                                next_lawful_action_at=None,
+                                evidence_expires_at=str(expiry),
+                                source_provenance={
+                                    "market": item.get("provenance"),
+                                    "holder_source": fact.get("source_name"),
+                                },
+                                evidence={
+                                    "liquidity": dict(item.get("liquidity") or {}),
+                                    "holder_safety": dict(fact),
+                                },
+                                campaign_id=command.campaign_id,
+                            )
+                    supply.diagnostics["memory_observation_tracking_exclusions"] = (
+                        tracking_exclusions
+                    )
+                    # Retained-evidence role completeness is binary eligibility before
+                    # the neutral seeded freeze. Incomplete DIRECT_PUMP / MARKET
+                    # nominees must never reach select-then-reject activation build.
+                    #
+                    # Current-run provenance authority is ONLY the already-produced
+                    # pre-holder reconciliation plus the validated
+                    # CampaignSourceRequestScope. Never reassemble / reconstruct
+                    # either after holder evaluation.
+                    from printer_v1.discovery.memory_observation_activation import (
+                        RETAINED_EVIDENCE_ROLE_INCOMPLETE_PRE_FREEZE,
+                    )
+                    from printer_v1.discovery.permanent_discovery_availability import (
+                        validate_campaign_source_request_scope,
+                    )
 
-                pre_holder_recon = dict(
-                    supply.diagnostics.get(
-                        "pre_holder_source_request_reconciliation"
-                    )
-                    or {}
-                )
-                pre_holder_snapshot = dict(
-                    supply.diagnostics.get("pre_holder_budget_snapshot") or {}
-                )
-                provenance_unavailable_detail = None
-                validated_scope = None
-                try:
-                    validated_scope = validate_campaign_source_request_scope(
-                        supply.diagnostics.get("campaign_source_request_scope"),
-                        execution_id=selection_seed,
-                        campaign_id=command.campaign_id,
-                        run_id=command.run_id,
-                        cycle_id=cycle_id,
-                    )
-                except ValueError as exc:
-                    provenance_unavailable_detail = (
-                        str(exc).strip()
-                        or "RETAINED_CURRENT_RUN_PROVENANCE_UNAVAILABLE"
-                    )
-                if provenance_unavailable_detail is None:
-                    if (
-                        not pre_holder_recon
-                        or str(pre_holder_recon.get("status") or "") != "OK"
-                        or not pre_holder_recon.get(
-                            "campaign_source_request_manifest"
+                    pre_holder_recon = dict(
+                        supply.diagnostics.get(
+                            "post_holder_source_request_reconciliation"
                         )
-                    ):
+                        or supply.diagnostics.get(
+                            "pre_holder_source_request_reconciliation"
+                        )
+                        or {}
+                    )
+                    pre_holder_snapshot = dict(
+                        supply.diagnostics.get("post_holder_budget_snapshot")
+                        or supply.diagnostics.get("pre_holder_budget_snapshot")
+                        or {}
+                    )
+                    provenance_unavailable_detail = None
+                    validated_scope = None
+                    try:
+                        validated_scope = validate_campaign_source_request_scope(
+                            supply.diagnostics.get("campaign_source_request_scope"),
+                            execution_id=selection_seed,
+                            campaign_id=command.campaign_id,
+                            run_id=command.run_id,
+                            cycle_id=cycle_id,
+                        )
+                    except ValueError as exc:
                         provenance_unavailable_detail = (
-                            "RETAINED_CURRENT_RUN_PROVENANCE_UNAVAILABLE"
+                            str(exc).strip()
+                            or "RETAINED_CURRENT_RUN_PROVENANCE_UNAVAILABLE"
                         )
-                if provenance_unavailable_detail is not None:
-                    role_complete_observation_rows = []
-                    retained_role_pre_freeze_exclusions = [
-                        {
-                            "mint": None,
-                            "pool": None,
-                            "admission_authority": None,
-                            "required_roles": (),
-                            "present_roles": (),
-                            "missing_roles": (),
-                            "qualification_failures": {
-                                "current_run_provenance": (
-                                    "RETAINED_CURRENT_RUN_PROVENANCE_UNAVAILABLE"
+                    if provenance_unavailable_detail is None:
+                        if (
+                            not pre_holder_recon
+                            or str(pre_holder_recon.get("status") or "") != "OK"
+                            or not pre_holder_recon.get(
+                                "campaign_source_request_manifest"
+                            )
+                        ):
+                            provenance_unavailable_detail = (
+                                "RETAINED_CURRENT_RUN_PROVENANCE_UNAVAILABLE"
+                            )
+                    if provenance_unavailable_detail is not None:
+                        role_complete_observation_rows = []
+                        retained_role_pre_freeze_exclusions = [
+                            {
+                                "mint": None,
+                                "pool": None,
+                                "admission_authority": None,
+                                "required_roles": (),
+                                "present_roles": (),
+                                "missing_roles": (),
+                                "qualification_failures": {
+                                    "current_run_provenance": (
+                                        "RETAINED_CURRENT_RUN_PROVENANCE_UNAVAILABLE"
+                                    )
+                                },
+                                "disposition": (
+                                    RETAINED_EVIDENCE_ROLE_INCOMPLETE_PRE_FREEZE
+                                ),
+                                "detail": "RETAINED_CURRENT_RUN_PROVENANCE_UNAVAILABLE",
+                                "scope_validation_detail": (
+                                    None
+                                    if provenance_unavailable_detail
+                                    == "RETAINED_CURRENT_RUN_PROVENANCE_UNAVAILABLE"
+                                    else provenance_unavailable_detail
+                                ),
+                            }
+                        ]
+                    else:
+                        assert validated_scope is not None
+                        measured_keys = list(
+                            pre_holder_snapshot.get(
+                                "measured_transport_identity_keys"
+                            )
+                            or ()
+                        )
+                        if not measured_keys:
+                            measured_keys = [
+                                list(key)
+                                for entry in (
+                                    pre_holder_recon.get(
+                                        "campaign_source_request_manifest"
+                                    )
+                                    or ()
                                 )
-                            },
-                            "disposition": (
-                                RETAINED_EVIDENCE_ROLE_INCOMPLETE_PRE_FREEZE
-                            ),
-                            "detail": "RETAINED_CURRENT_RUN_PROVENANCE_UNAVAILABLE",
-                            "scope_validation_detail": (
-                                None
-                                if provenance_unavailable_detail
-                                == "RETAINED_CURRENT_RUN_PROVENANCE_UNAVAILABLE"
-                                else provenance_unavailable_detail
-                            ),
-                        }
-                    ]
-                else:
-                    assert validated_scope is not None
-                    measured_keys = list(
-                        pre_holder_snapshot.get(
-                            "measured_transport_identity_keys"
+                                for key in (
+                                    entry.get("transport_identity_keys") or ()
+                                )
+                            ]
+                        from printer_v1.discovery.memory_observation_activation import (
+                            measure_freeze_ready_candidates,
                         )
-                        or ()
-                    )
-                    if not measured_keys:
-                        measured_keys = [
-                            list(key)
-                            for entry in (
+
+                        freeze_ready_measurement = measure_freeze_ready_candidates(
+                            connection,
+                            observation_rows,
+                            now=evaluated.isoformat(),
+                            request_key_root=str(validated_scope.request_key_root),
+                            campaign_id=str(validated_scope.campaign_id),
+                            run_id=str(validated_scope.run_id),
+                            cycle_id=str(validated_scope.cycle_id),
+                            campaign_source_request_manifest=list(
                                 pre_holder_recon.get(
                                     "campaign_source_request_manifest"
                                 )
                                 or ()
-                            )
-                            for key in (
-                                entry.get("transport_identity_keys") or ()
-                            )
+                            ),
+                            measured_transport_identity_keys=measured_keys,
+                            require_current_run_provenance=True,
+                        )
+                        # Pass pre-dedupe role-complete rows into freeze so
+                        # freeze_eligible_reserve remains uniqueness diagnostic owner.
+                        role_complete_observation_rows = list(
+                            freeze_ready_measurement.role_complete
+                        )
+                        retained_role_pre_freeze_exclusions = [
+                            dict(item) for item in freeze_ready_measurement.exclusions
                         ]
-                    from printer_v1.discovery.memory_observation_activation import (
-                        measure_freeze_ready_candidates,
-                    )
-
-                    freeze_ready_measurement = measure_freeze_ready_candidates(
-                        connection,
-                        observation_rows,
-                        now=evaluated.isoformat(),
-                        request_key_root=str(validated_scope.request_key_root),
-                        campaign_id=str(validated_scope.campaign_id),
-                        run_id=str(validated_scope.run_id),
-                        cycle_id=str(validated_scope.cycle_id),
-                        campaign_source_request_manifest=list(
-                            pre_holder_recon.get(
-                                "campaign_source_request_manifest"
-                            )
-                            or ()
+                        supply.diagnostics["freeze_ready_depth"] = int(
+                            freeze_ready_measurement.freeze_ready_depth
+                        )
+                    supply.diagnostics["retained_evidence_role_pre_freeze"] = {
+                        "input_count": len(observation_rows),
+                        "complete_count": len(role_complete_observation_rows),
+                        "excluded_count": len(retained_role_pre_freeze_exclusions),
+                        "exclusions": retained_role_pre_freeze_exclusions,
+                        "current_run_provenance_available": (
+                            provenance_unavailable_detail is None
                         ),
-                        measured_transport_identity_keys=measured_keys,
-                        require_current_run_provenance=True,
+                        "freeze_ready_depth": int(
+                            (supply.diagnostics.get("freeze_ready_depth"))
+                            if supply.diagnostics.get("freeze_ready_depth") is not None
+                            else len(role_complete_observation_rows)
+                        ),
+                    }
+                    # Post-filter freeze depth is the sole admission authority.
+                    # Never use raw observation_rows count for coverage decisions.
+                    # Historical-disjointness enforcement depends on the authoritative
+                    # CURRENT cycle ordinal. Real production persists Cycle 1 before
+                    # freeze, so COUNT(*) of campaign-cycle rows is not a prior-cycle
+                    # proxy and must not decide enforcement.
+                    current_cycle_ordinal = (
+                        _resolve_current_cycle_ordinal_for_historical_disjointness(
+                            connection,
+                            campaign_id=str(command.campaign_id),
+                            campaign_run_id=str(command.run_id),
+                            cycle_id=str(cycle_id),
+                        )
                     )
-                    # Pass pre-dedupe role-complete rows into freeze so
-                    # freeze_eligible_reserve remains uniqueness diagnostic owner.
-                    role_complete_observation_rows = list(
-                        freeze_ready_measurement.role_complete
-                    )
-                    retained_role_pre_freeze_exclusions = [
-                        dict(item) for item in freeze_ready_measurement.exclusions
-                    ]
-                    supply.diagnostics["freeze_ready_depth"] = int(
-                        freeze_ready_measurement.freeze_ready_depth
-                    )
-                supply.diagnostics["retained_evidence_role_pre_freeze"] = {
-                    "input_count": len(observation_rows),
-                    "complete_count": len(role_complete_observation_rows),
-                    "excluded_count": len(retained_role_pre_freeze_exclusions),
-                    "exclusions": retained_role_pre_freeze_exclusions,
-                    "current_run_provenance_available": (
-                        provenance_unavailable_detail is None
-                    ),
-                    "freeze_ready_depth": int(
-                        (supply.diagnostics.get("freeze_ready_depth"))
-                        if supply.diagnostics.get("freeze_ready_depth") is not None
-                        else len(role_complete_observation_rows)
-                    ),
-                }
-                # Post-filter freeze depth is the sole admission authority.
-                # Never use raw observation_rows count for coverage decisions.
-                # Historical-disjointness enforcement depends on the authoritative
-                # CURRENT cycle ordinal. Real production persists Cycle 1 before
-                # freeze, so COUNT(*) of campaign-cycle rows is not a prior-cycle
-                # proxy and must not decide enforcement.
-                current_cycle_ordinal = (
-                    _resolve_current_cycle_ordinal_for_historical_disjointness(
+                    frozen_eligible_reserve = freeze_eligible_reserve_for_campaign(
                         connection,
+                        role_complete_observation_rows,
+                        cycle_seed=selection_seed,
+                        at=datetime.now(timezone.utc).isoformat(),
                         campaign_id=str(command.campaign_id),
                         campaign_run_id=str(command.run_id),
-                        cycle_id=str(cycle_id),
-                    )
-                )
-                frozen_eligible_reserve = freeze_eligible_reserve_for_campaign(
-                    connection,
-                    role_complete_observation_rows,
-                    cycle_seed=selection_seed,
-                    at=datetime.now(timezone.utc).isoformat(),
-                    campaign_id=str(command.campaign_id),
-                    campaign_run_id=str(command.run_id),
-                    enforce_campaign_historical_disjointness=(
-                        current_cycle_ordinal > 1
-                    ),
-                )
-                freeze_authority = dict(
-                    frozen_eligible_reserve.selection_authority or {}
-                )
-                supply.diagnostics["observation_reserve"] = freeze_authority
-                supply.diagnostics["freeze_depth_enforcement"] = {
-                    "enforced": True,
-                    "selected_count": len(frozen_eligible_reserve.selected),
-                    "alternate_count": len(frozen_eligible_reserve.alternates[:2]),
-                    **freeze_authority,
-                }
-                if freeze_authority.get("coverage_blocker"):
-                    from printer_v1.discovery.eligible_token_supply import (
-                        decide_pre_lifecycle_supply_continuation,
-                    )
-                    from printer_v1.discovery.permanent_discovery_availability import (
-                        MINIMUM_FREEZE_DEPTH,
-                    )
-                    from printer_v1.discovery.pre_lifecycle_temporal_acquisition import (
-                        WAITING_FOR_ELIGIBLE_SUPPLY,
-                    )
-
-                    freeze_ready_depth = int(
-                        freeze_authority.get("valid_fresh_unique_observation_depth")
-                        or freeze_authority.get("observation_eligible_count")
-                        or len(role_complete_observation_rows)
-                    )
-                    acquisition_deadline = None
-                    refresh_interval = 600
-                    if pre_lifecycle_temporal_refresh_owner is not None:
-                        acquisition_deadline = getattr(
-                            pre_lifecycle_temporal_refresh_owner,
-                            "acquisition_deadline_at",
-                            None,
-                        )
-                        refresh_interval = int(
-                            getattr(
-                                pre_lifecycle_temporal_refresh_owner,
-                                "refresh_interval_seconds",
-                                600,
-                            )
-                        )
-                    if acquisition_deadline is None:
-                        acquisition_deadline = (
-                            evaluated
-                            + timedelta(seconds=int(pre_lifecycle_acquisition_seconds))
-                        ).isoformat()
-                    continuation = decide_pre_lifecycle_supply_continuation(
-                        freeze_ready_depth=freeze_ready_depth,
-                        enrichment_work_remaining=False,
-                        source_operations_remaining=max(
-                            0,
-                            int(
-                                (
-                                    supply.diagnostics.get(
-                                        "discovery_operations_remaining"
-                                    )
-                                    if supply is not None
-                                    else 0
-                                )
-                                or 0
-                            ),
+                        enforce_campaign_historical_disjointness=(
+                            current_cycle_ordinal > 1
                         ),
-                        acquisition_deadline_at=str(acquisition_deadline),
-                        now=datetime.now(timezone.utc).isoformat(),
-                        universe_state="ALL_REACHABLE_CANDIDATES_EVALUATED",
-                        refresh_interval_seconds=refresh_interval,
-                        minimum_freeze_depth=int(MINIMUM_FREEZE_DEPTH),
                     )
-                    if continuation.status == WAITING_FOR_ELIGIBLE_SUPPLY:
+                    freeze_authority = dict(
+                        frozen_eligible_reserve.selection_authority or {}
+                    )
+                    supply.diagnostics["observation_reserve"] = freeze_authority
+                    supply.diagnostics["freeze_depth_enforcement"] = {
+                        "enforced": True,
+                        "selected_count": len(frozen_eligible_reserve.selected),
+                        "alternate_count": len(frozen_eligible_reserve.alternates[:2]),
+                        **freeze_authority,
+                    }
+                    if freeze_authority.get("coverage_blocker"):
+                        from printer_v1.discovery.eligible_token_supply import (
+                            decide_pre_lifecycle_supply_continuation,
+                        )
+                        from printer_v1.discovery.permanent_discovery_availability import (
+                            MINIMUM_FREEZE_DEPTH,
+                        )
+                        from printer_v1.discovery.pre_lifecycle_temporal_acquisition import (
+                            WAITING_FOR_ELIGIBLE_SUPPLY,
+                        )
+
+                        freeze_ready_depth = int(
+                            freeze_authority.get("valid_fresh_unique_observation_depth")
+                            or freeze_authority.get("observation_eligible_count")
+                            or len(role_complete_observation_rows)
+                        )
+                        acquisition_deadline = None
+                        refresh_interval = 600
                         if pre_lifecycle_temporal_refresh_owner is not None:
+                            acquisition_deadline = getattr(
+                                pre_lifecycle_temporal_refresh_owner,
+                                "acquisition_deadline_at",
+                                None,
+                            )
+                            refresh_interval = int(
+                                getattr(
+                                    pre_lifecycle_temporal_refresh_owner,
+                                    "refresh_interval_seconds",
+                                    600,
+                                )
+                            )
+                        if acquisition_deadline is None:
+                            acquisition_deadline = (
+                                evaluated
+                                + timedelta(seconds=int(pre_lifecycle_acquisition_seconds))
+                            ).isoformat()
+                        continuation = decide_pre_lifecycle_supply_continuation(
+                            freeze_ready_depth=freeze_ready_depth,
+                            enrichment_work_remaining=False,
+                            source_operations_remaining=max(
+                                0,
+                                int(
+                                    (
+                                        supply.diagnostics.get(
+                                            "discovery_operations_remaining"
+                                        )
+                                        if supply is not None
+                                        else 0
+                                    )
+                                    or 0
+                                ),
+                            ),
+                            acquisition_deadline_at=str(acquisition_deadline),
+                            now=datetime.now(timezone.utc).isoformat(),
+                            universe_state="ALL_REACHABLE_CANDIDATES_EVALUATED",
+                            refresh_interval_seconds=refresh_interval,
+                            minimum_freeze_depth=int(MINIMUM_FREEZE_DEPTH),
+                        )
+                        if (
+                            continuation.status == WAITING_FOR_ELIGIBLE_SUPPLY
+                            and pre_lifecycle_temporal_refresh_owner is not None
+                            and not post_holder_refresh_resumed
+                        ):
+                            from printer_v1.discovery.eligible_token_supply import (
+                                temporal_refresh_terminal_cause,
+                            )
+                            from printer_v1.discovery.pre_lifecycle_temporal_acquisition import (
+                                REFRESH_COMPLETED,
+                                TemporalRefreshOutcome,
+                            )
+
                             refresh_outcome = _request_temporal_refresh_after_releasing_campaign_write(
                                 connection,
                                 pre_lifecycle_temporal_refresh_owner,
@@ -5211,12 +5448,8 @@ class AuthoritativeLiveOperationalCampaignOwner:
                                 source_operations_remaining=max(
                                     0,
                                     int(
-                                        (
-                                            supply.diagnostics.get(
-                                                "discovery_operations_remaining"
-                                            )
-                                            if supply is not None
-                                            else 0
+                                        supply.diagnostics.get(
+                                            "discovery_operations_remaining"
                                         )
                                         or 0
                                     ),
@@ -5224,44 +5457,151 @@ class AuthoritativeLiveOperationalCampaignOwner:
                                 provider_terminal_failure=False,
                                 now=datetime.now(timezone.utc).isoformat(),
                             )
+                            if not isinstance(refresh_outcome, TemporalRefreshOutcome):
+                                raise LiveOperationalError(
+                                    "POST_HOLDER_REFRESH_OUTCOME_INVALID",
+                                    type(refresh_outcome).__name__,
+                                )
                             supply = _replace_supply_post_holder_refresh_evidence(
                                 supply,
                                 refresh_outcome,
                             )
-                        supply.diagnostics["freeze_depth_enforcement"][
-                            "terminal"
-                        ] = WAITING_FOR_ELIGIBLE_SUPPLY
-                        supply.diagnostics["freeze_depth_enforcement"][
-                            "continuation"
-                        ] = "WAITING_FOR_ELIGIBLE_SUPPLY"
-                        selection_terminal = WAITING_FOR_ELIGIBLE_SUPPLY
-                    else:
-                        supply.diagnostics["freeze_depth_enforcement"][
-                            "terminal"
-                        ] = "PRE_LIFECYCLE_DISCOVERY_SELECTION_COVERAGE_INSUFFICIENT"
-                        supply.diagnostics["freeze_depth_enforcement"][
-                            "durable_report_required"
-                        ] = True
-                else:
-                    for reserve_state, items in (
-                        ("SELECTED", frozen_eligible_reserve.selected),
-                        ("ALTERNATE", frozen_eligible_reserve.alternates[:2]),
-                    ):
-                        for item in items:
-                            connection.execute(
-                                """UPDATE printer_discovery_reserve_layers
-                                   SET reserve_state=?,updated_at=?
-                                   WHERE network=? AND mint_identity=?
-                                     AND pool_address=? AND reserve_layer=?""",
-                                (
-                                    reserve_state,
-                                    evaluated.isoformat(),
-                                    NETWORK,
-                                    str(item.get("mint") or ""),
-                                    str(item.get("pool") or ""),
-                                    MEMORY_OBSERVATION_ELIGIBLE,
+                            if refresh_outcome.status == REFRESH_COMPLETED:
+                                supply = _resume_post_holder_supply_after_refresh(
+                                    db_path=command.db_path,
+                                    supply=supply,
+                                    outcome=refresh_outcome,
+                                    cycle_seed=selection_seed,
+                                    migration_transport=migration_transport,
+                                    supply_kwargs=supply_kwargs,
+                                    temporal_refresh_owner=(
+                                        pre_lifecycle_temporal_refresh_owner
+                                    ),
+                                )
+                                supply = _attach_post_holder_refresh_provenance_snapshot(
+                                    connection,
+                                    supply,
+                                    campaign_id=str(command.campaign_id),
+                                    pre_holder_accounting_projection=(
+                                        pre_holder_accounting_projection
+                                    ),
+                                )
+                                post_snapshot = dict(
+                                    supply.diagnostics.get(
+                                        "post_holder_budget_snapshot"
+                                    )
+                                    or {}
+                                )
+                                if post_snapshot:
+                                    from printer_v1.operator_cli.holder_reliability_budget_control import (
+                                        build_ledger_from_exact_counts,
+                                    )
+
+                                    ledger = build_ledger_from_exact_counts(
+                                        governed_request_count=int(
+                                            post_snapshot["governed_request_count"]
+                                        ),
+                                        underlying_transport_operations=int(
+                                            post_snapshot["measured_transport_count"]
+                                        ),
+                                        deadline_at=deadline,
+                                    )
+                                    persist_ledger(
+                                        connection,
+                                        run_id=command.run_id,
+                                        cycle_id=cycle_id,
+                                        ledger=ledger,
+                                        now=datetime.now(timezone.utc).isoformat(),
+                                    )
+                                    connection.commit()
+                                fixtures = replace(
+                                    fixtures,
+                                    pumpswap_proofs={
+                                        **dict(fixtures.pumpswap_proofs),
+                                        **dict(supply.graduation_proofs),
+                                    },
+                                )
+                                graduated_candidates, graduation_decisions = (
+                                    _graduated_admission(
+                                        _permanent_observation_admission_inputs(supply),
+                                        graduation_proofs=dict(
+                                            fixtures.pumpswap_proofs
+                                        ),
+                                        candidate_cap=candidate_cap,
+                                    )
+                                )
+                                admission = self._full_pilot_graduation_diagnostics(
+                                    graduation_decisions=graduation_decisions,
+                                    acquisition=acquisition,
+                                    enrichment=enrichment,
+                                    fixtures=fixtures,
+                                    staged_now=staged_now,
+                                    admitted=len(graduated_candidates),
+                                    candidate_cap=candidate_cap,
+                                )
+                                provenance_by_mint = {
+                                    mint.lower(): str(
+                                        candidate.get("provenance") or ""
+                                    )
+                                    for mint, candidate in dict(
+                                        supply.holder_reserve_candidates
+                                    ).items()
+                                }
+                                post_holder_refresh_resumed = True
+                                continue
+                            terminal = (
+                                WAITING_FOR_ELIGIBLE_SUPPLY
+                                if refresh_outcome.status
+                                == WAITING_FOR_ELIGIBLE_SUPPLY
+                                else temporal_refresh_terminal_cause(
+                                    refresh_outcome.status
+                                )
+                            )
+                        elif post_holder_refresh_resumed:
+                            terminal = _post_holder_resumed_supply_terminal_cause(
+                                supply,
+                                fallback=(
+                                    continuation.final_terminal_cause
+                                    or "PRE_LIFECYCLE_DISCOVERY_SELECTION_COVERAGE_INSUFFICIENT"
                                 ),
                             )
+                        else:
+                            terminal = (
+                                continuation.final_terminal_cause
+                                or "PRE_LIFECYCLE_DISCOVERY_SELECTION_COVERAGE_INSUFFICIENT"
+                            )
+                        supply.diagnostics["freeze_depth_enforcement"][
+                            "terminal"
+                        ] = terminal
+                        supply.diagnostics["freeze_depth_enforcement"][
+                            "continuation"
+                        ] = terminal
+                        if terminal != WAITING_FOR_ELIGIBLE_SUPPLY:
+                            supply.diagnostics["freeze_depth_enforcement"][
+                                "durable_report_required"
+                            ] = True
+                        selection_terminal = terminal
+                    else:
+                        for reserve_state, items in (
+                            ("SELECTED", frozen_eligible_reserve.selected),
+                            ("ALTERNATE", frozen_eligible_reserve.alternates[:2]),
+                        ):
+                            for item in items:
+                                connection.execute(
+                                    """UPDATE printer_discovery_reserve_layers
+                                       SET reserve_state=?,updated_at=?
+                                       WHERE network=? AND mint_identity=?
+                                         AND pool_address=? AND reserve_layer=?""",
+                                    (
+                                        reserve_state,
+                                        evaluated.isoformat(),
+                                        NETWORK,
+                                        str(item.get("mint") or ""),
+                                        str(item.get("pool") or ""),
+                                        MEMORY_OBSERVATION_ELIGIBLE,
+                                    ),
+                                )
+                    break
                 # Campaign-wide source-request reconciliation before readiness.
                 # Holder stage result is the sole owner of holder IDs/coverage;
                 # never invent IDs and never fall back to ledger.request_ids.
@@ -5358,6 +5698,9 @@ class AuthoritativeLiveOperationalCampaignOwner:
                             measured_transport_identity_keys=(
                                 (
                                     supply.diagnostics.get(
+                                        "post_holder_budget_snapshot"
+                                    )
+                                    or supply.diagnostics.get(
                                         "pre_holder_budget_snapshot"
                                     )
                                     or {}
@@ -5406,7 +5749,6 @@ class AuthoritativeLiveOperationalCampaignOwner:
             connection.close()
 
         readiness_bundle = None
-        selection_terminal = None
         eligible_alternates: list[dict[str, Any]] = []
         if supply is not None and provenance_by_mint:
             # Deterministic combined order: honour the seeded combined reserve order
@@ -5678,8 +6020,13 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     )
                     eligible_alternates = []
                 elif depth_blocker:
-                    selection_terminal = (
-                        "PRE_LIFECYCLE_DISCOVERY_SELECTION_COVERAGE_INSUFFICIENT"
+                    freeze_terminal = (
+                        (supply.diagnostics.get("freeze_depth_enforcement") or {})
+                        .get("terminal")
+                    )
+                    selection_terminal = str(
+                        freeze_terminal
+                        or "PRE_LIFECYCLE_DISCOVERY_SELECTION_COVERAGE_INSUFFICIENT"
                     )
                     eligible_alternates = []
                 else:

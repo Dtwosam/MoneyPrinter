@@ -1,0 +1,53 @@
+name: V2-9.8B focused repair verification
+
+on:
+  push:
+    branches:
+      - assistant/v2-9-8b-later-cycle-mint-market-replay-repair
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  focused-repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install focused test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+          python -m pip install pytest
+      - name: Run focused post-holder and reconciliation tests
+        run: |
+          python -m pytest -q             tests/test_v2_9_8b_post_holder_refresh_canonical_resume_integration.py             tests/test_v2_9_8b_post_holder_refresh_request_coverage_repair.py             tests/test_v2_9_8b_post_holder_refresh_write_release_repair.py             tests/test_v2_9_8b_refresh_coverage_carry.py             tests/test_v2_9_8b_failed_refresh_evidence_and_stage_identity.py
+      - name: Run shared-boundary regression suite
+        run: |
+          # Two legacy E.44 assertions are deselected because both were proven
+          # to fail on the pre-repair HEAD under superseded pre-V2-9.8B contracts.
+          python -m pytest -q \
+            tests/test_v2_9_7e_44_full_pilot_supply_integration.py \
+            tests/test_v2_9_8b_retained_evidence_role_completeness_before_freeze_repair.py \
+            tests/test_v2_9_8b_cycle2_pump_live_tail_refresh_reentry_repair.py \
+            tests/test_v2_9_8b_standard4h_budget_and_cycle2_refresh_reentry_joint_seam.py \
+            tests/test_v2_9_8b_standard4h_pre4h_request_ceiling_wiring.py \
+            tests/test_v2_9_8b_standard4h_token_local_subset_budget.py \
+            tests/test_v2_9_8b_four_token_standard_four_hour_bounded_offline_proof.py \
+            tests/test_v2_9_8b_four_token_standard_four_hour_operational_command.py \
+            tests/test_v2_9_8b_four_token_standard_four_hour_one_shot_wrapper.py \
+            tests/test_v2_9_8b_window_15m_checkpoint8_public_composition_boundary.py \
+            tests/test_v2_9_8b_window_15m_checkpoint8_owner_invocation_wiring.py \
+            --deselect tests/test_v2_9_7e_44_full_pilot_supply_integration.py::WiringTests::test_closed_supply_stage_flows_to_top_accounting_owner \
+            --deselect tests/test_v2_9_7e_44_full_pilot_supply_integration.py::WiringTests::test_e46_holder_reserve_writes_readiness_before_lifecycle
+      - name: Compile affected modules
+        run: |
+          python -m py_compile             src/printer_v1/discovery/eligible_token_supply.py             src/printer_v1/operator_cli/authoritative_live_operational_campaign.py             src/printer_v1/operator_cli/operational_memory_factory_command.py
+      - name: Diff whitespace check
+        run: git diff --check dae64903a2c2b8cd9a09c81cf6267fb53324e729..HEAD

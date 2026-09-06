@@ -3517,22 +3517,27 @@ def _run_operational_campaign(
         raise OperationalMemoryFactoryError(
             "DISPOSABLE_PROOF_EXTERNAL_OWNER_OVERRIDE_FORBIDDEN"
         )
-    # The manifest/marker compatibility exception applies only to the ordinary
-    # WINDOW_15M run. Selective-1h never receives the C8 proof capability.
-    if policy.selective_1h_continuation and disposable_proof is not None:
+    # Disposable proof is a development-only composition capability for the
+    # ordinary WINDOW_15M path and Standard-4H rehearsal. Standalone selective-1h
+    # remains unsupported; no disposable proof bypasses operational authorization.
+    if (
+        policy.selective_1h_continuation
+        and not policy.standard_four_hour_campaign
+        and disposable_proof is not None
+    ):
         raise OperationalMemoryFactoryError(
             "DISPOSABLE_PROOF_POLICY_UNSUPPORTED"
         )
-    if policy.standard_four_hour_campaign:
+    if disposable_proof is not None:
+        preflight = build_disposable_public_composition_preflight(
+            disposable_proof
+        )
+    elif policy.standard_four_hour_campaign:
         preflight = build_standard_four_hour_preflight(
             git_provenance_authorization=git_provenance_authorization
         )
     elif policy.selective_1h_continuation:
         preflight = build_selective_1h_preflight()
-    elif disposable_proof is not None:
-        preflight = build_disposable_public_composition_preflight(
-            disposable_proof
-        )
     else:
         preflight = build_activation_preflight(
             git_provenance_authorization=git_provenance_authorization
@@ -4773,6 +4778,7 @@ def run_four_token_standard_four_hour_campaign(
     pump_transport: Any | None = None,
     secondary_transport: Any | None = None,
     migration_transport: Any | None = None,
+    disposable_proof: Any | None = None,
 ) -> dict[str, Any]:
     """Run the one externally authorized OPERATIONAL four-token 4/2/2 campaign.
 
@@ -4791,6 +4797,7 @@ def run_four_token_standard_four_hour_campaign(
         secondary_transport=secondary_transport,
         migration_transport=migration_transport,
         git_provenance_authorization=git_provenance_authorization,
+        disposable_proof=disposable_proof,
         four_token_proof_controller=(
             _four_token_operational.build_operational_multi_cycle_controller()
         ),

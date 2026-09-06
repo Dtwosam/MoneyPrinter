@@ -131,6 +131,22 @@ class PreLifecycleSupplyContinuationDecision:
     automatic_retry_created: bool = False
 
 
+def temporal_refresh_terminal_cause(status: str) -> str:
+    """Map one temporal-owner status onto the canonical fail-closed terminal."""
+    value = str(status)
+    return {
+        TEMPORAL_SUPERVISION_FAILED: "CAMPAIGN_SUPERVISION_FAILED",
+        TEMPORAL_CANCELLED: "OPERATOR_SAFE_STOP_REQUESTED",
+        UNSAFE_SCHEDULER_STATE: "UNSAFE_SCHEDULER_OWNERSHIP_STATE",
+        INTERNAL_INVARIANT: DISCOVERY_ARCHITECTURE_FALSE_SHORTAGE,
+        INTERNAL_RUNTIME_ERROR: DISCOVERY_ARCHITECTURE_FALSE_SHORTAGE,
+        REFRESH_SOURCE_FAILURE: "SOURCE_AVAILABILITY_FAILURE_DURING_REFRESH",
+        TEMPORAL_SOURCE_BUDGET_EXHAUSTED: "DISCOVERY_OPERATION_BUDGET_EXHAUSTED",
+        ACQUISITION_DEADLINE_EXHAUSTED: PRE_LIFECYCLE_ACQUISITION_DURATION_EXHAUSTED,
+        NO_LAWFUL_REFRESH_WINDOW: PRE_LIFECYCLE_ACQUISITION_DURATION_EXHAUSTED,
+    }.get(value, value)
+
+
 def decide_pre_lifecycle_supply_continuation(
     *,
     freeze_ready_depth: int,
@@ -2454,24 +2470,7 @@ def run_persistent_eligible_token_supply(
         _refresh_freeze_ready_depth()
 
         def _temporal_stop_reason(status: str) -> str:
-            """Map one owner outcome onto the fail-closed terminal precedence."""
-            return {
-                TEMPORAL_SUPERVISION_FAILED: "CAMPAIGN_SUPERVISION_FAILED",
-                TEMPORAL_CANCELLED: "OPERATOR_SAFE_STOP_REQUESTED",
-                UNSAFE_SCHEDULER_STATE: "UNSAFE_SCHEDULER_OWNERSHIP_STATE",
-                INTERNAL_INVARIANT: DISCOVERY_ARCHITECTURE_FALSE_SHORTAGE,
-                INTERNAL_RUNTIME_ERROR: DISCOVERY_ARCHITECTURE_FALSE_SHORTAGE,
-                REFRESH_SOURCE_FAILURE: "SOURCE_AVAILABILITY_FAILURE_DURING_REFRESH",
-                TEMPORAL_SOURCE_BUDGET_EXHAUSTED: (
-                    "DISCOVERY_OPERATION_BUDGET_EXHAUSTED"
-                ),
-                ACQUISITION_DEADLINE_EXHAUSTED: (
-                    PRE_LIFECYCLE_ACQUISITION_DURATION_EXHAUSTED
-                ),
-                NO_LAWFUL_REFRESH_WINDOW: (
-                    PRE_LIFECYCLE_ACQUISITION_DURATION_EXHAUSTED
-                ),
-            }.get(status, status)
+            return temporal_refresh_terminal_cause(status)
 
         quantum_rounds = 0
 
@@ -4222,6 +4221,7 @@ __all__ = [
     "acquisition_capacity_met",
     "acquisition_quantum_bound",
     "decide_pre_lifecycle_supply_continuation",
+    "temporal_refresh_terminal_cause",
     "enrich_pre_freeze_retained_evidence",
     "COOPERATIVE_QUANTUM_MAX_DIRECT_CANDIDATES",
     "COOPERATIVE_QUANTUM_MAX_SOURCE_OPERATIONS",
