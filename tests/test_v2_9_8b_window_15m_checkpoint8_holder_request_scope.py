@@ -7,8 +7,10 @@ from pathlib import Path
 
 from printer_v1.db import apply_migrations
 from printer_v1.discovery.permanent_discovery_availability import (
+    _lawful_cooperative_resume_stage_contract,
     assemble_and_reconcile_campaign_source_requests,
     build_campaign_source_request_scope,
+    validate_cooperative_resume_source_request_scope,
 )
 from printer_v1.operator_cli import holder_reliability_budget_control as budget
 from printer_v1.operator_cli.holder_reliability_budget_control import (
@@ -193,6 +195,87 @@ def test_dtw50_rooted_holder_request_is_in_exact_campaign_scope(tmp_path):
     assert recon["transport_identity_completeness_status"] == "OK"
     assert recon["transport_identity_blockers"] == []
 
+
+
+def test_dtw50_holder_request_is_lawful_for_same_scope_cooperative_resume(
+    tmp_path,
+):
+    con = _db(tmp_path)
+    try:
+        scope, persisted, _request_key = _collect_holder(con, rooted=True)
+        resume = validate_cooperative_resume_source_request_scope(
+            con,
+            scope=scope,
+            execution_id=EXECUTION_ID,
+            campaign_id=CAMPAIGN_ID,
+            run_id=RUN_ID,
+            cycle_id=CYCLE_ID,
+        )
+    finally:
+        con.close()
+
+    assert resume["status"] == "RESUME_SCOPE_VALID"
+    assert resume["request_ids"] == list(persisted.source_request_ids)
+
+
+def test_dtw50_cooperative_resume_holder_contract_matrix_is_exact():
+    root = _scope().request_key_root
+    accepted = (
+        (
+            f"{root}-holder-1-context:safety",
+            "goplus",
+            "safety_reference",
+        ),
+        (
+            f"{root}-holder-2-context:core-safety",
+            "solana_rpc",
+            "mint_account_reference",
+        ),
+        (
+            f"{root}-holder-3-context:holder",
+            "solana_rpc",
+            "holder_concentration_reference",
+        ),
+        (
+            f"{root}-holder-4-context:holder_backup",
+            "solana_rpc",
+            "holder_concentration_reference",
+        ),
+        (
+            f"{root}-holder-5-context:holder_backup",
+            "helius_free",
+            "holder_concentration_reference",
+        ),
+    )
+    for request_key, source_name, request_kind in accepted:
+        assert _lawful_cooperative_resume_stage_contract(
+            request_key=request_key,
+            request_key_root=root,
+            source_name=source_name,
+            request_kind=request_kind,
+        )
+
+    rejected = (
+        (f"{root}-holder-9-context:safety", "goplus", "safety_reference"),
+        (f"{root}-holder-1-context:safety", "solana_rpc", "safety_reference"),
+        (
+            f"{root}-holder-1-context:holder",
+            "goplus",
+            "holder_concentration_reference",
+        ),
+        (
+            f"{root}-holder-1-context:holder_backup",
+            "dexscreener",
+            "holder_concentration_reference",
+        ),
+    )
+    for request_key, source_name, request_kind in rejected:
+        assert not _lawful_cooperative_resume_stage_contract(
+            request_key=request_key,
+            request_key_root=root,
+            source_name=source_name,
+            request_kind=request_kind,
+        )
 
 def test_dtw50_default_preclose_key_contract_is_unchanged(tmp_path):
     con = _db(tmp_path)
