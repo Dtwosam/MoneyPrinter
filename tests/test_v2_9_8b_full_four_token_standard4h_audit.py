@@ -374,7 +374,24 @@ def test_two_cycle_four_token_real_factory_reaches_shared_terminal_standard4h(
         ) == 4
         assert all(
             str(row["token_state"]) == "WINDOW_4H_CLOSED" for row in targets
-        ), json.dumps([dict(row) for row in targets], sort_keys=True)
+        ), json.dumps(
+            {
+                "targets": [dict(row) for row in targets],
+                "cycles": [
+                    {
+                        "cycle_id": item.get("cycle_id"),
+                        "execution_outcome": item.get("execution_outcome"),
+                        "standard_four_hour_terminal": item.get(
+                            "standard_four_hour_terminal"
+                        ),
+                    }
+                    for item in accounting.get("cycles", [])
+                    if isinstance(item, dict)
+                ],
+            },
+            sort_keys=True,
+            default=str,
+        )
 
         attempt = connection.execute(
             "SELECT attempt_state,consumed_cycle_id FROM "
