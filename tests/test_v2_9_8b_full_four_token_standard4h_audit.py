@@ -533,17 +533,43 @@ def test_two_cycle_four_token_real_factory_reaches_shared_terminal_standard4h(
             assert all(row["memory_window_row_id"] is not None for row in owned)
 
         long_closes = connection.execute(
-            "SELECT step_key,step_status,scheduler_job_id FROM "
-            "printer_memory_factory_run_steps "
-            "WHERE step_kind='LONG_CONTINUATION_CLOSE_AUDIT' ORDER BY step_key"
+            """SELECT cw.cycle_id,slot.slot_ordinal,rs.step_key,rs.step_status,
+                      rs.scheduler_job_id,cw.scheduler_work_id,cw.work_state
+                 FROM printer_memory_factory_run_steps AS rs
+                 JOIN printer_memory_factory_campaign_scheduler_work AS cw
+                   ON cw.scheduler_job_id=rs.scheduler_job_id
+                  AND cw.ownership_contract_version='V2_STAGE_SCOPED'
+                  AND cw.stage_id='WINDOW_4H'
+                  AND cw.work_scope='WINDOW_LIFECYCLE'
+                 JOIN printer_memory_factory_campaign_token_slots AS slot
+                   ON slot.campaign_id=cw.campaign_id
+                  AND slot.run_id=cw.run_id
+                  AND slot.cycle_id=cw.cycle_id
+                  AND slot.token_slot_id=cw.token_slot_id
+                WHERE rs.step_kind='LONG_CONTINUATION_CLOSE_AUDIT'
+                ORDER BY cw.cycle_id,slot.slot_ordinal"""
         ).fetchall()
         assert len(long_closes) == 4
-        assert all(str(row["step_status"]) == "SUCCEEDED" for row in long_closes)
-        keys = {str(row["step_key"]) for row in long_closes}
-        assert any(key.startswith("t1_") and "_c0002_" not in key for key in keys)
-        assert any(key.startswith("t2_") and "_c0002_" not in key for key in keys)
-        assert any(key.startswith("t1_c0002_") for key in keys)
-        assert any(key.startswith("t2_c0002_") for key in keys)
+        assert all(
+            (str(row["step_status"]), str(row["work_state"]))
+            == ("SUCCEEDED", "SUCCEEDED")
+            for row in long_closes
+        ), [dict(row) for row in long_closes]
+        assert {
+            str(row["cycle_id"]) for row in long_closes
+        } == {str(cycles[0]["cycle_id"]), str(cycles[1]["cycle_id"])}
+        for cycle in cycles:
+            owned = [
+                row
+                for row in long_closes
+                if str(row["cycle_id"]) == str(cycle["cycle_id"])
+            ]
+            assert [int(row["slot_ordinal"]) for row in owned] == [1, 2], [
+                dict(row) for row in owned
+            ]
+        assert len({int(row["scheduler_job_id"]) for row in long_closes}) == 4
+        assert len({str(row["scheduler_work_id"]) for row in long_closes}) == 4
+        assert len({str(row["step_key"]) for row in long_closes}) == 4
 
         progression = connection.execute(
             "SELECT cycle_id,attempt_state FROM "
