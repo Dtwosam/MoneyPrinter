@@ -319,6 +319,7 @@ def _resume_post_holder_supply_after_refresh(
             "temporal_refresh_owner": temporal_refresh_owner,
             "cooperative_resume": True,
             "cooperative_stage_budget": resumed_stage_budget,
+            "persist_terminal_certificate": False,
             "prior_source_operations_used": prior_operations,
             "prior_source_request_coverage": prior_coverage,
         }
@@ -1382,6 +1383,91 @@ def _graduated_supply_terminal_cause(supply: Any | None) -> str:
 
 def _project_supply_exhaustion_certificate(supply_diagnostics: Mapping[str, Any]) -> Any | None:
     return supply_diagnostics.get("exhaustion_certificate")
+
+
+def _persist_supply_exhaustion_certificate_at_terminal(
+    connection: sqlite3.Connection,
+    supply: Any | None,
+) -> Mapping[str, Any] | None:
+    """Persist one deferred Cycle-1 supply certificate at the real terminal.
+
+    Permanent operational supply can be resumed by the outer campaign owner.
+    The inner supply service therefore builds provisional exhaustion evidence but
+    must not own the durable write. At the actual campaign terminal boundary,
+    accept either the first write or an exact already-durable payload; any
+    same-ID identity/payload conflict fails closed.
+    """
+    if supply is None:
+        return None
+    diagnostics = dict(getattr(supply, "diagnostics", {}) or {})
+    certificate = diagnostics.get("exhaustion_certificate")
+    if not isinstance(certificate, Mapping):
+        return None
+    payload = dict(certificate)
+    certificate_id = str(payload.get("certificate_id") or "").strip()
+    if not certificate_id:
+        raise LiveOperationalError(
+            "CYCLE1_EXHAUSTION_CERTIFICATE_ID_MISSING"
+        )
+
+    expected_identity = tuple(
+        str(payload.get(key) or "")
+        for key in ("campaign_id", "execution_id", "run_id", "cycle_id")
+    )
+    expected_json = json.dumps(payload, sort_keys=True)
+    existing = connection.execute(
+        """SELECT campaign_id,execution_id,run_id,cycle_id,certificate_json
+             FROM printer_discovery_exhaustion_certificates
+            WHERE certificate_id=?""",
+        (certificate_id,),
+    ).fetchone()
+    if existing is None:
+        from printer_v1.discovery.eligible_token_supply import (
+            persist_exhaustion_certificate,
+        )
+
+        persist_exhaustion_certificate(connection, payload)
+        return payload
+
+    observed_identity = tuple(str(existing[index] or "") for index in range(4))
+    if observed_identity != expected_identity:
+        raise LiveOperationalError(
+            "CYCLE1_EXHAUSTION_CERTIFICATE_IDENTITY_CONFLICT"
+        )
+    if str(existing[4] or "") != expected_json:
+        raise LiveOperationalError(
+            "CYCLE1_EXHAUSTION_CERTIFICATE_PAYLOAD_CONFLICT"
+        )
+    return payload
+
+
+def _persist_supply_exhaustion_certificate_at_terminal_db(
+    db_path: str | Path,
+    supply: Any | None,
+) -> Mapping[str, Any] | None:
+    """Own the short terminal certificate write independently of campaign DB state."""
+    if supply is None:
+        return None
+    diagnostics = dict(getattr(supply, "diagnostics", {}) or {})
+    if not isinstance(diagnostics.get("exhaustion_certificate"), Mapping):
+        return None
+
+    from printer_v1.db.sqlite_write_contracts import connect_operational
+
+    terminal_connection = connect_operational(db_path)
+    try:
+        persisted = _persist_supply_exhaustion_certificate_at_terminal(
+            terminal_connection,
+            supply,
+        )
+        terminal_connection.commit()
+        return persisted
+    except BaseException:
+        if terminal_connection.in_transaction:
+            terminal_connection.rollback()
+        raise
+    finally:
+        terminal_connection.close()
 
 
 def _classify_graduation(proof: Any, *, graduation: Any) -> str:
@@ -4501,6 +4587,11 @@ class AuthoritativeLiveOperationalCampaignOwner:
             # exact invocation identities (never wall-clock, UUID, DB, or
             # provider output).
             if bool(supply_kwargs.get("permanent_availability")):
+                # The outer campaign can continue through holder evaluation and
+                # post-holder temporal refresh, so only it may decide when an
+                # exhaustion certificate is truly terminal. Mirror the proven
+                # later-cycle deferred-persistence ownership contract.
+                supply_kwargs["persist_terminal_certificate"] = False
                 scope = build_campaign_source_request_scope(
                     execution_id=selection_seed,
                     campaign_id=command.campaign_id,
@@ -4744,6 +4835,10 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     "campaign_source_calls": int(ledger.governed_requests),
                     "campaign_scheduler_calls": 0,
                 }
+                _persist_supply_exhaustion_certificate_at_terminal_db(
+                    command.db_path,
+                    supply,
+                )
                 terminal_reporting = {
                     "campaign_source_calls": int(ledger.governed_requests),
                     "campaign_scheduler_calls": 0,
@@ -6061,6 +6156,23 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     selection_terminal = _classify_pre_lifecycle_terminal(
                         holder_facts, reserve_count=len(admitted_by_mint)
                     )
+
+            freeze_terminal = str(
+                (
+                    supply.diagnostics.get("freeze_depth_enforcement") or {}
+                ).get("terminal")
+                or ""
+            )
+            if (
+                selection_terminal
+                and freeze_terminal
+                and str(selection_terminal) == freeze_terminal
+                and str(selection_terminal) != "WAITING_FOR_ELIGIBLE_SUPPLY"
+            ):
+                _persist_supply_exhaustion_certificate_at_terminal_db(
+                    command.db_path,
+                    supply,
+                )
 
         front_door_candidates = (
             list((supply.front_door_report or {}).get("candidates") or [])

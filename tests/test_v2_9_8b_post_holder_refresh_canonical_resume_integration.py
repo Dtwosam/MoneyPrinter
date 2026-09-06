@@ -36,8 +36,10 @@ from printer_v1.discovery.pre_lifecycle_temporal_acquisition import (
 from printer_v1.operator_cli import operational_memory_factory_command as command
 from printer_v1.operator_cli.authoritative_live_operational_campaign import (
     AuthoritativeLiveOperationalCampaignOwner,
+    LiveOperationalError,
     PILOT_INPUT_READINESS,
     _carry_post_holder_refresh_evidence,
+    _persist_supply_exhaustion_certificate_at_terminal,
     _post_holder_supply_resume_coverage,
 )
 from printer_v1.operator_cli.graduated_supply_front_door import GraduatedSupply
@@ -274,6 +276,126 @@ def test_non_quantum_resume_rehydrates_inventory_before_campaign_start_acquisiti
         )
 
 
+
+def test_cycle1_terminal_owner_persists_exact_certificate_once_and_conflicts_fail(
+    tmp_path,
+) -> None:
+    db = tmp_path / "cycle1-terminal-certificate.sqlite3"
+    apply_migrations(db)
+    certificate = {
+        "certificate_id": "exh-execution",
+        "campaign_id": "campaign",
+        "execution_id": "execution",
+        "run_id": "run",
+        "cycle_id": "cycle",
+        "required_eligible_capacity": 4,
+        "eligible_reserve_count": 1,
+        "shortage_classification": "TRUE_MARKET_SUPPLY_SHORTAGE",
+        "certificate_version": "V2_9_8B_LIQUIDITY_EVIDENCE_EXHAUSTION_V2",
+        "created_at": "2026-09-06T17:57:26+00:00",
+    }
+    supply = GraduatedSupply(
+        ready=False,
+        terminal="BLOCKED_INSUFFICIENT_ELIGIBLE_GRADUATED_POOL",
+        graduated_supply=(),
+        graduation_proofs={},
+        candidate_a=None,
+        candidate_b=None,
+        two_candidate_selection={},
+        handoff_readiness={},
+        discovery_report={},
+        front_door_report={},
+        diagnostics={"exhaustion_certificate": certificate},
+        holder_reserve_supply=(),
+        holder_reserve_candidates={},
+    )
+
+    connection = sqlite3.connect(db)
+    try:
+        first = _persist_supply_exhaustion_certificate_at_terminal(
+            connection,
+            supply,
+        )
+        connection.commit()
+        assert dict(first or {}) == certificate
+        assert connection.execute(
+            "SELECT COUNT(*) FROM printer_discovery_exhaustion_certificates "
+            "WHERE certificate_id='exh-execution'"
+        ).fetchone()[0] == 1
+
+        second = _persist_supply_exhaustion_certificate_at_terminal(
+            connection,
+            supply,
+        )
+        assert dict(second or {}) == certificate
+        assert connection.execute(
+            "SELECT COUNT(*) FROM printer_discovery_exhaustion_certificates "
+            "WHERE certificate_id='exh-execution'"
+        ).fetchone()[0] == 1
+
+        conflicting = replace(
+            supply,
+            diagnostics={
+                "exhaustion_certificate": {
+                    **certificate,
+                    "eligible_reserve_count": 2,
+                }
+            },
+        )
+        with pytest.raises(
+            LiveOperationalError,
+            match="CYCLE1_EXHAUSTION_CERTIFICATE_PAYLOAD_CONFLICT",
+        ):
+            _persist_supply_exhaustion_certificate_at_terminal(
+                connection,
+                conflicting,
+            )
+    finally:
+        connection.close()
+
+
+def test_live_permanent_supply_defers_terminal_certificate_persistence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base = _CampaignBase()
+    base.setUp()
+    try:
+        class CapturedDeferredPersistence(RuntimeError):
+            pass
+
+        def capture_builder(_db_path, **kwargs):
+            assert kwargs["permanent_availability"] is True
+            assert kwargs["persist_terminal_certificate"] is False
+            raise CapturedDeferredPersistence("captured")
+
+        owner = AuthoritativeLiveOperationalCampaignOwner()
+        with patch(
+            "printer_v1.operator_cli.graduated_supply_front_door."
+            "build_graduated_supply",
+            side_effect=capture_builder,
+        ):
+            with pytest.raises(CapturedDeferredPersistence, match="captured"):
+                owner.run(
+                    mode=PILOT_INPUT_READINESS,
+                    command=base.command,
+                    pump_transport=_FakePumpTransport([], {}),
+                    secondary_transport=None,
+                    source_governor=GOV,
+                    central_scheduler=SCH,
+                    selection_seed="cycle1-deferred-certificate",
+                    cycle_id="cyc",
+                    cycle_cutoff=e8.CUTOFF,
+                    evaluated_at=e8.NOW,
+                    backup_path=base.backup,
+                    lifecycle_kwargs={},
+                    graduated_supply=None,
+                    graduated_supply_kwargs={"permanent_availability": True},
+                    migration_transport=object(),
+                )
+    finally:
+        base.tearDown()
+
+
 def test_four_token_standard4h_disposable_rehearsal_uses_proof_preflight(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -471,6 +593,7 @@ def test_post_holder_completed_refresh_resumes_canonical_supply_and_refreezes() 
             assert kwargs["cooperative_stage_budget"].snapshot() == (
                 initial_stage_budget.snapshot()
             )
+            assert kwargs["persist_terminal_certificate"] is False
             assert kwargs["prior_source_operations_used"] == 1
             assert kwargs["permanent_availability"] is True
             assert kwargs["tracking_precheck"] is True

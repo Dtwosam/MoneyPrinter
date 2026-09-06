@@ -2,17 +2,17 @@
 
 ## Current HEAD
 
-This handoff is committed with the post-holder non-quantum resume repair.
-Use `git rev-parse HEAD` for the exact committed HEAD.
+This handoff is committed with the Cycle-1 deferred exhaustion-certificate
+persistence repair. Use `git rev-parse HEAD` for the exact committed HEAD.
 
 ## Authoritative DB
 
 `data/printer_v1.sqlite3`
 
 Latest post-run identity from the consumed child terminal:
-SHA-256 `6cd6e9c3135ba92fd9c5490ffb76f827a3989cb60f829c36d41da619f311c180`,
-size `171319296`, inode `1230526`, mtime_ns
-`1788709511519326180`.
+SHA-256 `70bb0bbca4c0c1385041f5d0b0bb322cad1818ee8deb8a9126541782f122470f`,
+size `171896832`, inode `1230526`, mtime_ns
+`1788717446330575600`.
 
 The child reported cleanup complete, lease released, zero locked Scheduler work,
 zero pending/running Scheduler work, and zero Scheduler runtime calls.
@@ -22,12 +22,12 @@ locally before any future authorization package is prepared.
 ## Latest consumed authorization
 
 One-shot authorization
-`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260906T151614Z_ea7f69c4` was consumed exactly
-once by execution `20260906T152505Z-1c1ea941dc1c`, campaign
-`20260906T152505Z-1c1ea941dc1c-campaign`. It exited 1 in
-`CAMPAIGN_PRE_LIFECYCLE` after 23 source calls and 6 DB writes. The durable
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260906T173358Z_606a9234` was consumed exactly
+once by execution `20260906T173720Z-6583e72274b2`, campaign
+`20260906T173720Z-6583e72274b2-campaign`. It exited 1 in
+`CAMPAIGN_PRE_LIFECYCLE` after 22 source calls and 6 DB writes. The durable
 first terminal cause was
-`CampaignSixUnitError:SIX_UNIT_STAGE_EVIDENCE_DUPLICATE_STAGE_ID:20260906T152505Z-1c1ea941dc1c-campaign|20260906T152505Z-1c1ea941dc1c-campaign-run|20260906T152505Z-1c1ea941dc1c-cycle|DIRECT_MIGRATION|1`.
+`IntegrityError:UNIQUE constraint failed: printer_discovery_exhaustion_certificates.certificate_id`.
 The authorization is permanently non-reusable. No retry, rerun, restart,
 resume, successor, or reuse is permitted or implied.
 
@@ -43,25 +43,31 @@ financial, position, and live-trading capabilities remain locked.
 
 ## Latest meaningful result
 
-The failed run proved that post-holder canonical resume reached beyond the
-same-scope holder-collision repair but then re-entered campaign-start direct
-migration and attempted to seal deterministic `DIRECT_MIGRATION|1` a second
-time.
+The latest operational failure proved a Cycle-1 terminal-ownership contradiction:
+the inner permanent supply service could persist deterministic
+`exh-{execution_id}` exhaustion evidence, while the outer campaign still had a
+lawful holder / temporal-refresh continuation under the same execution. A later
+canonical supply continuation could then reach the real terminal and attempt the
+same certificate identity again.
 
-The repair keeps the six-unit duplicate guard unchanged and fixes the resume
-owner instead:
+The repair mirrors the already-proven later-cycle ownership model:
 
-- non-quantum cooperative resume is explicitly existing-inventory continuation;
-- it skips campaign-start direct migration, fresh nomination, unknown-liquidity
-  backup, and early protocol-confirmation stages;
-- it rehydrates the canonical graduated registry and continues through the
-  durable-sequenced market path;
-- the first pass's exact `StageBudget` snapshot is restored and required, so
-  resume cannot regain already-spent stage-specific capacity;
-- later-cycle cooperative quantums remain phase-driven and unchanged.
+- initial live permanent Cycle-1 supply runs with
+  `persist_terminal_certificate=False`;
+- post-holder canonical resume also forces deferred certificate persistence;
+- the supply result still carries the exact provisional exhaustion certificate
+  in diagnostics;
+- the outer campaign persists it only when it has actually decided the Cycle-1
+  supply terminal is controlling;
+- the terminal write owns a short independent operational DB connection;
+- an exact already-durable same-ID payload is accepted only after exact identity
+  and JSON equality; any identity or payload conflict fails closed;
+- certificate IDs, schema constraints, source budgets, Scheduler ownership, and
+  the six-unit duplicate guard are unchanged.
 
 Verification on GitHub Actions for the repair code:
-- focused post-holder/reconciliation/holder-scope/resume suite: 25 passed;
+- focused post-holder/reconciliation/holder-scope/resume/certificate suite:
+  27 passed;
 - shared-boundary suite: 127 passed + 7 subtests, with two legacy E.44
   assertions deselected because both fail on the pre-repair HEAD under
   superseded contracts;
