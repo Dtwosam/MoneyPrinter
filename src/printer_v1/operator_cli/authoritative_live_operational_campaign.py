@@ -161,6 +161,24 @@ def _resolve_current_cycle_ordinal_for_historical_disjointness(
     return raw_ordinal
 
 
+def _request_temporal_refresh_after_releasing_campaign_write(
+    connection: sqlite3.Connection,
+    temporal_refresh_owner: Any,
+    **refresh_kwargs: Any,
+) -> Any:
+    """Release campaign writes before entering the path-owned refresh writer.
+
+    The temporal refresh owner opens its own SQLite connection to enqueue and
+    persist Scheduler-owned refresh work. The campaign connection must not carry
+    a deferred write transaction across that ownership boundary, or the nested
+    writer self-contends on SQLite's single-writer lock.
+    """
+    from printer_v1.db.sqlite_write_contracts import release_write_transaction
+
+    release_write_transaction(connection)
+    return temporal_refresh_owner.request_temporal_refresh(**refresh_kwargs)
+
+
 def _merge_later_cycle_refresh_source_request_coverage(
     progress: Mapping[str, Any],
     completed: Sequence[Mapping[str, Any]] | None,
@@ -5147,7 +5165,9 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     )
                     if continuation.status == WAITING_FOR_ELIGIBLE_SUPPLY:
                         if pre_lifecycle_temporal_refresh_owner is not None:
-                            pre_lifecycle_temporal_refresh_owner.request_temporal_refresh(
+                            _request_temporal_refresh_after_releasing_campaign_write(
+                                connection,
+                                pre_lifecycle_temporal_refresh_owner,
                                 reserve_depth=freeze_ready_depth,
                                 required_capacity=int(MINIMUM_FREEZE_DEPTH),
                                 universe_state="ALL_REACHABLE_CANDIDATES_EVALUATED",
