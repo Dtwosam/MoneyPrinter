@@ -14,12 +14,15 @@ from printer_v1.operator_cli.authoritative_admission_health import (
 )
 from printer_v1.operator_cli.campaign_ownership import create_cycle_with_two_slots
 from printer_v1.operator_cli.four_token_proof_integration import (
+    FourTokenAdmissionDisposition,
+    FourTokenAdmissionDispositionKind,
     FourTokenControllerReadiness,
     build_four_token_proof_policy,
     next_four_token_factory_wake,
 )
 from printer_v1.operator_cli.multi_cycle_campaign_coordinator import (
     MultiCycleAdmissionHealth,
+    MultiCycleCampaignBinding,
     MultiCycleCampaignSnapshot,
     multi_cycle_configuration_contract,
 )
@@ -437,6 +440,65 @@ class _CadenceReadyController:
                 proof_deadline=proof_deadline,
             ),
         )
+
+
+def test_late_new_cycle2_start_is_blocked_before_discovery(tmp_path) -> None:
+    db, _backup, _disposable_binding = _prepare(tmp_path)
+    connection = sqlite3.connect(db)
+    connection.row_factory = sqlite3.Row
+    callback_calls = 0
+
+    def forbidden_callback(**_kwargs):
+        nonlocal callback_calls
+        callback_calls += 1
+        raise AssertionError("late Cycle-2 discovery must not start")
+
+    try:
+        now = START + timedelta(seconds=901)
+        deadline = START + timedelta(seconds=18_000)
+        result = factory._run_four_token_admission_boundary(
+            connection=connection,
+            controller=_CadenceReadyController(),
+            binding=MultiCycleCampaignBinding(
+                campaign_id=CAMPAIGN_ID,
+                campaign_run_id=CAMPAIGN_RUN_ID,
+                configuration_id=CONFIGURATION_ID,
+                authoritative_factory_run_id=FACTORY_RUN_ID,
+            ),
+            first_cycle_id=CYCLE_ID,
+            now=now,
+            next_due_work_at=None,
+            proof_deadline=deadline,
+            project_health=_healthy_projection,
+            evaluate=lambda _projection: FourTokenAdmissionDisposition(
+                FourTokenAdmissionDispositionKind.CYCLE_ADMISSION,
+                "ADMISSION_READY",
+                now,
+                True,
+            ),
+            later_cycle_callback=forbidden_callback,
+            admit=lambda **_kwargs: (_ for _ in ()).throw(
+                AssertionError("late Cycle-2 admission must not run")
+            ),
+            materialize=lambda **_kwargs: (_ for _ in ()).throw(
+                AssertionError("late Cycle-2 materialization must not run")
+            ),
+            plan_opening=lambda **_kwargs: (_ for _ in ()).throw(
+                AssertionError("late Cycle-2 lifecycle planning must not run")
+            ),
+        )
+        assert callback_calls == 0
+        assert result.admitted is False
+        assert (
+            result.disposition.kind
+            is FourTokenAdmissionDispositionKind.BLOCKED
+        )
+        assert (
+            result.disposition.reason
+            == "INSUFFICIENT_LATER_CYCLE_COMPLETION_RESERVE"
+        )
+    finally:
+        connection.close()
 
 
 def test_real_factory_controlled_clock_interleaves_scheduler_yields_and_snapshots(
