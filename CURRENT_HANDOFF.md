@@ -2,30 +2,32 @@
 
 ## Current HEAD
 
-Use `git rev-parse HEAD`. This handoff is committed with the bounded
-post-holder SQLite ownership repair. The repair started from
-`f1a103e0c7c94bda9296b9b717fb1e7efbfaa219`.
+Use `git rev-parse HEAD`. This handoff is committed with the wrapper-bound
+returned-campaign terminal truth repair. The repair started from
+`b0ecbcb8830c55bb6242647cda23335201a3981e`.
 
 ## Authoritative DB
 
 `data/printer_v1.sqlite3`
 
-SHA-256: `e244ed70c8b3c413191255c496b328042d7192a23ea667d5061c87eda13aa5f8`
+The last exact identity verified before the latest consumed operational run was
+SHA-256 `e244ed70c8b3c413191255c496b328042d7192a23ea667d5061c87eda13aa5f8`,
+size `168710144`, inode `1230526`, mtime_ns `1788639431417133892`.
 
-Latest retained post-run identity: size `168710144`, inode `1230526`,
-mtime_ns `1788639431417133892`. The latest operational run completed cleanup
-and released its lease before this development repair.
+That identity is now historical pre-run evidence. The latest child terminal did
+not carry a post-run database identity, so the current authoritative DB identity
+must be re-derived read-only from the local checkout before any further
+preflight or authorization work.
 
 ## DB identity reconciliation
 
-The historical pre-run SHA
-`cb0ee82c4f4be453b8e7980ee080f131af276b4a343e0ebb2861fd67285135a4`
-belongs to consumed one-shot authorization
-`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260905T195512Z_f2e9b730`. Its campaign
-`20260905T200642Z-477a285e52df-campaign` failed closed in
-`CAMPAIGN_PRE_LIFECYCLE` with `OperationalError: database is locked`.
-The authorization is permanently non-reusable; no retry, restart, resume,
-successor, or authorization reuse is implied.
+One-shot authorization
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260906T100937Z_10850240` was consumed exactly
+once. Its execution `20260906T101455Z-cbbcf503d01b`, campaign
+`20260906T101455Z-cbbcf503d01b-campaign`, returned a pre-lifecycle terminal with
+first cause `CAMPAIGN_SOURCE_REQUEST_RECONCILIATION_MISMATCH` and
+`lifecycle_started=False`. The authorization is permanently non-reusable; no
+retry, rerun, restart, resume, successor, or reuse is implied.
 
 ## Current working capability
 
@@ -37,30 +39,30 @@ financial, position, and trading capability remain locked.
 
 ## Latest meaningful result
 
-The audited lock condition was nested SQLite writer ownership: after holder
-persistence the main campaign connection could retain a deferred write
-transaction while the coverage-blocked freeze path entered the temporal refresh
-owner, whose separate connection must enqueue Scheduler-owned refresh work. The
-repair now releases/commits the campaign connection immediately before that
-path-owned refresh call. A focused disposable regression captures both the
-pre-repair lock shape and the repaired two-writer boundary. No busy timeout,
-retry, Scheduler, Source Governor, reconciliation, or fail-closed policy was
-weakened.
+The preceding SQLite writer-release repair allowed the latest run to progress
+past the former `database is locked` blocker. That run then exposed a separate
+terminal-semantics defect: a normally returned pre-lifecycle campaign block had
+`campaign_pass=False`, yet the public CLI unconditionally wrote child exit 0
+with `success=True`. The repair now requires an explicit boolean
+`campaign_pass` for wrapper-bound campaign modes and maps it directly to child
+exit truth: pass -> 0, blocked -> 1; missing/invalid truth fails closed. Campaign
+ownership, reconciliation, Source Governor, Central Scheduler, timeout, retry,
+and accounting policy are unchanged.
 
 ## Known blocker
 
-The consumed campaign cannot be rerun. This environment could edit and review
-the connected GitHub repository but could not clone it for local pytest
-execution because outbound GitHub DNS is unavailable. The focused regression,
-directly related owner tests, `py_compile`, and `git diff --check` therefore
-must be executed from the project checkout before any authorization
-preparation.
+The exact durable source-request reconciliation defect from execution
+`20260906T101455Z-cbbcf503d01b` has not been repaired. Its source-request IDs,
+stage-reported coverage, manifest coverage, and earliest ownership mismatch must
+be audited from the retained local stdout/DB evidence before changing
+reconciliation or source-accounting code. The consumed authorization cannot be
+rerun.
 
 ## Next permitted action
 
-Run focused development verification only for this repair. If it is green,
-review the exact commit diff and confirm the authoritative DB remained
-unchanged during development. Only after that may a separate fresh task begin
-with exact HEAD/DB, integrity, zero-work, and non-reuse preflight. Any future
-operational execution requires an entirely new independently reviewed one-shot
-authorization plus separate explicit operator approval.
+First run focused development verification for this terminal-semantics repair
+and re-derive the current authoritative DB identity read-only. Then audit the
+latest campaign's exact durable reconciliation mismatch from retained
+`child-stdout.txt` and DB rows. Do not prepare a new authorization or run
+operational code until that proven reconciliation defect is repaired, verified,
+and reviewed.

@@ -6607,6 +6607,16 @@ def report_only(
     })
 
 
+def _wrapper_bound_campaign_exit_code(result: Mapping[str, Any]) -> int:
+    """Map explicit campaign acceptance truth to the one-shot child exit code."""
+    campaign_pass = result.get("campaign_pass")
+    if type(campaign_pass) is not bool:
+        raise OperationalMemoryFactoryError(
+            "WRAPPER_BOUND_CAMPAIGN_PASS_MISSING_OR_INVALID"
+        )
+    return 0 if campaign_pass else 1
+
+
 def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
@@ -6755,16 +6765,19 @@ def main(argv: Iterable[str] | None = None) -> int:
                 campaign_id=args.campaign_id,
                 run_id=args.run_id,
             )
-        if args.mode in wrapper_bound_modes and child_terminal_binding is not None:
-            write_child_terminal_envelope(
-                binding=child_terminal_binding,
-                source=result,
-                mode=args.mode,
-                exit_code=0,
-                success=True,
-            )
+        result_exit_code = 0
+        if args.mode in wrapper_bound_modes:
+            result_exit_code = _wrapper_bound_campaign_exit_code(result)
+            if child_terminal_binding is not None:
+                write_child_terminal_envelope(
+                    binding=child_terminal_binding,
+                    source=result,
+                    mode=args.mode,
+                    exit_code=result_exit_code,
+                    success=result_exit_code == 0,
+                )
         print(json.dumps(result, indent=2, sort_keys=True, default=str))
-        return 0
+        return result_exit_code
     except Exception as exc:
         # V2-9.8B.10 / V2-9.8B.19 / V2-9.8B readiness: action-local terminal
         # truth from durable campaign ownership and source rows. Never invent
