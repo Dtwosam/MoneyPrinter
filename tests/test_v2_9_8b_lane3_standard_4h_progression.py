@@ -1399,6 +1399,134 @@ def _factory_loop_operational_binding(db) -> object:
     return build_operational_database_target_binding(**values)
 
 
+def test_standard4h_shared_db_binding_scope_accepts_only_exact_admitted_cycle2(
+    tmp_path,
+) -> None:
+    from printer_v1.operator_cli.cadence_authority import (
+        claim_tracking_authority_for_slot_insert,
+    )
+    from printer_v1.operator_cli.campaign_ownership import (
+        create_cycle_with_two_slots,
+    )
+    from printer_v1.operator_cli.operational_database_target_binding import (
+        load_durable_operational_database_target_expectation,
+        validate_operational_database_target_binding,
+    )
+    from tests.test_v2_9_8b_four_token_factory_wake_ordering import (
+        CAMPAIGN_ID,
+        CAMPAIGN_RUN_ID,
+        CONFIGURATION_ID,
+        CYCLE_ID,
+        START,
+        _prepare,
+    )
+
+    db, _backup, _disposable = _prepare(tmp_path)
+    binding = _factory_loop_operational_binding(db)
+    cycle_2_id = f"{CYCLE_ID}-2"
+
+    assert load_durable_operational_database_target_expectation(
+        db,
+        campaign_id=CAMPAIGN_ID,
+        campaign_run_id=CAMPAIGN_RUN_ID,
+        cycle_id=cycle_2_id,
+        configuration_id=CONFIGURATION_ID,
+    ) is None
+
+    connection = sqlite3.connect(db)
+    try:
+        for row_id in (3, 4):
+            connection.execute(
+                "INSERT INTO printer_tokens(id,token_mint,chain) VALUES (?,?,'solana')",
+                (row_id, f"mint-{row_id}"),
+            )
+            connection.execute(
+                "INSERT INTO printer_pairs(id,token_id,pair_address,base_token_mint) "
+                "VALUES (?,?,?,?)",
+                (100 + row_id, row_id, f"pool-{row_id}", f"mint-{row_id}"),
+            )
+        queue_ids = tuple(
+            claim_tracking_authority_for_slot_insert(
+                connection,
+                token_row_id=row_id,
+                pair_row_id=100 + row_id,
+                tracking_lane="TRACK_NORMAL",
+                now=START,
+            )
+            for row_id in (3, 4)
+        )
+        create_cycle_with_two_slots(
+            connection,
+            campaign_id=CAMPAIGN_ID,
+            run_id=CAMPAIGN_RUN_ID,
+            cycle_id=cycle_2_id,
+            cycle_ordinal=2,
+            slots=(
+                {
+                    "token_slot_id": f"{cycle_2_id}-slot-1",
+                    "slot_ordinal": 1,
+                    "token_identity": "solana-mainnet:mint-3",
+                    "token_row_id": 3,
+                    "mint_identity": "mint-3",
+                    "pair_identity": "pool-3",
+                    "pair_row_id": 103,
+                    "lifecycle_identity": "PUMPSWAP_GRADUATED_CONFIRMED",
+                    "tracking_queue_id": queue_ids[0],
+                    "replacement_predecessor_slot_id": None,
+                },
+                {
+                    "token_slot_id": f"{cycle_2_id}-slot-2",
+                    "slot_ordinal": 2,
+                    "token_identity": "solana-mainnet:mint-4",
+                    "token_row_id": 4,
+                    "mint_identity": "mint-4",
+                    "pair_identity": "pool-4",
+                    "pair_row_id": 104,
+                    "lifecycle_identity": "PUMPSWAP_GRADUATED_CONFIRMED",
+                    "tracking_queue_id": queue_ids[1],
+                    "replacement_predecessor_slot_id": None,
+                },
+            ),
+            now=START.isoformat(),
+        )
+    finally:
+        connection.close()
+
+    shared = load_durable_operational_database_target_expectation(
+        db,
+        campaign_id=CAMPAIGN_ID,
+        campaign_run_id=CAMPAIGN_RUN_ID,
+        cycle_id=cycle_2_id,
+        configuration_id=CONFIGURATION_ID,
+        shared_admitted_cycle_scope=True,
+    )
+    assert shared is not None
+    assert shared["cycle_id"] == CYCLE_ID
+    assert validate_operational_database_target_binding(
+        binding,
+        actual_db_path=db,
+        canonical_authoritative_db_path=db,
+        expected=shared,
+    ) is None
+
+    assert load_durable_operational_database_target_expectation(
+        db,
+        campaign_id=CAMPAIGN_ID,
+        campaign_run_id=CAMPAIGN_RUN_ID,
+        cycle_id=f"{CYCLE_ID}-3",
+        configuration_id=CONFIGURATION_ID,
+        shared_admitted_cycle_scope=True,
+    ) is None
+
+    reused = replace(binding, invocation_count=2)
+    assert validate_operational_database_target_binding(
+        reused,
+        actual_db_path=db,
+        canonical_authoritative_db_path=db,
+        expected=shared,
+    ) == "OPERATIONAL_DB_BINDING_REUSE_OR_HISTORY_MISMATCH"
+
+
 def _promote_factory_window(connection, *, window_id: int, snapshot_id: int) -> None:
     if connection.execute(
         "SELECT 1 FROM printer_episodes WHERE memory_window_id=?",
