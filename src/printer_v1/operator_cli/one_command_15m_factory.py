@@ -379,17 +379,17 @@ def _later_cycle_attempt_is_terminal(state: str | None) -> bool:
     }
 
 
-def _existing_later_cycle_pair_ready_attempt(
+def _existing_later_cycle_attempt(
     connection: sqlite3.Connection,
     *,
     campaign_id: str,
     campaign_run_id: str,
     authoritative_factory_run_id: str,
     cycle_ordinal: int,
-) -> str | None:
-    """Return the exact unconsumed durable PAIR_READY attempt, if present."""
+) -> tuple[str, str, object | None, object | None] | None:
+    """Return the exact durable later-cycle attempt without creating a successor."""
     if cycle_ordinal != 2:
-        raise ValueError("later-cycle PAIR_READY lookup requires cycle ordinal 2")
+        raise ValueError("later-cycle attempt lookup requires cycle ordinal 2")
     attempt_id = (
         f"pre-admission:{campaign_id}:{campaign_run_id}:"
         f"{authoritative_factory_run_id}:c{cycle_ordinal:04d}"
@@ -407,6 +407,28 @@ def _existing_later_cycle_pair_ready_attempt(
         row["consumed_cycle_id"] if isinstance(row, sqlite3.Row) else row[1]
     )
     consumed_at = row["consumed_at"] if isinstance(row, sqlite3.Row) else row[2]
+    return attempt_id, state, consumed_cycle_id, consumed_at
+
+
+def _existing_later_cycle_pair_ready_attempt(
+    connection: sqlite3.Connection,
+    *,
+    campaign_id: str,
+    campaign_run_id: str,
+    authoritative_factory_run_id: str,
+    cycle_ordinal: int,
+) -> str | None:
+    """Return the exact unconsumed durable PAIR_READY attempt, if present."""
+    existing = _existing_later_cycle_attempt(
+        connection,
+        campaign_id=campaign_id,
+        campaign_run_id=campaign_run_id,
+        authoritative_factory_run_id=authoritative_factory_run_id,
+        cycle_ordinal=cycle_ordinal,
+    )
+    if existing is None:
+        return None
+    attempt_id, state, consumed_cycle_id, consumed_at = existing
     if state != "PAIR_READY":
         return None
     if consumed_cycle_id is not None or consumed_at is not None:
@@ -569,6 +591,13 @@ def _run_four_token_admission_boundary(
     )
 
     later_cycle_id = f"{first_cycle_id}-2"
+    existing_attempt = _existing_later_cycle_attempt(
+        connection,
+        campaign_id=str(binding.campaign_id),
+        campaign_run_id=str(binding.campaign_run_id),
+        authoritative_factory_run_id=str(binding.authoritative_factory_run_id),
+        cycle_ordinal=2,
+    )
     existing_pair_ready_attempt_id = _existing_later_cycle_pair_ready_attempt(
         connection,
         campaign_id=str(binding.campaign_id),
@@ -598,6 +627,28 @@ def _run_four_token_admission_boundary(
             attempt_acquisition_deadline_at=acquisition_deadline_at,
         )
     current = now.astimezone(timezone.utc)
+    if existing_attempt is None:
+        from printer_v1.operator_cli.four_token_proof_integration import (
+            FOUR_TOKEN_LATER_CYCLE_COMPLETION_RESERVE_SECONDS,
+            FourTokenAdmissionDisposition,
+        )
+
+        completion_reserve = timedelta(
+            seconds=float(FOUR_TOKEN_LATER_CYCLE_COMPLETION_RESERVE_SECONDS)
+        )
+        if current + completion_reserve > proof_deadline.astimezone(timezone.utc):
+            return FourTokenAdmissionBoundaryResult(
+                FourTokenAdmissionDisposition(
+                    FourTokenAdmissionDispositionKind.BLOCKED,
+                    "INSUFFICIENT_LATER_CYCLE_COMPLETION_RESERVE",
+                    None,
+                    False,
+                ),
+                False,
+                attempt_terminal_cause=(
+                    "INSUFFICIENT_LATER_CYCLE_COMPLETION_RESERVE"
+                ),
+            )
     acquisition_deadline_due = (
         acquisition_deadline_at is not None
         and current >= acquisition_deadline_at
