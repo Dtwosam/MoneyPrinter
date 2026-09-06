@@ -886,6 +886,7 @@ def evaluate_standard_4h_progression(
         campaign_run_id=campaign_run_id,
         cycle_id=cycle_id,
         configuration_id=configuration_id,
+        shared_admitted_cycle_scope=True,
     )
     binding_reason = validate_operational_database_target_binding(
         operational_db_binding,
@@ -1468,6 +1469,7 @@ def commit_standard_4h_progression_handoff(
         campaign_run_id=campaign_run_id,
         cycle_id=cycle_id,
         configuration_id=configuration_id,
+        shared_admitted_cycle_scope=True,
     )
     binding_reason = validate_operational_database_target_binding(
         operational_db_binding,
