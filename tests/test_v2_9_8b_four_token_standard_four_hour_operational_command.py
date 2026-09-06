@@ -201,6 +201,22 @@ class CapacityDerivationTests(unittest.TestCase):
             operational.MINIMUM_CYCLE_ADMISSION_SPACING_SECONDS, 300
         )
 
+    def test_later_cycle_has_full_standard_four_hour_wall_time_reserve(self) -> None:
+        latest_cycle_worst_case_completion = (
+            operational.MINIMUM_CYCLE_ADMISSION_SPACING_SECONDS
+            + operational.PRE_LIFECYCLE_ACQUISITION_DURATION_SECONDS
+            + command.STANDARD_FOUR_HOUR_TOTAL_DURATION_SECONDS
+        )
+        self.assertLessEqual(
+            latest_cycle_worst_case_completion,
+            operational.POST_SUPPLY_LIFECYCLE_DURATION_SECONDS,
+        )
+        self.assertEqual(
+            operational.POST_SUPPLY_LIFECYCLE_DURATION_SECONDS
+            - latest_cycle_worst_case_completion,
+            600,
+        )
+
     def test_derivation_is_live_not_a_literal(self) -> None:
         """Patching the canonical contract must move the derived policy."""
         widened = dict(self.contract)
