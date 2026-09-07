@@ -216,6 +216,52 @@ def test_two_cycle_four_token_real_factory_reaches_shared_terminal_standard4h(
         _healthy_projection,
     )
 
+    def mixed_cycle_one_discovery(db_path):
+        def run(_args):
+            connection = sqlite3.connect(db_path)
+            try:
+                connection.execute(
+                    "INSERT INTO printer_selection_batches("
+                    "batch_id,batch_status,window_kind,candidate_pool_total,"
+                    "selected_count,operator_approved) VALUES "
+                    "('terminal-batch','ASSEMBLED','WINDOW_15M',2,2,1)"
+                )
+                for row_id, lane in (
+                    (1, "TRACK_FAST"),
+                    (2, "TRACK_NORMAL"),
+                ):
+                    connection.execute(
+                        "INSERT INTO printer_selection_batch_items("
+                        "batch_id,item_status,token_id,pair_id,token_mint,"
+                        "pair_address,tracking_lane,operator_approved) VALUES "
+                        "('terminal-batch','SELECTED',?,?,?,?,?,1)",
+                        (
+                            row_id,
+                            100 + row_id,
+                            f"mint-{row_id}",
+                            f"pool-{row_id}",
+                            lane,
+                        ),
+                    )
+                connection.commit()
+            finally:
+                connection.close()
+            return {
+                "selection_handoff_report": {
+                    "batch_id": "terminal-batch",
+                    "selection_seed": "terminal-seed",
+                    "eligible_pool_size": 2,
+                },
+                "discovery_results": [],
+            }
+
+        return run
+
+    monkeypatch.setattr(
+        "tests.test_v2_9_8b_four_token_factory_terminal_integration._discovery",
+        mixed_cycle_one_discovery,
+    )
+
     supply_calls = 0
     aggregate_observations = []
 
@@ -239,6 +285,24 @@ def test_two_cycle_four_token_real_factory_reaches_shared_terminal_standard4h(
     def four_token_setup(db):
         connection = sqlite3.connect(db)
         try:
+            fast_slot = connection.execute(
+                "SELECT tracking_queue_id,token_row_id "
+                "FROM printer_memory_factory_campaign_token_slots "
+                "WHERE campaign_id=? AND run_id=? AND cycle_id=? "
+                "AND slot_ordinal=1",
+                (CAMPAIGN_ID, CAMPAIGN_RUN_ID, CYCLE_ID),
+            ).fetchone()
+            assert fast_slot is not None and fast_slot[0] is not None
+            connection.execute(
+                "UPDATE printer_tracking_queue "
+                "SET tracking_lane='TRACK_FAST',"
+                "tracking_action='PROMOTE_TO_TRACK_FAST' WHERE id=?",
+                (int(fast_slot[0]),),
+            )
+            connection.execute(
+                "UPDATE printer_tokens SET token_status='TRACK_FAST' WHERE id=?",
+                (int(fast_slot[1]),),
+            )
             for row_id in (3, 4):
                 connection.execute(
                     "INSERT INTO printer_tokens(id,token_mint,chain) "
@@ -495,6 +559,53 @@ def test_two_cycle_four_token_real_factory_reaches_shared_terminal_standard4h(
             and row["tracking_queue_id"] is not None
             for row in targets
         ), [dict(row) for row in targets]
+
+        cycle_one_selection = connection.execute(
+            "SELECT token_id,pair_id,tracking_lane "
+            "FROM printer_selection_batch_items "
+            "WHERE batch_id='terminal-batch' AND item_status='SELECTED' "
+            "ORDER BY token_id"
+        ).fetchall()
+        assert [tuple(row) for row in cycle_one_selection] == [
+            (1, 101, "TRACK_FAST"),
+            (2, 102, "TRACK_NORMAL"),
+        ]
+        cycle_one_queue_lanes = connection.execute(
+            """SELECT s.slot_ordinal,s.token_row_id,q.tracking_lane
+                 FROM printer_memory_factory_campaign_token_slots AS s
+                 JOIN printer_tracking_queue AS q ON q.id=s.tracking_queue_id
+                WHERE s.campaign_id=? AND s.run_id=? AND s.cycle_id=?
+                ORDER BY s.slot_ordinal""",
+            (CAMPAIGN_ID, CAMPAIGN_RUN_ID, CYCLE_ID),
+        ).fetchall()
+        assert [tuple(row) for row in cycle_one_queue_lanes] == [
+            (1, 1, "TRACK_FAST"),
+            (2, 2, "TRACK_NORMAL"),
+        ]
+        cycle_one_step_lanes = connection.execute(
+            """SELECT token_id,tracking_lane
+                 FROM printer_memory_factory_run_steps
+                WHERE run_id=? AND token_id IN (1,2)
+                  AND tracking_lane IS NOT NULL
+                GROUP BY token_id,tracking_lane
+                ORDER BY token_id""",
+            (FACTORY_RUN_ID,),
+        ).fetchall()
+        assert [tuple(row) for row in cycle_one_step_lanes] == [
+            (1, "TRACK_FAST"),
+            (2, "TRACK_NORMAL"),
+        ]
+        cycle_one_progression_lanes = connection.execute(
+            """SELECT slot_ordinal,tracking_lane
+                 FROM printer_memory_factory_standard_4h_progression_tokens
+                WHERE cycle_id=? ORDER BY slot_ordinal""",
+            (CYCLE_ID,),
+        ).fetchall()
+        assert [tuple(row) for row in cycle_one_progression_lanes] == [
+            (1, "TRACK_FAST"),
+            (2, "TRACK_NORMAL"),
+        ]
+
         queues = connection.execute(
             "SELECT id,queue_status,tracking_action FROM printer_tracking_queue "
             "WHERE id IN ("
@@ -573,6 +684,23 @@ def test_two_cycle_four_token_real_factory_reaches_shared_terminal_standard4h(
             ), context
             assert context.get("full_four_hour_outcome_path_start_at"), context
             assert context.get("full_four_hour_outcome_path_end_at"), context
+            authoritative_lane = connection.execute(
+                """SELECT q.tracking_lane
+                     FROM printer_memory_factory_campaign_token_slots AS s
+                     JOIN printer_tracking_queue AS q ON q.id=s.tracking_queue_id
+                    WHERE s.cycle_id=? AND s.slot_ordinal=?""",
+                (str(row["cycle_id"]), int(row["slot_ordinal"])),
+            ).fetchone()
+            assert authoritative_lane is not None
+            placeholders = ",".join("?" for _ in snapshot_ids)
+            snapshot_lanes = connection.execute(
+                f"SELECT DISTINCT tracking_lane FROM printer_token_snapshots "
+                f"WHERE id IN ({placeholders}) ORDER BY tracking_lane",
+                tuple(int(value) for value in snapshot_ids),
+            ).fetchall()
+            assert [str(item[0]) for item in snapshot_lanes] == [
+                str(authoritative_lane[0])
+            ]
 
         long_closes = connection.execute(
             """SELECT cw.cycle_id,slot.slot_ordinal,rs.step_key,rs.step_status,
