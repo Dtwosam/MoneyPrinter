@@ -6,6 +6,7 @@ import hashlib
 import json
 import shutil
 import sqlite3
+from types import SimpleNamespace
 
 from printer_v1.db import apply_migrations
 from printer_v1.db.migrate import canonical_migration_count, canonical_migration_names
@@ -451,6 +452,65 @@ class _CadenceReadyController:
                 proof_deadline=proof_deadline,
             ),
         )
+
+
+def test_latest_lawful_cycle2_start_reaches_discovery_at_exact_reserve_boundary(
+    tmp_path,
+) -> None:
+    db, _backup, _disposable_binding = _prepare(tmp_path)
+    connection = sqlite3.connect(db)
+    connection.row_factory = sqlite3.Row
+    callback_calls = 0
+
+    def boundary_callback(**_kwargs):
+        nonlocal callback_calls
+        callback_calls += 1
+        return SimpleNamespace(
+            attempt_id="boundary-attempt",
+            state="NO_PAIR",
+            first_terminal_cause="BOUNDARY_FIXTURE_NO_PAIR",
+        )
+
+    try:
+        now = START + timedelta(seconds=900)
+        deadline = START + timedelta(seconds=18_000)
+        result = factory._run_four_token_admission_boundary(
+            connection=connection,
+            controller=_CadenceReadyController(),
+            binding=MultiCycleCampaignBinding(
+                campaign_id=CAMPAIGN_ID,
+                campaign_run_id=CAMPAIGN_RUN_ID,
+                configuration_id=CONFIGURATION_ID,
+                authoritative_factory_run_id=FACTORY_RUN_ID,
+            ),
+            first_cycle_id=CYCLE_ID,
+            now=now,
+            next_due_work_at=None,
+            proof_deadline=deadline,
+            project_health=_healthy_projection,
+            evaluate=lambda _projection: FourTokenAdmissionDisposition(
+                FourTokenAdmissionDispositionKind.CYCLE_ADMISSION,
+                "ADMISSION_READY",
+                now,
+                True,
+            ),
+            later_cycle_callback=boundary_callback,
+            admit=lambda **_kwargs: (_ for _ in ()).throw(
+                AssertionError("NO_PAIR boundary fixture must not admit")
+            ),
+            materialize=lambda **_kwargs: (_ for _ in ()).throw(
+                AssertionError("NO_PAIR boundary fixture must not materialize")
+            ),
+            plan_opening=lambda **_kwargs: (_ for _ in ()).throw(
+                AssertionError("NO_PAIR boundary fixture must not plan lifecycle")
+            ),
+        )
+        assert callback_calls == 1
+        assert result.admitted is False
+        assert result.attempt_state == "NO_PAIR"
+        assert result.attempt_terminal_cause == "BOUNDARY_FIXTURE_NO_PAIR"
+    finally:
+        connection.close()
 
 
 def test_late_new_cycle2_start_is_blocked_before_discovery(tmp_path) -> None:
