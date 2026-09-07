@@ -49,6 +49,7 @@ jobs:
             tests/test_v2_9_8b_window_15m_checkpoint8_owner_invocation_wiring.py \
             tests/test_v2_9_8b_discovery_selection_full_system_consolidation.py \
             tests/test_v2_9_7e_8_origin_to_lifecycle_integration.py \
+            tests/test_v2_9_8b_operational_selective_1h.py \
             tests/test_v2_9_8b_first_hour_safety_provenance_repair.py \
             tests/test_post_dtw100_first_hour_lifecycle_policy.py \
             --deselect tests/test_v2_9_7e_44_full_pilot_supply_integration.py::WiringTests::test_closed_supply_stage_flows_to_top_accounting_owner \
