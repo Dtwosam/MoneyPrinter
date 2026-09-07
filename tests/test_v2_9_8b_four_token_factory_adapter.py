@@ -237,6 +237,49 @@ class FourTokenFactoryAdapterTests(unittest.TestCase):
         ).fetchone()[0]
         self.assertEqual(state, "TRACKING")
 
+    def test_completed_cycle1_with_no_cycle2_admission_becomes_safe_stop(self) -> None:
+        from printer_v1.operator_cli.one_command_15m_factory import (
+            _resolve_four_token_no_accounting_shared_terminal,
+        )
+
+        self.conn.execute(
+            """CREATE TABLE printer_pre_admission_discovery_attempts(
+                   attempt_id TEXT PRIMARY KEY,
+                   campaign_id TEXT NOT NULL,
+                   campaign_run_id TEXT NOT NULL,
+                   authoritative_factory_run_id TEXT NOT NULL,
+                   proposed_cycle_ordinal INTEGER NOT NULL,
+                   attempt_state TEXT NOT NULL,
+                   first_terminal_cause TEXT,
+                   consumed_cycle_id TEXT
+               )"""
+        )
+        self.conn.execute(
+            """INSERT INTO printer_pre_admission_discovery_attempts(
+                   attempt_id,campaign_id,campaign_run_id,
+                   authoritative_factory_run_id,proposed_cycle_ordinal,
+                   attempt_state,first_terminal_cause,consumed_cycle_id
+               ) VALUES (
+                   'attempt-2','campaign-1','campaign-run-1','factory-1',2,
+                   'NO_PAIR','INSUFFICIENT_ELIGIBLE_TWO_SLOT_POOL',NULL
+               )"""
+        )
+        status, cause = _resolve_four_token_no_accounting_shared_terminal(
+            self.conn,
+            campaign_id="campaign-1",
+            campaign_run_id="campaign-run-1",
+            factory_run_id="factory-1",
+            phase_a=(
+                {
+                    "cycle_state": "TERMINAL_COMPLETED",
+                    "first_terminal_cause":
+                        "COMPLETED_CLEAN_OR_DIRTY_RESULTS_REPORTED",
+                },
+            ),
+        )
+        self.assertEqual(status, "SAFE_STOPPED")
+        self.assertEqual(cause, "INSUFFICIENT_ELIGIBLE_TWO_SLOT_POOL")
+
     def test_completion_sentinel_requires_exact_two_strict_4h_cycles(self) -> None:
         from printer_v1.operator_cli.one_command_15m_factory import (
             _should_persist_four_token_shared_stop_reason,

@@ -7387,6 +7387,68 @@ def _terminalize_pre_15m_campaign_window_for_failed_slot(
     )
 
 
+def _resolve_four_token_no_accounting_shared_terminal(
+    conn: sqlite3.Connection,
+    *,
+    campaign_id: str,
+    campaign_run_id: str,
+    factory_run_id: str,
+    phase_a: Sequence[Mapping[str, Any]],
+) -> tuple[str, str]:
+    """Resolve a one-cycle terminal without promoting Cycle-1 success to 4/2/2.
+
+    A four-token run with no two-cycle aggregate cannot be globally COMPLETED.
+    When Cycle 1 itself completed, the only lawful no-accounting terminal is an
+    exact terminal Cycle-2 pre-admission attempt that never consumed a cycle.
+    Its persisted cause becomes an honest SAFE_STOPPED campaign cause.
+    """
+    if len(phase_a) != 1 or not isinstance(phase_a[0], Mapping):
+        raise ValueError(
+            "no-accounting shared terminal requires one Phase-A result"
+        )
+    phase_a_state = str(phase_a[0].get("cycle_state") or "")
+    phase_a_cause = str(phase_a[0].get("first_terminal_cause") or "").strip()
+    if phase_a_state == "TERMINAL_COMPLETED":
+        attempt_rows = conn.execute(
+            """SELECT attempt_state,first_terminal_cause,consumed_cycle_id
+               FROM printer_pre_admission_discovery_attempts
+               WHERE campaign_id=? AND campaign_run_id=?
+                 AND authoritative_factory_run_id=?
+                 AND proposed_cycle_ordinal=2""",
+            (campaign_id, campaign_run_id, factory_run_id),
+        ).fetchall()
+        if len(attempt_rows) != 1:
+            raise ValueError(
+                "completed Cycle-1 without exact Cycle-2 no-admission evidence"
+            )
+        attempt = attempt_rows[0]
+        attempt_state = str(attempt["attempt_state"] or "")
+        attempt_cause = str(attempt["first_terminal_cause"] or "").strip()
+        from printer_v1.operator_cli.four_token_factory_adapter import (
+            PARENT_CAMPAIGN_INTERRUPTED_PREFIX,
+        )
+
+        if (
+            attempt_state not in {"NO_PAIR", "BLOCKED", "FAILED", "CANCELLED"}
+            or not attempt_cause
+            or attempt_cause.startswith(PARENT_CAMPAIGN_INTERRUPTED_PREFIX)
+            or attempt["consumed_cycle_id"] is not None
+        ):
+            raise ValueError(
+                "completed Cycle-1 has no honest terminal Cycle-2 no-admission"
+            )
+        return "SAFE_STOPPED", attempt_cause
+    if phase_a_state == "TERMINAL_FAILED":
+        if not phase_a_cause:
+            raise ValueError("failed one-cycle terminal has no Phase-A cause")
+        return "FAILED", phase_a_cause
+    if phase_a_state in {"TERMINAL_STOPPED", "TERMINAL_BLOCKED"}:
+        if not phase_a_cause:
+            raise ValueError("stopped one-cycle terminal has no Phase-A cause")
+        return "SAFE_STOPPED", phase_a_cause
+    raise ValueError("no-accounting shared terminal has invalid Phase-A state")
+
+
 def _should_persist_four_token_shared_stop_reason(
     conn: sqlite3.Connection,
     *,
@@ -12090,31 +12152,17 @@ def run_one_command_15m_factory(
                 *, terminal_accounting: Mapping[str, Any] | None = None
             ) -> Mapping[str, Any]:
                 if terminal_accounting is None:
-                    if len(phase_a) != 1 or not isinstance(phase_a[0], Mapping):
-                        raise ValueError(
-                            "no-accounting shared terminal requires one Phase-A result"
+                    shared_status, shared_cause = (
+                        _resolve_four_token_no_accounting_shared_terminal(
+                            conn,
+                            campaign_id=str(campaign_id),
+                            campaign_run_id=str(campaign_run_id),
+                            factory_run_id=run_id,
+                            phase_a=phase_a,
                         )
-                    shared_cause = phase_a[0].get("first_terminal_cause")
-                    phase_a_state = str(phase_a[0].get("cycle_state") or "")
-                    if phase_a_state == "TERMINAL_COMPLETED":
-                        shared_status = "COMPLETED"
-                    elif phase_a_state == "TERMINAL_FAILED":
-                        shared_status = "FAILED"
-                    elif phase_a_state in {
-                        "TERMINAL_STOPPED",
-                        "TERMINAL_BLOCKED",
-                    }:
-                        shared_status = "SAFE_STOPPED"
-                    else:
-                        raise ValueError(
-                            "no-accounting shared terminal has invalid Phase-A state"
-                        )
-                    if not str(shared_cause or "").strip():
-                        raise ValueError(
-                            "no-accounting shared terminal has no Phase-A cause"
-                        )
+                    )
                     return four_token_shared_terminalizer(
-                        terminal_cause=str(shared_cause),
+                        terminal_cause=shared_cause,
                         run_status=shared_status,
                     )
                 aggregate_outcome = str(

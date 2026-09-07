@@ -173,6 +173,60 @@ class CommandSeparationTests(unittest.TestCase):
         self.assertNotIn("--cycles", parser_source)
 
 
+class FourTokenAcceptanceShapeTests(unittest.TestCase):
+    def test_single_admitted_cycle_can_never_be_four_token_campaign_pass(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = f"{tmp}/shape.sqlite3"
+            connection = sqlite3.connect(db)
+            try:
+                connection.execute(
+                    """CREATE TABLE printer_memory_factory_campaign_cycles(
+                           cycle_id TEXT PRIMARY KEY,
+                           campaign_id TEXT NOT NULL,
+                           run_id TEXT NOT NULL,
+                           cycle_ordinal INTEGER NOT NULL
+                       )"""
+                )
+                connection.execute(
+                    """INSERT INTO printer_memory_factory_campaign_cycles(
+                           cycle_id,campaign_id,run_id,cycle_ordinal
+                       ) VALUES ('cycle-1','campaign-1','run-1',1)"""
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            result = command._apply_full_run_campaign_acceptance(
+                db_path=db,
+                campaign_id="campaign-1",
+                campaign_run_id="run-1",
+                cycle_id="cycle-1",
+                configuration_id="configuration-1",
+                factory_run_id="factory-1",
+                execution_id="execution-1",
+                supervision_id="supervision-1",
+                launch_git_provenance={},
+                db_target_identity="db-1",
+                lifecycle_started=True,
+                lifecycle_operation_records=(),
+                forbidden_deltas={},
+                accounting_owner=object(),
+                action_local_ledger=object(),
+                runtime_terminal_status="COMPLETED",
+                cleanup_result={},
+                four_token_proof_owned=True,
+            )
+
+        self.assertEqual(
+            result["verdict"], command.FULL_RUN_VERDICT_HONEST_BLOCKED
+        )
+        self.assertFalse(result["campaign_acceptance"]["pass"])
+        self.assertEqual(
+            result["reason"], "FOUR_TOKEN_EXACT_TWO_CYCLE_ADMISSION_REQUIRED"
+        )
+        self.assertEqual(result["admitted_cycle_ordinals"], [1])
+
+
 class CapacityDerivationTests(unittest.TestCase):
     """4/2/2 must be derived from the one canonical contract, never copied."""
 

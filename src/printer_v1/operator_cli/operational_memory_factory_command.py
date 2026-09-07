@@ -3085,6 +3085,34 @@ def _apply_full_run_campaign_acceptance(
             "lifecycle_started": bool(lifecycle_started),
             "reason": "PRE_LIFECYCLE_NO_OWNED_LIFECYCLE",
         }
+    if four_token_proof_owned:
+        shape_connection = sqlite3.connect(str(db_path))
+        try:
+            admitted_ordinals = tuple(
+                int(row[0])
+                for row in shape_connection.execute(
+                    """SELECT cycle_ordinal
+                       FROM printer_memory_factory_campaign_cycles
+                       WHERE campaign_id=? AND run_id=?
+                       ORDER BY cycle_ordinal,cycle_id""",
+                    (campaign_id, campaign_run_id),
+                ).fetchall()
+            )
+        finally:
+            shape_connection.close()
+        if admitted_ordinals != (1, 2):
+            exact_honest_single_cycle = admitted_ordinals == (1,)
+            return {
+                "verdict": (
+                    FULL_RUN_VERDICT_HONEST_BLOCKED
+                    if exact_honest_single_cycle
+                    else FULL_RUN_VERDICT_BLOCKED_UNSAFE
+                ),
+                "campaign_acceptance": {"pass": False},
+                "lifecycle_started": True,
+                "reason": "FOUR_TOKEN_EXACT_TWO_CYCLE_ADMISSION_REQUIRED",
+                "admitted_cycle_ordinals": list(admitted_ordinals),
+            }
     if accounting_owner is None or action_local_ledger is None:
         return {
             "verdict": FULL_RUN_VERDICT_BLOCKED_UNSAFE,
