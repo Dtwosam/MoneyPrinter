@@ -44,6 +44,7 @@ from printer_v1.operator_cli.lane_q_15m_window_integrity_guard import (
 from printer_v1.operator_cli.operational_selective_1h import (
     SELECTIVE_1H_POLICY_VERSION,
     bind_1h_memory_window,
+    bind_precreated_1h_campaign_window_memory_row,
     campaign_window_id_for,
     ensure_authoritative_factory_link,
     evaluate_selective_1h_for_cycle,
@@ -1092,6 +1093,24 @@ class OperationalSelective1hTests(unittest.TestCase):
             self.fx.connection.execute(
                 "UPDATE printer_tokens SET token_status='TRACK_NORMAL' WHERE id=1"
             )
+
+        # Create the real campaign-owned WINDOW_1H authority before testing
+        # physical-memory promotion. Lane Q must never infer cadence from a
+        # standalone memory row.
+        self.fx.prepare_eligible(token_id=1, window_id=211)
+        self.fx.prepare_eligible(token_id=2, window_id=212)
+        continuation = self.fx.evaluate()
+        self.assertEqual(continuation["continue_count"], 2)
+        campaign_window_1h_id = str(
+            self.fx.connection.execute(
+                "SELECT window_id FROM printer_memory_factory_campaign_windows "
+                "WHERE campaign_id='campaign-1h' AND run_id='run-1h' "
+                "AND cycle_id='cycle-1h' AND token_slot_id='slot-1' "
+                "AND window_kind='WINDOW_1H'"
+            ).fetchone()[0]
+        )
+
+        with self.fx.connection:
             for index, snapshot_id in enumerate(snapshot_ids):
                 self.fx.connection.execute(
                     """INSERT INTO printer_token_snapshots(
@@ -1125,6 +1144,18 @@ class OperationalSelective1hTests(unittest.TestCase):
                     snapshot_ids[-1],
                     json.dumps(ctx),
                 ),
+            )
+            bind_precreated_1h_campaign_window_memory_row(
+                self.fx.connection,
+                campaign_id="campaign-1h",
+                run_id="run-1h",
+                cycle_id="cycle-1h",
+                token_slot_id="slot-1",
+                token_row_id=1,
+                pair_row_id=1,
+                campaign_window_id=campaign_window_1h_id,
+                memory_window_row_id=201,
+                now=NOW,
             )
         lane_q = guard_candidate_windows(
             self.fx.db,
