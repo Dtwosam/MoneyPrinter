@@ -626,6 +626,77 @@ class NegativePathTests(_IntegrationBase):
         self.assertEqual(len({s["token_row_id"] for s in slots}), 2)
         self.assertEqual(len({s["mint_identity"] for s in slots}), 2)
 
+    def test_materialize_preserves_each_authoritative_queue_lane(self) -> None:
+        driver_module = __import__(
+            "printer_v1.operator_cli.origin_lifecycle_campaign",
+            fromlist=["_read_activated_slots"],
+        )
+        original = driver_module._read_activated_slots
+        connection = self._conn()
+        try:
+            with connection:
+                for identity, lane, action in (
+                    (101, "TRACK_FAST", "PROMOTE_TO_TRACK_FAST"),
+                    (102, "TRACK_NORMAL", "PROMOTE_TO_TRACK_NORMAL"),
+                ):
+                    connection.execute(
+                        "INSERT INTO printer_tokens(id,token_mint) VALUES (?,?)",
+                        (identity, f"mint-{identity}"),
+                    )
+                    connection.execute(
+                        "INSERT INTO printer_pairs(id,token_id,pair_address) "
+                        "VALUES (?,?,?)",
+                        (identity, identity, f"pair-{identity}"),
+                    )
+                    connection.execute(
+                        """INSERT INTO printer_tracking_queue(
+                               id,token_id,pair_id,tracking_lane,tracking_action,
+                               priority_reason,next_check_at,queue_status,
+                               source_status,data_quality_label
+                           ) VALUES (?,?,?,?,?,'lane_identity_proof',?,'ACTIVE',
+                               'COMPLETE','CLEAN_DATA')""",
+                        (identity, identity, identity, lane, action, NOW),
+                    )
+            driver_module._read_activated_slots = lambda _c, _cycle: [
+                {
+                    "token_slot_id": "slot-fast",
+                    "slot_ordinal": 1,
+                    "token_row_id": 101,
+                    "pair_row_id": 101,
+                    "mint_identity": "mint-101",
+                    "pair_identity": "pair-101",
+                    "pair_address": "pair-101",
+                    "tracking_queue_id": 101,
+                },
+                {
+                    "token_slot_id": "slot-normal",
+                    "slot_ordinal": 2,
+                    "token_row_id": 102,
+                    "pair_row_id": 102,
+                    "mint_identity": "mint-102",
+                    "pair_identity": "pair-102",
+                    "pair_address": "pair-102",
+                    "tracking_queue_id": 102,
+                },
+            ]
+            batch_id = materialize_origin_activated_batch(
+                connection, cycle_id="cyc", selection_seed=SEED
+            )
+            lanes = {
+                int(row["token_id"]): str(row["tracking_lane"])
+                for row in connection.execute(
+                    """SELECT token_id,tracking_lane
+                       FROM printer_selection_batch_items WHERE batch_id=?""",
+                    (batch_id,),
+                ).fetchall()
+            }
+            self.assertEqual(
+                lanes, {101: "TRACK_FAST", 102: "TRACK_NORMAL"}
+            )
+        finally:
+            driver_module._read_activated_slots = original
+            connection.close()
+
     def test_materialize_guard_rejects_duplicate_token_slots(self) -> None:
         # Defense-in-depth: even if two SELECTED slots with a shared token
         # identity were presented, materialization fails closed.

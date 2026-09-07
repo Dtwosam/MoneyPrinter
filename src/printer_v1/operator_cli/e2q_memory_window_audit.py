@@ -1,12 +1,12 @@
 """E2Q Memory Window Audit / Classification Boundary.
 
 Audits and classifies a closed main-outcome printer_memory_windows row against
-its referenced snapshot evidence. Two window kinds are auditable: WINDOW_15M
-(unchanged) and a genuine WINDOW_1H (real 1h identity, duration, governed
-snapshot anchors, coverage, and exact token/pair targeting). WINDOW_5M_MICRO_EVENT
-is support-only and WINDOW_4H/12H/24H are not enabled; all are blocked with a
-window-kind-specific reason. Writes classification back to the window row
-idempotently. Does NOT create memory rows, episodes, fingerprints, or any
+its referenced snapshot evidence. Three window kinds are auditable: WINDOW_15M
+(unchanged), a genuine WINDOW_1H, and a genuine WINDOW_4H. Long-window audit
+requires real duration, governed snapshot anchors, continuity metadata, and exact
+token/pair targeting. WINDOW_5M_MICRO_EVENT is support-only; WINDOW_12H/24H remain
+disabled and are blocked with a window-kind-specific reason. Writes classification
+back to the window row idempotently. Does NOT create memory rows, episodes, fingerprints, or any
 paper-trading records.
 
 Classification outcomes:
@@ -57,8 +57,10 @@ E2Q_CREATED_BY: str = "lane_e2q"
 #                          it has real 1h identity (kind), real duration, governed
 #                          snapshot anchors, coverage, and exact token/pair
 #                          targeting; a relabelled or insufficient window is blocked.
+#   WINDOW_4H            — a genuine fixed 1h->4h continuation is admissible
+#                          only with real duration, anchors and continuity identity.
 #   WINDOW_5M_MICRO_EVENT — support-only; never a valid main outcome window.
-#   WINDOW_4H/12H/24H     — not enabled as main outcome windows.
+#   WINDOW_12H/24H        — not enabled as main outcome windows.
 E2Q_1H_WINDOW_KIND: str = "WINDOW_1H"
 E2Q_4H_WINDOW_KIND: str = "WINDOW_4H"
 E2Q_SUPPORT_ONLY_WINDOW_KIND: str = "WINDOW_5M_MICRO_EVENT"

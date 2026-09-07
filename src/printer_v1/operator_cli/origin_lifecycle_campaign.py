@@ -257,8 +257,8 @@ def _read_activated_slots(
     rows = connection.execute(
         """
         SELECT s.token_slot_id, s.slot_ordinal, s.token_row_id, s.pair_row_id,
-               s.mint_identity, s.pair_identity, s.token_state,
-               p.pair_address, t.token_status
+               s.mint_identity, s.pair_identity, s.tracking_queue_id,
+               s.token_state, p.pair_address, t.token_status
         FROM printer_memory_factory_campaign_token_slots AS s
         JOIN printer_pairs AS p ON p.id = s.pair_row_id
         JOIN printer_tokens AS t ON t.id = s.token_row_id
@@ -279,8 +279,8 @@ def _cancel_executor_first_15m_jobs(
 ) -> int:
     """Cancel the executor's own first-15m jobs; the factory owns scheduling.
 
-    The executor's atomic activation queues one ``TRACK_NORMAL_FIRST_15M`` job
-    per slot (``window15m:<mint>:<pool>``). The factory replans opening jobs
+    The executor's atomic activation queues one lane-matched first-15m job per
+    slot (``window15m:<mint>:<pool>``). The factory replans opening jobs
     deterministically, so those are superseded and must not linger as stale
     scheduler work. Cancellation uses the canonical Scheduler owner; the
     activation rows themselves (slots, tracking queue) are preserved.
@@ -309,7 +309,7 @@ def materialize_origin_activated_batch(
     *,
     cycle_id: str,
     selection_seed: str,
-    tracking_lane: str = "TRACK_NORMAL",
+    tracking_lane: str | None = None,
     now: str | None = None,
     post_handoff_fault: str | None = None,
     scope_recorder: _PostHandoffScopeRecorder | None = None,
@@ -330,6 +330,39 @@ def materialize_origin_activated_batch(
         )
     if any(s["slot_ordinal"] not in (1, 2) for s in slots):
         raise OriginLifecycleError("IDENTITY_MISMATCH", "unexpected slot ordinal")
+
+    lane_by_slot: dict[str, str] = {}
+    for slot in slots:
+        queue_id = slot.get("tracking_queue_id")
+        if queue_id is None:
+            raise OriginLifecycleError(
+                "IDENTITY_MISMATCH",
+                f"activated slot lacks tracking queue: {slot['token_slot_id']}",
+            )
+        queue = connection.execute(
+            """SELECT token_id,pair_id,tracking_lane
+               FROM printer_tracking_queue WHERE id=?""",
+            (int(queue_id),),
+        ).fetchone()
+        queue_lane = "" if queue is None else str(queue["tracking_lane"] or "")
+        if (
+            queue is None
+            or int(queue["token_id"]) != int(slot["token_row_id"])
+            or queue["pair_id"] is None
+            or int(queue["pair_id"]) != int(slot["pair_row_id"])
+            or queue_lane not in {"TRACK_FAST", "TRACK_NORMAL"}
+        ):
+            raise OriginLifecycleError(
+                "IDENTITY_MISMATCH",
+                f"activated slot tracking authority invalid: {slot['token_slot_id']}",
+            )
+        if tracking_lane is not None and queue_lane != str(tracking_lane):
+            raise OriginLifecycleError(
+                "IDENTITY_MISMATCH",
+                f"tracking lane override conflicts with queue authority: "
+                f"{slot['token_slot_id']}",
+            )
+        lane_by_slot[str(slot["token_slot_id"])] = queue_lane
 
     _cancel_executor_first_15m_jobs(
         connection, slots, post_handoff_fault=post_handoff_fault
@@ -368,7 +401,7 @@ def materialize_origin_activated_batch(
                 int(slot["pair_row_id"]),
                 slot["mint_identity"],
                 slot["pair_address"],
-                tracking_lane,
+                lane_by_slot[str(slot["token_slot_id"])],
                 stamp,
                 stamp,
             ),

@@ -624,6 +624,33 @@ def _slot_rows(
     return [dict(row) for row in rows]
 
 
+def _slot_tracking_lane(
+    connection: sqlite3.Connection, slot: Mapping[str, Any]
+) -> str:
+    queue_id = slot.get("tracking_queue_id")
+    if queue_id is None:
+        raise Selective1hError(
+            f"tracking queue missing for {slot.get('token_slot_id')}"
+        )
+    queue = connection.execute(
+        """SELECT token_id,pair_id,tracking_lane
+           FROM printer_tracking_queue WHERE id=?""",
+        (int(queue_id),),
+    ).fetchone()
+    lane = "" if queue is None else str(queue["tracking_lane"] or "")
+    if (
+        queue is None
+        or int(queue["token_id"]) != int(slot["token_row_id"])
+        or queue["pair_id"] is None
+        or int(queue["pair_id"]) != int(slot["pair_row_id"])
+        or lane not in {"TRACK_FAST", "TRACK_NORMAL"}
+    ):
+        raise Selective1hError(
+            f"tracking queue authority mismatch for {slot.get('token_slot_id')}"
+        )
+    return lane
+
+
 def _learning_need_from_window(
     connection: sqlite3.Connection, memory_window_id: int
 ) -> str | None:
@@ -816,6 +843,7 @@ def evaluate_selective_1h_for_cycle(
         # Authoritative quality for 4A is the promotion-derived CLEAN_MEMORY,
         # not the raw candidate PARTIAL window label.
         predecessor_quality = facts["predecessor_memory_quality"]
+        tracking_lane = _slot_tracking_lane(connection, slot)
         expected = ExpectedTokenContinuationIdentity(
             token_slot_id=token_slot_id,
             token_id=str(slot["token_row_id"]),
@@ -854,7 +882,7 @@ def evaluate_selective_1h_for_cycle(
                 continuity_status=continuity,
                 learning_need=learning_need,
                 token_budget_available=True,
-                token_state="TRACK_NORMAL",
+                token_state=tracking_lane,
                 token_eligible=True,
                 cancelled=False,
                 terminal=False,

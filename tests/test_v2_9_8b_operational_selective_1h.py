@@ -53,7 +53,10 @@ from printer_v1.operator_cli.operational_selective_1h import (
     should_continue_token,
     summarize_selective_1h_reporting,
 )
-from printer_v1.scheduler.token_local_continuation import ContinuationVerdict
+from printer_v1.scheduler.token_local_continuation import (
+    ContinuationVerdict,
+    evaluate_token_local_continuations,
+)
 from printer_v1.safety.composite import SAFETY_CONTEXT_ACCEPTABLE
 from printer_v1.operator_cli.unified_terminal_closure import (
     build_campaign_terminal_report,
@@ -757,6 +760,29 @@ class OperationalSelective1hTests(unittest.TestCase):
         )
         self.assertIsNotNone(plans[1]["campaign_window_1h_id"])
         self.assertIsNotNone(plans[2]["campaign_window_1h_id"])
+
+    def test_selective_policy_receives_authoritative_mixed_tracking_lanes(self) -> None:
+        self.fx.prepare_eligible(token_id=1, window_id=121)
+        self.fx.prepare_eligible(token_id=2, window_id=122)
+        captured = []
+
+        def capture(*, campaign, tokens):
+            captured.extend(tokens)
+            return evaluate_token_local_continuations(
+                campaign=campaign, tokens=tokens
+            )
+
+        with patch(
+            "printer_v1.operator_cli.operational_selective_1h."
+            "evaluate_token_local_continuations",
+            side_effect=capture,
+        ):
+            self.fx.evaluate()
+
+        self.assertEqual(
+            {token.token_slot_id: token.token_state for token in captured},
+            {"slot-1": "TRACK_FAST", "slot-2": "TRACK_NORMAL"},
+        )
 
     def test_two_eligible_tokens_fair_bounded_continuation(self) -> None:
         self.fx.prepare_eligible(token_id=1, window_id=121, outcome="DUMP")
