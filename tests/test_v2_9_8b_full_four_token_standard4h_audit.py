@@ -447,6 +447,65 @@ def test_two_cycle_four_token_real_factory_reaches_shared_terminal_standard4h(
             for item in latest.get("cycles", [])
             if isinstance(item, dict)
         ]
+        durable = {}
+        try:
+            connection = sqlite3.connect(db)
+            connection.row_factory = sqlite3.Row
+            durable = {
+                "factory_run": [
+                    dict(row)
+                    for row in connection.execute(
+                        "SELECT run_status,stop_reason,started_at,finished_at "
+                        "FROM printer_memory_factory_runs"
+                    ).fetchall()
+                ],
+                "campaign_cycles": [
+                    dict(row)
+                    for row in connection.execute(
+                        "SELECT cycle_id,cycle_ordinal,cycle_state,"
+                        "first_terminal_cause,created_at,updated_at "
+                        "FROM printer_memory_factory_campaign_cycles "
+                        "ORDER BY cycle_ordinal"
+                    ).fetchall()
+                ],
+                "admission_attempts": [
+                    dict(row)
+                    for row in connection.execute(
+                        "SELECT attempt_id,proposed_cycle_ordinal,attempt_state,"
+                        "first_terminal_cause,consumed_cycle_id,created_at,updated_at "
+                        "FROM printer_pre_admission_discovery_attempts "
+                        "ORDER BY proposed_cycle_ordinal,attempt_id"
+                    ).fetchall()
+                ],
+                "cycle_one_slots": [
+                    dict(row)
+                    for row in connection.execute(
+                        """SELECT s.slot_ordinal,s.token_row_id,s.token_state,
+                                  q.tracking_lane,q.queue_status
+                             FROM printer_memory_factory_campaign_token_slots AS s
+                             LEFT JOIN printer_tracking_queue AS q
+                               ON q.id=s.tracking_queue_id
+                            WHERE s.cycle_id=?
+                            ORDER BY s.slot_ordinal""",
+                        (CYCLE_ID,),
+                    ).fetchall()
+                ],
+                "active_steps": [
+                    dict(row)
+                    for row in connection.execute(
+                        "SELECT step_key,step_kind,token_id,tracking_lane,"
+                        "step_status,scheduled_for,error_or_skip_reason "
+                        "FROM printer_memory_factory_run_steps "
+                        "WHERE step_status IN ('PENDING','RUNNING') "
+                        "ORDER BY scheduled_for,id LIMIT 20"
+                    ).fetchall()
+                ],
+            }
+        finally:
+            try:
+                connection.close()
+            except Exception:
+                pass
         raise AssertionError(
             json.dumps(
                 {
@@ -457,6 +516,7 @@ def test_two_cycle_four_token_real_factory_reaches_shared_terminal_standard4h(
                         "accounting_complete"
                     ),
                     "cycles": diagnostic,
+                    "durable": durable,
                 },
                 sort_keys=True,
                 default=str,
