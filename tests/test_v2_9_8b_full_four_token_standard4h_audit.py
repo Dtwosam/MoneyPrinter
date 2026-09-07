@@ -189,6 +189,7 @@ def test_two_cycle_four_token_real_factory_reaches_shared_terminal_standard4h(
 
     from printer_v1.operator_cli.authoritative_live_operational_campaign import (
         AuthoritativeLiveOperationalCampaignOwner,
+        later_cycle_gate_quantum_seconds,
     )
     from printer_v1.operator_cli.campaign_supervision import (
         cleanup_campaign_supervision,
@@ -409,6 +410,9 @@ def test_two_cycle_four_token_real_factory_reaches_shared_terminal_standard4h(
         return {
             "four_token_proof_controller": FourTokenProofController.exact(),
             "later_cycle_discovery_callback": later_callback,
+            "later_cycle_acquisition_quantum_seconds": (
+                lambda: later_cycle_gate_quantum_seconds({})
+            ),
             "four_token_health_projector": (
                 lambda _connection, _now: _healthy_projection()
             ),
