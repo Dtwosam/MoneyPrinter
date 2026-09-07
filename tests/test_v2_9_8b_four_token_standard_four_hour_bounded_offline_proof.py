@@ -31,8 +31,7 @@ from printer_v1.operator_cli.authoritative_live_operational_campaign import (
     AuthoritativeLiveOperationalCampaignOwner,
 )
 from printer_v1.operator_cli.four_token_factory_adapter import (
-    finalize_four_token_shared_terminal,
-    reconcile_four_token_cycle_terminal,
+    four_token_cycle_through_4h_validation,
 )
 from printer_v1.operator_cli.four_token_proof_integration import (
     FourTokenAdmissionDisposition,
@@ -322,65 +321,25 @@ def test_one_operational_invocation_proves_four_two_two(tmp_path) -> None:
     )
     assert long_window_steps == 0
 
-    # --- one terminal closure, no successor / retry -------------------------
+    # --- strict completion remains blocked until real Standard-4H ------------
+    # This bounded proof owns admission/identity/Scheduler scoping only. It must
+    # never manufacture terminal success from opening/15m planning. The full
+    # integrated Standard-4H audit owns the real four-memory completion proof.
     connection.commit()
     for cycle in ("cycle-1", "cycle-1-2"):
-        reconcile_four_token_cycle_terminal(
+        strict = four_token_cycle_through_4h_validation(
             connection,
             campaign_id=BINDING.campaign_id,
             campaign_run_id=BINDING.campaign_run_id,
             factory_run_id=BINDING.authoritative_factory_run_id,
             cycle_id=cycle,
-            cause="COMPLETED_CLEAN_OR_DIRTY_RESULTS_REPORTED",
-            run_status="COMPLETED",
-            now=NOW,
         )
-    cleanup_calls: list[str] = []
+        assert strict["four_token_through_4h_complete"] is False
+        assert strict["expected_continuation_count"] == 0
+        assert strict["window_count"] == 0
 
-    def shared_terminalizer():
-        cleanup_calls.append("cleanup")
-        stamp = NOW.isoformat()
-        connection.execute(
-            "UPDATE printer_memory_factory_campaign_runs SET "
-            "run_state='TERMINAL_COMPLETED',first_terminal_cause=?,terminal_at=?,"
-            "updated_at=? WHERE run_id=?",
-            (
-                "COMPLETED_CLEAN_OR_DIRTY_RESULTS_REPORTED",
-                stamp,
-                stamp,
-                BINDING.campaign_run_id,
-            ),
-        )
-        connection.execute(
-            "UPDATE printer_memory_factory_campaigns SET "
-            "campaign_state='TERMINAL_COMPLETED',first_terminal_cause=?,terminal_at=?,"
-            "updated_at=? WHERE campaign_id=?",
-            (
-                "COMPLETED_CLEAN_OR_DIRTY_RESULTS_REPORTED",
-                stamp,
-                stamp,
-                BINDING.campaign_id,
-            ),
-        )
-        connection.execute(
-            "UPDATE printer_memory_factory_runs SET run_status='COMPLETED',"
-            "finished_at=?,updated_at=? WHERE run_id=?",
-            (stamp, stamp, BINDING.authoritative_factory_run_id),
-        )
-        connection.commit()
-        return {"clean_terminal": True, "lease_released": True}
-
-    terminal = finalize_four_token_shared_terminal(
-        connection,
-        campaign_id=BINDING.campaign_id,
-        campaign_run_id=BINDING.campaign_run_id,
-        factory_run_id=BINDING.authoritative_factory_run_id,
-        shared_terminalizer=shared_terminalizer,
-    )
-    assert terminal["shared_cleanup_count"] == 1
-    assert cleanup_calls == ["cleanup"]
-
-    # A terminal campaign spawns nothing: no third cycle, no successor run.
+    # No third cycle or successor run was created, and the bounded pre-4h graph
+    # truthfully remains nonterminal.
     assert int(
         connection.execute(
             "SELECT COUNT(*) FROM printer_memory_factory_campaign_cycles"
@@ -396,7 +355,7 @@ def test_one_operational_invocation_proves_four_two_two(tmp_path) -> None:
             "SELECT COUNT(*) FROM printer_memory_factory_campaign_runs "
             "WHERE run_state NOT LIKE 'TERMINAL_%'"
         ).fetchone()[0]
-    ) == 0
+    ) == 1
 
     # --- the operational command policy matches this proven envelope --------
     campaign_policy = command.FOUR_TOKEN_STANDARD_FOUR_HOUR_POLICY

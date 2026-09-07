@@ -24,6 +24,7 @@ from printer_v1.discovery.combined_executor import (
     CombinedPumpfunCampaignExecutor,
     FixtureOriginProof,
     FixturePumpSwapProof,
+    FixtureSourceFact,
 )
 from printer_v1.operator_cli.abstract_campaign_command import (
     AbstractCampaignCommand,
@@ -190,9 +191,39 @@ class _IntegrationBase(unittest.TestCase):
             cycle_id="cyc",
             cycle_cutoff=CUTOFF,
             campaign_selection_seed=SEED,
-            provider_contract_versions={"direct": "V2-9.7D.7B.3A"},
+            provider_contract_versions={
+                "direct": "V2-9.7D.7B.3A",
+                "dexscreener": "existing",
+            },
             git_provenance_identity="git-integration",
             evaluated_at=NOW,
+            dexscreener_ops=(
+                FixtureSourceFact(
+                    request_kind="dexscreener_fresh_profiles",
+                    source_name="dexscreener",
+                    body=[
+                        {
+                            "chainId": "solana",
+                            "baseToken": {"address": origin.mint},
+                            "quoteToken": {
+                                "address": "So11111111111111111111111111111111111111112"
+                            },
+                            "pairAddress": origin.bonding_curve,
+                            "dexId": "pumpfun",
+                            "priceUsd": 0.01,
+                            "liquidity": {"usd": 1500},
+                            "volume": {"m5": 50, "h1": 200, "h24": 200},
+                            "txns": {
+                                "m5": {"buys": 2, "sells": 1},
+                                "h1": 5,
+                                "h24": 10,
+                            },
+                        }
+                        for origin in origins
+                    ],
+                    receipt_time=NOW,
+                ),
+            ),
             direct_observations=origins,
             pumpswap_proofs=pumpswap_proofs,
         )

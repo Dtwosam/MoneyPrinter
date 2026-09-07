@@ -1081,6 +1081,14 @@ class OperationalSelective1hTests(unittest.TestCase):
     def test_e2z_promotes_clean_1h_once(self) -> None:
         snapshot_ids = list(range(1, 14))
         with self.fx.connection:
+            # Campaign-slot cadence authority is the linked tracking queue.
+            # Keep the token-status compatibility projection aligned, but never
+            # use it as a substitute for queue-owned cadence truth.
+            self.fx.connection.execute(
+                "UPDATE printer_tracking_queue "
+                "SET tracking_lane='TRACK_NORMAL',"
+                "tracking_action='PROMOTE_TO_TRACK_NORMAL' WHERE id=1"
+            )
             self.fx.connection.execute(
                 "UPDATE printer_tokens SET token_status='TRACK_NORMAL' WHERE id=1"
             )
@@ -1463,13 +1471,32 @@ class OperationalSelective1hTests(unittest.TestCase):
 
         self.assertEqual(factory._MAX_SNAPSHOTS_PER_TOKEN, 16)
         self.assertEqual(factory._continuation_expected_snapshots("TRACK_FAST"), 24)
-        # V2-9.8B first-hour safety provenance repair: the exact-pair 1h close
-        # now also reserves its fresh governed safety-only bundle (3 worst-case
-        # transports), so the per-token ceiling is 45 + 3.
-        self.assertEqual(factory.FIRST_HOUR_SAFETY_CONTEXT_REQUEST_COUNT, 3)
-        self.assertEqual(factory._SELECTIVE_1H_MAX_REQUESTS_PER_TOKEN, 48)
-        self.assertEqual(factory._SELECTIVE_1H_MAX_REQUESTS_RUN, 98)
-        self.assertEqual(factory._SELECTIVE_1H_MAX_SCHEDULER_ROWS, 82)
+        # Exact-pair 1h close reserves the canonical four-unit safety bundle:
+        # GoPlus + core mint-account + holder primary + one approved backup.
+        self.assertEqual(factory.FIRST_HOUR_SAFETY_CONTEXT_REQUEST_COUNT, 4)
+        expected_per_token = (
+            factory._MAX_GOVERNED_REQUESTS_PER_TOKEN
+            + factory._continuation_expected_snapshots("TRACK_FAST")
+            + factory.FIRST_HOUR_SAFETY_CONTEXT_REQUEST_COUNT
+        )
+        self.assertEqual(
+            factory._SELECTIVE_1H_MAX_REQUESTS_PER_TOKEN, expected_per_token
+        )
+        self.assertEqual(
+            factory._SELECTIVE_1H_MAX_REQUESTS_RUN,
+            factory._MAX_DISCOVERY_REQUESTS + 2 * expected_per_token,
+        )
+        self.assertEqual(
+            factory._SELECTIVE_1H_MAX_SCHEDULER_ROWS,
+            2
+            * (
+                factory._MAX_SNAPSHOTS_PER_TOKEN
+                + 3
+                + factory._continuation_expected_snapshots("TRACK_FAST")
+                + 3
+                + 1
+            ),
+        )
         self.assertTrue(
             factory._selective_1h_lifecycle(
                 {
