@@ -1644,6 +1644,7 @@ def _run_standard_factory_loop(
     fail_progression_binding=False,
     progression_predecessor_observations=None,
     four_token_setup=None,
+    cycle_one_tracking_lanes=None,
 ):
     from printer_v1.operator_cli import one_command_15m_factory as factory
     from printer_v1.operator_cli import operational_standard_4h as standard
@@ -1660,7 +1661,11 @@ def _run_standard_factory_loop(
         _prepare,
     )
 
-    db, backup, prepared_disposable = _prepare(tmp_path)
+    db, backup, prepared_disposable = (
+        _prepare(tmp_path)
+        if cycle_one_tracking_lanes is None
+        else _prepare(tmp_path, tracking_lanes=cycle_one_tracking_lanes)
+    )
     four_token_kwargs = (
         dict(four_token_setup(db)) if four_token_setup is not None else {}
     )
