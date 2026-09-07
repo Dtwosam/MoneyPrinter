@@ -285,24 +285,6 @@ def test_two_cycle_four_token_real_factory_reaches_shared_terminal_standard4h(
     def four_token_setup(db):
         connection = sqlite3.connect(db)
         try:
-            fast_slot = connection.execute(
-                "SELECT tracking_queue_id,token_row_id "
-                "FROM printer_memory_factory_campaign_token_slots "
-                "WHERE campaign_id=? AND run_id=? AND cycle_id=? "
-                "AND slot_ordinal=1",
-                (CAMPAIGN_ID, CAMPAIGN_RUN_ID, CYCLE_ID),
-            ).fetchone()
-            assert fast_slot is not None and fast_slot[0] is not None
-            connection.execute(
-                "UPDATE printer_tracking_queue "
-                "SET tracking_lane='TRACK_FAST',"
-                "tracking_action='PROMOTE_TO_TRACK_FAST' WHERE id=?",
-                (int(fast_slot[0]),),
-            )
-            connection.execute(
-                "UPDATE printer_tokens SET token_status='TRACK_FAST' WHERE id=?",
-                (int(fast_slot[1]),),
-            )
             for row_id in (3, 4):
                 connection.execute(
                     "INSERT INTO printer_tokens(id,token_mint,chain) "
@@ -446,6 +428,7 @@ def test_two_cycle_four_token_real_factory_reaches_shared_terminal_standard4h(
             operational_binding="VALID",
             disposable_binding=None,
             four_token_setup=four_token_setup,
+            cycle_one_tracking_lanes=("TRACK_FAST", "TRACK_NORMAL"),
         )
     except Exception as exc:
         latest = aggregate_observations[-1] if aggregate_observations else {}
