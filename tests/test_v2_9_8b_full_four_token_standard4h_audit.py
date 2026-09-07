@@ -453,7 +453,7 @@ def test_two_cycle_four_token_real_factory_reaches_shared_terminal_standard4h(
         ]
         durable = {}
         try:
-            connection = sqlite3.connect(db)
+            connection = sqlite3.connect(tmp_path / "wake-order.sqlite3")
             connection.row_factory = sqlite3.Row
             durable = {
                 "factory_run": [
