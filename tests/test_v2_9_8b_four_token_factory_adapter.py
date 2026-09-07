@@ -7,6 +7,10 @@ import sqlite3
 import unittest
 from unittest.mock import patch
 
+from printer_v1.operator_cli.campaign_full_run_accounting import (
+    project_four_token_selection_provenance,
+)
+
 from printer_v1.operator_cli.four_token_factory_adapter import (
     FourTokenFactoryAdapterError,
     build_cycle_lifecycle_ownership_context,
@@ -110,6 +114,165 @@ class FourTokenFactoryAdapterTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.conn.close()
+
+    def test_selection_provenance_reproves_both_cycle_inputs(self) -> None:
+        self.conn.executescript(
+            """
+            ALTER TABLE printer_memory_factory_campaign_token_slots
+                ADD COLUMN tracking_queue_id INTEGER;
+            CREATE TABLE printer_memory_factory_runs(
+                run_id TEXT PRIMARY KEY,
+                selection_batch_id TEXT
+            );
+            CREATE TABLE printer_selection_batch_items(
+                id INTEGER PRIMARY KEY,
+                batch_id TEXT NOT NULL,
+                item_status TEXT NOT NULL,
+                token_id INTEGER,
+                pair_id INTEGER,
+                token_mint TEXT NOT NULL,
+                pair_address TEXT NOT NULL,
+                tracking_lane TEXT
+            );
+            CREATE TABLE printer_tracking_queue(
+                id INTEGER PRIMARY KEY,
+                token_id INTEGER NOT NULL,
+                pair_id INTEGER,
+                tracking_lane TEXT NOT NULL
+            );
+            CREATE TABLE printer_pre_admission_discovery_attempts(
+                attempt_id TEXT PRIMARY KEY,
+                campaign_id TEXT NOT NULL,
+                campaign_run_id TEXT NOT NULL,
+                authoritative_factory_run_id TEXT NOT NULL,
+                proposed_cycle_id TEXT NOT NULL,
+                proposed_cycle_ordinal INTEGER NOT NULL,
+                attempt_state TEXT NOT NULL,
+                consumed_cycle_id TEXT
+            );
+            CREATE TABLE printer_pre_admission_discovery_attempt_items(
+                attempt_id TEXT NOT NULL,
+                slot_ordinal INTEGER NOT NULL,
+                token_identity TEXT NOT NULL,
+                token_row_id INTEGER NOT NULL,
+                mint_identity TEXT NOT NULL,
+                pair_identity TEXT NOT NULL,
+                pair_row_id INTEGER NOT NULL,
+                lifecycle_identity TEXT NOT NULL,
+                frozen_tracking_lane TEXT
+            );
+            """
+        )
+        self.conn.execute(
+            "INSERT INTO printer_memory_factory_runs VALUES (?,?)",
+            ("factory-1", "cycle-1-selected"),
+        )
+        for ordinal in (1, 2):
+            queue_id = 200 + ordinal
+            self.conn.execute(
+                "INSERT INTO printer_tracking_queue VALUES (?,?,?,?)",
+                (queue_id, ordinal, 100 + ordinal, "TRACK_NORMAL"),
+            )
+            self.conn.execute(
+                "UPDATE printer_memory_factory_campaign_token_slots "
+                "SET tracking_queue_id=? WHERE token_slot_id=?",
+                (queue_id, f"slot-cycle-1-{ordinal}"),
+            )
+            self.conn.execute(
+                "INSERT INTO printer_selection_batch_items "
+                "(batch_id,item_status,token_id,pair_id,token_mint,pair_address,"
+                "tracking_lane) VALUES "
+                "('cycle-1-selected','SELECTED',?,?,?,?,?)",
+                (
+                    ordinal,
+                    100 + ordinal,
+                    f"mint-{ordinal}",
+                    f"pair-{ordinal}",
+                    "TRACK_NORMAL",
+                ),
+            )
+
+        self.conn.execute(
+            """INSERT INTO printer_memory_factory_campaign_cycles(
+                   cycle_id,campaign_id,run_id,cycle_ordinal,cycle_state,
+                   created_at,updated_at
+               ) VALUES (?,?,?,?,?,?,?)""",
+            (
+                "cycle-2", "campaign-1", "campaign-run-1", 2, "TRACKING",
+                self.start.isoformat(), self.start.isoformat(),
+            ),
+        )
+        for ordinal,row_id in ((1,3),(2,4)):
+            queue_id = 300 + ordinal
+            self.conn.execute(
+                "INSERT INTO printer_tracking_queue VALUES (?,?,?,?)",
+                (queue_id, row_id, 100 + row_id, "TRACK_FAST"),
+            )
+            self.conn.execute(
+                """INSERT INTO printer_memory_factory_campaign_token_slots(
+                       token_slot_id,campaign_id,run_id,cycle_id,slot_ordinal,
+                       token_identity,token_row_id,mint_identity,pair_identity,
+                       pair_row_id,lifecycle_identity,token_state,created_at,updated_at,
+                       tracking_queue_id
+                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    f"slot-cycle-2-{ordinal}", "campaign-1", "campaign-run-1",
+                    "cycle-2", ordinal, f"token-{row_id}", row_id,
+                    f"mint-{row_id}", f"pair-{row_id}", 100 + row_id,
+                    f"lifecycle-{row_id}", "WINDOW_15M_ACTIVE",
+                    self.start.isoformat(), self.start.isoformat(), queue_id,
+                ),
+            )
+        self.conn.execute(
+            """INSERT INTO printer_pre_admission_discovery_attempts
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (
+                "attempt-2", "campaign-1", "campaign-run-1", "factory-1",
+                "cycle-2", 2, "CONSUMED", "cycle-2",
+            ),
+        )
+        for ordinal,row_id in ((1,3),(2,4)):
+            self.conn.execute(
+                """INSERT INTO printer_pre_admission_discovery_attempt_items
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                (
+                    "attempt-2", ordinal, f"token-{row_id}", row_id,
+                    f"mint-{row_id}", f"pair-{row_id}", 100 + row_id,
+                    f"lifecycle-{row_id}", "TRACK_FAST",
+                ),
+            )
+        self.conn.commit()
+        rows = self.conn.execute(
+            "SELECT cycle_id,cycle_ordinal FROM "
+            "printer_memory_factory_campaign_cycles ORDER BY cycle_ordinal"
+        ).fetchall()
+        result = project_four_token_selection_provenance(
+            self.conn,
+            campaign_id="campaign-1",
+            campaign_run_id="campaign-run-1",
+            factory_run_id="factory-1",
+            cycle_rows=rows,
+        )
+        self.assertTrue(result["exact"], result)
+        self.assertTrue(result["cycle_1"]["exact"])
+        self.assertTrue(result["cycle_2"]["exact"])
+
+        self.conn.execute(
+            "UPDATE printer_selection_batch_items SET pair_address='wrong-pair' "
+            "WHERE batch_id='cycle-1-selected' AND token_id=1"
+        )
+        broken = project_four_token_selection_provenance(
+            self.conn,
+            campaign_id="campaign-1",
+            campaign_run_id="campaign-run-1",
+            factory_run_id="factory-1",
+            cycle_rows=rows,
+        )
+        self.assertFalse(broken["exact"])
+        self.assertIn(
+            "CYCLE1_SELECTION_SLOT_PROVENANCE_MISMATCH",
+            broken["reasons"],
+        )
 
     def test_four_token_strict_4h_validation_rejects_generic_selective_success(
         self,

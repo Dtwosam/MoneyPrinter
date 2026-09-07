@@ -3229,6 +3229,225 @@ def derive_cycle_terminal_accounting_result(
     }
 
 
+def project_four_token_selection_provenance(
+    connection: sqlite3.Connection,
+    *,
+    campaign_id: str,
+    campaign_run_id: str,
+    factory_run_id: str,
+    cycle_rows: Sequence[Mapping[str, Any] | sqlite3.Row],
+) -> dict[str, Any]:
+    """Re-prove the exact selection inputs that became the two admitted cycles.
+
+    Cycle 1 is tied to the exact selection batch consumed by the factory.
+    Cycle 2 is tied to the sole consumed pre-admission attempt and its frozen
+    two-item authority.  This is read-only terminal evidence; it never infers
+    selection identity from terminal slots alone.
+    """
+    required_tables = (
+        "printer_memory_factory_runs",
+        "printer_selection_batch_items",
+        "printer_tracking_queue",
+        "printer_memory_factory_campaign_token_slots",
+        "printer_pre_admission_discovery_attempts",
+        "printer_pre_admission_discovery_attempt_items",
+    )
+    missing_tables = [
+        table
+        for table in required_tables
+        if not _table_exists_for_accounting(connection, table)
+    ]
+    if missing_tables:
+        return {
+            "exact": False,
+            "reasons": [
+                "FOUR_TOKEN_SELECTION_PROVENANCE_TABLE_MISSING:"
+                + ",".join(missing_tables)
+            ],
+            "cycle_1": {},
+            "cycle_2": {},
+        }
+
+    ordered_cycles = tuple(cycle_rows)
+    ordinals = tuple(int(row["cycle_ordinal"]) for row in ordered_cycles)
+    if len(ordered_cycles) != 2 or ordinals != REQUIRED_MULTI_CYCLE_ORDINALS:
+        return {
+            "exact": False,
+            "reasons": ["FOUR_TOKEN_SELECTION_PROVENANCE_CYCLE_SHAPE_INVALID"],
+            "cycle_1": {},
+            "cycle_2": {},
+        }
+
+    cycle_1_id = str(ordered_cycles[0]["cycle_id"])
+    cycle_2_id = str(ordered_cycles[1]["cycle_id"])
+    reasons: list[str] = []
+
+    factory_rows = connection.execute(
+        """SELECT selection_batch_id
+           FROM printer_memory_factory_runs
+           WHERE run_id=?""",
+        (str(factory_run_id),),
+    ).fetchall()
+    selection_batch_id = (
+        None
+        if len(factory_rows) != 1
+        else str(factory_rows[0]["selection_batch_id"] or "").strip() or None
+    )
+    if selection_batch_id is None:
+        reasons.append("CYCLE1_FACTORY_SELECTION_BATCH_MISSING")
+
+    cycle_1_items = (
+        []
+        if selection_batch_id is None
+        else connection.execute(
+            """SELECT id,token_id,pair_id,token_mint,pair_address,tracking_lane
+               FROM printer_selection_batch_items
+               WHERE batch_id=? AND item_status='SELECTED'
+               ORDER BY id""",
+            (selection_batch_id,),
+        ).fetchall()
+    )
+    cycle_1_slots = connection.execute(
+        """SELECT s.token_slot_id,s.slot_ordinal,s.token_identity,s.token_row_id,
+                  s.mint_identity,s.pair_identity,s.pair_row_id,
+                  s.lifecycle_identity,s.tracking_queue_id,q.tracking_lane
+           FROM printer_memory_factory_campaign_token_slots AS s
+           LEFT JOIN printer_tracking_queue AS q ON q.id=s.tracking_queue_id
+           WHERE s.campaign_id=? AND s.run_id=? AND s.cycle_id=?
+           ORDER BY s.slot_ordinal,s.token_slot_id""",
+        (str(campaign_id), str(campaign_run_id), cycle_1_id),
+    ).fetchall()
+    cycle_1_exact = bool(
+        len(cycle_1_items) == 2
+        and len(cycle_1_slots) == 2
+        and [int(row["slot_ordinal"]) for row in cycle_1_slots] == [1, 2]
+    )
+    if cycle_1_exact:
+        item_by_rows = {
+            (int(item["token_id"]), int(item["pair_id"])): item
+            for item in cycle_1_items
+            if item["token_id"] is not None and item["pair_id"] is not None
+        }
+        cycle_1_exact = len(item_by_rows) == 2
+        for slot in cycle_1_slots:
+            item = item_by_rows.get(
+                (int(slot["token_row_id"]), int(slot["pair_row_id"]))
+            )
+            if (
+                item is None
+                or str(item["token_mint"] or "") != str(slot["mint_identity"])
+                or str(item["pair_address"] or "") != str(slot["pair_identity"])
+                or str(item["tracking_lane"] or "") not in {
+                    "TRACK_FAST",
+                    "TRACK_NORMAL",
+                }
+                or str(slot["tracking_lane"] or "") != str(item["tracking_lane"])
+                or slot["tracking_queue_id"] is None
+            ):
+                cycle_1_exact = False
+                break
+    if not cycle_1_exact:
+        reasons.append("CYCLE1_SELECTION_SLOT_PROVENANCE_MISMATCH")
+
+    attempt_rows = connection.execute(
+        """SELECT attempt_id,proposed_cycle_id,proposed_cycle_ordinal,
+                  attempt_state,consumed_cycle_id
+           FROM printer_pre_admission_discovery_attempts
+           WHERE campaign_id=? AND campaign_run_id=?
+             AND authoritative_factory_run_id=? AND proposed_cycle_ordinal=2
+           ORDER BY attempt_id""",
+        (str(campaign_id), str(campaign_run_id), str(factory_run_id)),
+    ).fetchall()
+    cycle_2_attempt_exact = bool(
+        len(attempt_rows) == 1
+        and str(attempt_rows[0]["proposed_cycle_id"]) == cycle_2_id
+        and int(attempt_rows[0]["proposed_cycle_ordinal"]) == 2
+        and str(attempt_rows[0]["attempt_state"]) == "CONSUMED"
+        and str(attempt_rows[0]["consumed_cycle_id"]) == cycle_2_id
+    )
+    attempt_id = (
+        str(attempt_rows[0]["attempt_id"]) if cycle_2_attempt_exact else None
+    )
+    if not cycle_2_attempt_exact:
+        reasons.append("CYCLE2_CONSUMED_SELECTION_ATTEMPT_MISMATCH")
+
+    cycle_2_items = (
+        []
+        if attempt_id is None
+        else connection.execute(
+            """SELECT slot_ordinal,token_identity,token_row_id,mint_identity,
+                      pair_identity,pair_row_id,lifecycle_identity,
+                      frozen_tracking_lane
+               FROM printer_pre_admission_discovery_attempt_items
+               WHERE attempt_id=? ORDER BY slot_ordinal""",
+            (attempt_id,),
+        ).fetchall()
+    )
+    cycle_2_slots = connection.execute(
+        """SELECT s.token_slot_id,s.slot_ordinal,s.token_identity,s.token_row_id,
+                  s.mint_identity,s.pair_identity,s.pair_row_id,
+                  s.lifecycle_identity,s.tracking_queue_id,q.tracking_lane
+           FROM printer_memory_factory_campaign_token_slots AS s
+           LEFT JOIN printer_tracking_queue AS q ON q.id=s.tracking_queue_id
+           WHERE s.campaign_id=? AND s.run_id=? AND s.cycle_id=?
+           ORDER BY s.slot_ordinal,s.token_slot_id""",
+        (str(campaign_id), str(campaign_run_id), cycle_2_id),
+    ).fetchall()
+    cycle_2_exact = bool(
+        cycle_2_attempt_exact
+        and len(cycle_2_items) == 2
+        and len(cycle_2_slots) == 2
+        and [int(row["slot_ordinal"]) for row in cycle_2_items] == [1, 2]
+        and [int(row["slot_ordinal"]) for row in cycle_2_slots] == [1, 2]
+    )
+    if cycle_2_exact:
+        item_by_ordinal = {
+            int(item["slot_ordinal"]): item for item in cycle_2_items
+        }
+        for slot in cycle_2_slots:
+            item = item_by_ordinal.get(int(slot["slot_ordinal"]))
+            if (
+                item is None
+                or str(item["token_identity"]) != str(slot["token_identity"])
+                or int(item["token_row_id"]) != int(slot["token_row_id"])
+                or str(item["mint_identity"]) != str(slot["mint_identity"])
+                or str(item["pair_identity"]) != str(slot["pair_identity"])
+                or int(item["pair_row_id"]) != int(slot["pair_row_id"])
+                or str(item["lifecycle_identity"]) != str(slot["lifecycle_identity"])
+                or str(item["frozen_tracking_lane"] or "") not in {
+                    "TRACK_FAST",
+                    "TRACK_NORMAL",
+                }
+                or str(slot["tracking_lane"] or "")
+                != str(item["frozen_tracking_lane"])
+                or slot["tracking_queue_id"] is None
+            ):
+                cycle_2_exact = False
+                break
+    if not cycle_2_exact:
+        reasons.append("CYCLE2_SELECTION_SLOT_PROVENANCE_MISMATCH")
+
+    return {
+        "exact": not reasons,
+        "reasons": list(dict.fromkeys(reasons)),
+        "cycle_1": {
+            "cycle_id": cycle_1_id,
+            "selection_batch_id": selection_batch_id,
+            "selected_item_count": len(cycle_1_items),
+            "slot_count": len(cycle_1_slots),
+            "exact": cycle_1_exact,
+        },
+        "cycle_2": {
+            "cycle_id": cycle_2_id,
+            "attempt_id": attempt_id,
+            "attempt_count": len(attempt_rows),
+            "selected_item_count": len(cycle_2_items),
+            "slot_count": len(cycle_2_slots),
+            "exact": cycle_2_exact,
+        },
+    }
+
+
 def four_token_cross_cycle_identity_exact(
     cycles: Sequence[Mapping[str, Any]],
 ) -> bool:
@@ -3328,6 +3547,14 @@ def derive_two_cycle_campaign_terminal_accounting(
         REQUIRED_MULTI_CYCLE_ORDINALS
     )
     exact_four_distinct_targets = four_token_cross_cycle_identity_exact(cycles)
+    selection_provenance = project_four_token_selection_provenance(
+        connection,
+        campaign_id=campaign,
+        campaign_run_id=run,
+        factory_run_id=factory,
+        cycle_rows=rows,
+    )
+    exact_selection_provenance = selection_provenance.get("exact") is True
     cycle_failures = [
         item for item in cycles if item["execution_outcome"] == "CYCLE_FAILED"
     ]
@@ -3417,7 +3644,12 @@ def derive_two_cycle_campaign_terminal_accounting(
     # Structural ambiguity is first and fail-closed. A genuine persisted
     # campaign supervision failure/cancellation then outranks cycle-local
     # effects. Otherwise each independently derived cycle keeps its own result.
-    if not exact_ordinals or not exact_four_distinct_targets or ambiguous:
+    if (
+        not exact_ordinals
+        or not exact_four_distinct_targets
+        or not exact_selection_provenance
+        or ambiguous
+    ):
         execution_outcome = "INTERRUPTED_AMBIGUOUS"
     elif shared_fault is not None:
         execution_outcome = "CAMPAIGN_FAILED"
@@ -3463,6 +3695,7 @@ def derive_two_cycle_campaign_terminal_accounting(
     accounting_complete = bool(
         exact_ordinals
         and exact_four_distinct_targets
+        and exact_selection_provenance
         and execution_outcome
         not in {"ACTIVE_INCOMPLETE", "INTERRUPTED_AMBIGUOUS"}
         and all(item["accounting_complete"] is True for item in cycles)
@@ -3474,6 +3707,7 @@ def derive_two_cycle_campaign_terminal_accounting(
         "factory_run_id": factory,
         "required_cycle_ordinals": list(REQUIRED_MULTI_CYCLE_ORDINALS),
         "exact_four_distinct_targets": exact_four_distinct_targets,
+        "selection_provenance": selection_provenance,
         "admitted_cycles": [
             {
                 "cycle_id": item["cycle_id"],
@@ -5173,6 +5407,7 @@ __all__ = [
     "evaluate_quality_consistency",
     "finalize_full_run_ownership_and_report",
     "prepare_full_run_accounting_owner",
+    "project_four_token_selection_provenance",
     "load_invocation_authority_evidence",
     "parse_durable_timestamp",
     "reservation_identities_for_step",

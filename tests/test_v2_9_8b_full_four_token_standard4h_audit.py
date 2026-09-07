@@ -439,6 +439,11 @@ def test_two_cycle_four_token_real_factory_reaches_shared_terminal_standard4h(
         cycle_diagnostics, sort_keys=True, default=str
     )
     assert accounting.get("accounting_complete") is True, accounting
+    assert accounting.get("exact_four_distinct_targets") is True, accounting
+    selection_provenance = dict(accounting.get("selection_provenance") or {})
+    assert selection_provenance.get("exact") is True, selection_provenance
+    assert dict(selection_provenance.get("cycle_1") or {}).get("exact") is True
+    assert dict(selection_provenance.get("cycle_2") or {}).get("exact") is True
     assert [
         int(item["cycle_ordinal"]) for item in accounting.get("admitted_cycles", [])
     ] == [1, 2]
