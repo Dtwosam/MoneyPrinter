@@ -5,11 +5,14 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import sqlite3
 import unittest
+from unittest.mock import patch
 
 from printer_v1.operator_cli.four_token_factory_adapter import (
     FourTokenFactoryAdapterError,
     build_cycle_lifecycle_ownership_context,
+    four_token_cycle_through_4h_validation,
     four_token_scaled_capacity_contract,
+    reconcile_four_token_cycle_terminal,
     reserve_second_proof_cycle,
     terminalize_unfilled_reserved_cycle,
     validate_second_cycle_atomic_activation,
@@ -107,6 +110,165 @@ class FourTokenFactoryAdapterTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.conn.close()
+
+    def test_four_token_strict_4h_validation_rejects_generic_selective_success(
+        self,
+    ) -> None:
+        generic_complete_one_4h = {
+            "enabled": True,
+            "complete": True,
+            "reasons": [],
+            "aggregate_state": "HANDOFF_COMMITTED",
+            "expected_continuation_count": 1,
+            "window_count": 1,
+            "per_token": [
+                {"token_slot_id": "slot-1", "outcome": "SUCCEEDED"},
+                {"token_slot_id": "slot-2", "outcome": "INELIGIBLE"},
+            ],
+            "eligible_window_details": [
+                {
+                    "token_slot_id": "slot-1",
+                    "token_state": "WINDOW_4H_CLOSED",
+                    "window_state": "DIRTY",
+                    "memory_window_row_id": 91,
+                    "reasons": [],
+                }
+            ],
+        }
+        with patch(
+            "printer_v1.operator_cli.one_command_15m_factory."
+            "_standard_campaign_four_hour_terminal_validation",
+            return_value=generic_complete_one_4h,
+        ):
+            result = four_token_cycle_through_4h_validation(
+                self.conn,
+                campaign_id="campaign-1",
+                campaign_run_id="campaign-run-1",
+                factory_run_id="factory-1",
+                cycle_id="cycle-1",
+            )
+        self.assertFalse(result["four_token_through_4h_complete"])
+        self.assertIn(
+            "FOUR_TOKEN_CYCLE_REQUIRES_TWO_4H_CONTINUATIONS",
+            result["reasons"],
+        )
+        self.assertIn(
+            "FOUR_TOKEN_CYCLE_REQUIRES_TWO_SUCCEEDED_4H_OUTCOMES",
+            result["reasons"],
+        )
+
+    def test_four_token_strict_4h_validation_accepts_two_truthful_terminal_memories(
+        self,
+    ) -> None:
+        strict_complete = {
+            "enabled": True,
+            "complete": True,
+            "reasons": [],
+            "aggregate_state": "HANDOFF_COMMITTED",
+            "expected_continuation_count": 2,
+            "window_count": 2,
+            "per_token": [
+                {"token_slot_id": "slot-1", "outcome": "SUCCEEDED"},
+                {"token_slot_id": "slot-2", "outcome": "SUCCEEDED"},
+            ],
+            "eligible_window_details": [
+                {
+                    "token_slot_id": "slot-1",
+                    "token_state": "WINDOW_4H_CLOSED",
+                    "window_state": "DIRTY",
+                    "memory_window_row_id": 91,
+                    "reasons": [],
+                },
+                {
+                    "token_slot_id": "slot-2",
+                    "token_state": "WINDOW_4H_CLOSED",
+                    "window_state": "NO_PROMOTION",
+                    "memory_window_row_id": 92,
+                    "reasons": [],
+                },
+            ],
+        }
+        with patch(
+            "printer_v1.operator_cli.one_command_15m_factory."
+            "_standard_campaign_four_hour_terminal_validation",
+            return_value=strict_complete,
+        ):
+            result = four_token_cycle_through_4h_validation(
+                self.conn,
+                campaign_id="campaign-1",
+                campaign_run_id="campaign-run-1",
+                factory_run_id="factory-1",
+                cycle_id="cycle-1",
+            )
+        self.assertTrue(result["four_token_through_4h_complete"])
+        self.assertEqual(result["reasons"], [])
+
+    def test_four_token_terminal_refuses_generic_success_without_two_4h_memories(
+        self,
+    ) -> None:
+        with patch(
+            "printer_v1.operator_cli.four_token_factory_adapter."
+            "derive_cycle_terminal_accounting_result",
+            return_value={
+                "execution_outcome": "TERMINAL_SUCCESS",
+                "primary_fault": None,
+            },
+        ), patch(
+            "printer_v1.operator_cli.four_token_factory_adapter."
+            "four_token_cycle_through_4h_validation",
+            return_value={
+                "four_token_through_4h_complete": False,
+                "reasons": ["FOUR_TOKEN_CYCLE_REQUIRES_TWO_4H_CONTINUATIONS"],
+            },
+        ):
+            with self.assertRaises(FourTokenFactoryAdapterError):
+                reconcile_four_token_cycle_terminal(
+                    self.conn,
+                    campaign_id="campaign-1",
+                    campaign_run_id="campaign-run-1",
+                    factory_run_id="factory-1",
+                    cycle_id="cycle-1",
+                    configuration_id="configuration-1",
+                    now=self.start,
+                )
+        state = self.conn.execute(
+            "SELECT cycle_state FROM printer_memory_factory_campaign_cycles "
+            "WHERE cycle_id='cycle-1'"
+        ).fetchone()[0]
+        self.assertEqual(state, "TRACKING")
+
+    def test_completion_sentinel_requires_exact_two_strict_4h_cycles(self) -> None:
+        from printer_v1.operator_cli.one_command_15m_factory import (
+            _should_persist_four_token_shared_stop_reason,
+        )
+
+        with patch(
+            "printer_v1.operator_cli.four_token_factory_adapter."
+            "four_token_cycle_through_4h_validation",
+            return_value={"four_token_through_4h_complete": True},
+        ):
+            self.assertFalse(
+                _should_persist_four_token_shared_stop_reason(
+                    self.conn,
+                    stop_reason="COMPLETED_CLEAN_OR_DIRTY_RESULTS_REPORTED",
+                    campaign_id="campaign-1",
+                    campaign_run_id="campaign-run-1",
+                    configuration_id="configuration-1",
+                    factory_run_id="factory-1",
+                    admitted_cycles=(("cycle-1", 1),),
+                )
+            )
+            self.assertTrue(
+                _should_persist_four_token_shared_stop_reason(
+                    self.conn,
+                    stop_reason="COMPLETED_CLEAN_OR_DIRTY_RESULTS_REPORTED",
+                    campaign_id="campaign-1",
+                    campaign_run_id="campaign-run-1",
+                    configuration_id="configuration-1",
+                    factory_run_id="factory-1",
+                    admitted_cycles=(("cycle-1", 1), ("cycle-2", 2)),
+                )
+            )
 
     def test_four_token_capacity_contract_is_derived_and_does_not_change_rates(self) -> None:
         contract = four_token_scaled_capacity_contract()

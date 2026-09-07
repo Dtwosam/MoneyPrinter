@@ -240,6 +240,109 @@ def four_token_scaled_capacity_contract() -> dict[str, Any]:
     return contract
 
 
+def four_token_cycle_through_4h_validation(
+    connection: sqlite3.Connection,
+    *,
+    campaign_id: str,
+    campaign_run_id: str,
+    factory_run_id: str,
+    cycle_id: str,
+) -> dict[str, Any]:
+    """Require both owned slots to finish real Standard-4H memory.
+
+    Ordinary Standard-4H campaigns remain selective: a token may lawfully stop
+    before 4h. The four-token proof is stricter by contract and may report
+    completion only when both slots in this exact cycle own successful terminal
+    WINDOW_4H results with bound physical memory.
+    """
+    from printer_v1.operator_cli.one_command_15m_factory import (
+        _standard_campaign_four_hour_terminal_validation,
+    )
+
+    base = _standard_campaign_four_hour_terminal_validation(
+        connection,
+        factory_run_id=str(factory_run_id),
+        campaign_id=str(campaign_id),
+        run_id=str(campaign_run_id),
+        cycle_id=str(cycle_id),
+    )
+    strict_reasons = [
+        f"BASE_STANDARD_4H:{reason}"
+        for reason in (base.get("reasons") or ())
+    ]
+    if base.get("enabled") is not True:
+        strict_reasons.append("STANDARD_4H_NOT_ENABLED")
+    if base.get("complete") is not True:
+        strict_reasons.append("STANDARD_4H_NOT_COMPLETE")
+    if str(base.get("aggregate_state") or "") != "HANDOFF_COMMITTED":
+        strict_reasons.append("STANDARD_4H_HANDOFF_NOT_COMMITTED")
+    if int(base.get("expected_continuation_count") or 0) != 2:
+        strict_reasons.append("FOUR_TOKEN_CYCLE_REQUIRES_TWO_4H_CONTINUATIONS")
+    if int(base.get("window_count") or 0) != 2:
+        strict_reasons.append("FOUR_TOKEN_CYCLE_REQUIRES_TWO_4H_WINDOWS")
+
+    progression = [
+        dict(item)
+        for item in (base.get("per_token") or ())
+        if isinstance(item, Mapping)
+    ]
+    progression_slot_ids = [
+        str(item.get("token_slot_id") or "") for item in progression
+    ]
+    if (
+        len(progression) != 2
+        or any(not slot_id for slot_id in progression_slot_ids)
+        or len(set(progression_slot_ids)) != 2
+    ):
+        strict_reasons.append("FOUR_TOKEN_CYCLE_PROGRESSION_SLOT_SET_INVALID")
+    if any(str(item.get("outcome") or "") != "SUCCEEDED" for item in progression):
+        strict_reasons.append("FOUR_TOKEN_CYCLE_REQUIRES_TWO_SUCCEEDED_4H_OUTCOMES")
+
+    terminal_states = {
+        "CLEAN_PROMOTED",
+        "DIRTY",
+        "NO_PROMOTION",
+        "ALREADY_EXISTS_IDEMPOTENT",
+    }
+    details = [
+        dict(item)
+        for item in (base.get("eligible_window_details") or ())
+        if isinstance(item, Mapping)
+    ]
+    detail_slot_ids = [str(item.get("token_slot_id") or "") for item in details]
+    if (
+        len(details) != 2
+        or any(not slot_id for slot_id in detail_slot_ids)
+        or len(set(detail_slot_ids)) != 2
+    ):
+        strict_reasons.append("FOUR_TOKEN_CYCLE_4H_WINDOW_SLOT_SET_INVALID")
+    for item in details:
+        slot_id = str(item.get("token_slot_id") or "UNKNOWN")
+        if str(item.get("token_state") or "") != "WINDOW_4H_CLOSED":
+            strict_reasons.append(f"FOUR_TOKEN_4H_SLOT_NOT_CLOSED:{slot_id}")
+        if item.get("memory_window_row_id") is None:
+            strict_reasons.append(f"FOUR_TOKEN_4H_MEMORY_NOT_BOUND:{slot_id}")
+        if str(item.get("window_state") or "") not in terminal_states:
+            strict_reasons.append(f"FOUR_TOKEN_4H_WINDOW_NOT_SUCCESS_TERMINAL:{slot_id}")
+        if list(item.get("reasons") or ()):
+            strict_reasons.append(f"FOUR_TOKEN_4H_WINDOW_VALIDATION_FAILED:{slot_id}")
+
+    strict_reasons = list(dict.fromkeys(strict_reasons))
+    return {
+        "four_token_through_4h_complete": not strict_reasons,
+        "reasons": strict_reasons,
+        "cycle_id": str(cycle_id),
+        "expected_continuation_count": int(
+            base.get("expected_continuation_count") or 0
+        ),
+        "window_count": int(base.get("window_count") or 0),
+        "aggregate_state": base.get("aggregate_state"),
+        "per_token": progression,
+        "eligible_window_details": details,
+        "standard_four_hour_validation": dict(base),
+    }
+
+
 def build_four_token_cycle_accounting_package(
     connection: sqlite3.Connection,
     *,
@@ -431,6 +534,18 @@ def build_four_token_cycle_accounting_package(
             "canonical lifecycle accounting is incomplete"
             + (f": {reasons}" if reasons else "")
         )
+    through_4h = four_token_cycle_through_4h_validation(
+        connection,
+        campaign_id=campaign,
+        campaign_run_id=run,
+        factory_run_id=factory,
+        cycle_id=cycle,
+    )
+    if through_4h.get("four_token_through_4h_complete") is not True:
+        raise FourTokenFactoryAdapterError(
+            "four-token cycle did not complete both Standard-4H memories: "
+            + ",".join(str(item) for item in through_4h.get("reasons", ()))
+        )
 
     memory_quality: list[str] = []
     for slot in slots:
@@ -467,6 +582,7 @@ def build_four_token_cycle_accounting_package(
             "scheduler_statuses": tuple(str(row[3]) for row in step_rows),
             "attribution_owner": "V2_STAGE_SCOPED_SCHEDULER_AND_FULL_RUN_REQUEST_KEY",
             "lifecycle_completeness": lifecycle_completeness,
+            "four_token_through_4h_validation": through_4h,
         },
     }
 
@@ -928,6 +1044,7 @@ def reconcile_four_token_cycle_terminal(
         raise FourTokenFactoryAdapterError("proof cycle identity is missing or invalid")
     canonical_result: Mapping[str, Any] | None = None
     terminal_effect: Mapping[str, Any] | None = None
+    through_4h_validation: Mapping[str, Any] | None = None
     if configuration_id is not None:
         configuration = _required(configuration_id, "configuration_id")
         canonical_result = derive_cycle_terminal_accounting_result(
@@ -956,6 +1073,25 @@ def reconcile_four_token_cycle_terminal(
             outcome = str(canonical_result.get("execution_outcome") or "")
             primary = canonical_result.get("primary_fault")
             if outcome == "TERMINAL_SUCCESS":
+                through_4h_validation = four_token_cycle_through_4h_validation(
+                    connection,
+                    campaign_id=campaign,
+                    campaign_run_id=run,
+                    factory_run_id=factory,
+                    cycle_id=cycle,
+                )
+                if (
+                    through_4h_validation.get("four_token_through_4h_complete")
+                    is not True
+                ):
+                    raise FourTokenFactoryAdapterError(
+                        "generic cycle success is insufficient for four-token "
+                        "through-4h completion: "
+                        + ",".join(
+                            str(item)
+                            for item in through_4h_validation.get("reasons", ())
+                        )
+                    )
                 reason = "COMPLETED_CLEAN_OR_DIRTY_RESULTS_REPORTED"
                 resolved_run_status = "COMPLETED"
             elif outcome == "CYCLE_FAILED" and isinstance(primary, Mapping):
@@ -1017,6 +1153,11 @@ def reconcile_four_token_cycle_terminal(
             "terminal_effect": None if terminal_effect is None else dict(terminal_effect),
             "canonical_accounting": (
                 None if canonical_result is None else dict(canonical_result)
+            ),
+            "four_token_through_4h_validation": (
+                None
+                if through_4h_validation is None
+                else dict(through_4h_validation)
             ),
             "shared_terminalized": False,
             "already_terminal": True,
@@ -1214,6 +1355,11 @@ def reconcile_four_token_cycle_terminal(
         "terminal_effect": None if terminal_effect is None else dict(terminal_effect),
         "canonical_accounting": (
             None if canonical_result is None else dict(canonical_result)
+        ),
+        "four_token_through_4h_validation": (
+            None
+            if through_4h_validation is None
+            else dict(through_4h_validation)
         ),
         "active_owned_work": 0,
         "active_owned_jobs": 0,
@@ -1675,6 +1821,24 @@ def finalize_four_token_shared_terminal(
     factory_status = str(factory_row[0])
     factory_active = factory_status in {"PENDING", "RUNNING"}
     campaign_already_terminal = str(run_row[0]).startswith("TERMINAL_")
+    through_4h_validations: list[dict[str, Any]] = []
+    if admitted_shape == "TWO_CYCLE_COMPLETION":
+        for cycle_row in rows:
+            validation = four_token_cycle_through_4h_validation(
+                connection,
+                campaign_id=campaign,
+                campaign_run_id=run,
+                factory_run_id=factory,
+                cycle_id=str(cycle_row[0]),
+            )
+            through_4h_validations.append(validation)
+            if validation.get("four_token_through_4h_complete") is not True:
+                raise FourTokenFactoryAdapterError(
+                    "shared four-token terminal requires both cycles through 4h: "
+                    + ",".join(
+                        str(item) for item in validation.get("reasons", ())
+                    )
+                )
 
     # Linked factory PENDING/RUNNING is owned residue that the canonical terminal
     # owner must still clear. Any other uncleanness remains fail-closed.
@@ -1700,6 +1864,7 @@ def finalize_four_token_shared_terminal(
             "shared_cleanup_count": 0,
             "already_terminal": True,
             "admitted_shape": admitted_shape,
+            "four_token_through_4h_validations": through_4h_validations,
             "parent_interrupt_reconciliation": dict(interrupt_report),
         }
     terminal_accounting: dict[str, Any] | None = None
@@ -1756,6 +1921,7 @@ def finalize_four_token_shared_terminal(
         "shared_cleanup_count": 1,
         "already_terminal": False,
         "admitted_shape": admitted_shape,
+        "four_token_through_4h_validations": through_4h_validations,
         "terminal_accounting": terminal_accounting,
         "shared_evidence": dict(result),
         "active_work": active_report,

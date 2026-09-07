@@ -7405,27 +7405,22 @@ def _should_persist_four_token_shared_stop_reason(
     """
     if stop_reason != STOP_COMPLETED:
         return True
-    from printer_v1.operator_cli.campaign_full_run_accounting import (
-        OperationalLifecycleOwnershipContext,
-        derive_cycle_terminal_accounting_result,
+    admitted_ordinals = tuple(int(admitted[1]) for admitted in admitted_cycles)
+    if admitted_ordinals != (1, 2):
+        return False
+    from printer_v1.operator_cli.four_token_factory_adapter import (
+        four_token_cycle_through_4h_validation,
     )
 
-    required_outcome = "".join(("TERMINAL_", "SUCCESS"))
     return all(
-        str(
-            derive_cycle_terminal_accounting_result(
-                conn,
-                context=OperationalLifecycleOwnershipContext(
-                    campaign_id=campaign_id,
-                    campaign_run_id=campaign_run_id,
-                    cycle_id=str(admitted[0]),
-                    configuration_id=configuration_id,
-                    factory_run_id=factory_run_id,
-                ),
-            ).get("execution_outcome")
-            or ""
-        )
-        == required_outcome
+        four_token_cycle_through_4h_validation(
+            conn,
+            campaign_id=campaign_id,
+            campaign_run_id=campaign_run_id,
+            factory_run_id=factory_run_id,
+            cycle_id=str(admitted[0]),
+        ).get("four_token_through_4h_complete")
+        is True
         for admitted in admitted_cycles
     )
 
