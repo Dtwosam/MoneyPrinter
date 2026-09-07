@@ -102,7 +102,11 @@ def _slot(
     }
 
 
-def _prepare(tmp_path):
+def _prepare(
+    tmp_path,
+    *,
+    tracking_lanes=("TRACK_NORMAL", "TRACK_NORMAL"),
+):
     db = tmp_path / "wake-order.sqlite3"
     backup = tmp_path / "wake-order.backup.sqlite3"
     artifacts = tmp_path / "artifacts"
@@ -164,15 +168,22 @@ def _prepare(tmp_path):
         )
     # Design Lane 1: Cycle-1 fixtures must insert-bind exact tracking authority
     # before WINDOW_15M opening (slot.tracking_queue_id is immutable after insert).
+    if tuple(tracking_lanes) not in {
+        ("TRACK_NORMAL", "TRACK_NORMAL"),
+        ("TRACK_FAST", "TRACK_NORMAL"),
+        ("TRACK_NORMAL", "TRACK_FAST"),
+        ("TRACK_FAST", "TRACK_FAST"),
+    }:
+        raise ValueError("test fixture requires exact FAST/NORMAL tracking lanes")
     queue_ids = tuple(
         claim_tracking_authority_for_slot_insert(
             connection,
             token_row_id=row_id,
             pair_row_id=100 + row_id,
-            tracking_lane="TRACK_NORMAL",
+            tracking_lane=lane,
             now=START,
         )
-        for row_id in (1, 2)
+        for row_id, lane in zip((1, 2), tracking_lanes, strict=True)
     )
     create_cycle_with_two_slots(
         connection,
