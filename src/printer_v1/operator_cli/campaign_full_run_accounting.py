@@ -3229,6 +3229,42 @@ def derive_cycle_terminal_accounting_result(
     }
 
 
+def four_token_cross_cycle_identity_exact(
+    cycles: Sequence[Mapping[str, Any]],
+) -> bool:
+    """Prove the terminal two-cycle aggregate still represents four fresh targets."""
+    ordered = tuple(cycles)
+    if tuple(int(item.get("cycle_ordinal") or 0) for item in ordered) != (
+        REQUIRED_MULTI_CYCLE_ORDINALS
+    ):
+        return False
+    per_cycle_tokens = [
+        tuple(
+            token
+            for token in (item.get("tokens") or ())
+            if isinstance(token, Mapping)
+        )
+        for item in ordered
+    ]
+    if any(len(tokens) != 2 for tokens in per_cycle_tokens):
+        return False
+    tokens = tuple(token for group in per_cycle_tokens for token in group)
+    if len(tokens) != 4:
+        return False
+    dimensions = (
+        tuple(str(token.get("token_slot_id") or "") for token in tokens),
+        tuple(token.get("token_row_id") for token in tokens),
+        tuple(token.get("pair_row_id") for token in tokens),
+        tuple(str(token.get("mint_identity") or "") for token in tokens),
+        tuple(str(token.get("pair_identity") or "") for token in tokens),
+    )
+    return all(
+        all(value not in (None, "") for value in values)
+        and len(set(values)) == 4
+        for values in dimensions
+    )
+
+
 def derive_two_cycle_campaign_terminal_accounting(
     connection: sqlite3.Connection,
     *,
@@ -3291,6 +3327,7 @@ def derive_two_cycle_campaign_terminal_accounting(
     exact_ordinals = tuple(item["cycle_ordinal"] for item in cycles) == (
         REQUIRED_MULTI_CYCLE_ORDINALS
     )
+    exact_four_distinct_targets = four_token_cross_cycle_identity_exact(cycles)
     cycle_failures = [
         item for item in cycles if item["execution_outcome"] == "CYCLE_FAILED"
     ]
@@ -3380,7 +3417,7 @@ def derive_two_cycle_campaign_terminal_accounting(
     # Structural ambiguity is first and fail-closed. A genuine persisted
     # campaign supervision failure/cancellation then outranks cycle-local
     # effects. Otherwise each independently derived cycle keeps its own result.
-    if not exact_ordinals or ambiguous:
+    if not exact_ordinals or not exact_four_distinct_targets or ambiguous:
         execution_outcome = "INTERRUPTED_AMBIGUOUS"
     elif shared_fault is not None:
         execution_outcome = "CAMPAIGN_FAILED"
@@ -3425,6 +3462,7 @@ def derive_two_cycle_campaign_terminal_accounting(
         secondary_faults.append(candidate_dict)
     accounting_complete = bool(
         exact_ordinals
+        and exact_four_distinct_targets
         and execution_outcome
         not in {"ACTIVE_INCOMPLETE", "INTERRUPTED_AMBIGUOUS"}
         and all(item["accounting_complete"] is True for item in cycles)
@@ -3435,6 +3473,7 @@ def derive_two_cycle_campaign_terminal_accounting(
         "configuration_id": configuration,
         "factory_run_id": factory,
         "required_cycle_ordinals": list(REQUIRED_MULTI_CYCLE_ORDINALS),
+        "exact_four_distinct_targets": exact_four_distinct_targets,
         "admitted_cycles": [
             {
                 "cycle_id": item["cycle_id"],

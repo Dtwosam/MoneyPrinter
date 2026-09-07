@@ -266,10 +266,30 @@ def four_token_cycle_through_4h_validation(
         run_id=str(campaign_run_id),
         cycle_id=str(cycle_id),
     )
+    durable_slots = connection.execute(
+        """SELECT token_slot_id,slot_ordinal,token_row_id,pair_row_id,
+                  mint_identity,pair_identity
+           FROM printer_memory_factory_campaign_token_slots
+           WHERE campaign_id=? AND run_id=? AND cycle_id=?
+           ORDER BY slot_ordinal,token_slot_id""",
+        (str(campaign_id), str(campaign_run_id), str(cycle_id)),
+    ).fetchall()
+    durable_slot_ids = [str(row["token_slot_id"]) for row in durable_slots]
+    durable_slot_shape_exact = bool(
+        len(durable_slots) == 2
+        and [int(row["slot_ordinal"]) for row in durable_slots] == [1, 2]
+        and len(set(durable_slot_ids)) == 2
+        and len({int(row["token_row_id"]) for row in durable_slots}) == 2
+        and len({int(row["pair_row_id"]) for row in durable_slots}) == 2
+        and len({str(row["mint_identity"]) for row in durable_slots}) == 2
+        and len({str(row["pair_identity"]) for row in durable_slots}) == 2
+    )
     strict_reasons = [
         f"BASE_STANDARD_4H:{reason}"
         for reason in (base.get("reasons") or ())
     ]
+    if not durable_slot_shape_exact:
+        strict_reasons.append("FOUR_TOKEN_CYCLE_DURABLE_SLOT_SET_INVALID")
     if base.get("enabled") is not True:
         strict_reasons.append("STANDARD_4H_NOT_ENABLED")
     if base.get("complete") is not True:
@@ -295,6 +315,8 @@ def four_token_cycle_through_4h_validation(
         or len(set(progression_slot_ids)) != 2
     ):
         strict_reasons.append("FOUR_TOKEN_CYCLE_PROGRESSION_SLOT_SET_INVALID")
+    elif durable_slot_shape_exact and set(progression_slot_ids) != set(durable_slot_ids):
+        strict_reasons.append("FOUR_TOKEN_CYCLE_PROGRESSION_SLOT_SET_MISMATCH")
     if any(str(item.get("outcome") or "") != "SUCCEEDED" for item in progression):
         strict_reasons.append("FOUR_TOKEN_CYCLE_REQUIRES_TWO_SUCCEEDED_4H_OUTCOMES")
 
@@ -316,6 +338,14 @@ def four_token_cycle_through_4h_validation(
         or len(set(detail_slot_ids)) != 2
     ):
         strict_reasons.append("FOUR_TOKEN_CYCLE_4H_WINDOW_SLOT_SET_INVALID")
+    elif durable_slot_shape_exact and set(detail_slot_ids) != set(durable_slot_ids):
+        strict_reasons.append("FOUR_TOKEN_CYCLE_4H_WINDOW_SLOT_SET_MISMATCH")
+    if (
+        len(progression_slot_ids) == 2
+        and len(detail_slot_ids) == 2
+        and set(progression_slot_ids) != set(detail_slot_ids)
+    ):
+        strict_reasons.append("FOUR_TOKEN_CYCLE_PROGRESSION_WINDOW_SLOT_SET_MISMATCH")
     for item in details:
         slot_id = str(item.get("token_slot_id") or "UNKNOWN")
         if str(item.get("token_state") or "") != "WINDOW_4H_CLOSED":
@@ -337,6 +367,7 @@ def four_token_cycle_through_4h_validation(
         ),
         "window_count": int(base.get("window_count") or 0),
         "aggregate_state": base.get("aggregate_state"),
+        "durable_token_slot_ids": durable_slot_ids,
         "per_token": progression,
         "eligible_window_details": details,
         "standard_four_hour_validation": dict(base),

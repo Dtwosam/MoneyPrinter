@@ -168,19 +168,19 @@ class FourTokenFactoryAdapterTests(unittest.TestCase):
             "expected_continuation_count": 2,
             "window_count": 2,
             "per_token": [
-                {"token_slot_id": "slot-1", "outcome": "SUCCEEDED"},
-                {"token_slot_id": "slot-2", "outcome": "SUCCEEDED"},
+                {"token_slot_id": "slot-cycle-1-1", "outcome": "SUCCEEDED"},
+                {"token_slot_id": "slot-cycle-1-2", "outcome": "SUCCEEDED"},
             ],
             "eligible_window_details": [
                 {
-                    "token_slot_id": "slot-1",
+                    "token_slot_id": "slot-cycle-1-1",
                     "token_state": "WINDOW_4H_CLOSED",
                     "window_state": "DIRTY",
                     "memory_window_row_id": 91,
                     "reasons": [],
                 },
                 {
-                    "token_slot_id": "slot-2",
+                    "token_slot_id": "slot-cycle-1-2",
                     "token_state": "WINDOW_4H_CLOSED",
                     "window_state": "NO_PROMOTION",
                     "memory_window_row_id": 92,
@@ -202,6 +202,110 @@ class FourTokenFactoryAdapterTests(unittest.TestCase):
             )
         self.assertTrue(result["four_token_through_4h_complete"])
         self.assertEqual(result["reasons"], [])
+        self.assertEqual(
+            result["durable_token_slot_ids"],
+            ["slot-cycle-1-1", "slot-cycle-1-2"],
+        )
+
+    def test_four_token_strict_4h_validation_rejects_foreign_slot_set(self) -> None:
+        strict_mismatch = {
+            "enabled": True,
+            "complete": True,
+            "reasons": [],
+            "aggregate_state": "HANDOFF_COMMITTED",
+            "expected_continuation_count": 2,
+            "window_count": 2,
+            "per_token": [
+                {"token_slot_id": "slot-cycle-1-1", "outcome": "SUCCEEDED"},
+                {"token_slot_id": "slot-cycle-1-2", "outcome": "SUCCEEDED"},
+            ],
+            "eligible_window_details": [
+                {
+                    "token_slot_id": "slot-cycle-1-1",
+                    "token_state": "WINDOW_4H_CLOSED",
+                    "window_state": "DIRTY",
+                    "memory_window_row_id": 91,
+                    "reasons": [],
+                },
+                {
+                    "token_slot_id": "foreign-slot",
+                    "token_state": "WINDOW_4H_CLOSED",
+                    "window_state": "NO_PROMOTION",
+                    "memory_window_row_id": 92,
+                    "reasons": [],
+                },
+            ],
+        }
+        with patch(
+            "printer_v1.operator_cli.one_command_15m_factory."
+            "_standard_campaign_four_hour_terminal_validation",
+            return_value=strict_mismatch,
+        ):
+            result = four_token_cycle_through_4h_validation(
+                self.conn,
+                campaign_id="campaign-1",
+                campaign_run_id="campaign-run-1",
+                factory_run_id="factory-1",
+                cycle_id="cycle-1",
+            )
+        self.assertFalse(result["four_token_through_4h_complete"])
+        self.assertIn(
+            "FOUR_TOKEN_CYCLE_4H_WINDOW_SLOT_SET_MISMATCH",
+            result["reasons"],
+        )
+        self.assertIn(
+            "FOUR_TOKEN_CYCLE_PROGRESSION_WINDOW_SLOT_SET_MISMATCH",
+            result["reasons"],
+        )
+
+    def test_terminal_cross_cycle_identity_requires_four_distinct_targets(self) -> None:
+        from printer_v1.operator_cli.campaign_full_run_accounting import (
+            four_token_cross_cycle_identity_exact,
+        )
+
+        cycles = [
+            {
+                "cycle_ordinal": 1,
+                "tokens": [
+                    {
+                        "token_slot_id": "c1-s1",
+                        "token_row_id": 1,
+                        "pair_row_id": 101,
+                        "mint_identity": "mint-1",
+                        "pair_identity": "pair-1",
+                    },
+                    {
+                        "token_slot_id": "c1-s2",
+                        "token_row_id": 2,
+                        "pair_row_id": 102,
+                        "mint_identity": "mint-2",
+                        "pair_identity": "pair-2",
+                    },
+                ],
+            },
+            {
+                "cycle_ordinal": 2,
+                "tokens": [
+                    {
+                        "token_slot_id": "c2-s1",
+                        "token_row_id": 3,
+                        "pair_row_id": 103,
+                        "mint_identity": "mint-3",
+                        "pair_identity": "pair-3",
+                    },
+                    {
+                        "token_slot_id": "c2-s2",
+                        "token_row_id": 4,
+                        "pair_row_id": 104,
+                        "mint_identity": "mint-4",
+                        "pair_identity": "pair-4",
+                    },
+                ],
+            },
+        ]
+        self.assertTrue(four_token_cross_cycle_identity_exact(cycles))
+        cycles[1]["tokens"][0]["mint_identity"] = "mint-1"
+        self.assertFalse(four_token_cross_cycle_identity_exact(cycles))
 
     def test_four_token_terminal_refuses_generic_success_without_two_4h_memories(
         self,
