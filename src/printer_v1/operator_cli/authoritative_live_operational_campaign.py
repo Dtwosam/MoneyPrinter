@@ -4228,6 +4228,39 @@ class AuthoritativeLiveOperationalCampaignOwner:
                                     "provider_failures": 0,
                                     "shortage_classification": None,
                                     "scheduler_yield": outcome.to_dict(),
+                                    "stage_capacity": cooperative_stage_budget.snapshot(),
+                                    "cooperative_phase": progress.get(
+                                        "cooperative_phase"
+                                    ),
+                                    "next_cooperative_phase": progress.get(
+                                        "cooperative_phase"
+                                    ),
+                                    "freeze_ready_depth": int(
+                                        progress.get("reserve_depth") or 0
+                                    ),
+                                    "eligible_reserve_count": int(
+                                        progress.get("reserve_depth") or 0
+                                    ),
+                                    "discovery_operations_used": prior_operations,
+                                    "discovery_operations_remaining": max(
+                                        0, operation_budget - prior_operations
+                                    ),
+                                    "direct_acquisition_mode": progress.get(
+                                        "direct_acquisition_mode"
+                                    ),
+                                    "direct_live_tail_completed": bool(
+                                        progress.get("direct_live_tail_completed")
+                                    ),
+                                    "direct_backfill_completed": bool(
+                                        progress.get("direct_backfill_completed")
+                                    ),
+                                    "waiting_for_refresh": True,
+                                    "refresh_ordinal": int(
+                                        outcome.refresh_ordinal or 0
+                                    ),
+                                    "next_governed_request_worst_case_seconds": (
+                                        outcome.next_governed_request_worst_case_seconds
+                                    ),
                                 },
                                 None,
                             )
@@ -4243,6 +4276,45 @@ class AuthoritativeLiveOperationalCampaignOwner:
                                     + int(outcome.source_operations),
                                     "provider_failures": int(outcome.provider_failures),
                                     "shortage_classification": terminal,
+                                    "stage_capacity": cooperative_stage_budget.snapshot(),
+                                    "cooperative_phase": progress.get(
+                                        "cooperative_phase"
+                                    ),
+                                    "next_cooperative_phase": progress.get(
+                                        "cooperative_phase"
+                                    ),
+                                    "freeze_ready_depth": int(
+                                        progress.get("reserve_depth") or 0
+                                    ),
+                                    "eligible_reserve_count": int(
+                                        progress.get("reserve_depth") or 0
+                                    ),
+                                    "discovery_operations_used": (
+                                        prior_operations
+                                        + int(outcome.source_operations)
+                                    ),
+                                    "discovery_operations_remaining": max(
+                                        0,
+                                        operation_budget
+                                        - prior_operations
+                                        - int(outcome.source_operations),
+                                    ),
+                                    "direct_acquisition_mode": progress.get(
+                                        "direct_acquisition_mode"
+                                    ),
+                                    "direct_live_tail_completed": bool(
+                                        progress.get("direct_live_tail_completed")
+                                    ),
+                                    "direct_backfill_completed": bool(
+                                        progress.get("direct_backfill_completed")
+                                    ),
+                                    "waiting_for_refresh": False,
+                                    "refresh_ordinal": int(
+                                        outcome.refresh_ordinal or 0
+                                    ),
+                                    "next_governed_request_worst_case_seconds": (
+                                        outcome.next_governed_request_worst_case_seconds
+                                    ),
                                 },
                                 classify_later_cycle_failure(
                                     terminal_cause=terminal,
@@ -4281,7 +4353,37 @@ class AuthoritativeLiveOperationalCampaignOwner:
                                 "eligible_reserve_count": int(
                                     progress.get("reserve_depth") or 0
                                 ),
+                                "freeze_ready_depth": int(
+                                    progress.get("reserve_depth") or 0
+                                ),
                                 "completed_refresh": outcome.to_dict(),
+                                "stage_capacity": cooperative_stage_budget.snapshot(),
+                                "cooperative_phase": progress.get(
+                                    "cooperative_phase"
+                                ),
+                                "next_cooperative_phase": progress.get(
+                                    "cooperative_phase"
+                                ),
+                                "discovery_operations_used": prior_operations,
+                                "discovery_operations_remaining": max(
+                                    0, operation_budget - prior_operations
+                                ),
+                                "direct_acquisition_mode": progress.get(
+                                    "direct_acquisition_mode"
+                                ),
+                                "direct_live_tail_completed": bool(
+                                    progress.get("direct_live_tail_completed")
+                                ),
+                                "direct_backfill_completed": bool(
+                                    progress.get("direct_backfill_completed")
+                                ),
+                                "waiting_for_refresh": False,
+                                "refresh_ordinal": int(
+                                    outcome.refresh_ordinal or 0
+                                ),
+                                "next_governed_request_worst_case_seconds": (
+                                    outcome.next_governed_request_worst_case_seconds
+                                ),
                             },
                             None,
                         )
