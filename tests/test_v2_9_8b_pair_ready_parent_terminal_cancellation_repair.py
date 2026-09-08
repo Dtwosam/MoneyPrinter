@@ -31,7 +31,10 @@ MIGRATION_060 = "060_pre_admission_frozen_tracking_lane_provenance.sql"
 
 
 def _seed_graph(
-    connection: sqlite3.Connection, *, include_frozen_lane: bool = False
+    connection: sqlite3.Connection,
+    *,
+    include_frozen_lane: bool = False,
+    attempt_id: str = attempt_id,
 ) -> None:
     connection.execute(
         "INSERT INTO printer_memory_factory_campaigns("
@@ -107,7 +110,7 @@ def _seed_graph(
                attempt_state,first_terminal_cause,terminal_at,created_at,updated_at
            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
-            "attempt-pair-ready", "campaign-1", "campaign-run-1", "configuration-1",
+            attempt_id, "campaign-1", "campaign-run-1", "configuration-1",
             "factory-1", 2, "cycle-2", job_id, NOW.isoformat(), NOW.isoformat(),
             "seed-frozen-pair", "PAIR_READY", "EXACT_PAIR_FROZEN",
             NOW.isoformat(), NOW.isoformat(), NOW.isoformat(),
@@ -127,7 +130,7 @@ def _seed_graph(
                        frozen_lane_decided_at,frozen_lane_decision_owner
                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
-                    "attempt-pair-ready", slot, f"token-{row_id}", row_id, f"mint-{row_id}",
+                    attempt_id, slot, f"token-{row_id}", row_id, f"mint-{row_id}",
                     f"pair-{row_id}", 100 + row_id, f"lifecycle-{row_id}",
                     f"solana-mainnet:pumpswap:pair-{row_id}", f"pair-{row_id}",
                     json.dumps({"quality": "exact"}, sort_keys=True),
@@ -147,7 +150,7 @@ def _seed_graph(
                        canonical_evidence_hash,evidence_version,observed_at,created_at
                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
-                    "attempt-pair-ready", slot, f"token-{row_id}", row_id, f"mint-{row_id}",
+                    attempt_id, slot, f"token-{row_id}", row_id, f"mint-{row_id}",
                     f"pair-{row_id}", 100 + row_id, f"lifecycle-{row_id}",
                     f"solana-mainnet:pumpswap:pair-{row_id}", f"pair-{row_id}",
                     json.dumps({"quality": "exact"}, sort_keys=True),
@@ -171,7 +174,7 @@ def _seed_graph(
         "attempt_id,link_ordinal,logical_stage,source_request_id,source_response_id,"
         "created_at) VALUES (?,?,?,?,?,?)",
         (
-            "attempt-pair-ready",
+            attempt_id,
             1,
             "PAIR_READY_PROOF",
             request_id,
@@ -599,8 +602,27 @@ def test_pair_ready_admission_deadline_revokes_frozen_authority_without_rewrite(
     finally:
         connection.close()
 
-def test_expired_pair_ready_reports_deadline_as_shared_terminal_cause(db_path) -> None:
-    connection = _open(db_path)
+def test_expired_pair_ready_reports_deadline_as_shared_terminal_cause(
+    tmp_path,
+) -> None:
+    path = tmp_path / "pair-ready-admission-deadline.sqlite3"
+    apply_migrations(path)
+    canonical_attempt_id = (
+        "pre-admission:campaign-1:campaign-run-1:factory-1:c0002"
+    )
+    seed = sqlite3.connect(path)
+    seed.row_factory = sqlite3.Row
+    seed.execute("PRAGMA foreign_keys=ON")
+    try:
+        _seed_graph(
+            seed,
+            include_frozen_lane=True,
+            attempt_id=canonical_attempt_id,
+        )
+    finally:
+        seed.close()
+
+    connection = _open(path)
     try:
         attempt_id, state, cause = factory._terminalize_later_cycle_admission_deadline(
             connection,
@@ -614,7 +636,7 @@ def test_expired_pair_ready_reports_deadline_as_shared_terminal_cause(db_path) -
             now=CANCEL_NOW,
             deadline_at=CANCEL_NOW,
         )
-        assert attempt_id == "pre-admission:campaign-1:campaign-run-1:factory-1:c0002"
+        assert attempt_id == canonical_attempt_id
         assert state == "CANCELLED"
         assert cause == factory.LATER_CYCLE_ADMISSION_DEADLINE_EXHAUSTED
         status, terminal_cause = factory._resolve_four_token_no_accounting_shared_terminal(

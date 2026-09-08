@@ -960,6 +960,20 @@ def test_cycle2_deadline_terminalizes_without_starting_unsafe_quantum(
     connection = sqlite3.connect(db)
     connection.row_factory = sqlite3.Row
     connection.execute(
+        "INSERT INTO printer_memory_factory_runs("
+        "run_id,run_status,window_kind,db_mode,config_hash,config_json,started_at"
+        ") VALUES (?,?,?,?,?,?,?)",
+        (
+            FACTORY_RUN_ID,
+            "RUNNING",
+            "WINDOW_15M",
+            "OPERATIONAL_PERSISTENT",
+            "c" * 64,
+            "{}",
+            START.isoformat(),
+        ),
+    )
+    connection.execute(
         "UPDATE printer_memory_factory_campaign_runs SET authoritative_run_id=? "
         "WHERE run_id=? AND campaign_id=?",
         (FACTORY_RUN_ID, CAMPAIGN_RUN_ID, CAMPAIGN_ID),

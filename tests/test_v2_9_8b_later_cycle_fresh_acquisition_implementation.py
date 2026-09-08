@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 import inspect
+import sqlite3
 
 import pytest
 
@@ -11,6 +12,9 @@ import printer_v1.operator_cli.operational_memory_factory_command as operational
 from printer_v1.operator_cli.later_cycle_graduated_supply import (
     LaterCycleGraduatedSupplyError,
     build_later_cycle_graduated_supply,
+)
+from printer_v1.discovery.permanent_discovery_availability import (
+    derive_campaign_source_request_key_root,
 )
 from printer_v1.operator_cli.pre_lifecycle_persistent_refresh_owner import (
     PreLifecycleTemporalRefreshError,
@@ -108,7 +112,9 @@ def test_canonical_builder_rebinds_cycle_scope_but_preserves_campaign_seed(
         cancellation_probe=lambda: None,
     )
     initial_work_deadline = owner.work_deadline_at
-    assert stage_calls[-1]["request_key_prefix"] == "campaign-selection-seed"
+    assert stage_calls[-1]["request_key_prefix"] == (
+        derive_campaign_source_request_key_root("campaign-selection-seed")
+    )
     assert resolver_calls[-1]["campaign_selection_seed"] == "campaign-selection-seed"
     assert resolver_calls[-1]["cycle_id"] == "cycle-1"
 
