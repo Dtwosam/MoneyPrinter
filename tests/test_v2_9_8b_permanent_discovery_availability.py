@@ -48,7 +48,6 @@ from printer_v1.discovery.permanent_discovery_availability import (
 )
 from printer_v1.discovery.eligible_token_supply import (
     BUDGET_EXHAUSTION,
-    GRADUATED_SUPPLY_READY,
     run_persistent_eligible_token_supply,
 )
 from printer_v1.sources.dexscreener import fixture_success_transport
@@ -563,11 +562,15 @@ class TestProductionSupplyComposition:
             campaign_source_request_scope=scope,
         )
 
-        assert result.ready is True
-        assert result.terminal == GRADUATED_SUPPLY_READY
+        # MARKET_READY is an intermediate reserve layer. Permanent-mode
+        # readiness is freeze-ready capacity and must stay false until later
+        # observation/holder gates complete.
+        assert result.ready is False
         assert len(result.eligible_reserve) == 4
         assert batch_calls == [tuple(sorted(pools))]
         assert result.diagnostics["required_token_capacity"] == 4
+        assert result.diagnostics["market_ready_reserve_depth"] == 4
+        assert result.diagnostics["freeze_ready_depth"] == 0
         after = {
             table: connection.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
             for table in locked_tables
