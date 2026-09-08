@@ -455,7 +455,7 @@ def test_cooperative_market_batch_defers_reconciliation_to_fast_safe_quantum(
     stage = result.diagnostics["stage_capacity"]
     assert stage["used_by_stage"]["market_batching"] == 1
     assert stage["used_by_stage"]["reconciliation"] == 0
-    assert len(result.diagnostics["work_queues"]["RECONCILIATION_DUE"]) == 1
+    assert len(result.diagnostics["pending_work_by_queue"]["RECONCILIATION_DUE"]) == 1
     assert (
         acquisition_quantum_bound(
             AcquisitionQuantumKind.MARKET_DISCOVERY
