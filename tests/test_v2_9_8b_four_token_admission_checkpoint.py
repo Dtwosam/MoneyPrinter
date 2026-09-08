@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import hashlib
+import json
+from pathlib import Path
 import sqlite3
 from types import SimpleNamespace
 
@@ -26,6 +29,7 @@ from printer_v1.operator_cli.one_command_15m_factory import (
 from printer_v1.operator_cli.four_token_proof_zero_state_gate import (
     is_printer_operational_runtime_command,
 )
+from printer_v1.operator_cli import git_provenance_authorization_manifest as git_auth
 from printer_v1.operator_cli.window_15m_child_terminal import CHILD_TERMINAL_MODE_SCHEMAS
 
 
@@ -209,3 +213,64 @@ def test_checkpoint_command_is_classified_as_live_printer_runtime() -> None:
         "four-token-admission-checkpoint-run --operator-approved"
     )
     assert is_printer_operational_runtime_command(command) is True
+
+
+def test_checkpoint_profile_uses_wrapper_bound_authorization_dispatch(tmp_path: Path) -> None:
+    profile = git_auth.FOUR_TOKEN_ADMISSION_CHECKPOINT_AUTHORIZATION_PROFILE
+    branch = "assistant/test"
+    head = "a" * 40
+    authorization_id = (
+        "V2_9_8B_FOUR_TOKEN_ADMISSION_CHECKPOINT_AUTH_20260908T150000Z_deadbeef"
+    )
+    document = fixture_authorization_document(
+        branch=branch,
+        head=head,
+        database={
+            "path": "/tmp/printer-v1.sqlite3",
+            "sha256": "b" * 64,
+            "size": 1,
+            "inode": 2,
+            "mtime_ns": 3,
+            "migration_count": 62,
+            "migration_head": "062_pre_admission_attempt_evidence.sql",
+        },
+        authorization_id=authorization_id,
+        migration_execution_id=profile.current_migration_execution_id,
+        authorized_at=datetime.now(timezone.utc).isoformat(),
+        validity_seconds=3600,
+        prior_authorizations_non_reusable=(),
+    )
+
+    relative = (
+        f"{profile.authorization_package_root}/"
+        f"{authorization_id}/final_authorization.json"
+    )
+    authorization_file = tmp_path / relative
+    authorization_file.parent.mkdir(parents=True)
+    raw = (
+        json.dumps(
+            document,
+            indent=2,
+            sort_keys=True,
+            ensure_ascii=True,
+            allow_nan=False,
+        )
+        + "\n"
+    ).encode("utf-8")
+    authorization_file.write_bytes(raw)
+    digest = hashlib.sha256(raw).hexdigest()
+
+    actual_sha256, database, prior = git_auth._validate_authorization_document(
+        {"authorization_file": {"path": relative, "sha256": digest}},
+        root=tmp_path,
+        authorization_id=authorization_id,
+        migration_execution_id=profile.current_migration_execution_id,
+        branch=branch,
+        head=head,
+        profile=profile,
+    )
+
+    assert actual_sha256 == digest
+    assert database["migration_count"] == 62
+    assert database["migration_head"] == "062_pre_admission_attempt_evidence.sql"
+    assert prior == ()

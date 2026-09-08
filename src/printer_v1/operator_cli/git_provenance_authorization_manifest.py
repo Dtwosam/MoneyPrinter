@@ -2840,6 +2840,7 @@ def _validate_authorization_document(
         STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE,
         FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE,
         FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE,
+        FOUR_TOKEN_ADMISSION_CHECKPOINT_AUTHORIZATION_PROFILE,
     ):
         if profile == STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE:
             try:
@@ -2866,6 +2867,22 @@ def _validate_authorization_document(
             except FourTokenStandardFourHourOneShotWrapperError as exc:
                 raise GitProvenanceAuthorizationError(
                     "four-token standard four-hour authorization document "
+                    f"rejected: {exc}"
+                ) from exc
+        elif profile == FOUR_TOKEN_ADMISSION_CHECKPOINT_AUTHORIZATION_PROFILE:
+            try:
+                from printer_v1.operator_cli.four_token_admission_checkpoint_one_shot_wrapper import (
+                    FourTokenAdmissionCheckpointOneShotWrapperError,
+                    validate_four_token_admission_checkpoint_authorization_document,
+                )
+                validated_document = (
+                    validate_four_token_admission_checkpoint_authorization_document(
+                        document
+                    )
+                )
+            except FourTokenAdmissionCheckpointOneShotWrapperError as exc:
+                raise GitProvenanceAuthorizationError(
+                    "four-token admission checkpoint authorization document "
                     f"rejected: {exc}"
                 ) from exc
         else:
