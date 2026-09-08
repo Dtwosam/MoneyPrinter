@@ -488,3 +488,103 @@ def test_terminal_truth_reconstruction_failure_preserves_unknown_operational_fac
         assert payload["database_identity_after"] is None
         assert payload["cleanup_complete"] is None
         assert payload["lease_released"] is None
+def test_normal_blocked_wrapper_return_reconstructs_terminal_truth_before_write():
+    captured = {}
+
+    def blocked_run(**_kwargs):
+        command._ACTION_RUN_CONTEXT["execution_id"] = "exec-normal-block"
+        command._ACTION_RUN_CONTEXT["campaign_id"] = "campaign-normal-block"
+        command._ACTION_RUN_CONTEXT["run_id"] = "run-normal-block"
+        command._ACTION_RUN_CONTEXT["cycle_id"] = "cycle-normal-block"
+        return {
+            "status": "OPERATIONAL_CAMPAIGN_TERMINAL",
+            "campaign_pass": False,
+            "execution_id": "exec-normal-block",
+            "campaign_id": "campaign-normal-block",
+            "run_id": "run-normal-block",
+            "cycle_id": "cycle-normal-block",
+            "supervision_id": "supervision-normal-block",
+            "first_terminal_cause": "DISCOVERY_ARCHITECTURE_FALSE_SHORTAGE",
+            "cleanup_complete": True,
+            "lease_released": True,
+            "active_locked_work": {"active_owned_work_after": 0},
+            "source_calls": 15,
+            "scheduler_runtime_calls": 514,
+        }
+
+    truth = {
+        "source_calls": 15,
+        "source_request_ids": [1, 2],
+        "source_response_ids": [1],
+        "source_failure_ids": [2],
+        "fresh_external_transport_attempts": 15,
+        "database_identity_before": {"path": "/tmp/db", "exists": True},
+        "database_identity_after": {"path": "/tmp/db", "exists": True},
+        "table_deltas": {"printer_source_requests": 15},
+        "mutation_classifications": {},
+        "database_writes": 42,
+        "database_mutation_known": True,
+        "database_mutation_status": "OWNER_EMITTED_AUTHORITATIVE",
+        "campaign_run_cycle_states": {
+            "run_state": "TERMINAL_FAILED",
+            "cycle_state": "TERMINAL_COMPLETED",
+            "supervision_state": "COMPLETED",
+            "terminal_status": "FAILED",
+            "first_terminal_cause": "DISCOVERY_ARCHITECTURE_FALSE_SHORTAGE",
+            "terminal_at": "2026-09-07T15:30:20+00:00",
+            "cleanup_completed_at": "2026-09-07T15:30:20+00:00",
+            "lease_released_at": "2026-09-07T15:30:20+00:00",
+        },
+        "cleanup_complete": True,
+        "lease_released": True,
+        "active_locked_work": {"active_owned_work_after": 0},
+    }
+
+    def capture_write(**kwargs):
+        captured.update(kwargs)
+
+    env = {
+        command.GIT_PROVENANCE_MANIFEST_ENV_VARS[0]: "/tmp/manifest.json",
+        command.GIT_PROVENANCE_MANIFEST_ENV_VARS[1]: "a" * 64,
+        command.GIT_PROVENANCE_MANIFEST_ENV_VARS[2]: "/tmp/marker.json",
+        command.GIT_PROVENANCE_MANIFEST_ENV_VARS[3]: "b" * 64,
+        CHILD_TERMINAL_ENV_VAR: "/tmp/child-terminal.json",
+    }
+    stdout = io.StringIO()
+    with (
+        mock.patch.dict(os.environ, env, clear=True),
+        mock.patch.object(
+            command, "_resolve_git_provenance_authorization", return_value=object()
+        ),
+        mock.patch.object(
+            command, "run_four_token_standard_four_hour_campaign", side_effect=blocked_run
+        ),
+        mock.patch(
+            "printer_v1.operator_cli.window_15m_child_terminal."
+            "resolve_child_terminal_binding",
+            return_value=object(),
+        ),
+        mock.patch(
+            "printer_v1.operator_cli.window_15m_child_terminal."
+            "write_child_terminal_envelope",
+            side_effect=capture_write,
+        ),
+        mock.patch(
+            "printer_v1.operator_cli.action_local_terminal_truth."
+            "build_action_local_terminal_truth",
+            return_value=truth,
+        ),
+        contextlib.redirect_stdout(stdout),
+    ):
+        code = command.main(
+            [command.FOUR_TOKEN_STANDARD_FOUR_HOUR_MODE, "--operator-approved"]
+        )
+
+    assert code == 1
+    source = captured["source"]
+    assert source["terminal_truth_status"] == "RECONSTRUCTED"
+    assert source["secondary_terminal_truth_error"] is None
+    assert source["database_writes"] == 42
+    assert source["source_calls"] == 15
+    assert source["cleanup_complete"] is True
+    assert source["active_locked_work"]["active_owned_work_after"] == 0

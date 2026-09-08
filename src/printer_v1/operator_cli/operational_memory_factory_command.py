@@ -6653,6 +6653,84 @@ def _wrapper_bound_campaign_exit_code(result: Mapping[str, Any]) -> int:
         )
     return 0 if campaign_pass else 1
 
+def _reconstruct_normal_blocked_wrapper_terminal_truth(
+    result: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Add action-local durable truth to a handled nonzero campaign result.
+
+    Exceptions already use the canonical action-local truth owner. A normal
+    campaign_pass=False return must use that same owner before the child
+    terminal is written.
+    """
+    out = dict(result)
+    action_run_id = _ACTION_RUN_CONTEXT.get("run_id")
+    action_campaign_id = _ACTION_RUN_CONTEXT.get("campaign_id")
+    if action_run_id is None and action_campaign_id is None:
+        return out
+
+    from printer_v1.operator_cli.action_local_terminal_truth import (
+        build_action_local_terminal_truth,
+        merge_action_local_into_exception_envelope,
+    )
+
+    baseline = _ACTION_RUN_CONTEXT.get("action_local_baseline")
+    mutation_recorder = _ACTION_RUN_CONTEXT.get("mutation_recorder")
+    inserted_ids = None
+    updated_ids = None
+    authoritative_write_count = None
+    if mutation_recorder is not None:
+        inserted_ids = mutation_recorder.inserted_row_ids()
+        updated_ids = mutation_recorder.updated_row_ids()
+        authoritative_write_count = mutation_recorder.authoritative_write_count()
+
+    db_path: str | Path = AUTHORITATIVE_DB
+    if baseline is not None:
+        baseline_identity = getattr(baseline, "database_identity", None)
+        if isinstance(baseline_identity, Mapping):
+            baseline_path = baseline_identity.get("path")
+            if isinstance(baseline_path, str) and baseline_path.strip():
+                db_path = baseline_path
+
+    try:
+        truth = build_action_local_terminal_truth(
+            db_path,
+            baseline=baseline,
+            execution_id=(
+                str(_ACTION_RUN_CONTEXT.get("execution_id"))
+                if _ACTION_RUN_CONTEXT.get("execution_id")
+                else None
+            ),
+            campaign_id=str(action_campaign_id) if action_campaign_id else None,
+            run_id=str(action_run_id) if action_run_id else None,
+            cycle_id=(
+                str(_ACTION_RUN_CONTEXT.get("cycle_id"))
+                if _ACTION_RUN_CONTEXT.get("cycle_id")
+                else None
+            ),
+            supervision_id=(
+                str(out.get("supervision_id"))
+                if out.get("supervision_id")
+                else None
+            ),
+            first_terminal_cause=(
+                str(out.get("first_terminal_cause"))
+                if out.get("first_terminal_cause")
+                else None
+            ),
+            owner_emitted_inserted_row_ids=inserted_ids,
+            owner_emitted_updated_row_ids=updated_ids,
+            authoritative_write_count=authoritative_write_count,
+        )
+        out = merge_action_local_into_exception_envelope(out, truth)
+        out["terminal_truth_status"] = "RECONSTRUCTED"
+        out["secondary_terminal_truth_error"] = None
+    except Exception as truth_exc:
+        out["terminal_truth_status"] = "RECONSTRUCTION_FAILED"
+        out["secondary_terminal_truth_error"] = (
+            f"{type(truth_exc).__name__}:{truth_exc}"
+        )
+    return out
+
 
 def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
@@ -6805,6 +6883,8 @@ def main(argv: Iterable[str] | None = None) -> int:
         result_exit_code = 0
         if args.mode in wrapper_bound_modes:
             result_exit_code = _wrapper_bound_campaign_exit_code(result)
+            if result_exit_code != 0:
+                result = _reconstruct_normal_blocked_wrapper_terminal_truth(result)
             if child_terminal_binding is not None:
                 write_child_terminal_envelope(
                     binding=child_terminal_binding,
