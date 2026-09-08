@@ -1710,6 +1710,12 @@ def _create_campaign_command(
             ),
         },
     }
+    if policy.later_cycle_pre_admission_deadline_seconds_after_cycle_one is not None:
+        configuration[
+            "later_cycle_pre_admission_deadline_seconds_after_cycle_one"
+        ] = int(
+            policy.later_cycle_pre_admission_deadline_seconds_after_cycle_one
+        )
     if four_token_multi_cycle_capacity is not None:
         configuration["multi_cycle_capacity"] = four_token_multi_cycle_capacity
     if disposable_proof_binding is None:
