@@ -315,6 +315,16 @@ def test_market_feeder_exhaustion_is_honest_budget_terminal_with_downstream_capa
         now=NOW,
         discovery_channel=PERSISTED_GRADUATED_CHANNEL,
     )
+    # Cooperative resume must own at least one lawful completed request in the
+    # exact typed Cycle-2 scope.  Use another mint so the candidate under test
+    # remains unexplored when market-batching capacity is already exhausted.
+    scope = _scope()
+    _record_request(
+        connection,
+        request_key=f"{scope.request_key_root}-mint-batch-r0",
+        response_status="COMPLETE",
+        identity=_identity(OTHER_MINT),
+    )
     connection.commit()
     connection.close()
 
