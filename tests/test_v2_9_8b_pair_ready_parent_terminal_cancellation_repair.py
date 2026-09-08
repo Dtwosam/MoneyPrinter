@@ -12,6 +12,7 @@ from printer_v1.db.migrate import MIGRATIONS_DIR, canonical_migration_names
 from printer_v1.operator_cli.pre_admission_discovery_attempt import (
     PreAdmissionAttemptError,
     PreAdmissionAttemptState,
+    cancel_pair_ready_pre_admission_attempt_for_admission_deadline,
     cancel_pair_ready_pre_admission_attempt_for_terminal_parent,
     terminalize_pre_admission_attempt,
 )
@@ -554,5 +555,42 @@ def test_fresh_migration_path_reaches_current_head_with_integrity_and_foreign_ke
         assert applied[-1] == canonical_migration_names()[-1]
         assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+    finally:
+        connection.close()
+
+def test_pair_ready_admission_deadline_revokes_frozen_authority_without_rewrite(db_path) -> None:
+    connection = _open(db_path)
+    try:
+        before_row, before_items, before_links = _snapshot(connection)
+        deadline = CANCEL_NOW
+        with pytest.raises(
+            PreAdmissionAttemptError, match="ADMISSION_DEADLINE_NOT_REACHED"
+        ):
+            cancel_pair_ready_pre_admission_attempt_for_admission_deadline(
+                connection,
+                attempt_id="attempt-pair-ready",
+                campaign_id="campaign-1",
+                campaign_run_id="campaign-run-1",
+                authoritative_factory_run_id="factory-1",
+                deadline_at=deadline,
+                now=NOW,
+            )
+        cancelled = cancel_pair_ready_pre_admission_attempt_for_admission_deadline(
+            connection,
+            attempt_id="attempt-pair-ready",
+            campaign_id="campaign-1",
+            campaign_run_id="campaign-run-1",
+            authoritative_factory_run_id="factory-1",
+            deadline_at=deadline,
+            now=deadline,
+        )
+        connection.commit()
+        after_row, after_items, after_links = _snapshot(connection)
+        assert cancelled.state is PreAdmissionAttemptState.CANCELLED
+        assert after_row["attempt_state"] == "CANCELLED"
+        assert after_row["first_terminal_cause"] == "EXACT_PAIR_FROZEN"
+        assert after_row["terminal_at"] == before_row["terminal_at"]
+        assert after_items == before_items
+        assert after_links == before_links
     finally:
         connection.close()

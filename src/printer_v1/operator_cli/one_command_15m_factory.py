@@ -565,6 +565,147 @@ def _terminalize_unstarted_cycle_after_materialization_failure(
         raise
 
 
+LATER_CYCLE_ADMISSION_DEADLINE_EXHAUSTED = (
+    "LATER_CYCLE_ADMISSION_DEADLINE_EXHAUSTED"
+)
+
+
+def _later_cycle_admission_deadline(
+    connection: sqlite3.Connection,
+    *,
+    binding: Any,
+    first_cycle_id: str,
+    seconds_after_first_cycle: int,
+) -> datetime:
+    if (
+        type(seconds_after_first_cycle) is not int
+        or seconds_after_first_cycle < 300
+    ):
+        raise ValueError("later-cycle admission deadline is invalid")
+    rows = connection.execute(
+        """SELECT created_at FROM printer_memory_factory_campaign_cycles
+           WHERE cycle_id=? AND campaign_id=? AND run_id=? AND cycle_ordinal=1""",
+        (first_cycle_id, binding.campaign_id, binding.campaign_run_id),
+    ).fetchall()
+    if len(rows) != 1:
+        raise ValueError("Cycle-1 admission time is not exact")
+    admitted_at = datetime.fromisoformat(
+        str(rows[0][0]).replace("Z", "+00:00")
+    )
+    if admitted_at.tzinfo is None or admitted_at.utcoffset() is None:
+        raise ValueError("Cycle-1 admission time is malformed")
+    return admitted_at.astimezone(timezone.utc) + timedelta(
+        seconds=seconds_after_first_cycle
+    )
+
+
+def _terminalize_later_cycle_admission_deadline(
+    connection: sqlite3.Connection,
+    *,
+    binding: Any,
+    first_cycle_id: str,
+    now: datetime,
+    deadline_at: datetime,
+) -> tuple[str, str, str]:
+    """Terminalize the sole Cycle-2 opportunity without source work or retry."""
+    from printer_v1.operator_cli.pre_admission_discovery_attempt import (
+        PreAdmissionAttemptError,
+        PreAdmissionAttemptState,
+        cancel_pair_ready_pre_admission_attempt_for_admission_deadline,
+        create_scheduled_pre_admission_attempt,
+        load_pre_admission_attempt,
+        terminalize_pre_admission_attempt,
+    )
+    from printer_v1.operator_cli.pre_admission_attempt_evidence import (
+        append_pre_admission_attempt_evidence,
+    )
+    from printer_v1.scheduler.scheduler import cancel_job
+
+    attempt_id = (
+        f"pre-admission:{binding.campaign_id}:{binding.campaign_run_id}:"
+        f"{binding.authoritative_factory_run_id}:c0002"
+    )
+    try:
+        attempt = load_pre_admission_attempt(connection, attempt_id=attempt_id)
+    except PreAdmissionAttemptError as exc:
+        if str(exc) != "ATTEMPT_NOT_FOUND":
+            raise
+        if connection.in_transaction:
+            connection.commit()
+        attempt = create_scheduled_pre_admission_attempt(
+            connection,
+            attempt_id=attempt_id,
+            campaign_id=str(binding.campaign_id),
+            campaign_run_id=str(binding.campaign_run_id),
+            configuration_id=str(binding.configuration_id),
+            authoritative_factory_run_id=str(binding.authoritative_factory_run_id),
+            proposed_cycle_ordinal=2,
+            proposed_cycle_id=f"{first_cycle_id}-2",
+            cycle_cutoff=now,
+            evaluated_at=now,
+            selection_seed_identity=(
+                f"{binding.authoritative_factory_run_id}:"
+                f"{binding.campaign_run_id}:c0002"
+            ),
+            scheduled_for=now,
+            now=now,
+        )
+
+    if attempt.state is PreAdmissionAttemptState.PAIR_READY:
+        final = cancel_pair_ready_pre_admission_attempt_for_admission_deadline(
+            connection,
+            attempt_id=attempt_id,
+            campaign_id=str(binding.campaign_id),
+            campaign_run_id=str(binding.campaign_run_id),
+            authoritative_factory_run_id=str(binding.authoritative_factory_run_id),
+            deadline_at=deadline_at,
+            now=now,
+        )
+    elif attempt.state in {
+        PreAdmissionAttemptState.PLANNED,
+        PreAdmissionAttemptState.RUNNING,
+    }:
+        final = terminalize_pre_admission_attempt(
+            connection,
+            attempt_id=attempt_id,
+            state=PreAdmissionAttemptState.BLOCKED,
+            cause=LATER_CYCLE_ADMISSION_DEADLINE_EXHAUSTED,
+            now=now,
+        )
+        cancel_job(connection, job_id=attempt.scheduler_job_id, now=now)
+    elif attempt.state is PreAdmissionAttemptState.CONSUMED:
+        raise ValueError("consumed Cycle-2 attempt reached admission deadline path")
+    else:
+        final = attempt
+
+    claim_ordinal = int(
+        connection.execute(
+            "SELECT COALESCE(MAX(claim_ordinal),1) "
+            "FROM printer_pre_admission_attempt_evidence WHERE attempt_id=?",
+            (attempt_id,),
+        ).fetchone()[0]
+    )
+    append_pre_admission_attempt_evidence(
+        connection,
+        attempt_id=attempt_id,
+        event_key="admission-deadline-expired",
+        opportunity_ordinal=3,
+        claim_ordinal=max(1, claim_ordinal),
+        evidence_kind="ATTEMPT_DISPOSITION",
+        observed_at=now.astimezone(timezone.utc).isoformat(),
+        categorical_reason=LATER_CYCLE_ADMISSION_DEADLINE_EXHAUSTED,
+        payload={
+            "deadline_at": deadline_at.astimezone(timezone.utc).isoformat(),
+            "state_after": final.state.value,
+        },
+    )
+    connection.commit()
+    return (
+        attempt_id,
+        final.state.value,
+        LATER_CYCLE_ADMISSION_DEADLINE_EXHAUSTED,
+    )
+
 def _run_four_token_admission_boundary(
     *,
     connection: Any,
@@ -584,6 +725,7 @@ def _run_four_token_admission_boundary(
     central_scheduler: Any | None = None,
     clock: Callable[[], datetime] | None = None,
     acquisition_quantum_worst_case_seconds: float | Callable[[], float] = 60.0,
+    admission_deadline_seconds_after_first_cycle: int | None = None,
 ) -> FourTokenAdmissionBoundaryResult:
     """Consume at most one due admission inside the canonical factory loop."""
     from printer_v1.operator_cli.four_token_proof_integration import (
@@ -605,6 +747,14 @@ def _run_four_token_admission_boundary(
         authoritative_factory_run_id=str(binding.authoritative_factory_run_id),
         cycle_ordinal=2,
     )
+    hard_admission_deadline = None
+    if admission_deadline_seconds_after_first_cycle is not None:
+        hard_admission_deadline = _later_cycle_admission_deadline(
+            connection,
+            binding=binding,
+            first_cycle_id=first_cycle_id,
+            seconds_after_first_cycle=admission_deadline_seconds_after_first_cycle,
+        )
     pre = project_health()
     if existing_pair_ready_attempt_id is not None:
         pre = _pair_ready_post_discovery_projection(pre)
@@ -620,6 +770,50 @@ def _run_four_token_admission_boundary(
         if wait_projection is None
         else wait_projection.acquisition_deadline_at
     )
+    if hard_admission_deadline is not None:
+        acquisition_deadline_at = (
+            hard_admission_deadline
+            if acquisition_deadline_at is None
+            else min(acquisition_deadline_at, hard_admission_deadline)
+        )
+    current = now.astimezone(timezone.utc)
+    quantum_seconds = _resolve_acquisition_quantum_bound(
+        acquisition_quantum_worst_case_seconds
+    )
+    deadline_exhausted = (
+        hard_admission_deadline is not None
+        and current >= hard_admission_deadline
+    )
+    no_safe_quantum_remaining = (
+        hard_admission_deadline is not None
+        and existing_pair_ready_attempt_id is None
+        and current + timedelta(seconds=quantum_seconds) > hard_admission_deadline
+    )
+    if deadline_exhausted or no_safe_quantum_remaining:
+        attempt_id, attempt_state, cause = (
+            _terminalize_later_cycle_admission_deadline(
+                connection,
+                binding=binding,
+                first_cycle_id=first_cycle_id,
+                now=current,
+                deadline_at=hard_admission_deadline,
+            )
+        )
+        return FourTokenAdmissionBoundaryResult(
+            FourTokenAdmissionDisposition(
+                FourTokenAdmissionDispositionKind.COMPLETE,
+                LATER_CYCLE_ADMISSION_DEADLINE_EXHAUSTED,
+                current,
+                False,
+            ),
+            False,
+            attempt_id,
+            attempt_state,
+            cause,
+            None,
+            None,
+            hard_admission_deadline,
+        )
     spacing_health = getattr(pre, "health", None)
     spacing_acquisition_rearm = (
         disposition.kind is FourTokenAdmissionDispositionKind.REARM
@@ -661,7 +855,6 @@ def _run_four_token_admission_boundary(
             None,
             acquisition_deadline_at,
         )
-    current = now.astimezone(timezone.utc)
     if existing_attempt is None:
         from printer_v1.operator_cli.four_token_proof_integration import (
             FOUR_TOKEN_LATER_CYCLE_COMPLETION_RESERVE_SECONDS,
@@ -694,9 +887,7 @@ def _run_four_token_admission_boundary(
         and _later_cycle_acquisition_deadline_conflict(
             now=now,
             earliest_lifecycle_deadline=next_due_work_at,
-            worst_case_quantum_seconds=_resolve_acquisition_quantum_bound(
-                acquisition_quantum_worst_case_seconds
-            ),
+            worst_case_quantum_seconds=quantum_seconds,
         )
     ):
         from printer_v1.operator_cli.four_token_proof_integration import (
@@ -7459,6 +7650,25 @@ def _resolve_four_token_no_accounting_shared_terminal(
         attempt = attempt_rows[0]
         attempt_state = str(attempt["attempt_state"] or "")
         attempt_cause = str(attempt["first_terminal_cause"] or "").strip()
+        if (
+            attempt_state == "CANCELLED"
+            and attempt_cause == "EXACT_PAIR_FROZEN"
+        ):
+            deadline_evidence = conn.execute(
+                """SELECT categorical_reason FROM printer_pre_admission_attempt_evidence
+                   WHERE attempt_id=? AND event_key='admission-deadline-expired'
+                     AND evidence_kind='ATTEMPT_DISPOSITION'""",
+                (
+                    f"pre-admission:{campaign_id}:{campaign_run_id}:"
+                    f"{factory_run_id}:c0002",
+                ),
+            ).fetchone()
+            if (
+                deadline_evidence is not None
+                and str(deadline_evidence[0] or "")
+                == LATER_CYCLE_ADMISSION_DEADLINE_EXHAUSTED
+            ):
+                attempt_cause = LATER_CYCLE_ADMISSION_DEADLINE_EXHAUSTED
         from printer_v1.operator_cli.four_token_factory_adapter import (
             PARENT_CAMPAIGN_INTERRUPTED_PREFIX,
         )
@@ -10036,6 +10246,7 @@ def run_one_command_15m_factory(
     four_token_proof_controller: Any | None = None,
     later_cycle_discovery_callback: Callable[..., Any] | None = None,
     later_cycle_acquisition_quantum_seconds: float | Callable[[], float] = 60.0,
+    later_cycle_admission_deadline_seconds_after_first_cycle: int | None = None,
     four_token_health_projector: Callable[[sqlite3.Connection, datetime], Any]
     | None = None,
     four_token_shared_terminalizer: Callable[..., Mapping[str, Any]]
@@ -10107,6 +10318,16 @@ def run_one_command_15m_factory(
             _resolve_acquisition_quantum_bound(
                 later_cycle_acquisition_quantum_seconds
             )
+            if (
+                later_cycle_admission_deadline_seconds_after_first_cycle
+                is not None
+                and (
+                    type(later_cycle_admission_deadline_seconds_after_first_cycle)
+                    is not int
+                    or later_cycle_admission_deadline_seconds_after_first_cycle < 300
+                )
+            ):
+                raise ValueError("invalid later-cycle admission deadline")
         except (TypeError, ValueError):
             reasons.append("later-cycle acquisition quantum duration must be positive")
     elif later_cycle_discovery_callback is not None:
@@ -10812,6 +11033,9 @@ def run_one_command_15m_factory(
                         clock=_now,
                         acquisition_quantum_worst_case_seconds=(
                             later_cycle_acquisition_quantum_seconds
+                        ),
+                        admission_deadline_seconds_after_first_cycle=(
+                            later_cycle_admission_deadline_seconds_after_first_cycle
                         ),
                     )
                     kind = boundary.disposition.kind

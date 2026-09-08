@@ -4187,6 +4187,9 @@ def _run_operational_campaign(
                     "cancellation_probe": cancellation_probe,
                     "factory_run_initialized": retain_factory_run_id,
                     "four_token_proof_controller": four_token_proof_controller,
+                    "later_cycle_admission_deadline_seconds_after_first_cycle": (
+                        policy.later_cycle_pre_admission_deadline_seconds_after_cycle_one
+                    ),
                     "four_token_shared_terminalizer": (
                         _four_token_shared_terminalizer
                         if four_token_proof_controller is not None

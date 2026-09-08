@@ -952,3 +952,75 @@ def test_spacing_hold_does_not_bypass_source_or_capacity_health(
     finally:
         connection.close()
 
+def test_cycle2_deadline_terminalizes_without_starting_unsafe_quantum(
+    tmp_path,
+) -> None:
+    db, _backup, _disposable_binding = _prepare(tmp_path)
+    connection = sqlite3.connect(db)
+    connection.row_factory = sqlite3.Row
+    connection.execute(
+        "UPDATE printer_memory_factory_campaign_runs SET authoritative_run_id=? "
+        "WHERE run_id=? AND campaign_id=?",
+        (FACTORY_RUN_ID, CAMPAIGN_RUN_ID, CAMPAIGN_ID),
+    )
+    connection.commit()
+    callback_calls = 0
+    now = START + timedelta(seconds=590)
+
+    def forbidden_callback(**_kwargs):
+        nonlocal callback_calls
+        callback_calls += 1
+        raise AssertionError("quantum crossing +10m deadline must not start")
+
+    try:
+        result = factory._run_four_token_admission_boundary(
+            connection=connection,
+            controller=_CadenceReadyController(),
+            binding=MultiCycleCampaignBinding(
+                campaign_id=CAMPAIGN_ID,
+                campaign_run_id=CAMPAIGN_RUN_ID,
+                configuration_id=CONFIGURATION_ID,
+                authoritative_factory_run_id=FACTORY_RUN_ID,
+            ),
+            first_cycle_id=CYCLE_ID,
+            now=now,
+            next_due_work_at=None,
+            proof_deadline=START + timedelta(hours=5),
+            project_health=_healthy_projection,
+            evaluate=lambda _projection: FourTokenAdmissionDisposition(
+                FourTokenAdmissionDispositionKind.CYCLE_ADMISSION,
+                "ADMISSION_READY",
+                now,
+                True,
+            ),
+            later_cycle_callback=forbidden_callback,
+            admit=lambda **_kwargs: (_ for _ in ()).throw(
+                AssertionError("deadline-terminal Cycle 2 cannot admit")
+            ),
+            materialize=lambda **_kwargs: None,
+            plan_opening=lambda **_kwargs: None,
+            acquisition_quantum_worst_case_seconds=18.0,
+            admission_deadline_seconds_after_first_cycle=600,
+        )
+        assert callback_calls == 0
+        assert result.admitted is False
+        assert result.attempt_state == "BLOCKED"
+        assert (
+            result.attempt_terminal_cause
+            == factory.LATER_CYCLE_ADMISSION_DEADLINE_EXHAUSTED
+        )
+        assert result.attempt_acquisition_deadline_at == START + timedelta(seconds=600)
+        row = connection.execute(
+            "SELECT attempt_state,first_terminal_cause FROM "
+            "printer_pre_admission_discovery_attempts"
+        ).fetchone()
+        assert tuple(row) == (
+            "BLOCKED",
+            factory.LATER_CYCLE_ADMISSION_DEADLINE_EXHAUSTED,
+        )
+        assert connection.execute(
+            "SELECT COUNT(*) FROM printer_memory_factory_campaign_cycles "
+            "WHERE cycle_ordinal=2"
+        ).fetchone()[0] == 0
+    finally:
+        connection.close()

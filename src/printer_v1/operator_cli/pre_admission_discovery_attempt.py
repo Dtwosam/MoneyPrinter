@@ -1378,6 +1378,84 @@ def cancel_pair_ready_pre_admission_attempt_for_terminal_parent(
     return load_pre_admission_attempt(connection, attempt_id=exact_id)
 
 
+def cancel_pair_ready_pre_admission_attempt_for_admission_deadline(
+    connection: sqlite3.Connection,
+    *,
+    attempt_id: str,
+    campaign_id: str,
+    campaign_run_id: str,
+    authoritative_factory_run_id: str,
+    deadline_at: datetime,
+    now: datetime,
+) -> PreAdmissionDiscoveryAttempt:
+    """Revoke an unconsumed frozen pair only after its admission deadline.
+
+    The frozen pair evidence and its original EXACT_PAIR_FROZEN first cause are
+    immutable. A separate append-only ATTEMPT_DISPOSITION event carries the
+    deadline terminal cause for campaign reporting.
+    """
+    exact_id = _required(attempt_id, "attempt_id")
+    exact_campaign_id = _required(campaign_id, "campaign_id")
+    exact_run_id = _required(campaign_run_id, "campaign_run_id")
+    exact_factory_id = _required(
+        authoritative_factory_run_id, "authoritative_factory_run_id"
+    )
+    if (
+        deadline_at.tzinfo is None
+        or deadline_at.utcoffset() is None
+        or now.tzinfo is None
+        or now.utcoffset() is None
+    ):
+        raise PreAdmissionAttemptError("ADMISSION_DEADLINE_TIME_INVALID")
+    deadline = deadline_at.astimezone(timezone.utc)
+    instant_dt = now.astimezone(timezone.utc)
+    if instant_dt < deadline:
+        raise PreAdmissionAttemptError("ADMISSION_DEADLINE_NOT_REACHED")
+
+    current = load_pre_admission_attempt(connection, attempt_id=exact_id)
+    if (
+        current.state is not PreAdmissionAttemptState.PAIR_READY
+        or current.first_terminal_cause != "EXACT_PAIR_FROZEN"
+        or current.terminal_at is None
+        or current.consumed_cycle_id is not None
+        or current.consumed_at is not None
+    ):
+        raise PreAdmissionAttemptError("PAIR_READY_DEADLINE_SHAPE_INVALID")
+    if (
+        current.campaign_id != exact_campaign_id
+        or current.campaign_run_id != exact_run_id
+        or current.authoritative_factory_run_id != exact_factory_id
+    ):
+        raise PreAdmissionAttemptError("ADMISSION_DEADLINE_OWNERSHIP_MISMATCH")
+
+    load_pre_admission_pair(
+        connection, attempt_id=exact_id, require_frozen_lane=True
+    )
+    instant = instant_dt.isoformat()
+    cursor = connection.execute(
+        """UPDATE printer_pre_admission_discovery_attempts
+           SET attempt_state='CANCELLED', updated_at=?
+           WHERE attempt_id=?
+             AND campaign_id=?
+             AND campaign_run_id=?
+             AND authoritative_factory_run_id=?
+             AND attempt_state='PAIR_READY'
+             AND first_terminal_cause='EXACT_PAIR_FROZEN'
+             AND terminal_at IS NOT NULL
+             AND consumed_cycle_id IS NULL
+             AND consumed_at IS NULL""",
+        (
+            instant,
+            exact_id,
+            exact_campaign_id,
+            exact_run_id,
+            exact_factory_id,
+        ),
+    )
+    if cursor.rowcount != 1:
+        raise PreAdmissionAttemptError("PAIR_READY_DEADLINE_CANCEL_FAILED")
+    return load_pre_admission_attempt(connection, attempt_id=exact_id)
+
 def link_pre_admission_source_evidence(
     connection: sqlite3.Connection,
     *,
@@ -1469,6 +1547,7 @@ __all__ = [
     "PreAdmissionPersistenceDiagnostic",
     "PreAdmissionAttemptState", "PreAdmissionDiscoveryAttempt",
     "attach_frozen_tracking_lane",
+    "cancel_pair_ready_pre_admission_attempt_for_admission_deadline",
     "cancel_pair_ready_pre_admission_attempt_for_terminal_parent",
     "create_pre_admission_attempt", "create_scheduled_pre_admission_attempt",
     "link_pre_admission_source_evidence",
