@@ -484,6 +484,13 @@ def _post_holder_resumed_supply_terminal_cause(
 ) -> str:
     """Surface the canonical resumed supply terminal without another refresh call."""
     diagnostics = dict(getattr(supply, "diagnostics", {}) or {})
+    # The canonical shortage classification is the terminal truth.  A raw
+    # stop reason explains how supply stopped, but must not replace a more
+    # precise budget/source/staleness/duration/tracking classification at the
+    # campaign boundary.
+    shortage = str(diagnostics.get("shortage_classification") or "").strip()
+    if shortage:
+        return shortage
     last_stop_reason = str(diagnostics.get("last_stop_reason") or "").strip()
     if last_stop_reason and last_stop_reason != "ELIGIBLE_CAPACITY_MET":
         return last_stop_reason
@@ -493,7 +500,6 @@ def _post_holder_resumed_supply_terminal_cause(
         "CANDIDATE_SUPPLY_READY",
     }:
         return terminal
-    shortage = str(diagnostics.get("shortage_classification") or "").strip()
     return shortage or str(fallback)
 
 

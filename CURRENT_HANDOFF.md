@@ -59,15 +59,33 @@ distinction between MARKET_READY and freeze-ready capacity.
 No unresolved code blocker is proven in the audited Cycle-2 live path by the
 current exact CI.
 
+## Cycle-1 terminal-truth repair
+
+The consumed admission-checkpoint authorization
+`V2_9_8B_FOUR_TOKEN_ADMISSION_CHECKPOINT_AUTH_20260908T172327Z_884c7694`
+remains permanently non-reusable. Its Cycle-1 post-holder resumed supply had
+the authoritative `BUDGET_EXHAUSTION` shortage classification, but campaign
+terminal truth was incorrectly collapsed to
+`INSUFFICIENT_ELIGIBLE_TWO_SLOT_POOL`; its deferred certificate was therefore
+not persisted at the real terminal boundary.
+
+The repair preserves an authoritative resumed-supply shortage classification
+at that boundary, allowing the existing single deferred certificate owner to
+persist the exact budget-exhaustion certificate. Focused disposable-state
+coverage verifies the budget terminal, exact certificate persistence, ordinary
+generic shortfall behavior, and the post-holder request-provenance path. This
+does not change budgets, source policy, candidate selection, holder/tracking
+policy, or operational readiness.
+
 Operational readiness is not established for this branch HEAD or the
 authoritative DB. The prior one-shot authorization remains consumed and
 non-reusable.
 
 ## Exact next permitted action
 
-This repair lane is closed. No authorization preparation/consumption, provider
-contact, Printer run, Scheduler operational execution, or authoritative DB
-mutation is permitted by this handoff.
+Read-only verification/review of this repair is permitted. No authorization
+preparation/consumption, provider contact, Printer run, Scheduler operational
+execution, or authoritative DB mutation is permitted by this handoff.
 
 A new engineering lane may begin from the exact current branch HEAD after
 re-resolving it and reading `AGENTS.md` plus this file. Any future operational

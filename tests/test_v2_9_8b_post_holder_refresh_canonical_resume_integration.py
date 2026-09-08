@@ -40,6 +40,7 @@ from printer_v1.operator_cli.authoritative_live_operational_campaign import (
     PILOT_INPUT_READINESS,
     _carry_post_holder_refresh_evidence,
     _persist_supply_exhaustion_certificate_at_terminal,
+    _post_holder_resumed_supply_terminal_cause,
     _post_holder_supply_resume_coverage,
 )
 from printer_v1.operator_cli.graduated_supply_front_door import GraduatedSupply
@@ -75,6 +76,87 @@ def test_temporal_refresh_terminal_mapping_is_shared_and_categorical() -> None:
     assert temporal_refresh_terminal_cause(INTERNAL_INVARIANT) == (
         "DISCOVERY_ARCHITECTURE_FALSE_SHORTAGE"
     )
+
+
+def test_post_holder_resumed_budget_exhaustion_preserves_shortage_classification(
+    tmp_path,
+) -> None:
+    """A resumed supply's authoritative shortage must beat its raw stop code."""
+    supply = GraduatedSupply(
+        ready=False,
+        terminal="BLOCKED_INSUFFICIENT_ELIGIBLE_GRADUATED_POOL",
+        graduated_supply=(),
+        graduation_proofs={},
+        candidate_a=None,
+        candidate_b=None,
+        two_candidate_selection={},
+        handoff_readiness={},
+        discovery_report={},
+        front_door_report={},
+        diagnostics={
+            "last_stop_reason": "DISCOVERY_OPERATION_BUDGET_EXHAUSTED",
+            "shortage_classification": "BUDGET_EXHAUSTION",
+            "exhaustion_certificate": {
+                "certificate_id": "exh-post-holder-budget",
+                "campaign_id": "campaign",
+                "execution_id": "execution",
+                "run_id": "run",
+                "cycle_id": "cycle",
+                "required_eligible_capacity": 2,
+                "eligible_reserve_count": 0,
+                "shortage_classification": "BUDGET_EXHAUSTION",
+                "certificate_version": "V2_9_8B_LIQUIDITY_EVIDENCE_EXHAUSTION_V2",
+                "created_at": "2026-09-08T17:56:45+00:00",
+            },
+        },
+        holder_reserve_supply=(),
+        holder_reserve_candidates={},
+    )
+
+    assert _post_holder_resumed_supply_terminal_cause(
+        supply,
+        fallback="INSUFFICIENT_ELIGIBLE_TWO_SLOT_POOL",
+    ) == "BUDGET_EXHAUSTION"
+
+    db = tmp_path / "post-holder-budget.sqlite3"
+    apply_migrations(db)
+    connection = sqlite3.connect(db)
+    try:
+        _persist_supply_exhaustion_certificate_at_terminal(connection, supply)
+        connection.commit()
+        row = connection.execute(
+            "SELECT shortage_classification, certificate_json "
+            "FROM printer_discovery_exhaustion_certificates "
+            "WHERE certificate_id='exh-post-holder-budget'"
+        ).fetchone()
+        assert row is not None
+        assert row[0] == "BUDGET_EXHAUSTION"
+        assert json.loads(row[1]) == supply.diagnostics["exhaustion_certificate"]
+    finally:
+        connection.close()
+
+
+def test_post_holder_resume_keeps_generic_pool_shortfall_without_shortage_classification() -> None:
+    supply = GraduatedSupply(
+        ready=False,
+        terminal="BLOCKED_INSUFFICIENT_ELIGIBLE_GRADUATED_POOL",
+        graduated_supply=(),
+        graduation_proofs={},
+        candidate_a=None,
+        candidate_b=None,
+        two_candidate_selection={},
+        handoff_readiness={},
+        discovery_report={},
+        front_door_report={},
+        diagnostics={},
+        holder_reserve_supply=(),
+        holder_reserve_candidates={},
+    )
+
+    assert _post_holder_resumed_supply_terminal_cause(
+        supply,
+        fallback="INSUFFICIENT_ELIGIBLE_TWO_SLOT_POOL",
+    ) == "BLOCKED_INSUFFICIENT_ELIGIBLE_GRADUATED_POOL"
 
 
 def test_refresh_evidence_carry_is_idempotent() -> None:
@@ -427,7 +509,7 @@ def test_four_token_standard4h_disposable_rehearsal_uses_proof_preflight(
         )
 
 
-def test_post_holder_completed_refresh_resumes_canonical_supply_and_refreezes() -> None:
+def test_post_holder_resumed_budget_exhaustion_preserves_terminal_and_certificate() -> None:
     base = _CampaignBase()
     base.setUp()
     try:
@@ -562,12 +644,10 @@ def test_post_holder_completed_refresh_resumes_canonical_supply_and_refreezes() 
         owner = AuthoritativeLiveOperationalCampaignOwner()
         _force_holder_extreme_ineligible(owner, supply.holder_reserve_supply)
 
-        real_freeze = freeze_eligible_reserve_for_campaign
         freeze_calls = {"count": 0}
 
         def freeze_spy(connection, candidates, **kwargs):
             freeze_calls["count"] += 1
-            materialized = list(candidates)
             if freeze_calls["count"] == 1:
                 return FrozenEligibleReserve(
                     selected=(),
@@ -580,8 +660,17 @@ def test_post_holder_completed_refresh_resumes_canonical_supply_and_refreezes() 
                         "observation_eligible_count": 2,
                     },
                 )
-            assert len(materialized) >= 4
-            return real_freeze(connection, materialized, **kwargs)
+            return FrozenEligibleReserve(
+                selected=(),
+                alternates=(),
+                rejected_stale=(),
+                frozen_at=str(kwargs["at"]),
+                selection_authority={
+                    "coverage_blocker": True,
+                    "valid_fresh_unique_observation_depth": 0,
+                    "observation_eligible_count": 0,
+                },
+            )
 
         resume_calls = {"count": 0}
 
@@ -620,8 +709,20 @@ def test_post_holder_completed_refresh_resumes_canonical_supply_and_refreezes() 
             updated["stage_reported_request_ids"] = [refresh_owner.request_id]
             updated["discovery_operations_used"] = 1
             updated["discovery_operations_remaining"] = 9
-            updated["last_stop_reason"] = "ELIGIBLE_CAPACITY_MET"
-            updated["shortage_classification"] = None
+            updated["last_stop_reason"] = "DISCOVERY_OPERATION_BUDGET_EXHAUSTED"
+            updated["shortage_classification"] = "BUDGET_EXHAUSTION"
+            updated["exhaustion_certificate"] = {
+                "certificate_id": "exh-post-holder-campaign-budget",
+                "campaign_id": base.command.campaign_id,
+                "execution_id": selection_seed,
+                "run_id": base.command.run_id,
+                "cycle_id": cycle_id,
+                "required_eligible_capacity": 2,
+                "eligible_reserve_count": 0,
+                "shortage_classification": "BUDGET_EXHAUSTION",
+                "certificate_version": "V2_9_8B_LIQUIDITY_EVIDENCE_EXHAUSTION_V2",
+                "created_at": e8.NOW,
+            }
             return replace(supply, diagnostics=updated)
 
         with patch(
@@ -656,7 +757,7 @@ def test_post_holder_completed_refresh_resumes_canonical_supply_and_refreezes() 
         assert resume_calls["count"] == 1
         assert freeze_calls["count"] == 2
         assert result.lifecycle_started is False
-        assert result.lifecycle["stop_reason"] == "PILOT_INPUT_READY"
+        assert result.lifecycle["stop_reason"] == "BUDGET_EXHAUSTION"
         final_diagnostics = _campaign_supply_diagnostics(result.lifecycle)
         assert (
             final_diagnostics["post_holder_refresh_resume"]["status"]
@@ -690,9 +791,21 @@ def test_post_holder_completed_refresh_resumes_canonical_supply_and_refreezes() 
             final_diagnostics["campaign_source_request_reconciliation"]["status"]
             == "OK"
         )
-        assert final_diagnostics["freeze_depth_enforcement"]["selected_count"] == 2
+        assert final_diagnostics["freeze_depth_enforcement"]["selected_count"] == 0
         assert refresh_owner.request_id in final_diagnostics[
             "durable_campaign_request_ids"
         ]
+        connection = sqlite3.connect(base.db)
+        try:
+            row = connection.execute(
+                "SELECT shortage_classification, certificate_json "
+                "FROM printer_discovery_exhaustion_certificates "
+                "WHERE certificate_id='exh-post-holder-campaign-budget'"
+            ).fetchone()
+            assert row is not None
+            assert row[0] == "BUDGET_EXHAUSTION"
+            assert json.loads(row[1]) == final_diagnostics["exhaustion_certificate"]
+        finally:
+            connection.close()
     finally:
         base.tearDown()
