@@ -80,10 +80,11 @@ LOCKED_WINDOWS = ("WINDOW_12H", "WINDOW_24H")
 #: through-4h lifecycle a finite same-invocation wall-time envelope. They are
 #: the proven four-token bounded clocks, reused rather than re-derived.
 PRE_LIFECYCLE_ACQUISITION_DURATION_SECONDS = 2_400
-# Cycle 2 discovery starts during the five-minute admission-spacing hold and
-# gets one bounded ten-minute pre-admission window from its first cooperative
-# claim. Admission itself remains locked by the existing 300s minimum spacing.
-LATER_CYCLE_PRE_ADMISSION_ACQUISITION_DURATION_SECONDS = 600
+# Cycle 2 discovery starts during the five-minute admission-spacing hold. Its
+# pre-admission deadline is anchored to the durable Cycle-1 admission timestamp
+# at +600s; Scheduler delay therefore cannot widen the intended overlap window.
+# Admission itself remains locked by the existing 300s minimum spacing.
+LATER_CYCLE_PRE_ADMISSION_DEADLINE_SECONDS_AFTER_CYCLE_ONE = 600
 POST_SUPPLY_LIFECYCLE_DURATION_SECONDS = 18_000
 MAX_ONE_SHOT_WALL_ENVELOPE_SECONDS = (
     PRE_LIFECYCLE_ACQUISITION_DURATION_SECONDS
@@ -113,8 +114,8 @@ def exact_operational_policy() -> dict[str, Any]:
         "pre_lifecycle_acquisition_duration_seconds": (
             PRE_LIFECYCLE_ACQUISITION_DURATION_SECONDS
         ),
-        "later_cycle_pre_admission_acquisition_duration_seconds": (
-            LATER_CYCLE_PRE_ADMISSION_ACQUISITION_DURATION_SECONDS
+        "later_cycle_pre_admission_deadline_seconds_after_cycle_one": (
+            LATER_CYCLE_PRE_ADMISSION_DEADLINE_SECONDS_AFTER_CYCLE_ONE
         ),
         "post_supply_lifecycle_duration_seconds": (
             POST_SUPPLY_LIFECYCLE_DURATION_SECONDS
@@ -150,7 +151,7 @@ __all__ = [
     "CONFIGURED_THROUGH_4H_TOKENS",
     "FOUR_TOKEN_STANDARD_FOUR_HOUR_MODE",
     "LIFECYCLE_REQUESTS_PER_TOKEN",
-    "LATER_CYCLE_PRE_ADMISSION_ACQUISITION_DURATION_SECONDS",
+    "LATER_CYCLE_PRE_ADMISSION_DEADLINE_SECONDS_AFTER_CYCLE_ONE",
     "LIFECYCLE_REQUEST_OUTER_CEILING",
     "LIFECYCLE_SCHEDULER_OUTER_CEILING",
     "LOCKED_WINDOWS",

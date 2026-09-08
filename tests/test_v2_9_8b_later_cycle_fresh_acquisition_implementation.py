@@ -105,7 +105,6 @@ def test_canonical_builder_rebinds_cycle_scope_but_preserves_campaign_seed(
         acquisition_seconds=2400,
         lifecycle_duration_seconds=14700,
         heartbeat=None,
-        later_cycle_acquisition_seconds=600,
         cancellation_probe=lambda: None,
     )
     initial_work_deadline = owner.work_deadline_at
@@ -121,7 +120,6 @@ def test_canonical_builder_rebinds_cycle_scope_but_preserves_campaign_seed(
     )
     assert rebound.cycle_id == "cycle-2"
     assert rebound.work_deadline_at == initial_work_deadline
-    assert rebound.acquisition_deadline_at == "2026-08-17T00:15:01+00:00"
     assert rebound.refresh_interval_seconds == owner.refresh_interval_seconds
     assert stage_calls[-1]["request_key_prefix"] == "cycle-2-source-request-root"
     assert resolver_calls[-1]["cycle_id"] == "cycle-2"
@@ -218,3 +216,70 @@ def test_live_owner_uses_exact_cycle_child_source_scope_for_rebind():
     assert "request_key_prefix=cycle_scope.request_key_root" in source
     assert "deadline_at=later_cycle_deadline" in source
     assert "temporal_refresh_owner=later_cycle_refresh_owner" in source
+
+def test_later_cycle_deadline_is_anchored_to_cycle1_admission_not_rebind_time(
+    tmp_path,
+):
+    db_path = tmp_path / "anchored-deadline.sqlite3"
+    connection = sqlite3.connect(db_path)
+    connection.execute(
+        "CREATE TABLE printer_memory_factory_campaign_cycles("
+        "cycle_id TEXT PRIMARY KEY,campaign_id TEXT NOT NULL,run_id TEXT NOT NULL,"
+        "cycle_ordinal INTEGER NOT NULL,created_at TEXT NOT NULL)"
+    )
+    connection.execute(
+        "INSERT INTO printer_memory_factory_campaign_cycles("
+        "cycle_id,campaign_id,run_id,cycle_ordinal,created_at) "
+        "VALUES ('cycle-1','campaign-a','run-a',1,'2026-08-17T00:00:00+00:00')"
+    )
+    connection.commit()
+    connection.close()
+
+    original = None
+
+    def rebind(**kwargs):
+        return PreLifecycleTemporalRefreshOwner(
+            db_path,
+            campaign_id="campaign-a",
+            run_id="run-a",
+            cycle_id=kwargs["cycle_id"],
+            supervision_id="supervision-a",
+            source_governor=original.source_governor,
+            central_scheduler=original.central_scheduler,
+            acquisition_deadline_at=kwargs["acquisition_deadline_at_override"],
+            work_deadline_at=original.work_deadline_at,
+            refresh_stage=lambda *a, **k: {},
+            discovery_batch_resolver=lambda *a, **k: "batch-2",
+            refresh_interval_seconds=original.refresh_interval_seconds,
+            cycle_rebinder=rebind,
+            later_cycle_deadline_seconds_after_first_cycle=600,
+        )
+
+    original = PreLifecycleTemporalRefreshOwner(
+        db_path,
+        campaign_id="campaign-a",
+        run_id="run-a",
+        cycle_id="cycle-1",
+        supervision_id="supervision-a",
+        source_governor=Port("SOURCE_GOVERNOR"),
+        central_scheduler=Port("CENTRAL_SCHEDULER"),
+        acquisition_deadline_at="2026-08-17T00:40:00+00:00",
+        work_deadline_at="2026-08-17T05:00:00+00:00",
+        refresh_stage=lambda *a, **k: {},
+        discovery_batch_resolver=lambda *a, **k: "batch-1",
+        refresh_interval_seconds=600,
+        cycle_rebinder=rebind,
+        later_cycle_deadline_seconds_after_first_cycle=600,
+    )
+
+    rebound = original.for_cycle(
+        cycle_id="cycle-2",
+        cycle_cutoff="2026-08-17T00:07:00+00:00",
+        evaluated_at="2026-08-17T00:07:00+00:00",
+        request_key_prefix="cycle-2-request-root",
+        cooperative_yield=True,
+    )
+    assert rebound.acquisition_deadline_at == "2026-08-17T00:10:00+00:00"
+    assert rebound.acquisition_started_at is None
+    assert rebound._cooperative_yield is True
+

@@ -293,7 +293,7 @@ class _OperationalCampaignPolicy:
     pre_lifecycle_acquisition_duration_seconds: int = (
         PRE_LIFECYCLE_ACQUISITION_DURATION_SECONDS
     )
-    later_cycle_pre_admission_acquisition_duration_seconds: int | None = None
+    later_cycle_pre_admission_deadline_seconds_after_cycle_one: int | None = None
     continuous_four_hour: bool = False
     standard_four_hour_campaign: bool = False
 
@@ -378,8 +378,8 @@ FOUR_TOKEN_STANDARD_FOUR_HOUR_POLICY = _OperationalCampaignPolicy(
     pre_lifecycle_acquisition_duration_seconds=(
         _four_token_operational.PRE_LIFECYCLE_ACQUISITION_DURATION_SECONDS
     ),
-    later_cycle_pre_admission_acquisition_duration_seconds=(
-        _four_token_operational.LATER_CYCLE_PRE_ADMISSION_ACQUISITION_DURATION_SECONDS
+    later_cycle_pre_admission_deadline_seconds_after_cycle_one=(
+        _four_token_operational.LATER_CYCLE_PRE_ADMISSION_DEADLINE_SECONDS_AFTER_CYCLE_ONE
     ),
     continuous_four_hour=True,
     standard_four_hour_campaign=True,
@@ -1867,7 +1867,7 @@ def _build_pre_lifecycle_temporal_refresh_owner(
     lifecycle_duration_seconds: int,
     heartbeat: "_CampaignHeartbeat | None",
     cancellation_probe: Callable[[], str | None],
-    later_cycle_acquisition_seconds: int | None = None,
+    later_cycle_deadline_seconds_after_first_cycle: int | None = None,
     stage_evidence_sink: Callable[[Mapping[str, Any]], None] | None = None,
     transport_identity_observer: Callable[[Any], None] | None = None,
     local_validation_identity_observer: Callable[[Any], None] | None = None,
@@ -1936,10 +1936,10 @@ def _build_pre_lifecycle_temporal_refresh_owner(
     supply_kwargs = dict(graduated_supply_kwargs or {})
     campaign_selection_seed = execution_id
     if (
-        later_cycle_acquisition_seconds is not None
+        later_cycle_deadline_seconds_after_first_cycle is not None
         and (
-            type(later_cycle_acquisition_seconds) is not int
-            or later_cycle_acquisition_seconds <= 0
+            type(later_cycle_deadline_seconds_after_first_cycle) is not int
+            or later_cycle_deadline_seconds_after_first_cycle <= 0
         )
     ):
         raise OperationalMemoryFactoryError(
@@ -1956,6 +1956,7 @@ def _build_pre_lifecycle_temporal_refresh_owner(
         *, owner_cycle_id: str, owner_cycle_cutoff: str,
         owner_evaluated_at: str, owner_request_key_prefix: str,
         owner_acquisition_seconds: int,
+        owner_acquisition_deadline_at: str | None = None,
         owner_stage_evidence_sink: (
             Callable[[Mapping[str, Any]], None] | None
         ) = None,
@@ -1968,9 +1969,13 @@ def _build_pre_lifecycle_temporal_refresh_owner(
             supervision_id=command.supervision_id,
             source_governor=OwnerPort(SOURCE_GOVERNOR_OWNER, True),
             central_scheduler=OwnerPort(CENTRAL_SCHEDULER_OWNER, True),
-            acquisition_deadline_at=acquisition_deadline_at(
-                owner_evaluated_at,
-                acquisition_duration_seconds=int(owner_acquisition_seconds),
+            acquisition_deadline_at=(
+                str(owner_acquisition_deadline_at)
+                if owner_acquisition_deadline_at is not None
+                else acquisition_deadline_at(
+                    owner_evaluated_at,
+                    acquisition_duration_seconds=int(owner_acquisition_seconds),
+                )
             ),
             acquisition_started_at=owner_evaluated_at,
             # Later acquisition cannot extend the original authorization's
@@ -2003,12 +2008,16 @@ def _build_pre_lifecycle_temporal_refresh_owner(
             waiter=waiter,
             abort_event=failure_event,
             cycle_rebinder=cycle_rebinder,
+            later_cycle_deadline_seconds_after_first_cycle=(
+                later_cycle_deadline_seconds_after_first_cycle
+            ),
         )
 
     def cycle_rebinder(
         *, cycle_id: str, cycle_cutoff: str, evaluated_at: str,
         request_key_prefix: str,
         stage_evidence_sink: Callable[[Mapping[str, Any]], None] | None = None,
+        acquisition_deadline_at_override: str | None = None,
     ) -> PreLifecycleTemporalRefreshOwner:
         if (
             stage_evidence_sink is None
@@ -2022,11 +2031,8 @@ def _build_pre_lifecycle_temporal_refresh_owner(
             owner_cycle_cutoff=cycle_cutoff,
             owner_evaluated_at=evaluated_at,
             owner_request_key_prefix=request_key_prefix,
-            owner_acquisition_seconds=(
-                int(later_cycle_acquisition_seconds)
-                if later_cycle_acquisition_seconds is not None
-                else int(acquisition_seconds)
-            ),
+            owner_acquisition_seconds=int(acquisition_seconds),
+            owner_acquisition_deadline_at=acquisition_deadline_at_override,
             owner_stage_evidence_sink=stage_evidence_sink,
         )
 
@@ -4057,8 +4063,8 @@ def _run_operational_campaign(
                 ),
                 lifecycle_duration_seconds=policy.duration_seconds,
                 heartbeat=heartbeat,
-                later_cycle_acquisition_seconds=(
-                    policy.later_cycle_pre_admission_acquisition_duration_seconds
+                later_cycle_deadline_seconds_after_first_cycle=(
+                    policy.later_cycle_pre_admission_deadline_seconds_after_cycle_one
                 ),
                 cancellation_probe=cancellation_probe,
                 stage_evidence_sink=cycle_1_stage_evidence_sink,

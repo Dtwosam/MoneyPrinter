@@ -170,7 +170,8 @@ class PreLifecycleTemporalRefreshOwner:
         waiter: Callable[[float], bool] | None = None, clock: Callable[[], str] | None = None,
         publisher: Callable[[Mapping[str, Any]], None] | None = None,
         abort_event: threading.Event | None = None, refresh_interval_seconds: int | None = None,
-        cycle_rebinder: Callable[..., "PreLifecycleTemporalRefreshOwner"] | None = None) -> None:
+        cycle_rebinder: Callable[..., "PreLifecycleTemporalRefreshOwner"] | None = None,
+        later_cycle_deadline_seconds_after_first_cycle: int | None = None) -> None:
         self.db_path=Path(db_path); self.campaign_id=str(campaign_id); self.run_id=str(run_id)
         self.cycle_id=str(cycle_id); self.supervision_id=str(supervision_id)
         self.source_governor=source_governor; self.central_scheduler=central_scheduler
@@ -183,6 +184,19 @@ class PreLifecycleTemporalRefreshOwner:
         self._supervision_probe=supervision_probe; self._waiter=waiter; self._clock=clock
         self._publisher=publisher; self._abort_event=abort_event
         self._cycle_rebinder=cycle_rebinder
+        if (
+            later_cycle_deadline_seconds_after_first_cycle is not None
+            and (
+                type(later_cycle_deadline_seconds_after_first_cycle) is not int
+                or later_cycle_deadline_seconds_after_first_cycle <= 0
+            )
+        ):
+            raise PreLifecycleTemporalRefreshError(
+                'LATER_CYCLE_DEADLINE_BOUND_INVALID'
+            )
+        self._later_cycle_deadline_seconds_after_first_cycle=(
+            later_cycle_deadline_seconds_after_first_cycle
+        )
         self._cooperative_yield=False
         self.refresh_interval_seconds=int(next_check_interval_seconds(JobKind.DISCOVERY_REFRESH) if refresh_interval_seconds is None else refresh_interval_seconds)
         self.published_states=[]; self._acquisition_mark=None
@@ -200,6 +214,26 @@ class PreLifecycleTemporalRefreshOwner:
         }
         if stage_evidence_sink is not None:
             rebind_kwargs['stage_evidence_sink']=stage_evidence_sink
+        if self._later_cycle_deadline_seconds_after_first_cycle is not None:
+            db_uri=f"file:{self.db_path.resolve().as_posix()}?mode=ro"
+            c=sqlite3.connect(db_uri,uri=True)
+            try:
+                rows=c.execute(
+                    """SELECT created_at FROM printer_memory_factory_campaign_cycles
+                       WHERE campaign_id=? AND run_id=? AND cycle_ordinal=1""",
+                    (self.campaign_id,self.run_id),
+                ).fetchall()
+            finally:
+                c.close()
+            if len(rows) != 1:
+                raise PreLifecycleTemporalRefreshError(
+                    'CYCLE_ONE_ADMISSION_TIME_NOT_EXACT'
+                )
+            first_cycle_admitted_at=parse_iso(str(rows[0][0]))
+            exact_deadline=first_cycle_admitted_at+timedelta(
+                seconds=self._later_cycle_deadline_seconds_after_first_cycle
+            )
+            rebind_kwargs['acquisition_deadline_at_override']=iso(exact_deadline)
         rebound=self._cycle_rebinder(
             **rebind_kwargs,
         )
@@ -217,6 +251,8 @@ class PreLifecycleTemporalRefreshOwner:
             or owner_identity(rebound.central_scheduler) != owner_identity(self.central_scheduler)
             or rebound.refresh_interval_seconds != self.refresh_interval_seconds
             or rebound.work_deadline_at != self.work_deadline_at
+            or rebound._later_cycle_deadline_seconds_after_first_cycle
+            != self._later_cycle_deadline_seconds_after_first_cycle
         ):
             raise PreLifecycleTemporalRefreshError('TEMPORAL_CYCLE_REBINDER_AUTHORITY_DRIFT')
         if parse_iso(rebound.acquisition_deadline_at) >= parse_iso(rebound.work_deadline_at):

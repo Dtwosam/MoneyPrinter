@@ -255,7 +255,7 @@ class CapacityDerivationTests(unittest.TestCase):
             operational.MINIMUM_CYCLE_ADMISSION_SPACING_SECONDS, 300
         )
         self.assertEqual(
-            operational.LATER_CYCLE_PRE_ADMISSION_ACQUISITION_DURATION_SECONDS,
+            operational.LATER_CYCLE_PRE_ADMISSION_DEADLINE_SECONDS_AFTER_CYCLE_ONE,
             600,
         )
 
@@ -311,7 +311,7 @@ class CapacityDerivationTests(unittest.TestCase):
         self.assertEqual(policy["total_cycle_admission_ceiling"], 2)
         self.assertEqual(policy["tokens_per_cycle"], 2)
         self.assertEqual(
-            policy["later_cycle_pre_admission_acquisition_duration_seconds"],
+            policy["later_cycle_pre_admission_deadline_seconds_after_cycle_one"],
             600,
         )
         self.assertEqual(policy["automatic_retries"], 0)
@@ -350,8 +350,8 @@ class CapacityDerivationTests(unittest.TestCase):
             operational.PRE_LIFECYCLE_ACQUISITION_DURATION_SECONDS,
         )
         self.assertEqual(
-            policy.later_cycle_pre_admission_acquisition_duration_seconds,
-            operational.LATER_CYCLE_PRE_ADMISSION_ACQUISITION_DURATION_SECONDS,
+            policy.later_cycle_pre_admission_deadline_seconds_after_cycle_one,
+            operational.LATER_CYCLE_PRE_ADMISSION_DEADLINE_SECONDS_AFTER_CYCLE_ONE,
         )
 
     def test_widening_beyond_two_cycles_is_rejected(self) -> None:
