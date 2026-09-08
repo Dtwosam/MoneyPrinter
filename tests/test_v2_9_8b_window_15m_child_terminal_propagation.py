@@ -95,6 +95,7 @@ def test_child_success_writes_structured_terminal():
         stdout = io.StringIO()
         result = {
             "status": "V2_9_8_OPERATIONAL_COMPLETE",
+            "campaign_pass": True,
             "execution_id": "exec-a",
             "campaign_id": "campaign-a",
             "run_id": "run-a",

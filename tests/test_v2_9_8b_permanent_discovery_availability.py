@@ -181,9 +181,11 @@ class TestMigration051:
                         "SELECT version FROM printer_schema_migrations ORDER BY version"
                     )
                 ]
+                canonical = list(migration_runner.canonical_migration_names())
                 assert before == 50
-                assert versions[-1] == "052_memory_observation_eligibility_layers.sql"
-                assert len(versions) == 52
+                assert versions == canonical
+                assert versions[-1] == canonical[-1]
+                assert len(versions) == len(canonical)
                 assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
                 assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
             finally:
@@ -530,6 +532,16 @@ class TestProductionSupplyComposition:
                 }
             )
 
+        execution_id = "permanent-owner-execution"
+        campaign_id = "campaign-a"
+        run_id = "permanent-owner-run"
+        cycle_id = "permanent-owner-cycle"
+        scope = build_campaign_source_request_scope(
+            execution_id=execution_id,
+            campaign_id=campaign_id,
+            run_id=run_id,
+            cycle_id=cycle_id,
+        )
         result = run_persistent_eligible_token_supply(
             db_path,
             cycle_seed="permanent-owner-seed",
@@ -541,7 +553,13 @@ class TestProductionSupplyComposition:
             run_locator=False,
             required_token_capacity=2,
             permanent_availability=True,
-            campaign_id="campaign-a",
+            execution_id=execution_id,
+            campaign_id=campaign_id,
+            run_id=run_id,
+            cycle_id=cycle_id,
+            discovery_request_key_prefix=scope.request_key_root,
+            front_door_request_key_prefix=scope.request_key_root,
+            campaign_source_request_scope=scope,
         )
 
         assert result.ready is True

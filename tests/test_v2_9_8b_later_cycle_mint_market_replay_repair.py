@@ -398,6 +398,13 @@ def test_cooperative_market_batch_defers_reconciliation_to_fast_safe_quantum(
         now=NOW,
         discovery_channel=PERSISTED_GRADUATED_CHANNEL,
     )
+    scope = _scope()
+    _record_request(
+        connection,
+        request_key=f"{scope.request_key_root}-mint-batch-r1",
+        response_status="COMPLETE",
+        identity=_identity(OTHER_MINT),
+    )
     connection.commit()
     connection.close()
 
@@ -423,14 +430,15 @@ def test_cooperative_market_batch_defers_reconciliation_to_fast_safe_quantum(
         dexscreener_batch_transport_factory=dex_factory,
         geckoterminal_reconciliation_transport_factory=forbidden_gecko,
         now=NOW,
-        discovery_request_key_prefix=_scope().request_key_root,
-        front_door_request_key_prefix=_scope().request_key_root,
+        discovery_request_key_prefix=scope.request_key_root,
+        front_door_request_key_prefix=scope.request_key_root,
         execution_id=EXECUTION_ID,
-        campaign_id=None,
-        run_id=None,
-        cycle_id=None,
-        campaign_source_request_scope=_scope(),
+        campaign_id=CAMPAIGN_ID,
+        run_id=RUN_ID,
+        cycle_id=CYCLE_ID,
+        campaign_source_request_scope=scope,
         permanent_availability=True,
+        cooperative_resume=True,
         cooperative_quantum=True,
         cooperative_phase="MARKET_DISCOVERY",
         cooperative_stage_budget=StageBudget.permanent_discovery_default(),
