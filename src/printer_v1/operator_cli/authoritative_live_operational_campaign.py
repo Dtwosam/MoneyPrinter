@@ -243,6 +243,50 @@ def _post_holder_supply_resume_coverage(
     return coverage
 
 
+def _restore_post_holder_resume_request_provenance(
+    diagnostics: Mapping[str, Any],
+    *,
+    prior_coverage: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Restore cumulative stage-produced request truth after canonical resume.
+
+    build_graduated_supply may return diagnostics that describe only the
+    resumed round even though the cooperative resume input carried earlier
+    discovery/supply coverage. Reconciliation is campaign-scoped, so preserve
+    the exact cumulative stage-produced coverage and its explicit stage-reported
+    IDs before durable request reconciliation runs.
+    """
+    from printer_v1.discovery.eligible_token_supply import (
+        merge_cumulative_source_request_coverage,
+    )
+
+    updated = dict(diagnostics)
+    cumulative = merge_cumulative_source_request_coverage(
+        prior_coverage,
+        updated.get("campaign_source_request_coverage")
+        or updated.get("source_request_coverage")
+        or (),
+    )
+    updated["campaign_source_request_coverage"] = cumulative
+
+    reported_ids: set[int] = set()
+    for raw in updated.get("stage_reported_request_ids") or ():
+        if isinstance(raw, bool):
+            continue
+        try:
+            request_id = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if request_id > 0:
+            reported_ids.add(request_id)
+    for entry in cumulative:
+        request_id = int(entry["source_request_id"])
+        if request_id > 0:
+            reported_ids.add(request_id)
+    updated["stage_reported_request_ids"] = sorted(reported_ids)
+    return updated
+
+
 def _resume_post_holder_supply_after_refresh(
     *,
     db_path: str | Path,
@@ -332,7 +376,10 @@ def _resume_post_holder_supply_after_refresh(
         now=datetime.now(timezone.utc).isoformat(),
         **resume_kwargs,
     )
-    diagnostics = dict(resumed.diagnostics)
+    diagnostics = _restore_post_holder_resume_request_provenance(
+        resumed.diagnostics,
+        prior_coverage=prior_coverage,
+    )
     for key in (
         "holder_context",
         "holder_source_request_ids",

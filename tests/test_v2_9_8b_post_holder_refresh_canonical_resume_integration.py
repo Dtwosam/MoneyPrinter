@@ -605,16 +605,19 @@ def test_post_holder_completed_refresh_resumes_canonical_supply_and_refreezes() 
                 int(entry["source_request_id"]) for entry in prior_coverage
             }
             updated = dict(supply.diagnostics)
-            updated["source_request_coverage"] = prior_coverage
-            updated["campaign_source_request_coverage"] = prior_coverage
-            ids = sorted(
-                {
-                    int(entry["source_request_id"])
-                    for entry in prior_coverage
-                }
-            )
-            updated["source_request_ids"] = ids
-            updated["stage_reported_request_ids"] = ids
+            refresh_only = [
+                entry
+                for entry in prior_coverage
+                if int(entry["source_request_id"]) == refresh_owner.request_id
+            ]
+            assert len(refresh_only) == 1
+            # Reproduce the live defect: canonical resumed diagnostics describe
+            # only the resumed/refresh round. The campaign owner, not this
+            # builder, must restore the earlier cumulative request provenance.
+            updated["source_request_coverage"] = refresh_only
+            updated["campaign_source_request_coverage"] = refresh_only
+            updated["source_request_ids"] = [refresh_owner.request_id]
+            updated["stage_reported_request_ids"] = [refresh_owner.request_id]
             updated["discovery_operations_used"] = 1
             updated["discovery_operations_remaining"] = 9
             updated["last_stop_reason"] = "ELIGIBLE_CAPACITY_MET"
@@ -659,10 +662,30 @@ def test_post_holder_completed_refresh_resumes_canonical_supply_and_refreezes() 
             final_diagnostics["post_holder_refresh_resume"]["status"]
             == "CANONICAL_SUPPLY_RESUMED"
         )
-        assert (
-            final_diagnostics["post_holder_source_request_reconciliation"]["status"]
-            == "OK"
+        post_holder_recon = final_diagnostics[
+            "post_holder_source_request_reconciliation"
+        ]
+        assert post_holder_recon["status"] == "OK"
+        expected_request_ids = sorted(
+            {
+                *[
+                    int(entry["source_request_id"])
+                    for entry in initial_manifest
+                ],
+                int(refresh_owner.request_id),
+            }
         )
+        assert post_holder_recon["durable_campaign_request_ids"] == (
+            expected_request_ids
+        )
+        assert post_holder_recon["stage_reported_request_ids"] == (
+            expected_request_ids
+        )
+        assert post_holder_recon["durable_not_stage_reported"] == []
+        assert [
+            int(entry["source_request_id"])
+            for entry in post_holder_recon["campaign_source_request_manifest"]
+        ] == expected_request_ids
         assert (
             final_diagnostics["campaign_source_request_reconciliation"]["status"]
             == "OK"
