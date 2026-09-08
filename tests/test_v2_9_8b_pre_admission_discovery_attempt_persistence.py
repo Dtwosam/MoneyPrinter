@@ -3,10 +3,15 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import datetime, timezone
 import sqlite3
+from types import SimpleNamespace
 
 import pytest
 
 from printer_v1.db import apply_migrations
+from printer_v1.operator_cli.pre_admission_attempt_evidence import (
+    record_later_cycle_supply_evidence,
+    reduce_pre_admission_attempt_evidence,
+)
 from printer_v1.operator_cli.pre_admission_discovery_attempt import (
     FROZEN_LANE_DECISION_OWNER,
     PreAdmissionAttemptError,
@@ -261,3 +266,95 @@ def test_source_links_require_exact_canonical_request_lineage(connection) -> Non
         now=NOW,
     )
     assert load_pre_admission_attempt(connection, attempt_id="attempt-1").attempt_id == "attempt-1"
+
+def test_attempt_evidence_persists_cooperative_stage_budget_snapshot(connection) -> None:
+    _create(connection)
+    stage_capacity = {
+        "reservations": {
+            "intake": 3,
+            "market_batching": 2,
+            "reconciliation": 6,
+            "protocol_confirmation": 7,
+            "holder_safety": 8,
+            "final_refresh_handoff": 4,
+        },
+        "used_by_stage": {
+            "intake": 3,
+            "market_batching": 2,
+            "reconciliation": 1,
+            "protocol_confirmation": 2,
+            "holder_safety": 0,
+            "final_refresh_handoff": 0,
+        },
+        "remaining_by_stage": {
+            "intake": 0,
+            "market_batching": 0,
+            "reconciliation": 5,
+            "protocol_confirmation": 5,
+            "holder_safety": 8,
+            "final_refresh_handoff": 4,
+        },
+        "sealed_stages": ["intake", "market_batching"],
+        "unsealed_stages": [
+            "reconciliation",
+            "protocol_confirmation",
+            "holder_safety",
+            "final_refresh_handoff",
+        ],
+        "total_ceiling": 30,
+        "total_used": 8,
+        "total_remaining": 22,
+    }
+    supply = SimpleNamespace(
+        terminal_cause="DISCOVERY_OPERATION_BUDGET_EXHAUSTED",
+        source_evidence=(),
+        diagnostics={
+            "stage_local_source_requests": 14,
+            "cooperative_phase": "MARKET_DISCOVERY",
+            "next_cooperative_phase": "MARKET_DISCOVERY",
+            "stage_capacity": stage_capacity,
+            "freeze_ready_depth": 0,
+            "eligible_reserve_count": 0,
+            "unexplored_unique_remaining": 11,
+            "evaluated_unique_mints": 19,
+            "discovery_operations_used": 14,
+            "discovery_operations_remaining": 16,
+            "direct_acquisition_mode": "live-tail",
+            "next_direct_acquisition_mode": "backfill",
+            "direct_live_tail_completed": True,
+            "direct_backfill_completed": False,
+            "waiting_for_refresh": False,
+            "refresh_ordinal": 2,
+            "next_governed_request_worst_case_seconds": 83.0,
+        },
+    )
+
+    reduced = record_later_cycle_supply_evidence(
+        connection,
+        attempt_id="attempt-1",
+        supply=supply,
+        observed_at=NOW.isoformat(),
+    )
+    connection.commit()
+
+    row = connection.execute(
+        "SELECT payload_json FROM printer_pre_admission_attempt_evidence "
+        "WHERE attempt_id='attempt-1' AND evidence_kind='OPPORTUNITY_EXECUTED'"
+    ).fetchone()
+    assert row is not None
+    import json
+    payload = json.loads(row[0])
+    assert payload["stage_capacity"] == stage_capacity
+    assert payload["cooperative_phase"] == "MARKET_DISCOVERY"
+    assert payload["unexplored_unique_remaining"] == 11
+    assert payload["discovery_operations_remaining"] == 16
+
+    rebuilt = reduce_pre_admission_attempt_evidence(
+        connection, attempt_id="attempt-1"
+    )
+    assert rebuilt == reduced
+    snapshots = rebuilt["opportunity_snapshots"]
+    assert len(snapshots) == 1
+    assert snapshots[0]["payload"]["stage_capacity"] == stage_capacity
+    assert snapshots[0]["payload"]["next_governed_request_worst_case_seconds"] == 83.0
+

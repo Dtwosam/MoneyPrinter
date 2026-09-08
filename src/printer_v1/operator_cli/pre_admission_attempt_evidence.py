@@ -117,6 +117,7 @@ def reduce_pre_admission_attempt_evidence(
     duplicates: set[str] = set()
     reobservations: set[str] = set()
     refresh_rounds: set[int] = set()
+    opportunity_snapshots: list[dict[str, Any]] = []
     outcomes: dict[str, list[dict[str, Any]]] = {
         "exact_pair_results": [],
         "pumpswap_results": [],
@@ -193,6 +194,15 @@ def reduce_pre_admission_attempt_evidence(
                     "payload": payload,
                 }
             )
+        if kind == "OPPORTUNITY_EXECUTED":
+            opportunity_snapshots.append(
+                {
+                    "opportunity_ordinal": ordinal,
+                    "claim_ordinal": claim,
+                    "categorical_reason": row["categorical_reason"],
+                    "payload": payload,
+                }
+            )
         if kind == "REFRESH_ROUND":
             refresh_rounds.add(ordinal)
         if kind == "ATTEMPT_DISPOSITION":
@@ -212,6 +222,7 @@ def reduce_pre_admission_attempt_evidence(
         "rejection_reasons": dict(sorted(rejection_reasons.items())),
         "provider_failures": len(provider_failure_ids),
         "terminal_reason": terminal_reason,
+        "opportunity_snapshots": opportunity_snapshots,
         **outcomes,
     }
 
@@ -289,6 +300,37 @@ def record_later_cycle_supply_evidence(
                 diagnostics.get("stage_local_source_requests") or 0
             ),
             "cooperative_phase": diagnostics.get("cooperative_phase"),
+            "next_cooperative_phase": diagnostics.get("next_cooperative_phase"),
+            "stage_capacity": diagnostics.get("stage_capacity"),
+            "freeze_ready_depth": diagnostics.get("freeze_ready_depth"),
+            "eligible_reserve_count": diagnostics.get("eligible_reserve_count"),
+            "unexplored_unique_remaining": diagnostics.get(
+                "unexplored_unique_remaining"
+            ),
+            "evaluated_unique_mints": diagnostics.get("evaluated_unique_mints"),
+            "discovery_operations_used": diagnostics.get(
+                "discovery_operations_used"
+            ),
+            "discovery_operations_remaining": diagnostics.get(
+                "discovery_operations_remaining"
+            ),
+            "direct_acquisition_mode": diagnostics.get(
+                "direct_acquisition_mode"
+            ),
+            "next_direct_acquisition_mode": diagnostics.get(
+                "next_direct_acquisition_mode"
+            ),
+            "direct_live_tail_completed": diagnostics.get(
+                "direct_live_tail_completed"
+            ),
+            "direct_backfill_completed": diagnostics.get(
+                "direct_backfill_completed"
+            ),
+            "waiting_for_refresh": diagnostics.get("waiting_for_refresh"),
+            "refresh_ordinal": diagnostics.get("refresh_ordinal"),
+            "next_governed_request_worst_case_seconds": diagnostics.get(
+                "next_governed_request_worst_case_seconds"
+            ),
         },
     )
     if opportunity_ordinal > 0:
