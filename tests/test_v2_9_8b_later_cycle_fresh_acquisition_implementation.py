@@ -105,6 +105,7 @@ def test_canonical_builder_rebinds_cycle_scope_but_preserves_campaign_seed(
         acquisition_seconds=2400,
         lifecycle_duration_seconds=14700,
         heartbeat=None,
+        later_cycle_acquisition_seconds=600,
         cancellation_probe=lambda: None,
     )
     initial_work_deadline = owner.work_deadline_at
@@ -120,6 +121,7 @@ def test_canonical_builder_rebinds_cycle_scope_but_preserves_campaign_seed(
     )
     assert rebound.cycle_id == "cycle-2"
     assert rebound.work_deadline_at == initial_work_deadline
+    assert rebound.acquisition_deadline_at == "2026-08-17T00:15:01+00:00"
     assert rebound.refresh_interval_seconds == owner.refresh_interval_seconds
     assert stage_calls[-1]["request_key_prefix"] == "cycle-2-source-request-root"
     assert resolver_calls[-1]["cycle_id"] == "cycle-2"

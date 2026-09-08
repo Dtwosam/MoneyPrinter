@@ -47,6 +47,7 @@ jobs:
             tests/test_v2_9_8b_full_four_token_standard4h_audit.py \
             tests/test_v2_9_8b_four_token_factory_adapter.py \
             tests/test_v2_9_8b_four_token_factory_wake_ordering.py \
+            tests/test_v2_9_8b_later_cycle_fresh_acquisition_implementation.py \
             tests/test_v2_9_8b_four_token_standard_four_hour_operational_command.py \
             tests/test_v2_9_8b_four_token_standard_four_hour_one_shot_wrapper.py \
             tests/test_v2_9_8b_window_15m_checkpoint8_public_composition_boundary.py \

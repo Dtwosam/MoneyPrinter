@@ -813,3 +813,69 @@ def test_real_factory_controlled_clock_interleaves_scheduler_yields_and_snapshot
         "WHERE job_kind='PRE_ADMISSION_DISCOVERY_SELECTION'"
     ).fetchone()[0] == 1
     connection.close()
+
+def test_spacing_hold_allows_cycle2_acquisition_without_early_admission(
+    tmp_path,
+) -> None:
+    db, _backup, _disposable_binding = _prepare(tmp_path)
+    connection = sqlite3.connect(db)
+    connection.row_factory = sqlite3.Row
+    callback_calls = 0
+    admission_calls = 0
+    now = START + timedelta(seconds=60)
+
+    def callback(**_kwargs):
+        nonlocal callback_calls
+        callback_calls += 1
+        return SimpleNamespace(
+            attempt_id="early-attempt",
+            state="RUNNING",
+            first_terminal_cause="",
+        )
+
+    def forbidden_admit(**_kwargs):
+        nonlocal admission_calls
+        admission_calls += 1
+        raise AssertionError("Cycle 2 cannot admit before the 300s spacing boundary")
+
+    try:
+        result = factory._run_four_token_admission_boundary(
+            connection=connection,
+            controller=_SpacingController(),
+            binding=MultiCycleCampaignBinding(
+                campaign_id=CAMPAIGN_ID,
+                campaign_run_id=CAMPAIGN_RUN_ID,
+                configuration_id=CONFIGURATION_ID,
+                authoritative_factory_run_id=FACTORY_RUN_ID,
+            ),
+            first_cycle_id=CYCLE_ID,
+            now=now,
+            next_due_work_at=None,
+            proof_deadline=START + timedelta(hours=5),
+            project_health=_healthy_projection,
+            evaluate=lambda _projection: FourTokenAdmissionDisposition(
+                FourTokenAdmissionDispositionKind.REARM,
+                "PERSISTED_ADMISSION_SPACING_BOUNDARY",
+                START + timedelta(seconds=300),
+                False,
+            ),
+            later_cycle_callback=callback,
+            admit=forbidden_admit,
+            materialize=lambda **_kwargs: (_ for _ in ()).throw(
+                AssertionError("early Cycle-2 acquisition cannot materialize")
+            ),
+            plan_opening=lambda **_kwargs: (_ for _ in ()).throw(
+                AssertionError("early Cycle-2 acquisition cannot plan lifecycle")
+            ),
+        )
+        assert callback_calls == 1
+        assert admission_calls == 0
+        assert result.admitted is False
+        assert result.attempt_state == "RUNNING"
+        assert (
+            result.disposition.kind
+            is FourTokenAdmissionDispositionKind.REARM
+        )
+    finally:
+        connection.close()
+

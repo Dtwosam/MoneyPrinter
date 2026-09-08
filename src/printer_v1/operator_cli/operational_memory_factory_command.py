@@ -293,6 +293,7 @@ class _OperationalCampaignPolicy:
     pre_lifecycle_acquisition_duration_seconds: int = (
         PRE_LIFECYCLE_ACQUISITION_DURATION_SECONDS
     )
+    later_cycle_pre_admission_acquisition_duration_seconds: int | None = None
     continuous_four_hour: bool = False
     standard_four_hour_campaign: bool = False
 
@@ -376,6 +377,9 @@ FOUR_TOKEN_STANDARD_FOUR_HOUR_POLICY = _OperationalCampaignPolicy(
     locked_windows=_four_token_operational.LOCKED_WINDOWS,
     pre_lifecycle_acquisition_duration_seconds=(
         _four_token_operational.PRE_LIFECYCLE_ACQUISITION_DURATION_SECONDS
+    ),
+    later_cycle_pre_admission_acquisition_duration_seconds=(
+        _four_token_operational.LATER_CYCLE_PRE_ADMISSION_ACQUISITION_DURATION_SECONDS
     ),
     continuous_four_hour=True,
     standard_four_hour_campaign=True,
@@ -1862,6 +1866,7 @@ def _build_pre_lifecycle_temporal_refresh_owner(
     acquisition_seconds: int,
     lifecycle_duration_seconds: int,
     heartbeat: "_CampaignHeartbeat | None",
+    later_cycle_acquisition_seconds: int | None = None,
     cancellation_probe: Callable[[], str | None],
     stage_evidence_sink: Callable[[Mapping[str, Any]], None] | None = None,
     transport_identity_observer: Callable[[Any], None] | None = None,
@@ -1930,6 +1935,16 @@ def _build_pre_lifecycle_temporal_refresh_owner(
 
     supply_kwargs = dict(graduated_supply_kwargs or {})
     campaign_selection_seed = execution_id
+    if (
+        later_cycle_acquisition_seconds is not None
+        and (
+            type(later_cycle_acquisition_seconds) is not int
+            or later_cycle_acquisition_seconds <= 0
+        )
+    ):
+        raise OperationalMemoryFactoryError(
+            "LATER_CYCLE_ACQUISITION_DURATION_INVALID"
+        )
     shared_work_deadline_at = _iso(
         datetime.fromisoformat(evaluated_at.replace("Z", "+00:00"))
         + timedelta(
@@ -1940,6 +1955,7 @@ def _build_pre_lifecycle_temporal_refresh_owner(
     def compose_owner(
         *, owner_cycle_id: str, owner_cycle_cutoff: str,
         owner_evaluated_at: str, owner_request_key_prefix: str,
+        owner_acquisition_seconds: int,
         owner_stage_evidence_sink: (
             Callable[[Mapping[str, Any]], None] | None
         ) = None,
@@ -1954,7 +1970,7 @@ def _build_pre_lifecycle_temporal_refresh_owner(
             central_scheduler=OwnerPort(CENTRAL_SCHEDULER_OWNER, True),
             acquisition_deadline_at=acquisition_deadline_at(
                 owner_evaluated_at,
-                acquisition_duration_seconds=int(acquisition_seconds),
+                acquisition_duration_seconds=int(owner_acquisition_seconds),
             ),
             acquisition_started_at=owner_evaluated_at,
             # Later acquisition cannot extend the original authorization's
@@ -2006,6 +2022,11 @@ def _build_pre_lifecycle_temporal_refresh_owner(
             owner_cycle_cutoff=cycle_cutoff,
             owner_evaluated_at=evaluated_at,
             owner_request_key_prefix=request_key_prefix,
+            owner_acquisition_seconds=(
+                int(later_cycle_acquisition_seconds)
+                if later_cycle_acquisition_seconds is not None
+                else int(acquisition_seconds)
+            ),
             owner_stage_evidence_sink=stage_evidence_sink,
         )
 
@@ -2018,6 +2039,7 @@ def _build_pre_lifecycle_temporal_refresh_owner(
         owner_cycle_cutoff=cycle_cutoff,
         owner_evaluated_at=evaluated_at,
         owner_request_key_prefix=initial_cycle_request_key_root,
+        owner_acquisition_seconds=int(acquisition_seconds),
         owner_stage_evidence_sink=stage_evidence_sink_for_initial_cycle,
     )
 
@@ -4035,6 +4057,9 @@ def _run_operational_campaign(
                 ),
                 lifecycle_duration_seconds=policy.duration_seconds,
                 heartbeat=heartbeat,
+                later_cycle_acquisition_seconds=(
+                    policy.later_cycle_pre_admission_acquisition_duration_seconds
+                ),
                 cancellation_probe=cancellation_probe,
                 stage_evidence_sink=cycle_1_stage_evidence_sink,
                 transport_identity_observer=_observe_transport_identity,

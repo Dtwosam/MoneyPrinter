@@ -620,11 +620,23 @@ def _run_four_token_admission_boundary(
         if wait_projection is None
         else wait_projection.acquisition_deadline_at
     )
-    if disposition.kind is not FourTokenAdmissionDispositionKind.CYCLE_ADMISSION:
+    spacing_acquisition_rearm = (
+        disposition.kind is FourTokenAdmissionDispositionKind.REARM
+        and disposition.reason == "PERSISTED_ADMISSION_SPACING_BOUNDARY"
+    )
+    if (
+        disposition.kind is not FourTokenAdmissionDispositionKind.CYCLE_ADMISSION
+        and not spacing_acquisition_rearm
+    ):
         return FourTokenAdmissionBoundaryResult(
             disposition,
             False,
-            attempt_acquisition_deadline_at=acquisition_deadline_at,
+            None if existing_attempt is None else str(existing_attempt[0]),
+            None if existing_attempt is None else str(existing_attempt[1]),
+            None,
+            None,
+            None,
+            acquisition_deadline_at,
         )
     current = now.astimezone(timezone.utc)
     if existing_attempt is None:
@@ -10804,6 +10816,42 @@ def run_one_command_15m_factory(
                         break
                     if kind is FourTokenAdmissionDispositionKind.COMPLETE:
                         admission_attempt_finished = True
+                    if (
+                        kind is FourTokenAdmissionDispositionKind.REARM
+                        and str(boundary.attempt_state or "") == "RUNNING"
+                    ):
+                        # Discovery is allowed to progress during the persisted
+                        # 300s admission-spacing hold. Admission remains locked;
+                        # only the existing cooperative attempt may re-enter.
+                        should_recheck, cooperative_wake_at = (
+                            _cooperative_later_cycle_recheck(
+                                boundary,
+                                next_due_work_at=_next_due(),
+                                proof_deadline=proof_deadline,
+                                acquisition_deadline_at=(
+                                    boundary.attempt_acquisition_deadline_at
+                                ),
+                            )
+                        )
+                        if should_recheck:
+                            if cooperative_wake_at is not None:
+                                wait = max(
+                                    0.0,
+                                    (cooperative_wake_at - _now()).total_seconds(),
+                                )
+                                if wait:
+                                    _sleep_with_cancellation(
+                                        min(
+                                            wait,
+                                            max(
+                                                0.0,
+                                                total_duration_seconds - elapsed,
+                                            ),
+                                        ),
+                                        sleep=_sleep,
+                                        probe=cancellation_probe,
+                                    )
+                            continue
                     if kind is FourTokenAdmissionDispositionKind.REARM:
                         at = boundary.disposition.at
                         if at is None:

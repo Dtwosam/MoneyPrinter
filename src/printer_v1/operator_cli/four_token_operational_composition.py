@@ -80,6 +80,10 @@ LOCKED_WINDOWS = ("WINDOW_12H", "WINDOW_24H")
 #: through-4h lifecycle a finite same-invocation wall-time envelope. They are
 #: the proven four-token bounded clocks, reused rather than re-derived.
 PRE_LIFECYCLE_ACQUISITION_DURATION_SECONDS = 2_400
+# Cycle 2 discovery starts during the five-minute admission-spacing hold and
+# gets one bounded ten-minute pre-admission window from its first cooperative
+# claim. Admission itself remains locked by the existing 300s minimum spacing.
+LATER_CYCLE_PRE_ADMISSION_ACQUISITION_DURATION_SECONDS = 600
 POST_SUPPLY_LIFECYCLE_DURATION_SECONDS = 18_000
 MAX_ONE_SHOT_WALL_ENVELOPE_SECONDS = (
     PRE_LIFECYCLE_ACQUISITION_DURATION_SECONDS
@@ -108,6 +112,9 @@ def exact_operational_policy() -> dict[str, Any]:
         "root_main_window": ROOT_MAIN_WINDOW,
         "pre_lifecycle_acquisition_duration_seconds": (
             PRE_LIFECYCLE_ACQUISITION_DURATION_SECONDS
+        ),
+        "later_cycle_pre_admission_acquisition_duration_seconds": (
+            LATER_CYCLE_PRE_ADMISSION_ACQUISITION_DURATION_SECONDS
         ),
         "post_supply_lifecycle_duration_seconds": (
             POST_SUPPLY_LIFECYCLE_DURATION_SECONDS
@@ -143,6 +150,7 @@ __all__ = [
     "CONFIGURED_THROUGH_4H_TOKENS",
     "FOUR_TOKEN_STANDARD_FOUR_HOUR_MODE",
     "LIFECYCLE_REQUESTS_PER_TOKEN",
+    "LATER_CYCLE_PRE_ADMISSION_ACQUISITION_DURATION_SECONDS",
     "LIFECYCLE_REQUEST_OUTER_CEILING",
     "LIFECYCLE_SCHEDULER_OUTER_CEILING",
     "LOCKED_WINDOWS",
