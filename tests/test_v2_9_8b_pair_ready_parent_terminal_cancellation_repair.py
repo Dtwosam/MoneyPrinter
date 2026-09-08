@@ -34,7 +34,7 @@ def _seed_graph(
     connection: sqlite3.Connection,
     *,
     include_frozen_lane: bool = False,
-    attempt_id: str = attempt_id,
+    attempt_id: str = "attempt-pair-ready",
 ) -> None:
     connection.execute(
         "INSERT INTO printer_memory_factory_campaigns("
