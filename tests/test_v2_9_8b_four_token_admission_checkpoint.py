@@ -83,7 +83,7 @@ def _shape_db() -> sqlite3.Connection:
         CREATE TABLE printer_memory_factory_campaign_token_slots(
           cycle_id TEXT, campaign_id TEXT, run_id TEXT, slot_ordinal INTEGER,
           token_row_id INTEGER, mint_identity TEXT, pair_row_id INTEGER,
-          pair_identity TEXT, tracking_queue_id INTEGER
+          pair_identity TEXT, tracking_queue_id INTEGER, created_at TEXT
         );
         CREATE TABLE printer_pre_admission_discovery_attempts(
           attempt_id TEXT, campaign_id TEXT, campaign_run_id TEXT,
@@ -113,11 +113,12 @@ def _shape_db() -> sqlite3.Connection:
     for cycle_id, base in (("c1", 0), ("c2", 2)):
         for slot in (1, 2):
             n = base + slot
+            slot_time = start if cycle_id == "c1" else second
             c.execute(
                 "INSERT INTO printer_memory_factory_campaign_token_slots "
-                "VALUES (?,?,?,?,?,?,?,?,?)",
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (cycle_id, "camp", "run", slot, n, f"mint-{n}",
-                 100+n, f"pair-{n}", 200+n),
+                 100+n, f"pair-{n}", 200+n, slot_time.isoformat()),
             )
     c.execute(
         "INSERT INTO printer_pre_admission_discovery_attempts VALUES (?,?,?,?,?,?,?,?)",
