@@ -288,4 +288,3 @@ def test_later_cycle_deadline_is_anchored_to_cycle1_admission_not_rebind_time(
     assert rebound.acquisition_deadline_at == "2026-08-17T00:10:00+00:00"
     assert rebound.acquisition_started_at is None
     assert rebound._cooperative_yield is True
-

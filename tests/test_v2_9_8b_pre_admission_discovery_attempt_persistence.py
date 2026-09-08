@@ -357,4 +357,3 @@ def test_attempt_evidence_persists_cooperative_stage_budget_snapshot(connection)
     assert len(snapshots) == 1
     assert snapshots[0]["payload"]["stage_capacity"] == stage_capacity
     assert snapshots[0]["payload"]["next_governed_request_worst_case_seconds"] == 83.0
-
