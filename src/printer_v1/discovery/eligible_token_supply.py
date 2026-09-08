@@ -1604,6 +1604,11 @@ def run_persistent_eligible_token_supply(
         raise EligibleTokenSupplyError("COOPERATIVE_STAGE_BUDGET_INVALID")
     protocol_stage_charged = False
     direct_protocol_confirmation_calls = 0
+    # Preserve the exact stage whose required work could not execute.  Later
+    # stages never lend capacity backward, so their unused reservations cannot
+    # make an exhausted feeder stage executable.
+    budget_exhausted_stage: str | None = None
+    budget_exhausted_required_operations = 0
     protocol_confirmation_outcomes: list[dict[str, Any]] = []
     protocol_report: dict[str, Any] = {}
     liquidity_backup_work_remaining = False
@@ -2891,11 +2896,15 @@ def run_persistent_eligible_token_supply(
                                 "protocol_confirmation", protocol_calls
                             )
                         except ValueError:
+                            budget_exhausted_stage = "protocol_confirmation"
+                            budget_exhausted_required_operations = int(protocol_calls)
                             last_stop_reason = "DISCOVERY_OPERATION_BUDGET_EXHAUSTED"
                             break
                     protocol_stage_charged = True
                 if stage_budget.available("market_batching") < 1:
                     # Seal market only when no capacity remains for another batch.
+                    budget_exhausted_stage = "market_batching"
+                    budget_exhausted_required_operations = 1
                     if not stage_budget.is_sealed("market_batching"):
                         stage_budget.seal("market_batching")
                     last_stop_reason = "DISCOVERY_OPERATION_BUDGET_EXHAUSTED"
@@ -2903,6 +2912,8 @@ def run_persistent_eligible_token_supply(
                 try:
                     stage_budget.consume("market_batching", 1)
                 except ValueError:
+                    budget_exhausted_stage = "market_batching"
+                    budget_exhausted_required_operations = 1
                     last_stop_reason = "DISCOVERY_OPERATION_BUDGET_EXHAUSTED"
                     break
                 quantum_rounds += 1
@@ -3538,25 +3549,26 @@ def run_persistent_eligible_token_supply(
                     "NO_ADDITIONAL_UNIQUE_CANDIDATES_REACHABLE",
                 }
             )
-            # Budget exhaustion is legal only when flat or stage capacity that
-            # could execute remaining queued work is actually gone.
-            executable_stage_capacity = 0
-            if permanent_availability:
-                for stage_name in (
-                    "market_batching",
-                    "reconciliation",
-                    "protocol_confirmation",
-                ):
-                    if not stage_budget.is_sealed(stage_name):
-                        executable_stage_capacity += stage_budget.available(
-                            stage_name
-                        )
+            # Budget exhaustion is legal only when the flat budget is gone or
+            # the exact stage required by the stopped work cannot execute.  Do
+            # not sum unrelated downstream capacity: StageBudget deliberately
+            # forbids later reservations from lending backward to an exhausted
+            # feeder stage.
             true_flat_exhausted = _ops_remaining() <= 0
-            true_stage_exhausted = (
+            true_stage_exhausted = False
+            if (
                 permanent_availability
-                and executable_stage_capacity <= 0
                 and last_stop_reason == "DISCOVERY_OPERATION_BUDGET_EXHAUSTED"
-            )
+                and budget_exhausted_stage is not None
+            ):
+                required_operations = max(
+                    1, int(budget_exhausted_required_operations)
+                )
+                true_stage_exhausted = (
+                    stage_budget.is_sealed(budget_exhausted_stage)
+                    or stage_budget.available(budget_exhausted_stage)
+                    < required_operations
+                )
             if (
                 last_stop_reason == "DISCOVERY_OPERATION_BUDGET_EXHAUSTED"
                 and not true_flat_exhausted

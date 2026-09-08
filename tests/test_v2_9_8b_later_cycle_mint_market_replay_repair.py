@@ -11,6 +11,7 @@ from pathlib import Path
 
 from printer_v1.db import apply_migrations
 from printer_v1.discovery.eligible_token_supply import (
+    BUDGET_EXHAUSTION,
     load_completed_cooperative_mint_market_batch_mints,
     run_persistent_eligible_token_supply,
 )
@@ -295,3 +296,74 @@ def test_market_discovery_resume_uses_rehydrated_mints_before_due_batch(
         assert int(check.execute("SELECT COUNT(*) FROM printer_source_requests").fetchone()[0]) == 0
     finally:
         check.close()
+
+def test_market_feeder_exhaustion_is_honest_budget_terminal_with_downstream_capacity(
+    tmp_path: Path,
+) -> None:
+    """Unused downstream reservations cannot make exhausted market work executable."""
+    db_path = tmp_path / "market-feeder-exhaustion.sqlite3"
+    apply_migrations(db_path)
+    connection = sqlite3.connect(db_path)
+    connection.row_factory = sqlite3.Row
+    record_graduated_candidate(
+        connection,
+        mint=MINT,
+        migration_signature=SIGNATURE,
+        pumpswap_pool=POOL,
+        graduation_block_time=1_784_000_000,
+        graduation_slot=1,
+        now=NOW,
+        discovery_channel=PERSISTED_GRADUATED_CHANNEL,
+    )
+    connection.commit()
+    connection.close()
+
+    stage_budget = StageBudget.permanent_discovery_default()
+    stage_budget.consume("market_batching", 2)
+    assert stage_budget.available("market_batching") == 0
+    # These later reservations remain unused but cannot feed market batching.
+    assert stage_budget.available("reconciliation") > 0
+    assert stage_budget.available("protocol_confirmation") > 0
+
+    def unexpected_market_factory(_mints):
+        raise AssertionError("exhausted market feeder attempted another transport")
+
+    result = run_persistent_eligible_token_supply(
+        db_path,
+        cycle_seed="market-feeder-exhaustion-seed",
+        migration_transport=lambda _context: {"result": []},
+        dexscreener_batch_transport_factory=unexpected_market_factory,
+        now=NOW,
+        discovery_request_key_prefix=_scope().request_key_root,
+        front_door_request_key_prefix=_scope().request_key_root,
+        execution_id=EXECUTION_ID,
+        campaign_id=None,
+        run_id=None,
+        cycle_id=None,
+        campaign_source_request_scope=_scope(),
+        permanent_availability=True,
+        cooperative_resume=True,
+        cooperative_quantum=True,
+        cooperative_phase="MARKET_DISCOVERY",
+        cooperative_stage_budget=stage_budget,
+        enable_geckoterminal_reconciliation=False,
+        persist_terminal_certificate=False,
+    )
+
+    assert result.ready is False
+    assert result.shortage_classification == BUDGET_EXHAUSTION
+    assert result.shortage_classification != "DISCOVERY_ARCHITECTURE_FALSE_SHORTAGE"
+    assert result.diagnostics["last_stop_reason"] == "DISCOVERY_OPERATION_BUDGET_EXHAUSTED"
+    assert result.diagnostics["unexplored_unique_remaining"] > 0
+    assert result.diagnostics["discovery_operations_remaining"] > 0
+    assert (
+        result.diagnostics["stage_capacity"]["remaining_by_stage"]["reconciliation"]
+        > 0
+    )
+    assert (
+        result.diagnostics["stage_capacity"]["remaining_by_stage"][
+            "protocol_confirmation"
+        ]
+        > 0
+    )
+
