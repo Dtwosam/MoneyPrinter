@@ -448,7 +448,7 @@ def test_cooperative_market_batch_defers_reconciliation_to_fast_safe_quantum(
 
     assert dex_calls == 1
     assert gecko_calls == 0
-    assert result.terminal_cause == ACQUISITION_QUANTUM_YIELDED
+    assert result.terminal == ACQUISITION_QUANTUM_YIELDED
     assert result.diagnostics["next_cooperative_phase"] == (
         "AUXILIARY_LIQUIDITY_BACKUP"
     )
