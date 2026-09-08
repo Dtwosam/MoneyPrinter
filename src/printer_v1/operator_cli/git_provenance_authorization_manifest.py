@@ -795,6 +795,39 @@ FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE = GitAuthorizationProfile(
     ),
 )
 
+FOUR_TOKEN_ADMISSION_CHECKPOINT_AUTHORIZATION_PROFILE = GitAuthorizationProfile(
+    command_mode="four-token-admission-checkpoint-run",
+    authorization_package_root=(
+        "operator-runs/v2-9-8b-four-token-admission-checkpoint-final-authorization"
+    ),
+    authorization_package_kind=(
+        "FOUR_TOKEN_ADMISSION_CHECKPOINT_AUTHORIZATION_EVIDENCE"
+    ),
+    manifest_schema_version=(
+        "PRINTER_V1_GIT_PROVENANCE_MANIFEST_FOUR_TOKEN_ADMISSION_CHECKPOINT_V1"
+    ),
+    historical_authorization_package_roots=(
+        AUTHORIZATION_PACKAGE_ROOT,
+        "operator-runs/v2-9-8b-standard-four-hour-final-authorization",
+        "operator-runs/v2-9-8b-four-token-final-authorization",
+        "operator-runs/v2-9-8b-four-token-standard-four-hour-final-authorization",
+        "operator-runs/v2-9-8b-four-token-admission-checkpoint-final-authorization",
+    ),
+    migration_package_root=MIGRATION_062_PACKAGE_ROOT,
+    migration_package_kind=MIGRATION_062_PACKAGE_KIND,
+    current_migration_execution_id=FOUR_TOKEN_CURRENT_MIGRATION_062_EXECUTION_ID,
+    current_migration_expected_file_count=(
+        FOUR_TOKEN_CURRENT_MIGRATION_062_EXPECTED_FILE_COUNT
+    ),
+    current_migration_expected_inventory_sha256=(
+        FOUR_TOKEN_CURRENT_MIGRATION_062_EXPECTED_INVENTORY_SHA256
+    ),
+    historical_migration_packages=FOUR_TOKEN_HISTORICAL_MIGRATION_PACKAGES,
+    historical_reconciliation_packages=(
+        FOUR_TOKEN_OPERATIONAL_HISTORICAL_RECONCILIATION_PACKAGES
+    ),
+)
+
 
 #: Every Git authorization profile this validator will ever accept. Anything
 #: else fails closed. This name tuple is the single allowlist declaration.
@@ -803,6 +836,7 @@ _SUPPORTED_PROFILE_NAMES: tuple[str, ...] = (
     "STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE",
     "FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE",
     "FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE",
+    "FOUR_TOKEN_ADMISSION_CHECKPOINT_AUTHORIZATION_PROFILE",
 )
 
 

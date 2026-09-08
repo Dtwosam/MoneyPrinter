@@ -7645,6 +7645,28 @@ def _resolve_four_token_no_accounting_shared_terminal(
     exact terminal Cycle-2 pre-admission attempt that never consumed a cycle.
     Its persisted cause becomes an honest SAFE_STOPPED campaign cause.
     """
+    if len(phase_a) == 2 and all(isinstance(item, Mapping) for item in phase_a):
+        from printer_v1.operator_cli.four_token_admission_checkpoint import (
+            TERMINAL_CAUSE as ADMISSION_CHECKPOINT_TERMINAL_CAUSE,
+        )
+        states = tuple(str(item.get("cycle_state") or "") for item in phase_a)
+        causes = tuple(
+            str(item.get("first_terminal_cause") or "") for item in phase_a
+        )
+        if (
+            all(
+                state in {"TERMINAL_STOPPED", "TERMINAL_BLOCKED"}
+                for state in states
+            )
+            and causes == (
+                ADMISSION_CHECKPOINT_TERMINAL_CAUSE,
+                ADMISSION_CHECKPOINT_TERMINAL_CAUSE,
+            )
+        ):
+            return "SAFE_STOPPED", ADMISSION_CHECKPOINT_TERMINAL_CAUSE
+        raise ValueError(
+            "two-cycle no-accounting terminal is not exact admission checkpoint"
+        )
     if len(phase_a) != 1 or not isinstance(phase_a[0], Mapping):
         raise ValueError(
             "no-accounting shared terminal requires one Phase-A result"
@@ -10264,6 +10286,8 @@ def run_one_command_15m_factory(
     later_cycle_discovery_callback: Callable[..., Any] | None = None,
     later_cycle_acquisition_quantum_seconds: float | Callable[[], float] = 60.0,
     later_cycle_admission_deadline_seconds_after_first_cycle: int | None = None,
+    four_token_admission_checkpoint: bool = False,
+    four_token_admission_checkpoint_runtime_seconds: float | None = None,
     four_token_health_projector: Callable[[sqlite3.Connection, datetime], Any]
     | None = None,
     four_token_shared_terminalizer: Callable[..., Mapping[str, Any]]
@@ -10314,6 +10338,22 @@ def run_one_command_15m_factory(
         reasons.append("non-proof execution requires operational persistent mode")
     if proof_mode and operational_persistent_mode:
         reasons.append("proof and operational persistent modes are mutually exclusive")
+    if four_token_admission_checkpoint:
+        if four_token_proof_controller is None:
+            reasons.append(
+                "four-token admission checkpoint requires four-token controller"
+            )
+        if (
+            four_token_admission_checkpoint_runtime_seconds is None
+            or float(four_token_admission_checkpoint_runtime_seconds) <= 0
+        ):
+            reasons.append(
+                "four-token admission checkpoint runtime must be positive"
+            )
+    elif four_token_admission_checkpoint_runtime_seconds is not None:
+        reasons.append(
+            "four-token admission checkpoint runtime requires checkpoint mode"
+        )
     if four_token_proof_controller is not None:
         if not standard_four_hour_campaign:
             reasons.append(
@@ -10940,6 +10980,17 @@ def run_one_command_15m_factory(
                 conn, run_id=run_id, now=_now()
             )
             elapsed = _monotonic() - start_mono
+            if (
+                four_token_admission_checkpoint
+                and elapsed >= float(
+                    four_token_admission_checkpoint_runtime_seconds or 0.0
+                )
+            ):
+                from printer_v1.operator_cli.four_token_admission_checkpoint import (
+                    TIMEOUT_CAUSE,
+                )
+                stop_reason = TIMEOUT_CAUSE
+                break
             if elapsed >= total_duration_seconds:
                 stop_reason = STOP_DURATION
                 break
@@ -11020,15 +11071,20 @@ def run_one_command_15m_factory(
                             campaign_run_id=str(campaign_run_id),
                             cycle_id=cycle_id,
                         )
-                        _plan_opening_jobs(
-                            conn,
-                            run_id,
-                            cycle_targets,
-                            now,
-                            operation_observer=lifecycle_operation_observer,
-                            cycle_ordinal=cycle_ordinal,
-                            four_token_proof=True,
-                        )
+                        if len(cycle_targets) != 2:
+                            raise ValueError(
+                                "Cycle-2 admission requires exact two-slot target"
+                            )
+                        if not four_token_admission_checkpoint:
+                            _plan_opening_jobs(
+                                conn,
+                                run_id,
+                                cycle_targets,
+                                now,
+                                operation_observer=lifecycle_operation_observer,
+                                cycle_ordinal=cycle_ordinal,
+                                four_token_proof=True,
+                            )
                         conn.commit()
 
                     boundary = _run_four_token_admission_boundary(
@@ -11058,6 +11114,12 @@ def run_one_command_15m_factory(
                     kind = boundary.disposition.kind
                     if boundary.admitted:
                         admission_attempt_finished = True
+                        if four_token_admission_checkpoint:
+                            from printer_v1.operator_cli.four_token_admission_checkpoint import (
+                                TERMINAL_CAUSE as ADMISSION_CHECKPOINT_TERMINAL_CAUSE,
+                            )
+                            stop_reason = ADMISSION_CHECKPOINT_TERMINAL_CAUSE
+                            break
                         continue
                     if _later_cycle_attempt_is_terminal(boundary.attempt_state):
                         # Only a true terminal outcome ends the one durable
@@ -11069,6 +11131,12 @@ def run_one_command_15m_factory(
                             four_token_attempt_terminal_cause = (
                                 boundary.attempt_terminal_cause
                             )
+                        if four_token_admission_checkpoint:
+                            stop_reason = (
+                                boundary.attempt_terminal_cause
+                                or "FOUR_TOKEN_ADMISSION_CHECKPOINT_CYCLE2_TERMINAL"
+                            )
+                            break
                     if kind is FourTokenAdmissionDispositionKind.PROOF_DEADLINE:
                         stop_reason = STOP_DURATION
                         break

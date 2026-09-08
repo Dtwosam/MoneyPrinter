@@ -523,6 +523,41 @@ def assert_four_token_standard_four_hour_zero_state(
     )
 
 
+def assert_four_token_admission_checkpoint_zero_state(
+    *,
+    db_path: str | Path,
+    authorization_document: Mapping[str, Any],
+    environment: Mapping[str, str],
+    printer_process_probe: Callable[[], Iterable[int]],
+    migrations_dir: str | Path | None = None,
+    migration_ledger_guard: Callable[..., GuardResult | None] = (
+        assert_migration_ledger_ready
+    ),
+) -> dict[str, Any]:
+    """Prove quiescence for the exact reduced 4/2/2 admission checkpoint."""
+    from printer_v1.operator_cli.four_token_admission_checkpoint import (
+        exact_admission_checkpoint_policy,
+    )
+    from printer_v1.operator_cli.four_token_admission_checkpoint_one_shot_wrapper import (
+        FourTokenAdmissionCheckpointOneShotWrapperError,
+        validate_four_token_admission_checkpoint_authorization_document,
+    )
+
+    return _assert_four_token_zero_state(
+        db_path=db_path,
+        authorization_document=authorization_document,
+        environment=environment,
+        printer_process_probe=printer_process_probe,
+        migrations_dir=migrations_dir,
+        migration_ledger_guard=migration_ledger_guard,
+        document_validator=validate_four_token_admission_checkpoint_authorization_document,
+        validator_error=FourTokenAdmissionCheckpointOneShotWrapperError,
+        policy_key="operational_policy",
+        expected_policy=exact_admission_checkpoint_policy,
+        schema_version=OPERATIONAL_ZERO_STATE_SCHEMA_VERSION,
+    )
+
+
 __all__ = [
     "FourTokenProofZeroStateError",
     "LOCKED_LONG_WINDOWS",
@@ -532,6 +567,7 @@ __all__ = [
     "REQUIRED_ZERO_STATE_DOMAINS",
     "ZERO_STATE_SCHEMA_VERSION",
     "active_printer_runtime_processes",
+    "assert_four_token_admission_checkpoint_zero_state",
     "assert_four_token_proof_zero_state",
     "assert_four_token_standard_four_hour_zero_state",
     "project_four_token_proof_zero_state",

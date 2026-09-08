@@ -1689,6 +1689,153 @@ def reconcile_parent_interrupted_open_pre_admission_attempts(
     }
 
 
+
+def validate_four_token_admission_checkpoint(
+    connection: sqlite3.Connection,
+    *,
+    campaign_id: str,
+    campaign_run_id: str,
+    factory_run_id: str,
+) -> dict[str, Any]:
+    """Prove exact 4/2/2 admission and zero Cycle-2 lifecycle planning."""
+    from printer_v1.operator_cli.four_token_admission_checkpoint import TERMINAL_CAUSE
+
+    cycles = connection.execute(
+        """SELECT cycle_id,cycle_ordinal,created_at,cycle_state,first_terminal_cause
+           FROM printer_memory_factory_campaign_cycles
+           WHERE campaign_id=? AND run_id=? ORDER BY cycle_ordinal""",
+        (campaign_id, campaign_run_id),
+    ).fetchall()
+    if len(cycles) != 2 or tuple(int(row[1]) for row in cycles) != (1, 2):
+        raise FourTokenFactoryAdapterError(
+            "admission checkpoint requires exact admitted cycle ordinals (1,2)"
+        )
+    if any(
+        not str(row[3]).startswith("TERMINAL_") or str(row[4] or "") != TERMINAL_CAUSE
+        for row in cycles
+    ):
+        raise FourTokenFactoryAdapterError(
+            "admission checkpoint requires exact checkpoint terminal cause"
+        )
+    cycle_ids = tuple(str(row[0]) for row in cycles)
+    slots = connection.execute(
+        """SELECT cycle_id,slot_ordinal,token_row_id,mint_identity,pair_row_id,
+                  pair_identity,tracking_queue_id
+           FROM printer_memory_factory_campaign_token_slots
+           WHERE campaign_id=? AND run_id=?
+           ORDER BY cycle_ordinal_if_present,slot_ordinal""".replace(
+               "cycle_ordinal_if_present,", "cycle_id,"
+           ),
+        (campaign_id, campaign_run_id),
+    ).fetchall()
+    if len(slots) != 4:
+        raise FourTokenFactoryAdapterError(
+            "admission checkpoint requires exactly four durable token slots"
+        )
+    by_cycle = {
+        cycle: [row for row in slots if str(row[0]) == cycle]
+        for cycle in cycle_ids
+    }
+    if any(
+        tuple(int(row[1]) for row in by_cycle[cycle]) != (1, 2)
+        for cycle in cycle_ids
+    ):
+        raise FourTokenFactoryAdapterError(
+            "admission checkpoint requires exact two-slot ownership per cycle"
+        )
+    for index in (2, 3, 4, 5):
+        if len({row[index] for row in slots}) != 4:
+            raise FourTokenFactoryAdapterError(
+                "admission checkpoint requires four distinct token/pair identities"
+            )
+    if any(row[6] is None for row in slots):
+        raise FourTokenFactoryAdapterError(
+            "admission checkpoint requires insert-bound tracking authority"
+        )
+
+    first_at = datetime.fromisoformat(str(cycles[0][2]).replace("Z", "+00:00"))
+    second_at = datetime.fromisoformat(str(cycles[1][2]).replace("Z", "+00:00"))
+    if first_at.tzinfo is None:
+        first_at = first_at.replace(tzinfo=timezone.utc)
+    if second_at.tzinfo is None:
+        second_at = second_at.replace(tzinfo=timezone.utc)
+    spacing_seconds = (second_at - first_at).total_seconds()
+    if not 300 <= spacing_seconds <= 600:
+        raise FourTokenFactoryAdapterError(
+            "admission checkpoint cycle spacing is outside 300..600s"
+        )
+
+    attempts = connection.execute(
+        """SELECT attempt_id,attempt_state,consumed_cycle_id,consumed_at
+           FROM printer_pre_admission_discovery_attempts
+           WHERE campaign_id=? AND campaign_run_id=?
+             AND authoritative_factory_run_id=? AND proposed_cycle_ordinal=2""",
+        (campaign_id, campaign_run_id, factory_run_id),
+    ).fetchall()
+    if len(attempts) != 1:
+        raise FourTokenFactoryAdapterError(
+            "admission checkpoint requires one exact Cycle-2 pre-admission attempt"
+        )
+    attempt = attempts[0]
+    if (
+        str(attempt[1]) != "CONSUMED"
+        or str(attempt[2] or "") != cycle_ids[1]
+        or attempt[3] is None
+    ):
+        raise FourTokenFactoryAdapterError(
+            "admission checkpoint requires Cycle-2 attempt CONSUMED into Cycle 2"
+        )
+    attempt_items = connection.execute(
+        """SELECT slot_ordinal,token_row_id,mint_identity,pair_row_id,pair_identity
+           FROM printer_pre_admission_discovery_attempt_items
+           WHERE attempt_id=? ORDER BY slot_ordinal""",
+        (str(attempt[0]),),
+    ).fetchall()
+    if tuple(int(row[0]) for row in attempt_items) != (1, 2):
+        raise FourTokenFactoryAdapterError(
+            "admission checkpoint requires exact frozen Cycle-2 pair"
+        )
+    frozen_items = [
+        (int(row[1]), str(row[2]), int(row[3]), str(row[4]))
+        for row in attempt_items
+    ]
+    cycle2_items = [
+        (int(row[2]), str(row[3]), int(row[4]), str(row[5]))
+        for row in by_cycle[cycle_ids[1]]
+    ]
+    if frozen_items != cycle2_items:
+        raise FourTokenFactoryAdapterError(
+            "admission checkpoint Cycle-2 slots do not match frozen attempt pair"
+        )
+
+    cycle2_windows = int(connection.execute(
+        "SELECT COUNT(*) FROM printer_memory_factory_campaign_windows "
+        "WHERE campaign_id=? AND run_id=? AND cycle_id=?",
+        (campaign_id, campaign_run_id, cycle_ids[1]),
+    ).fetchone()[0])
+    cycle2_work = int(connection.execute(
+        "SELECT COUNT(*) FROM printer_memory_factory_campaign_scheduler_work "
+        "WHERE campaign_id=? AND run_id=? AND cycle_id=?",
+        (campaign_id, campaign_run_id, cycle_ids[1]),
+    ).fetchone()[0])
+    if cycle2_windows or cycle2_work:
+        raise FourTokenFactoryAdapterError(
+            "admission checkpoint must not plan Cycle-2 lifecycle windows/work"
+        )
+    return {
+        "admission_checkpoint_pass": True,
+        "cycle_ids": list(cycle_ids),
+        "cycle_created_at": [str(row[2]) for row in cycles],
+        "cycle_spacing_seconds": spacing_seconds,
+        "slot_count": 4,
+        "mints": [str(row[3]) for row in slots],
+        "pairs": [str(row[5]) for row in slots],
+        "cycle2_attempt_id": str(attempt[0]),
+        "cycle2_attempt_state": str(attempt[1]),
+        "cycle2_lifecycle_windows": cycle2_windows,
+        "cycle2_lifecycle_work": cycle2_work,
+    }
+
 def finalize_four_token_shared_terminal(
     connection: sqlite3.Connection,
     *,
@@ -1718,6 +1865,22 @@ def finalize_four_token_shared_terminal(
     ).fetchall()
     ordinals = [int(item[1]) for item in rows]
     admitted_shape = "TWO_CYCLE_COMPLETION"
+    admission_checkpoint_validation: dict[str, Any] | None = None
+    if len(rows) == 2 and ordinals == [1, 2]:
+        from printer_v1.operator_cli.four_token_admission_checkpoint import (
+            TERMINAL_CAUSE as ADMISSION_CHECKPOINT_TERMINAL_CAUSE,
+        )
+        if all(
+            str(item[3] or "") == ADMISSION_CHECKPOINT_TERMINAL_CAUSE
+            for item in rows
+        ):
+            admitted_shape = "TWO_CYCLE_ADMISSION_CHECKPOINT"
+            admission_checkpoint_validation = validate_four_token_admission_checkpoint(
+                connection,
+                campaign_id=campaign,
+                campaign_run_id=run,
+                factory_run_id=factory,
+            )
     if len(rows) == 1 and ordinals == [1]:
         attempt_rows = connection.execute(
             "SELECT attempt_state,first_terminal_cause,consumed_cycle_id "
@@ -1896,6 +2059,7 @@ def finalize_four_token_shared_terminal(
             "already_terminal": True,
             "admitted_shape": admitted_shape,
             "four_token_through_4h_validations": through_4h_validations,
+            "admission_checkpoint_validation": admission_checkpoint_validation,
             "parent_interrupt_reconciliation": dict(interrupt_report),
         }
     terminal_accounting: dict[str, Any] | None = None
@@ -1953,6 +2117,7 @@ def finalize_four_token_shared_terminal(
         "already_terminal": False,
         "admitted_shape": admitted_shape,
         "four_token_through_4h_validations": through_4h_validations,
+        "admission_checkpoint_validation": admission_checkpoint_validation,
         "terminal_accounting": terminal_accounting,
         "shared_evidence": dict(result),
         "active_work": active_report,

@@ -155,11 +155,19 @@ FOUR_TOKEN_PROOF_MODE = "four-token-bounded-capacity-proof-run"
 # widens ``standard-four-hour-run`` nor promotes the proof mode to production
 # authority, and it is unreachable without its own one-shot wrapper.
 FOUR_TOKEN_STANDARD_FOUR_HOUR_MODE = "four-token-standard-four-hour-run"
+from printer_v1.operator_cli.four_token_admission_checkpoint import (
+    CHECKPOINT_RUNTIME_SECONDS as FOUR_TOKEN_ADMISSION_CHECKPOINT_RUNTIME_SECONDS,
+    FOUR_TOKEN_ADMISSION_CHECKPOINT_MODE,
+    LOCKED_WINDOWS as FOUR_TOKEN_ADMISSION_CHECKPOINT_LOCKED_WINDOWS,
+    POLICY_VERSION as FOUR_TOKEN_ADMISSION_CHECKPOINT_POLICY_VERSION,
+    POST_SUPPLY_LIFECYCLE_DURATION_SECONDS as FOUR_TOKEN_ADMISSION_CONTROLLER_HORIZON_SECONDS,
+)
 _WRAPPER_BOUND_MODE_LABELS = {
     "run": "ordinary run",
     STANDARD_FOUR_HOUR_MODE: "standard four-hour run",
     FOUR_TOKEN_PROOF_MODE: "four-token bounded capacity proof run",
     FOUR_TOKEN_STANDARD_FOUR_HOUR_MODE: "four-token standard four-hour run",
+    FOUR_TOKEN_ADMISSION_CHECKPOINT_MODE: "four-token admission checkpoint run",
 }
 STANDARD_FOUR_HOUR_POLICY_VERSION = "V2-9.8-STANDARD-4H-OPERATIONAL-V1"
 STANDARD_FOUR_HOUR_TOTAL_DURATION_SECONDS = 14_700
@@ -261,7 +269,7 @@ GIT_PROVENANCE_MANIFEST_ENV_VARS = (
 )
 GIT_PROVENANCE_MANIFEST_SUPPORTED_MODES = (
     "preflight-only", "run", STANDARD_FOUR_HOUR_MODE, FOUR_TOKEN_PROOF_MODE,
-    FOUR_TOKEN_STANDARD_FOUR_HOUR_MODE,
+    FOUR_TOKEN_STANDARD_FOUR_HOUR_MODE, FOUR_TOKEN_ADMISSION_CHECKPOINT_MODE,
 )
 # Action-local run identity for blocked-command source accounting. Never inherit
 # a previous campaign's holder-ledger totals into a different public action.
@@ -382,6 +390,33 @@ FOUR_TOKEN_STANDARD_FOUR_HOUR_POLICY = _OperationalCampaignPolicy(
         _four_token_operational.LATER_CYCLE_PRE_ADMISSION_DEADLINE_SECONDS_AFTER_CYCLE_ONE
     ),
     continuous_four_hour=True,
+    standard_four_hour_campaign=True,
+)
+
+# Admission-checkpoint policy: preserve the real four-token controller horizon
+# while the factory owns a separate 900s diagnostic stop.
+FOUR_TOKEN_ADMISSION_CHECKPOINT_POLICY = _OperationalCampaignPolicy(
+    mode=FOUR_TOKEN_ADMISSION_CHECKPOINT_MODE,
+    policy_version=FOUR_TOKEN_ADMISSION_CHECKPOINT_POLICY_VERSION,
+    duration_seconds=FOUR_TOKEN_ADMISSION_CONTROLLER_HORIZON_SECONDS,
+    selective_1h_continuation=False,
+    governed_request_ceiling=(
+        _four_token_operational.LIFECYCLE_REQUEST_OUTER_CEILING
+    ),
+    governed_requests_per_token=(
+        _four_token_operational.LIFECYCLE_REQUESTS_PER_TOKEN
+    ),
+    scheduler_row_ceiling=(
+        _four_token_operational.LIFECYCLE_SCHEDULER_OUTER_CEILING
+    ),
+    locked_windows=FOUR_TOKEN_ADMISSION_CHECKPOINT_LOCKED_WINDOWS,
+    pre_lifecycle_acquisition_duration_seconds=(
+        _four_token_operational.PRE_LIFECYCLE_ACQUISITION_DURATION_SECONDS
+    ),
+    later_cycle_pre_admission_deadline_seconds_after_cycle_one=(
+        _four_token_operational.LATER_CYCLE_PRE_ADMISSION_DEADLINE_SECONDS_AFTER_CYCLE_ONE
+    ),
+    continuous_four_hour=False,
     standard_four_hour_campaign=True,
 )
 
@@ -861,6 +896,13 @@ def _resolve_git_provenance_authorization(
 
             validation_kwargs["profile"] = (
                 FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE
+            )
+        elif mode == FOUR_TOKEN_ADMISSION_CHECKPOINT_MODE:
+            from printer_v1.operator_cli.git_provenance_authorization_manifest import (
+                FOUR_TOKEN_ADMISSION_CHECKPOINT_AUTHORIZATION_PROFILE,
+            )
+            validation_kwargs["profile"] = (
+                FOUR_TOKEN_ADMISSION_CHECKPOINT_AUTHORIZATION_PROFILE
             )
         return validate_git_provenance_authorization(**validation_kwargs)
     except GitProvenanceAuthorizationError as exc:
@@ -1715,6 +1757,10 @@ def _create_campaign_command(
             "later_cycle_pre_admission_deadline_seconds_after_cycle_one"
         ] = int(
             policy.later_cycle_pre_admission_deadline_seconds_after_cycle_one
+        )
+    if policy.mode == FOUR_TOKEN_ADMISSION_CHECKPOINT_MODE:
+        configuration["four_token_admission_checkpoint_runtime_seconds"] = int(
+            FOUR_TOKEN_ADMISSION_CHECKPOINT_RUNTIME_SECONDS
         )
     if four_token_multi_cycle_capacity is not None:
         configuration["multi_cycle_capacity"] = four_token_multi_cycle_capacity
@@ -4187,6 +4233,14 @@ def _run_operational_campaign(
                     "cancellation_probe": cancellation_probe,
                     "factory_run_initialized": retain_factory_run_id,
                     "four_token_proof_controller": four_token_proof_controller,
+                    "four_token_admission_checkpoint": (
+                        policy.mode == FOUR_TOKEN_ADMISSION_CHECKPOINT_MODE
+                    ),
+                    "four_token_admission_checkpoint_runtime_seconds": (
+                        FOUR_TOKEN_ADMISSION_CHECKPOINT_RUNTIME_SECONDS
+                        if policy.mode == FOUR_TOKEN_ADMISSION_CHECKPOINT_MODE
+                        else None
+                    ),
                     "later_cycle_admission_deadline_seconds_after_first_cycle": (
                         policy.later_cycle_pre_admission_deadline_seconds_after_cycle_one
                     ),
@@ -4397,6 +4451,83 @@ def _run_operational_campaign(
             lifecycle=lifecycle,
             required_token_capacity=TOKEN_CAPACITY,
         )
+        if policy.mode == FOUR_TOKEN_ADMISSION_CHECKPOINT_MODE:
+            from printer_v1.operator_cli.four_token_admission_checkpoint import (
+                TERMINAL_CAUSE as ADMISSION_CHECKPOINT_TERMINAL_CAUSE,
+            )
+            from printer_v1.operator_cli.four_token_factory_adapter import (
+                validate_four_token_admission_checkpoint,
+            )
+
+            checkpoint_validation = None
+            checkpoint_error = None
+            try:
+                checkpoint_connection = sqlite3.connect(str(command.db_path))
+                checkpoint_connection.row_factory = sqlite3.Row
+                try:
+                    checkpoint_validation = validate_four_token_admission_checkpoint(
+                        checkpoint_connection,
+                        campaign_id=command.campaign_id,
+                        campaign_run_id=command.run_id,
+                        factory_run_id=initialized_factory_run_id,
+                    )
+                finally:
+                    checkpoint_connection.close()
+            except Exception as exc:
+                checkpoint_error = f"{type(exc).__name__}:{exc}"
+            checkpoint_pass = bool(
+                cause == ADMISSION_CHECKPOINT_TERMINAL_CAUSE
+                and isinstance(checkpoint_validation, Mapping)
+                and checkpoint_validation.get("admission_checkpoint_pass") is True
+                and cleanup.get("cleanup_completed") is True
+                and cleanup.get("lease_released") is True
+                and reconciliation.get("clean_terminal") is True
+            )
+            terminal = {
+                "status": "FOUR_TOKEN_ADMISSION_CHECKPOINT_TERMINAL",
+                "execution_id": execution_id,
+                "campaign_id": command.campaign_id,
+                "run_id": command.run_id,
+                "cycle_id": cycle_id,
+                "supervision_id": command.supervision_id,
+                "lifecycle_started": True,
+                "run_status": lifecycle.get("run_status"),
+                "first_terminal_cause": cause,
+                "campaign_pass": checkpoint_pass,
+                "admission_checkpoint_pass": checkpoint_pass,
+                "admission_checkpoint": checkpoint_validation,
+                "admission_checkpoint_error": checkpoint_error,
+                "cleanup_complete": cleanup.get("cleanup_completed"),
+                "lease_released": cleanup.get("lease_released"),
+                "active_locked_work": cleanup.get("active_owned_work_after")
+                or cleanup.get("active_work_after")
+                or 0,
+                "campaign_source_calls": reporting.get("campaign_source_calls"),
+                "campaign_scheduler_calls": reporting.get("campaign_scheduler_calls"),
+                "source_calls": reporting.get("campaign_source_calls"),
+                "scheduler_runtime_calls": len(scheduler_runtime_records),
+                "database_writes": None,
+                "restart_created": False,
+                "successor_created": False,
+                "operational_lifecycle_pass": False,
+                "policy_version": policy.policy_version,
+                "locked_windows": policy.locked_windows,
+            }
+            write_campaign_terminal_summary(
+                paths["summary"],
+                summary={
+                    **terminal,
+                    "configuration_id": command.configuration_id,
+                    "campaign_run_id": command.run_id,
+                    "cycles": (
+                        checkpoint_validation.get("cycle_ids", [])
+                        if isinstance(checkpoint_validation, Mapping)
+                        else []
+                    ),
+                },
+            )
+            terminal["terminal_report_path"] = str(paths["summary"])
+            return terminal
         # Seal terminal reconciliation on the same owner at the actual cleanup
         # boundary.  Every named validation is independently mirrored into the
         # action-local ledger at execution time.
@@ -4861,6 +4992,32 @@ def run_four_token_standard_four_hour_campaign(
     """
     return _run_operational_campaign(
         policy=FOUR_TOKEN_STANDARD_FOUR_HOUR_POLICY,
+        operator_approved=operator_approved,
+        owner=owner,
+        pump_transport=pump_transport,
+        secondary_transport=secondary_transport,
+        migration_transport=migration_transport,
+        git_provenance_authorization=git_provenance_authorization,
+        disposable_proof=disposable_proof,
+        four_token_proof_controller=(
+            _four_token_operational.build_operational_multi_cycle_controller()
+        ),
+    )
+
+
+def run_four_token_admission_checkpoint_campaign(
+    *,
+    operator_approved: bool,
+    git_provenance_authorization: ValidatedGitProvenanceAuthorization | None,
+    owner: Any | None = None,
+    pump_transport: Any | None = None,
+    secondary_transport: Any | None = None,
+    migration_transport: Any | None = None,
+    disposable_proof: Any | None = None,
+) -> dict[str, Any]:
+    """Run exact 4/2/2 operation and stop at the Cycle-2 admission outcome."""
+    return _run_operational_campaign(
+        policy=FOUR_TOKEN_ADMISSION_CHECKPOINT_POLICY,
         operator_approved=operator_approved,
         owner=owner,
         pump_transport=pump_transport,
@@ -6779,7 +6936,8 @@ def main(argv: Iterable[str] | None = None) -> int:
             "Modes: preflight-only, run, selective-1h-preflight, "
             "selective-1h-proof, standard-four-hour-preflight, "
             "standard-four-hour-run, four-token-standard-four-hour-run, "
-            "status, cooperative-stop, recover-orphan, "
+            "four-token-admission-checkpoint-run, status, cooperative-stop, "
+            "recover-orphan, "
             "report-only, discovery-only. Candidate acquisition and cursor "
             "recovery are deferred and are not operational prerequisites."
         )
@@ -6791,6 +6949,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             SELECTIVE_1H_MODE, STANDARD_FOUR_HOUR_PREFLIGHT_MODE,
             STANDARD_FOUR_HOUR_MODE, FOUR_TOKEN_PROOF_MODE,
             FOUR_TOKEN_STANDARD_FOUR_HOUR_MODE,
+            FOUR_TOKEN_ADMISSION_CHECKPOINT_MODE,
             "status", "cooperative-stop", "recover-orphan",
             "report-only", "discovery-only",
         ),
@@ -6845,6 +7004,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             STANDARD_FOUR_HOUR_MODE,
             FOUR_TOKEN_PROOF_MODE,
             FOUR_TOKEN_STANDARD_FOUR_HOUR_MODE,
+            FOUR_TOKEN_ADMISSION_CHECKPOINT_MODE,
         }
         if args.mode in wrapper_bound_modes and not any(provenance_binding_values):
             label = _WRAPPER_BOUND_MODE_LABELS[args.mode]
@@ -6898,6 +7058,11 @@ def main(argv: Iterable[str] | None = None) -> int:
             )
         elif args.mode == FOUR_TOKEN_STANDARD_FOUR_HOUR_MODE:
             result = run_four_token_standard_four_hour_campaign(
+                operator_approved=args.operator_approved,
+                git_provenance_authorization=git_provenance_authorization,
+            )
+        elif args.mode == FOUR_TOKEN_ADMISSION_CHECKPOINT_MODE:
+            result = run_four_token_admission_checkpoint_campaign(
                 operator_approved=args.operator_approved,
                 git_provenance_authorization=git_provenance_authorization,
             )
