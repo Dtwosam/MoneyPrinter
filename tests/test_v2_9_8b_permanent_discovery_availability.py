@@ -32,6 +32,7 @@ from printer_v1.discovery.permanent_discovery_availability import (
     CandidateObservation,
     ExactMarketObservation,
     StageBudget,
+    build_campaign_source_request_scope,
     freeze_eligible_reserve,
     interleave_candidate_observations,
     load_exact_market_states,
