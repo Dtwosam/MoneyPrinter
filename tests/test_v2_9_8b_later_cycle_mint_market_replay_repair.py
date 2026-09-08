@@ -11,7 +11,10 @@ from pathlib import Path
 
 from printer_v1.db import apply_migrations
 from printer_v1.discovery.eligible_token_supply import (
+    ACQUISITION_QUANTUM_YIELDED,
+    AcquisitionQuantumKind,
     BUDGET_EXHAUSTION,
+    acquisition_quantum_bound,
     load_completed_cooperative_mint_market_batch_mints,
     run_persistent_eligible_token_supply,
 )
@@ -19,6 +22,7 @@ from printer_v1.discovery.permanent_discovery_availability import (
     StageBudget,
     build_campaign_source_request_scope,
 )
+from printer_v1.sources.dexscreener import fixture_success_transport
 from printer_v1.sources.pumpswap_graduated_registry import (
     PERSISTED_GRADUATED_CHANNEL,
     record_graduated_candidate,
@@ -376,3 +380,87 @@ def test_market_feeder_exhaustion_is_honest_budget_terminal_with_downstream_capa
         ]
         > 0
     )
+
+def test_cooperative_market_batch_defers_reconciliation_to_fast_safe_quantum(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "market-split.sqlite3"
+    apply_migrations(db_path)
+    connection = sqlite3.connect(db_path)
+    connection.row_factory = sqlite3.Row
+    record_graduated_candidate(
+        connection,
+        mint=MINT,
+        migration_signature=SIGNATURE,
+        pumpswap_pool=POOL,
+        graduation_block_time=1_784_000_000,
+        graduation_slot=1,
+        now=NOW,
+        discovery_channel=PERSISTED_GRADUATED_CHANNEL,
+    )
+    connection.commit()
+    connection.close()
+
+    dex_calls = 0
+    gecko_calls = 0
+
+    def dex_factory(_mints):
+        nonlocal dex_calls
+        dex_calls += 1
+        return fixture_success_transport({"pairs": []})
+
+    def forbidden_gecko(_mint):
+        nonlocal gecko_calls
+        gecko_calls += 1
+        raise AssertionError(
+            "Gecko reconciliation must be a later cooperative claim"
+        )
+
+    result = run_persistent_eligible_token_supply(
+        db_path,
+        cycle_seed="market-split-seed",
+        migration_transport=lambda _context: {"result": []},
+        dexscreener_batch_transport_factory=dex_factory,
+        geckoterminal_reconciliation_transport_factory=forbidden_gecko,
+        now=NOW,
+        discovery_request_key_prefix=_scope().request_key_root,
+        front_door_request_key_prefix=_scope().request_key_root,
+        execution_id=EXECUTION_ID,
+        campaign_id=None,
+        run_id=None,
+        cycle_id=None,
+        campaign_source_request_scope=_scope(),
+        permanent_availability=True,
+        cooperative_quantum=True,
+        cooperative_phase="MARKET_DISCOVERY",
+        cooperative_stage_budget=StageBudget.permanent_discovery_default(),
+        enable_geckoterminal_reconciliation=True,
+        persist_terminal_certificate=False,
+    )
+
+    assert dex_calls == 1
+    assert gecko_calls == 0
+    assert result.terminal_cause == ACQUISITION_QUANTUM_YIELDED
+    assert result.diagnostics["next_cooperative_phase"] == (
+        "AUXILIARY_LIQUIDITY_BACKUP"
+    )
+    stage = result.diagnostics["stage_capacity"]
+    assert stage["used_by_stage"]["market_batching"] == 1
+    assert stage["used_by_stage"]["reconciliation"] == 0
+    assert len(result.diagnostics["work_queues"]["RECONCILIATION_DUE"]) == 1
+    assert (
+        acquisition_quantum_bound(
+            AcquisitionQuantumKind.MARKET_DISCOVERY
+        ).worst_case_seconds
+        == 5.0
+    )
+    check = sqlite3.connect(db_path)
+    try:
+        row = check.execute(
+            "SELECT current_state,current_reason FROM printer_exact_market_states "
+            "WHERE mint_identity=? AND pool_address=?",
+            (MINT, POOL),
+        ).fetchone()
+        assert tuple(row) == ("CONTRACT_BLOCKED", "LIQUIDITY_UNKNOWN")
+    finally:
+        check.close()

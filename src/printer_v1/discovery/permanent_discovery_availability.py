@@ -1492,6 +1492,7 @@ def run_dexscreener_batch_market_resolution(
     geckoterminal_transport_factory: Any | None = None,
     enable_geckoterminal_fallback: bool = False,
     max_geckoterminal_fallbacks: int | None = None,
+    defer_geckoterminal_fallback: bool = False,
     before_geckoterminal_request: Any | None = None,
     recent_request_count: int = 0,
     run_id: str | None = None,
@@ -1779,9 +1780,13 @@ def run_dexscreener_batch_market_resolution(
                 build_geckoterminal_token_pools_transport,
             )
 
-            fallback_limit = _bounded_geckoterminal_fallback_limit(
-                unresolved_count=len(unresolved_for_fallback),
-                max_fallbacks=max_geckoterminal_fallbacks,
+            fallback_limit = (
+                0
+                if defer_geckoterminal_fallback
+                else _bounded_geckoterminal_fallback_limit(
+                    unresolved_count=len(unresolved_for_fallback),
+                    max_fallbacks=max_geckoterminal_fallbacks,
+                )
             )
             report["reconciliation_fallback_suppressed_count"] += (
                 len(unresolved_for_fallback) - fallback_limit
@@ -1909,6 +1914,11 @@ def run_dexscreener_batch_market_resolution(
             historical_pool = str(row["pumpswap_pool"])
             pool_program = str(row.get("pumpswap_program_id") or PUMPSWAP_AMM_PROGRAM_ID)
             gt_entry = fallback.get(mint)
+            deferred_reconciliation = bool(
+                defer_geckoterminal_fallback
+                and mint in unresolved_for_fallback
+                and gt_entry is None
+            )
             effective_failed = failed and (
                 gt_entry is None or bool(gt_entry.get("failed"))
             )
@@ -1922,6 +1932,9 @@ def run_dexscreener_batch_market_resolution(
                     None if execution.failure_record is None else int(execution.failure_record.id)
                 ),
             }
+            if deferred_reconciliation:
+                provenance["liquidity_backup_attempted"] = False
+                provenance["reconciliation_deferred"] = True
             common = dict(
                 network=NETWORK,
                 mint=mint,
@@ -1965,6 +1978,16 @@ def run_dexscreener_batch_market_resolution(
                     source_failure_id=(None if execution.failure_record is None else int(execution.failure_record.id)),
                     failure_type=result.failure_type,
                 )
+                if deferred_reconciliation:
+                    report["state_transition_ids"].append(
+                        upsert_state(
+                            historical_pool,
+                            CONTRACT_BLOCKED,
+                            REASON_LIQUIDITY_UNKNOWN,
+                            due_boundary,
+                        )
+                    )
+                    report["reconciliation_due_count"] += 1
                 rejection = LIQUIDITY_UNPROVEN
             else:
                 primary_rows = tuple(resolution.by_mint.get(mint, ()))
@@ -2035,6 +2058,15 @@ def run_dexscreener_batch_market_resolution(
                         liquidity=evidence,
                         now=now,
                     )
+                    if deferred_reconciliation:
+                        report["state_transition_ids"].append(
+                            upsert_state(
+                                historical_pool,
+                                CONTRACT_BLOCKED,
+                                REASON_LIQUIDITY_UNKNOWN,
+                                due_boundary,
+                            )
+                        )
                     rejection = LIQUIDITY_UNPROVEN
                 else:
                     if all(item.pool != historical_pool for item in primary_rows) and gt_entry is not None:

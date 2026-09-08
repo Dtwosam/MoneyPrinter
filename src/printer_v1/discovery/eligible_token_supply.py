@@ -450,13 +450,9 @@ _ACQUISITION_QUANTUM_BOUNDS = {
         AcquisitionQuantumKind.MARKET_DISCOVERY,
         (
             AcquisitionQuantumComponent(
-                "dexscreener_market_batch_http", 1, DEXSCREENER_SMOKE_TIMEOUT_SECONDS
-            ),
-            AcquisitionQuantumComponent(
-                "geckoterminal_reconciliation_http", 6, GECKOTERMINAL_TIMEOUT_SECONDS
-            ),
-            AcquisitionQuantumComponent(
-                "geckoterminal_inter_request_pacing", 5, 6.0, transport=False
+                "dexscreener_market_batch_http",
+                1,
+                DEXSCREENER_SMOKE_TIMEOUT_SECONDS,
             ),
         ),
     ),
@@ -2943,7 +2939,13 @@ def run_persistent_eligible_token_supply(
                     enable_geckoterminal_fallback=(
                         enable_geckoterminal_reconciliation
                     ),
-                    max_geckoterminal_fallbacks=reconciliation_offer,
+                    max_geckoterminal_fallbacks=(
+                        0 if cooperative_quantum else reconciliation_offer
+                    ),
+                    defer_geckoterminal_fallback=bool(
+                        cooperative_quantum
+                        and enable_geckoterminal_reconciliation
+                    ),
                     before_geckoterminal_request=(
                         (lambda: _pace_live_geckoterminal())
                         if geckoterminal_reconciliation_transport_factory is None
@@ -2966,6 +2968,27 @@ def run_persistent_eligible_token_supply(
                 )
                 if reconciliation_calls:
                     stage_budget.consume("reconciliation", reconciliation_calls)
+                if cooperative_quantum:
+                    from printer_v1.discovery.permanent_discovery_availability import (
+                        load_liquidity_unknown_candidates,
+                    )
+
+                    pending_liquidity = [
+                        item
+                        for item in load_liquidity_unknown_candidates(connection)
+                        if not bool(item.get("liquidity_backup_attempted"))
+                    ]
+                    liquidity_backup_work_remaining = bool(
+                        stage_budget.available("reconciliation") >= 1
+                        and pending_liquidity
+                    )
+                    work_queues["RECONCILIATION_DUE"] = [
+                        {
+                            "mint": str(item.get("mint") or ""),
+                            "pool": str(item.get("pool") or ""),
+                        }
+                        for item in pending_liquidity
+                    ]
                 front_door = {
                     "candidates": permanent_report["candidates"],
                     "market_calls": int(
@@ -3830,6 +3853,10 @@ def run_persistent_eligible_token_supply(
                 and direct_backfill_due
                 else "MARKET_DISCOVERY"
                 if cooperative_quantum and cooperative_phase == "DIRECT_MIGRATION"
+                else "AUXILIARY_LIQUIDITY_BACKUP"
+                if cooperative_quantum
+                and cooperative_phase == "MARKET_DISCOVERY"
+                and liquidity_backup_work_remaining
                 else "PROTOCOL_CONFIRMATION"
                 if cooperative_quantum
                 and cooperative_phase == "MARKET_DISCOVERY"
