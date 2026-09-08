@@ -879,3 +879,76 @@ def test_spacing_hold_allows_cycle2_acquisition_without_early_admission(
     finally:
         connection.close()
 
+def test_spacing_hold_does_not_bypass_source_or_capacity_health(
+    tmp_path,
+) -> None:
+    db, _backup, _disposable_binding = _prepare(tmp_path)
+    connection = sqlite3.connect(db)
+    connection.row_factory = sqlite3.Row
+    callback_calls = 0
+    now = START + timedelta(seconds=60)
+
+    unhealthy = AdmissionHealthProjection(
+        health=MultiCycleAdmissionHealth(
+            source_budget_available=False,
+            provider_budgets_available=True,
+            scheduler_budget_available=True,
+            scheduler_due_work_healthy=True,
+            close_reserve_available=True,
+            campaign_supervision_healthy=True,
+            lease_healthy=True,
+            db_healthy=True,
+            shared_terminal_condition=False,
+            cancellation_requested=False,
+            discovery_capacity_available=True,
+            protected_work_capacity_available=True,
+        ),
+        recheck_at=None,
+        recheck_on_lifecycle_change=False,
+        evidence=(),
+        reasons=("source_budget_unavailable",),
+    )
+
+    def forbidden_callback(**_kwargs):
+        nonlocal callback_calls
+        callback_calls += 1
+        raise AssertionError("spacing hold must not bypass source budget health")
+
+    try:
+        result = factory._run_four_token_admission_boundary(
+            connection=connection,
+            controller=_SpacingController(),
+            binding=MultiCycleCampaignBinding(
+                campaign_id=CAMPAIGN_ID,
+                campaign_run_id=CAMPAIGN_RUN_ID,
+                configuration_id=CONFIGURATION_ID,
+                authoritative_factory_run_id=FACTORY_RUN_ID,
+            ),
+            first_cycle_id=CYCLE_ID,
+            now=now,
+            next_due_work_at=None,
+            proof_deadline=START + timedelta(hours=5),
+            project_health=lambda: unhealthy,
+            evaluate=lambda _projection: FourTokenAdmissionDisposition(
+                FourTokenAdmissionDispositionKind.REARM,
+                "PERSISTED_ADMISSION_SPACING_BOUNDARY",
+                START + timedelta(seconds=300),
+                False,
+            ),
+            later_cycle_callback=forbidden_callback,
+            admit=lambda **_kwargs: (_ for _ in ()).throw(
+                AssertionError("unhealthy spacing hold cannot admit")
+            ),
+            materialize=lambda **_kwargs: None,
+            plan_opening=lambda **_kwargs: None,
+        )
+        assert callback_calls == 0
+        assert result.admitted is False
+        assert result.attempt_id is None
+        assert (
+            result.disposition.kind
+            is FourTokenAdmissionDispositionKind.REARM
+        )
+    finally:
+        connection.close()
+

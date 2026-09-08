@@ -620,10 +620,33 @@ def _run_four_token_admission_boundary(
         if wait_projection is None
         else wait_projection.acquisition_deadline_at
     )
+    spacing_health = getattr(pre, "health", None)
     spacing_acquisition_rearm = (
         disposition.kind is FourTokenAdmissionDispositionKind.REARM
         and disposition.reason == "PERSISTED_ADMISSION_SPACING_BOUNDARY"
+        and spacing_health is not None
+        and bool(getattr(spacing_health, "source_budget_available", False))
+        and bool(getattr(spacing_health, "provider_budgets_available", False))
+        and bool(getattr(spacing_health, "scheduler_budget_available", False))
+        and bool(getattr(spacing_health, "scheduler_due_work_healthy", False))
+        and bool(getattr(spacing_health, "close_reserve_available", False))
+        and bool(getattr(spacing_health, "discovery_capacity_available", False))
+        and bool(getattr(spacing_health, "protected_work_capacity_available", False))
     )
+    if (
+        spacing_acquisition_rearm
+        and existing_pair_ready_attempt_id is not None
+    ):
+        return FourTokenAdmissionBoundaryResult(
+            disposition,
+            False,
+            existing_pair_ready_attempt_id,
+            "PAIR_READY",
+            None,
+            None,
+            None,
+            acquisition_deadline_at,
+        )
     if (
         disposition.kind is not FourTokenAdmissionDispositionKind.CYCLE_ADMISSION
         and not spacing_acquisition_rearm
