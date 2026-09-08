@@ -366,4 +366,3 @@ def test_market_feeder_exhaustion_is_honest_budget_terminal_with_downstream_capa
         ]
         > 0
     )
-
