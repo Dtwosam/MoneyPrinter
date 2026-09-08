@@ -161,6 +161,7 @@ from printer_v1.operator_cli.four_token_admission_checkpoint import (
     LOCKED_WINDOWS as FOUR_TOKEN_ADMISSION_CHECKPOINT_LOCKED_WINDOWS,
     POLICY_VERSION as FOUR_TOKEN_ADMISSION_CHECKPOINT_POLICY_VERSION,
     POST_SUPPLY_LIFECYCLE_DURATION_SECONDS as FOUR_TOKEN_ADMISSION_CONTROLLER_HORIZON_SECONDS,
+    exact_admission_checkpoint_policy,
 )
 _WRAPPER_BOUND_MODE_LABELS = {
     "run": "ordinary run",
@@ -1604,6 +1605,55 @@ def build_standard_four_hour_preflight(
     }
 
 
+def build_four_token_admission_checkpoint_preflight(
+    *,
+    db_path: str | Path | None = None,
+    repository_root: str | Path | None = None,
+    git_provenance_authorization: ValidatedGitProvenanceAuthorization | None = None,
+) -> dict[str, Any]:
+    """Read-only preflight for the exact reduced 4/2/2 admission checkpoint."""
+    base = build_activation_preflight(
+        db_path=db_path,
+        repository_root=repository_root,
+        git_provenance_authorization=git_provenance_authorization,
+    )
+    policy = FOUR_TOKEN_ADMISSION_CHECKPOINT_POLICY
+    if AUTOMATIC_RETRIES != 0:
+        _preflight_fail("retry_policy", "automatic retries must remain zero")
+    if tuple(policy.locked_windows) != (
+        "WINDOW_1H", "WINDOW_4H", "WINDOW_12H", "WINDOW_24H"
+    ):
+        _preflight_fail(
+            "checkpoint_window_locks",
+            "admission checkpoint must keep all continuation windows locked",
+        )
+    exact_policy = exact_admission_checkpoint_policy()
+    return {
+        **base,
+        "mode": FOUR_TOKEN_ADMISSION_CHECKPOINT_MODE,
+        "status": "V2_9_8B_FOUR_TOKEN_ADMISSION_CHECKPOINT_PREFLIGHT_READY",
+        "four_token_admission_checkpoint_policy": exact_policy,
+        "checkpoint_ceilings": {
+            "configured_tokens": exact_policy["configured_tokens"],
+            "configured_active_cycles": exact_policy["configured_active_cycles"],
+            "tokens_per_cycle": exact_policy["tokens_per_cycle"],
+            "pre_lifecycle_acquisition_duration_seconds": (
+                policy.pre_lifecycle_acquisition_duration_seconds
+            ),
+            "controller_post_supply_horizon_seconds": policy.duration_seconds,
+            "checkpoint_runtime_seconds": (
+                FOUR_TOKEN_ADMISSION_CHECKPOINT_RUNTIME_SECONDS
+            ),
+            "governed_requests": policy.governed_request_ceiling,
+            "governed_requests_per_token": policy.governed_requests_per_token,
+            "scheduler_rows": policy.scheduler_row_ceiling,
+        },
+        "source_calls": 0,
+        "scheduler_runtime_calls": 0,
+        "database_writes": 0,
+    }
+
+
 def _artifact_paths(
     execution_id: str,
     *,
@@ -1734,9 +1784,13 @@ def _create_campaign_command(
             "source_identity": backup["source_identity"],
             "backup_sha256": backup["backup_hash"],
             "required_migration": (
-                SELECTIVE_1H_REQUIRED_MIGRATION
-                if policy.selective_1h_continuation
-                else "032_campaign_ownership_schema.sql"
+                canonical_migration_names()[-1]
+                if policy.mode == FOUR_TOKEN_ADMISSION_CHECKPOINT_MODE
+                else (
+                    SELECTIVE_1H_REQUIRED_MIGRATION
+                    if policy.selective_1h_continuation
+                    else "032_campaign_ownership_schema.sql"
+                )
             ),
             "latest_migration": backup["latest_rehearsed_migration"],
         },
@@ -3640,6 +3694,10 @@ def _run_operational_campaign(
     if disposable_proof is not None:
         preflight = build_disposable_public_composition_preflight(
             disposable_proof
+        )
+    elif policy.mode == FOUR_TOKEN_ADMISSION_CHECKPOINT_MODE:
+        preflight = build_four_token_admission_checkpoint_preflight(
+            git_provenance_authorization=git_provenance_authorization
         )
     elif policy.standard_four_hour_campaign:
         preflight = build_standard_four_hour_preflight(
