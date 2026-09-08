@@ -653,65 +653,74 @@ def _terminalize_later_cycle_admission_deadline(
             now=now,
         )
 
-    if attempt.state is PreAdmissionAttemptState.PAIR_READY:
-        final = cancel_pair_ready_pre_admission_attempt_for_admission_deadline(
-            connection,
-            attempt_id=attempt_id,
-            campaign_id=str(binding.campaign_id),
-            campaign_run_id=str(binding.campaign_run_id),
-            authoritative_factory_run_id=str(binding.authoritative_factory_run_id),
-            deadline_at=deadline_at,
-            now=now,
-        )
-    elif attempt.state in {
-        PreAdmissionAttemptState.PLANNED,
-        PreAdmissionAttemptState.RUNNING,
-    }:
-        final = terminalize_pre_admission_attempt(
-            connection,
-            attempt_id=attempt_id,
-            state=PreAdmissionAttemptState.BLOCKED,
-            cause=LATER_CYCLE_ADMISSION_DEADLINE_EXHAUSTED,
-            now=now,
-        )
-        cancel_job(connection, job_id=attempt.scheduler_job_id, now=now)
-    elif attempt.state is PreAdmissionAttemptState.CONSUMED:
-        raise ValueError("consumed Cycle-2 attempt reached admission deadline path")
-    else:
-        connection.commit()
-        return (
-            attempt_id,
-            attempt.state.value,
-            str(attempt.first_terminal_cause or ""),
-        )
+    try:
+        if attempt.state is PreAdmissionAttemptState.PAIR_READY:
+            final = cancel_pair_ready_pre_admission_attempt_for_admission_deadline(
+                connection,
+                attempt_id=attempt_id,
+                campaign_id=str(binding.campaign_id),
+                campaign_run_id=str(binding.campaign_run_id),
+                authoritative_factory_run_id=str(
+                    binding.authoritative_factory_run_id
+                ),
+                deadline_at=deadline_at,
+                now=now,
+            )
+        elif attempt.state in {
+            PreAdmissionAttemptState.PLANNED,
+            PreAdmissionAttemptState.RUNNING,
+        }:
+            final = terminalize_pre_admission_attempt(
+                connection,
+                attempt_id=attempt_id,
+                state=PreAdmissionAttemptState.BLOCKED,
+                cause=LATER_CYCLE_ADMISSION_DEADLINE_EXHAUSTED,
+                now=now,
+            )
+            cancel_job(connection, job_id=attempt.scheduler_job_id, now=now)
+        elif attempt.state is PreAdmissionAttemptState.CONSUMED:
+            raise ValueError(
+                "consumed Cycle-2 attempt reached admission deadline path"
+            )
+        else:
+            return (
+                attempt_id,
+                attempt.state.value,
+                str(attempt.first_terminal_cause or ""),
+            )
 
-    claim_ordinal = int(
-        connection.execute(
-            "SELECT COALESCE(MAX(claim_ordinal),1) "
-            "FROM printer_pre_admission_attempt_evidence WHERE attempt_id=?",
-            (attempt_id,),
-        ).fetchone()[0]
-    )
-    append_pre_admission_attempt_evidence(
-        connection,
-        attempt_id=attempt_id,
-        event_key="admission-deadline-expired",
-        opportunity_ordinal=3,
-        claim_ordinal=max(1, claim_ordinal),
-        evidence_kind="ATTEMPT_DISPOSITION",
-        observed_at=now.astimezone(timezone.utc).isoformat(),
-        categorical_reason=LATER_CYCLE_ADMISSION_DEADLINE_EXHAUSTED,
-        payload={
-            "deadline_at": deadline_at.astimezone(timezone.utc).isoformat(),
-            "state_after": final.state.value,
-        },
-    )
-    connection.commit()
+        claim_ordinal = int(
+            connection.execute(
+                "SELECT COALESCE(MAX(claim_ordinal),1) "
+                "FROM printer_pre_admission_attempt_evidence WHERE attempt_id=?",
+                (attempt_id,),
+            ).fetchone()[0]
+        )
+        append_pre_admission_attempt_evidence(
+            connection,
+            attempt_id=attempt_id,
+            event_key="admission-deadline-expired",
+            opportunity_ordinal=3,
+            claim_ordinal=max(1, claim_ordinal),
+            evidence_kind="ATTEMPT_DISPOSITION",
+            observed_at=now.astimezone(timezone.utc).isoformat(),
+            categorical_reason=LATER_CYCLE_ADMISSION_DEADLINE_EXHAUSTED,
+            payload={
+                "deadline_at": deadline_at.astimezone(timezone.utc).isoformat(),
+                "state_after": final.state.value,
+            },
+        )
+        connection.commit()
+    except Exception:
+        if connection.in_transaction:
+            connection.rollback()
+        raise
     return (
         attempt_id,
         final.state.value,
         LATER_CYCLE_ADMISSION_DEADLINE_EXHAUSTED,
     )
+
 
 def _run_four_token_admission_boundary(
     *,
