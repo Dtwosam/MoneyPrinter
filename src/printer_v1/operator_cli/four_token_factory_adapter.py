@@ -1723,9 +1723,7 @@ def validate_four_token_admission_checkpoint(
                   pair_identity,tracking_queue_id
            FROM printer_memory_factory_campaign_token_slots
            WHERE campaign_id=? AND run_id=?
-           ORDER BY cycle_ordinal_if_present,slot_ordinal""".replace(
-               "cycle_ordinal_if_present,", "cycle_id,"
-           ),
+           ORDER BY cycle_id,slot_ordinal""",
         (campaign_id, campaign_run_id),
     ).fetchall()
     if len(slots) != 4:

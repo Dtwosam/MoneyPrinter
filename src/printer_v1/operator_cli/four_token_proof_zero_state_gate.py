@@ -309,6 +309,7 @@ def _assert_four_token_zero_state(
     policy_key: str,
     expected_policy: Callable[[], Mapping[str, Any]],
     schema_version: str,
+    expected_locked_windows: Iterable[str] = LOCKED_LONG_WINDOWS,
 ) -> dict[str, Any]:
     """Prove the authoritative state is quiescent for one exact 4/2/2 start.
 
@@ -339,7 +340,7 @@ def _assert_four_token_zero_state(
             )
         )
     locked_windows = list(policy.get("locked_windows") or ())
-    if tuple(locked_windows) != tuple(LOCKED_LONG_WINDOWS):
+    if tuple(locked_windows) != tuple(expected_locked_windows):
         blockers.append(
             _blocker("long_windows_unlocked", f"locked windows are {locked_windows}")
         )
@@ -536,6 +537,7 @@ def assert_four_token_admission_checkpoint_zero_state(
 ) -> dict[str, Any]:
     """Prove quiescence for the exact reduced 4/2/2 admission checkpoint."""
     from printer_v1.operator_cli.four_token_admission_checkpoint import (
+        LOCKED_WINDOWS as ADMISSION_CHECKPOINT_LOCKED_WINDOWS,
         exact_admission_checkpoint_policy,
     )
     from printer_v1.operator_cli.four_token_admission_checkpoint_one_shot_wrapper import (
@@ -555,6 +557,7 @@ def assert_four_token_admission_checkpoint_zero_state(
         policy_key="operational_policy",
         expected_policy=exact_admission_checkpoint_policy,
         schema_version=OPERATIONAL_ZERO_STATE_SCHEMA_VERSION,
+        expected_locked_windows=ADMISSION_CHECKPOINT_LOCKED_WINDOWS,
     )
 
 
