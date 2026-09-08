@@ -23,6 +23,9 @@ from printer_v1.operator_cli.one_command_15m_factory import (
     _later_cycle_admission_deadline,
     _resolve_four_token_no_accounting_shared_terminal,
 )
+from printer_v1.operator_cli.four_token_proof_zero_state_gate import (
+    is_printer_operational_runtime_command,
+)
 from printer_v1.operator_cli.window_15m_child_terminal import CHILD_TERMINAL_MODE_SCHEMAS
 
 
@@ -198,3 +201,11 @@ def test_cycle2_deadline_is_anchored_to_atomic_cycle1_slot_admission() -> None:
     )
     assert deadline == admitted + timedelta(minutes=10)
     assert deadline != setup + timedelta(minutes=10)
+
+
+def test_checkpoint_command_is_classified_as_live_printer_runtime() -> None:
+    command = (
+        "python -m printer_v1.operator_cli.operational_memory_factory_command "
+        "four-token-admission-checkpoint-run --operator-approved"
+    )
+    assert is_printer_operational_runtime_command(command) is True

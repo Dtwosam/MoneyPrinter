@@ -169,6 +169,7 @@ PRINTER_OPERATIONAL_RUNTIME_MODES = (
     "standard-four-hour-run",
     "four-token-bounded-capacity-proof-run",
     "four-token-standard-four-hour-run",
+    "four-token-admission-checkpoint-run",
 )
 
 
