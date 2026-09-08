@@ -17,6 +17,10 @@ from printer_v1.operator_cli.pre_admission_discovery_attempt import (
     terminalize_pre_admission_attempt,
 )
 from printer_v1.operator_cli.unified_terminal_closure import reconcile_campaign_terminal
+from printer_v1.operator_cli import one_command_15m_factory as factory
+from printer_v1.operator_cli.multi_cycle_campaign_coordinator import (
+    MultiCycleCampaignBinding,
+)
 
 
 NOW = datetime(2026, 8, 20, 12, 0, tzinfo=timezone.utc)
@@ -592,5 +596,35 @@ def test_pair_ready_admission_deadline_revokes_frozen_authority_without_rewrite(
         assert after_row["terminal_at"] == before_row["terminal_at"]
         assert after_items == before_items
         assert after_links == before_links
+    finally:
+        connection.close()
+
+def test_expired_pair_ready_reports_deadline_as_shared_terminal_cause(db_path) -> None:
+    connection = _open(db_path)
+    try:
+        attempt_id, state, cause = factory._terminalize_later_cycle_admission_deadline(
+            connection,
+            binding=MultiCycleCampaignBinding(
+                campaign_id="campaign-1",
+                campaign_run_id="campaign-run-1",
+                configuration_id="configuration-1",
+                authoritative_factory_run_id="factory-1",
+            ),
+            first_cycle_id="cycle-1",
+            now=CANCEL_NOW,
+            deadline_at=CANCEL_NOW,
+        )
+        assert attempt_id == "pre-admission:campaign-1:campaign-run-1:factory-1:c0002"
+        assert state == "CANCELLED"
+        assert cause == factory.LATER_CYCLE_ADMISSION_DEADLINE_EXHAUSTED
+        status, terminal_cause = factory._resolve_four_token_no_accounting_shared_terminal(
+            connection,
+            campaign_id="campaign-1",
+            campaign_run_id="campaign-run-1",
+            factory_run_id="factory-1",
+            phase_a=({"cycle_state": "TERMINAL_COMPLETED"},),
+        )
+        assert status == "SAFE_STOPPED"
+        assert terminal_cause == factory.LATER_CYCLE_ADMISSION_DEADLINE_EXHAUSTED
     finally:
         connection.close()

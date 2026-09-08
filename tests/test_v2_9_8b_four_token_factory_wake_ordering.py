@@ -867,6 +867,7 @@ def test_spacing_hold_allows_cycle2_acquisition_without_early_admission(
             plan_opening=lambda **_kwargs: (_ for _ in ()).throw(
                 AssertionError("early Cycle-2 acquisition cannot plan lifecycle")
             ),
+            admission_deadline_seconds_after_first_cycle=600,
         )
         assert callback_calls == 1
         assert admission_calls == 0

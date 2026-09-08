@@ -653,7 +653,6 @@ def _terminalize_later_cycle_admission_deadline(
             now=now,
         )
 
-    deadline_terminalized = False
     if attempt.state is PreAdmissionAttemptState.PAIR_READY:
         final = cancel_pair_ready_pre_admission_attempt_for_admission_deadline(
             connection,
@@ -664,7 +663,6 @@ def _terminalize_later_cycle_admission_deadline(
             deadline_at=deadline_at,
             now=now,
         )
-        deadline_terminalized = True
     elif attempt.state in {
         PreAdmissionAttemptState.PLANNED,
         PreAdmissionAttemptState.RUNNING,
@@ -677,7 +675,6 @@ def _terminalize_later_cycle_admission_deadline(
             now=now,
         )
         cancel_job(connection, job_id=attempt.scheduler_job_id, now=now)
-        deadline_terminalized = True
     elif attempt.state is PreAdmissionAttemptState.CONSUMED:
         raise ValueError("consumed Cycle-2 attempt reached admission deadline path")
     else:

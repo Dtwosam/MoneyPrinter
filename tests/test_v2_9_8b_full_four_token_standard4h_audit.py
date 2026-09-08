@@ -413,6 +413,7 @@ def test_two_cycle_four_token_real_factory_reaches_shared_terminal_standard4h(
             "later_cycle_acquisition_quantum_seconds": (
                 lambda: later_cycle_gate_quantum_seconds({})
             ),
+            "later_cycle_admission_deadline_seconds_after_first_cycle": 600,
             "four_token_health_projector": (
                 lambda _connection, _now: _healthy_projection()
             ),
