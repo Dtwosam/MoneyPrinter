@@ -7168,8 +7168,12 @@ def main(argv: Iterable[str] | None = None) -> int:
         action_execution_id = _ACTION_RUN_CONTEXT.get("execution_id")
         baseline = _ACTION_RUN_CONTEXT.get("action_local_baseline")
         campaign_modes = {
-            "run", SELECTIVE_1H_MODE, STANDARD_FOUR_HOUR_MODE, FOUR_TOKEN_PROOF_MODE,
+            "run",
+            SELECTIVE_1H_MODE,
+            STANDARD_FOUR_HOUR_MODE,
+            FOUR_TOKEN_PROOF_MODE,
             FOUR_TOKEN_STANDARD_FOUR_HOUR_MODE,
+            FOUR_TOKEN_ADMISSION_CHECKPOINT_MODE,
         }
         from printer_v1.operator_cli.action_local_terminal_truth import (
             build_action_local_terminal_truth,
