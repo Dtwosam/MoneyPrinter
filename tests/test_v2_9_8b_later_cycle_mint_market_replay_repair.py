@@ -321,7 +321,7 @@ def test_market_feeder_exhaustion_is_honest_budget_terminal_with_downstream_capa
     scope = _scope()
     _record_request(
         connection,
-        request_key=f"{scope.request_key_root}-mint-batch-r0",
+        request_key=f"{scope.request_key_root}-mint-batch-r1",
         response_status="COMPLETE",
         identity=_identity(OTHER_MINT),
     )
