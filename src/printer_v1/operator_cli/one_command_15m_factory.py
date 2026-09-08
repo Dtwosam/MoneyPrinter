@@ -583,18 +583,25 @@ def _later_cycle_admission_deadline(
     ):
         raise ValueError("later-cycle admission deadline is invalid")
     rows = connection.execute(
-        """SELECT created_at FROM printer_memory_factory_campaign_cycles
-           WHERE cycle_id=? AND campaign_id=? AND run_id=? AND cycle_ordinal=1""",
+        """SELECT created_at
+           FROM printer_memory_factory_campaign_token_slots
+           WHERE cycle_id=? AND campaign_id=? AND run_id=?
+           ORDER BY slot_ordinal""",
         (first_cycle_id, binding.campaign_id, binding.campaign_run_id),
     ).fetchall()
-    if len(rows) != 1:
-        raise ValueError("Cycle-1 admission time is not exact")
-    admitted_at = datetime.fromisoformat(
-        str(rows[0][0]).replace("Z", "+00:00")
-    )
-    if admitted_at.tzinfo is None or admitted_at.utcoffset() is None:
-        raise ValueError("Cycle-1 admission time is malformed")
-    return admitted_at.astimezone(timezone.utc) + timedelta(
+    if len(rows) != 2:
+        raise ValueError("Cycle-1 admission time requires exact two-slot ownership")
+    admitted_times: list[datetime] = []
+    for row in rows:
+        admitted_at = datetime.fromisoformat(
+            str(row[0]).replace("Z", "+00:00")
+        )
+        if admitted_at.tzinfo is None or admitted_at.utcoffset() is None:
+            raise ValueError("Cycle-1 admission time is malformed")
+        admitted_times.append(admitted_at.astimezone(timezone.utc))
+    if admitted_times[0] != admitted_times[1]:
+        raise ValueError("Cycle-1 pair admission timestamp is not atomic")
+    return admitted_times[0] + timedelta(
         seconds=seconds_after_first_cycle
     )
 

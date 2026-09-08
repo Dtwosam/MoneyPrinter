@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import sqlite3
+from types import SimpleNamespace
 
 from printer_v1.operator_cli.four_token_admission_checkpoint import (
     CHECKPOINT_RUNTIME_SECONDS,
@@ -19,6 +20,7 @@ from printer_v1.operator_cli.four_token_factory_adapter import (
     validate_four_token_admission_checkpoint,
 )
 from printer_v1.operator_cli.one_command_15m_factory import (
+    _later_cycle_admission_deadline,
     _resolve_four_token_no_accounting_shared_terminal,
 )
 from printer_v1.operator_cli.window_15m_child_terminal import CHILD_TERMINAL_MODE_SCHEMAS
@@ -159,3 +161,39 @@ def test_two_cycle_checkpoint_is_valid_no_accounting_shared_terminal() -> None:
     )
     assert status == "SAFE_STOPPED"
     assert cause == TERMINAL_CAUSE
+
+
+def test_cycle2_deadline_is_anchored_to_atomic_cycle1_slot_admission() -> None:
+    connection = sqlite3.connect(":memory:")
+    connection.executescript(
+        """
+        CREATE TABLE printer_memory_factory_campaign_cycles(
+          cycle_id TEXT, campaign_id TEXT, run_id TEXT, cycle_ordinal INTEGER,
+          created_at TEXT
+        );
+        CREATE TABLE printer_memory_factory_campaign_token_slots(
+          cycle_id TEXT, campaign_id TEXT, run_id TEXT, slot_ordinal INTEGER,
+          created_at TEXT
+        );
+        """
+    )
+    setup = datetime(2026, 9, 8, 12, 0, tzinfo=timezone.utc)
+    admitted = setup + timedelta(minutes=12)
+    connection.execute(
+        "INSERT INTO printer_memory_factory_campaign_cycles VALUES (?,?,?,?,?)",
+        ("c1", "camp", "run", 1, setup.isoformat()),
+    )
+    for ordinal in (1, 2):
+        connection.execute(
+            "INSERT INTO printer_memory_factory_campaign_token_slots "
+            "VALUES (?,?,?,?,?)",
+            ("c1", "camp", "run", ordinal, admitted.isoformat()),
+        )
+    deadline = _later_cycle_admission_deadline(
+        connection,
+        binding=SimpleNamespace(campaign_id="camp", campaign_run_id="run"),
+        first_cycle_id="c1",
+        seconds_after_first_cycle=600,
+    )
+    assert deadline == admitted + timedelta(minutes=10)
+    assert deadline != setup + timedelta(minutes=10)

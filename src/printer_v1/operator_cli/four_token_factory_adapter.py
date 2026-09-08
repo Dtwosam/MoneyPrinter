@@ -1751,16 +1751,37 @@ def validate_four_token_admission_checkpoint(
             "admission checkpoint requires insert-bound tracking authority"
         )
 
-    first_at = datetime.fromisoformat(str(cycles[0][2]).replace("Z", "+00:00"))
-    second_at = datetime.fromisoformat(str(cycles[1][2]).replace("Z", "+00:00"))
-    if first_at.tzinfo is None:
-        first_at = first_at.replace(tzinfo=timezone.utc)
-    if second_at.tzinfo is None:
-        second_at = second_at.replace(tzinfo=timezone.utc)
-    spacing_seconds = (second_at - first_at).total_seconds()
+    admitted_times: list[datetime] = []
+    for cycle_id in cycle_ids:
+        time_rows = connection.execute(
+            """SELECT created_at
+               FROM printer_memory_factory_campaign_token_slots
+               WHERE campaign_id=? AND run_id=? AND cycle_id=?
+               ORDER BY slot_ordinal""",
+            (campaign_id, campaign_run_id, cycle_id),
+        ).fetchall()
+        if len(time_rows) != 2:
+            raise FourTokenFactoryAdapterError(
+                "admission checkpoint requires exact two-slot admission timestamps"
+            )
+        parsed = [
+            datetime.fromisoformat(str(row[0]).replace("Z", "+00:00"))
+            for row in time_rows
+        ]
+        parsed = [
+            item.replace(tzinfo=timezone.utc) if item.tzinfo is None else item
+            for item in parsed
+        ]
+        normalized = [item.astimezone(timezone.utc) for item in parsed]
+        if normalized[0] != normalized[1]:
+            raise FourTokenFactoryAdapterError(
+                "admission checkpoint pair admission timestamp is not atomic"
+            )
+        admitted_times.append(normalized[0])
+    spacing_seconds = (admitted_times[1] - admitted_times[0]).total_seconds()
     if not 300 <= spacing_seconds <= 600:
         raise FourTokenFactoryAdapterError(
-            "admission checkpoint cycle spacing is outside 300..600s"
+            "admission checkpoint spacing is outside 300..600s after Cycle-1 admission"
         )
 
     attempts = connection.execute(
@@ -1823,7 +1844,7 @@ def validate_four_token_admission_checkpoint(
     return {
         "admission_checkpoint_pass": True,
         "cycle_ids": list(cycle_ids),
-        "cycle_created_at": [str(row[2]) for row in cycles],
+        "cycle_admitted_at": [item.isoformat() for item in admitted_times],
         "cycle_spacing_seconds": spacing_seconds,
         "slot_count": 4,
         "mints": [str(row[3]) for row in slots],
