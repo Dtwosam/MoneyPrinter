@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 from urllib.parse import quote
 
+from printer_v1.contracts import capability_locks
 from printer_v1.db.migrate import MIGRATIONS_DIR, canonical_migration_names
 from printer_v1.hardening.flow_validation import (
     initialize_temp_validation_db,
@@ -9512,6 +9513,12 @@ def build_clean_memory_retrieval_report_once_payload(args: argparse.Namespace) -
         "lane": "post_rc_lane7",
         "lane_label": "CONTROLLED_CLEAN_MEMORY_RETRIEVAL_REPORTING",
         "report_only": True,
+        "retrieval_activation_enabled": bool(
+            capability_locks.RETRIEVAL_ACTIVATION_ENABLED
+        ),
+        "retrieval_activation_locked": not bool(
+            capability_locks.RETRIEVAL_ACTIVATION_ENABLED
+        ),
         # Core eligibility scan
         "retrieval_report": scan,
         # Safety/audit counters (top-level for easy inspection)
@@ -9794,6 +9801,7 @@ def build_wait_avoid_no_action_readiness_payload(
 
     readiness_label, readiness_reasons = _derive_lane8a_readiness(scan, guard_deltas)
     decision_template = _lane8a_decision_template_summary(eligible_memories)
+    paper_decision_creation_enabled = bool(capability_locks.PAPER_DECISIONS_ENABLED)
 
     return {
         "command": "printer-review-wait-avoid-no-action-readiness-once",
@@ -9819,7 +9827,9 @@ def build_wait_avoid_no_action_readiness_payload(
         # Action boundary — only conservative actions allowed in future review
         "allowed_future_review_actions": _LANE8A_ALLOWED_FUTURE_REVIEW_ACTIONS,
         "blocked_actions": _LANE8A_BLOCKED_ACTIONS,
-        # Hard locks — all false; no unlock possible from this command
+        # Current capability locks; review readiness is not creation authority.
+        "paper_decision_creation_enabled": paper_decision_creation_enabled,
+        "paper_decision_creation_locked": not paper_decision_creation_enabled,
         "buy_unlock": False,
         "position_unlock": False,
         "pnl_unlock": False,
@@ -9845,9 +9855,13 @@ def build_wait_avoid_no_action_readiness_payload(
         "readiness_label": readiness_label,
         "readiness_reasons": readiness_reasons,
         "next_required_operator_step": (
-            "operator_may_proceed_to_lane8b_conservative_decision_creation"
-            if has_clean_memory
-            else "collect_more_clean_memory_windows_before_proceeding_to_lane8b"
+            "paper_decision_creation_locked_requires_separate_deliberate_capability_change"
+            if not paper_decision_creation_enabled
+            else (
+                "operator_may_proceed_to_lane8b_conservative_decision_creation"
+                if has_clean_memory
+                else "collect_more_clean_memory_windows_before_proceeding_to_lane8b"
+            )
         ),
         # Decision template field availability preview (informational, no values invented)
         "decision_template_field_readiness": decision_template,
@@ -10470,6 +10484,12 @@ def _lane8c_not_found_payload(
             f"FAIL:paper_decision_id_{paper_decision_id}_not_found_in_printer_paper_decisions"
         ],
         "blocked_actions": _LANE8C_BLOCKED_ACTIONS,
+        "paper_decision_creation_enabled": bool(
+            capability_locks.PAPER_DECISIONS_ENABLED
+        ),
+        "paper_decision_creation_locked": not bool(
+            capability_locks.PAPER_DECISIONS_ENABLED
+        ),
         "buy_unlock": False,
         "position_unlock": False,
         "pnl_unlock": False,
@@ -10629,6 +10649,12 @@ def build_conservative_paper_decision_audit_review_payload(
         "audit_review_status": audit_status,
         "audit_review_reasons": combined_reasons,
         "blocked_actions": _LANE8C_BLOCKED_ACTIONS,
+        "paper_decision_creation_enabled": bool(
+            capability_locks.PAPER_DECISIONS_ENABLED
+        ),
+        "paper_decision_creation_locked": not bool(
+            capability_locks.PAPER_DECISIONS_ENABLED
+        ),
         "buy_unlock": False,
         "position_unlock": False,
         "pnl_unlock": False,
