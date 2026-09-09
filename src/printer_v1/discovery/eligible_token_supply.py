@@ -1121,6 +1121,54 @@ def _protocol_promotion_candidate(promo: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _protocol_resume_inventory_row(item: Mapping[str, Any]) -> dict[str, Any]:
+    """Rebuild a protocol-confirmed market row without changing exact identity."""
+    mint = str(item.get("mint") or "").strip()
+    pool = str(item.get("pool") or "").strip()
+    venue = str(item.get("venue") or "").strip()
+    token_program = str(item.get("token_program") or "").strip()
+    pool_program = str(item.get("pool_program") or "").strip()
+    base_mint = str(item.get("base_mint") or "").strip()
+    quote_mint = str(item.get("quote_mint") or "").strip()
+    protocol_request_id = item.get("protocol_request_id")
+    required = {
+        "mint": mint,
+        "pool": pool,
+        "venue": venue,
+        "token_program": token_program,
+        "pool_program": pool_program,
+        "base_mint": base_mint,
+        "quote_mint": quote_mint,
+        "protocol_request_id": protocol_request_id,
+    }
+    missing = [
+        key for key, value in required.items()
+        if not str(value or "").strip()
+    ]
+    if missing:
+        raise EligibleTokenSupplyError(
+            "PROTOCOL_RESUME_IDENTITY_INCOMPLETE:" + ",".join(sorted(missing))
+        )
+    return {
+        "mint_identity": mint,
+        # Legacy field name remains the resolver's exact-pool key; it does not
+        # assert Pump lineage.
+        "pumpswap_pool": pool,
+        "market_identity": f"solana-mainnet:{venue}:{pool}",
+        "lifecycle_state": "PROTOCOL_CONFIRMED",
+        "graduation_block_time": None,
+        "pumpswap_program_id": pool_program,
+        "token_program": token_program,
+        "pool_program": pool_program,
+        "base_mint": base_mint,
+        "quote_mint": quote_mint,
+        "venue": venue,
+        "protocol_request_id": int(protocol_request_id),
+        "protocol_confirmed": True,
+        "latest_channel": "PROTOCOL_CONFIRMED",
+    }
+
+
 def _candidate_liquidity_lineage(candidate: Mapping[str, Any]) -> dict[str, Any]:
     liquidity = candidate.get("liquidity")
     evidence = dict(liquidity) if isinstance(liquidity, Mapping) else {}
@@ -2664,15 +2712,17 @@ def run_persistent_eligible_token_supply(
                 load_protocol_resume_market_due,
                 next_mint_market_batch_stage_sequence,
             )
-            from printer_v1.sources.pumpswap import PUMPSWAP_AMM_PROGRAM_ID as _PAM
-
             resume_due = load_protocol_resume_market_due(connection)
             work_queues["PROTOCOL_RESUME_MARKET_DUE"] = list(resume_due)
-            if resume_due and stage_budget.available("market_batching") >= 1:
+            resume_batch_capacity = min(
+                1,
+                stage_budget.available("market_batching"),
+                max(0, _ops_remaining()),
+            )
+            if resume_due and resume_batch_capacity >= 1:
                 current_resume_batch = resume_due[
                     :MAX_DEXSCREENER_MARKET_BATCH_MINTS
                 ]
-                stage_budget.consume("market_batching", 1)
                 resume_stage_sequence = next_mint_market_batch_stage_sequence(
                     connection,
                     request_key_prefix=str(front_door_request_key_prefix),
@@ -2685,17 +2735,7 @@ def run_persistent_eligible_token_supply(
                 resume_report = run_dexscreener_batch_market_resolution(
                     connection,
                     inventory_rows=[
-                        {
-                            "mint_identity": str(item["mint"]),
-                            "pumpswap_pool": str(item["pool"]),
-                            "market_identity": (
-                                f"solana-mainnet:pumpswap:{item['pool']}"
-                            ),
-                            "lifecycle_state": "PUMPSWAP_PROTOCOL_CONFIRMED",
-                            "graduation_block_time": None,
-                            "pumpswap_program_id": _PAM,
-                            "latest_channel": "PROTOCOL_CONFIRMED",
-                        }
+                        _protocol_resume_inventory_row(item)
                         for item in current_resume_batch
                     ],
                     transport_factory=dexscreener_batch_transport_factory,
@@ -2713,9 +2753,18 @@ def run_persistent_eligible_token_supply(
                 )
                 permanent_market_reports.append(resume_report)
                 resume_market_calls = int(
-                    resume_report.get("source_request_count")
-                    or len(resume_report.get("source_request_ids") or ())
+                    (resume_report.get("calls_by_stage") or {}).get(
+                        "market_batching", 0
+                    )
                 )
+                if resume_market_calls > resume_batch_capacity:
+                    raise EligibleTokenSupplyError(
+                        "PROTOCOL_RESUME_MARKET_ACCOUNTING_EXCEEDED"
+                    )
+                if resume_market_calls:
+                    stage_budget.consume(
+                        "market_batching", resume_market_calls
+                    )
                 fresh_market_checks += resume_market_calls
                 ops_used += resume_market_calls
                 for candidate in resume_report.get("candidates") or ():
@@ -3326,39 +3375,30 @@ def run_persistent_eligible_token_supply(
             # Only rows that could not promote via retained evidence re-enter
             # market validation when capacity remains (never invent liquidity).
             # Preserve both early and residual revalidation candidates.
-            confirmed_for_market = union_market_revalidation_candidates(
-                protocol_report.get("requires_market_revalidation"),
+            from printer_v1.discovery.permanent_discovery_availability import (
+                load_protocol_resume_market_due,
             )
-            if (
-                confirmed_for_market
-                and stage_budget.available("market_batching") >= 1
-                and dexscreener_batch_transport_factory is not None
-            ):
-                from printer_v1.sources.pumpswap import PUMPSWAP_AMM_PROGRAM_ID as _PAM
 
-                resume_rows = [
-                    {
-                        "mint_identity": str(item["mint"]),
-                        "pumpswap_pool": str(item["pool"]),
-                        "market_identity": (
-                            f"solana-mainnet:pumpswap:{item['pool']}"
-                        ),
-                        "lifecycle_state": "PUMPSWAP_PROTOCOL_CONFIRMED",
-                        "graduation_block_time": None,
-                        "pumpswap_program_id": _PAM,
-                        "latest_channel": "PROTOCOL_CONFIRMED",
-                    }
-                    for item in confirmed_for_market
-                ]
-                try:
-                    stage_budget.consume("market_batching", 1)
-                except ValueError:
-                    resume_rows = []
-                if resume_rows:
-                    from printer_v1.discovery.permanent_discovery_availability import (
-                        build_mint_market_batch_request_key,
-                        next_mint_market_batch_stage_sequence,
-                    )
+            confirmed_for_market = load_protocol_resume_market_due(connection)
+            work_queues["PROTOCOL_RESUME_MARKET_DUE"] = list(
+                confirmed_for_market
+            )
+            resume_batch_capacity = min(
+                stage_budget.available("market_batching"),
+                max(0, _ops_remaining()),
+            )
+            resume_items = confirmed_for_market[
+                : resume_batch_capacity * MAX_DEXSCREENER_MARKET_BATCH_MINTS
+            ]
+            resume_rows = [
+                _protocol_resume_inventory_row(item)
+                for item in resume_items
+            ]
+            if resume_rows:
+                from printer_v1.discovery.permanent_discovery_availability import (
+                    build_mint_market_batch_request_key,
+                    next_mint_market_batch_stage_sequence,
+                )
 
                     # Continue monotonic market-batch sequence after protocol work.
                     resume_stage_sequence = next_mint_market_batch_stage_sequence(
@@ -3388,9 +3428,16 @@ def run_persistent_eligible_token_supply(
                     )
                     permanent_market_reports.append(resume_report)
                     market_calls = int(
-                        resume_report.get("source_request_count")
-                        or len(resume_report.get("source_request_ids") or ())
+                        (resume_report.get("calls_by_stage") or {}).get(
+                            "market_batching", 0
+                        )
                     )
+                    if market_calls > resume_batch_capacity:
+                        raise EligibleTokenSupplyError(
+                            "PROTOCOL_RESUME_MARKET_ACCOUNTING_EXCEEDED"
+                        )
+                    if market_calls:
+                        stage_budget.consume("market_batching", market_calls)
                     fresh_market_checks += market_calls
                     ops_used += market_calls
                     for cand in resume_report.get("candidates") or ():
@@ -3428,6 +3475,24 @@ def run_persistent_eligible_token_supply(
                             last_campaign_id=campaign_id,
                         )
                     connection.commit()
+            remaining_protocol_resume = load_protocol_resume_market_due(connection)
+            work_queues["PROTOCOL_RESUME_MARKET_DUE"] = list(
+                remaining_protocol_resume
+            )
+            protocol_resume_market_work_remaining = bool(
+                remaining_protocol_resume
+                and stage_budget.available("market_batching") >= 1
+                and _ops_remaining() >= 1
+            )
+            if (
+                remaining_protocol_resume
+                and stage_budget.available("market_batching") < 1
+            ):
+                budget_exhausted_stage = "market_batching"
+                budget_exhausted_required_operations = 1
+                last_stop_reason = "DISCOVERY_OPERATION_BUDGET_EXHAUSTED"
+            elif remaining_protocol_resume and _ops_remaining() < 1:
+                last_stop_reason = "DISCOVERY_OPERATION_BUDGET_EXHAUSTED"
             if not stage_budget.is_sealed("protocol_confirmation"):
                 if stage_budget.available("protocol_confirmation") < 1 or not (
                     protocol_report.get("remaining_due")
