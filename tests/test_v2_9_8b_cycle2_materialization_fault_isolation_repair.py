@@ -351,6 +351,139 @@ def _snapshot_factory(*, token_mint, timeout_seconds):
     )
 
 
+def test_shared_terminal_archives_unstarted_cycle2_tracking_claims(
+    tmp_path,
+) -> None:
+    from printer_v1.operator_cli.cadence_authority import (
+        claim_tracking_authority_for_slot_insert,
+    )
+    from printer_v1.operator_cli.four_token_factory_adapter import (
+        reconcile_four_token_cycle_terminal,
+    )
+
+    db, _backup, _disposable_binding = _prepare(tmp_path)
+    connection = sqlite3.connect(db)
+    connection.row_factory = sqlite3.Row
+    cycle2_id = CYCLE2_ID
+    failure_at = START + timedelta(seconds=301)
+    try:
+        connection.execute(
+            "INSERT INTO printer_memory_factory_runs("
+            "run_id,run_status,window_kind,db_mode,config_hash,config_json,started_at"
+            ") VALUES (?,?,?,?,?,?,?)",
+            (
+                FACTORY_RUN_ID,
+                "RUNNING",
+                "WINDOW_15M",
+                "OPERATIONAL_PERSISTENT",
+                "c" * 64,
+                "{}",
+                START.isoformat(),
+            ),
+        )
+        connection.execute(
+            "UPDATE printer_memory_factory_campaign_runs SET authoritative_run_id=? "
+            "WHERE run_id=? AND campaign_id=?",
+            (FACTORY_RUN_ID, CAMPAIGN_RUN_ID, CAMPAIGN_ID),
+        )
+        for row_id in (3, 4):
+            connection.execute(
+                "INSERT INTO printer_tokens(id,token_mint,chain) VALUES (?,?,'solana')",
+                (row_id, f"mint-{row_id}"),
+            )
+            connection.execute(
+                "INSERT INTO printer_pairs(id,token_id,pair_address,base_token_mint) "
+                "VALUES (?,?,?,?)",
+                (100 + row_id, row_id, f"pool-{row_id}", f"mint-{row_id}"),
+            )
+        queue_ids = tuple(
+            claim_tracking_authority_for_slot_insert(
+                connection,
+                token_row_id=row_id,
+                pair_row_id=100 + row_id,
+                tracking_lane=lane,
+                now=START + timedelta(seconds=300),
+            )
+            for row_id, lane in zip(
+                (3, 4), ("TRACK_FAST", "TRACK_NORMAL"), strict=True
+            )
+        )
+        slots = []
+        for ordinal, (row_id, queue_id) in enumerate(
+            zip((3, 4), queue_ids, strict=True), start=1
+        ):
+            slot = _slot(row_id, ordinal, tracking_queue_id=queue_id)
+            slot["token_slot_id"] = f"t{ordinal}_c0002_slot"
+            slots.append(slot)
+        create_cycle_with_two_slots(
+            connection,
+            campaign_id=CAMPAIGN_ID,
+            run_id=CAMPAIGN_RUN_ID,
+            cycle_id=cycle2_id,
+            cycle_ordinal=2,
+            slots=tuple(slots),
+            now=(START + timedelta(seconds=300)).isoformat(),
+            commit_transaction=False,
+        )
+        connection.commit()
+
+        assert connection.execute(
+            "SELECT COUNT(*) FROM printer_memory_factory_campaign_windows "
+            "WHERE cycle_id=?",
+            (cycle2_id,),
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT COUNT(*) FROM printer_memory_factory_campaign_scheduler_work "
+            "WHERE cycle_id=?",
+            (cycle2_id,),
+        ).fetchone()[0] == 0
+
+        reconcile_four_token_cycle_terminal(
+            connection,
+            campaign_id=CAMPAIGN_ID,
+            campaign_run_id=CAMPAIGN_RUN_ID,
+            factory_run_id=FACTORY_RUN_ID,
+            cycle_id=cycle2_id,
+            now=failure_at,
+            cause="CYCLE2_PRE15M_STRUCTURAL_FAILURE",
+            run_status="FAILED",
+        )
+
+        assert [
+            str(row[0])
+            for row in connection.execute(
+                "SELECT queue_status FROM printer_tracking_queue "
+                "WHERE id IN (?,?) ORDER BY id",
+                queue_ids,
+            ).fetchall()
+        ] == ["ARCHIVED", "ARCHIVED"]
+        assert [
+            row[0]
+            for row in connection.execute(
+                "SELECT token_status FROM printer_tokens WHERE id IN (3,4) ORDER BY id"
+            ).fetchall()
+        ] == [None, None]
+        assert [
+            str(row[0])
+            for row in connection.execute(
+                "SELECT token_state FROM printer_memory_factory_campaign_token_slots "
+                "WHERE cycle_id=? ORDER BY slot_ordinal",
+                (cycle2_id,),
+            ).fetchall()
+        ] == ["MANUAL_REVIEW", "MANUAL_REVIEW"]
+        cycle = connection.execute(
+            "SELECT cycle_state,first_terminal_cause "
+            "FROM printer_memory_factory_campaign_cycles WHERE cycle_id=?",
+            (cycle2_id,),
+        ).fetchone()
+        assert tuple(cycle) == (
+            "TERMINAL_FAILED",
+            "CYCLE2_PRE15M_STRUCTURAL_FAILURE",
+        )
+    finally:
+        connection.close()
+
+
 def test_factory_loop_cycle2_local_failure_preserves_and_drains_cycle1(
     tmp_path, monkeypatch
 ) -> None:

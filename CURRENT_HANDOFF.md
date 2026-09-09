@@ -56,25 +56,25 @@ distinction between MARKET_READY and freeze-ready capacity.
 
 ## Current audit checkpoint
 
-Checkpoint 1 repaired Cycle-1 post-holder cooperative resume so this campaign's
-durable fresh MOE carriers are rehydrated before existing-inventory traversal.
+Checkpoint 1 repaired Cycle-1 post-holder cooperative resume so campaign-owned
+durable fresh MOE carriers survive the post-holder resume boundary.
 
-Checkpoint 2 found a separate Cycle-2 deadline defect at the PAIR_READY boundary.
-The +600s admission deadline was enforced before a bounded acquisition quantum,
-but a quantum that started lawfully could return PAIR_READY after +600s and then
-continue directly into admission. The repair now:
+Checkpoint 2 has now repaired two independent Cycle-2 seams:
 
-- refuses to start a quantum whose declared worst-case completion reaches or
-  crosses the hard +600s boundary;
-- rechecks the hard deadline using the post-callback clock before post-discovery
-  health/admission;
-- routes an expired PAIR_READY attempt through the existing deadline
-  terminalization/cancellation owner;
-- performs no extra source work, retry, successor, or budget widening.
+1. The hard +600s admission deadline is enforced both before a cooperative
+   acquisition quantum and again after PAIR_READY returns, so a quantum cannot
+   cross the admission boundary and still admit.
+2. An admitted Cycle 2 that fails before creating any WINDOW_15M window or
+   lifecycle work now archives its exact insert-bound tracking claims during
+   shared cycle terminal reconciliation. Generic post-cycle tracking cleanup is
+   rooted in the original Cycle-1 selection batch and cannot discover this
+   pre-opening Cycle-2 authority on its own.
 
-Focused disposable coverage includes both the exact-boundary pre-quantum guard
-and a callback-return-after-deadline case proving admission/materialization/
-opening cannot proceed.
+The new cleanup is restricted to non-success Cycle 2 with zero cycle-owned
+windows and zero cycle-owned lifecycle work. It reuses the canonical
+`terminalize_unstarted_cycle_tracking_claims` owner; started lifecycle cycles
+retain their existing reconciliation path. No source budget, retry, successor,
+selection, cadence policy, or Scheduler ownership is widened.
 
 ## Cycle-1 terminal-truth repair
 
@@ -100,9 +100,8 @@ non-reusable.
 
 ## Exact next permitted action
 
-Continue the read-only line-by-line Checkpoint-2 audit from PAIR_READY through
-atomic Cycle-2 admission, frozen tracking authority, materialization, and
-Cycle-2 WINDOW_15M opening. Then proceed to the two-cycle lifecycle/continuation
-path. No operational authorization, provider contact, Printer run, Scheduler
-operational execution, or authoritative DB mutation is permitted by this
-handoff.
+Continue the read-only audit at the Cycle-2 WINDOW_15M opening/execution boundary,
+then audit two-cycle Scheduler interleaving, WINDOW_15M close, 1h continuation,
+4h continuation, canonical accounting, and shared terminal cleanup. No
+operational authorization, provider contact, Printer run, Scheduler operational
+execution, or authoritative DB mutation is permitted by this handoff.
