@@ -497,6 +497,16 @@ def set_queue_status(
 ) -> None:
     status = QueueStatus(queue_status)
     with connect(db_or_connection) as connection:
+        row = connection.execute(
+            "SELECT tracking_lane FROM printer_tracking_queue WHERE id = ?",
+            (queue_id,),
+        ).fetchone()
+        if (
+            row is not None
+            and row["tracking_lane"] == TokenLifecycleState.PAPER_MONITORING.value
+            and status in LIVE_TRACKING_OWNERSHIP_STATUSES
+        ):
+            require_paper_monitoring_enabled()
         connection.execute(
             """
             UPDATE printer_tracking_queue
