@@ -12,6 +12,7 @@ PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 SRC_PATH = PROJECT_ROOT / "src"
 sys.path.insert(0, str(SRC_PATH))
 
+from printer_v1.contracts import capability_locks
 from printer_v1.db import apply_migrations
 from printer_v1.paper_audit import classifier, evidence, recorder, reports
 from printer_v1.paper_audit.classifier import (
@@ -69,6 +70,11 @@ FORBIDDEN_COLUMNS = {
 
 class Phase18PaperAuditEngineTest(unittest.TestCase):
     def setUp(self):
+        previous_audits = capability_locks.PAPER_AUDITS_ENABLED
+        capability_locks.PAPER_AUDITS_ENABLED = True
+        self.addCleanup(
+            setattr, capability_locks, "PAPER_AUDITS_ENABLED", previous_audits
+        )
         self.tempdir = tempfile.TemporaryDirectory()
         self.db_path = pathlib.Path(self.tempdir.name) / "printer.sqlite3"
         apply_migrations(self.db_path)
