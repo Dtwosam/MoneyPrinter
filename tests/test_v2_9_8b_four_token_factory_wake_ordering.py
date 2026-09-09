@@ -75,6 +75,45 @@ CONFIGURATION_ID = "wake-order-configuration"
 FACTORY_RUN_ID = "wake-order-factory"
 
 
+def _complete_stubbed_shared_terminal(
+    connection: sqlite3.Connection,
+    *args,
+    factory_run_id: str,
+    **kwargs,
+) -> dict[str, object]:
+    """Honor the real Phase-B contract without exercising terminal cleanup here."""
+    del args, kwargs
+    row = connection.execute(
+        "SELECT run_status,stop_reason FROM printer_memory_factory_runs WHERE run_id=?",
+        (str(factory_run_id),),
+    ).fetchone()
+    assert row is not None
+    cause = str(row[1] or "").strip()
+    assert cause
+    assert str(row[0]) == "RUNNING"
+    terminal_status = (
+        "COMPLETED" if cause == factory.STOP_COMPLETED else "SAFE_STOPPED"
+    )
+    terminal_at = factory._now().isoformat()
+    updated = connection.execute(
+        "UPDATE printer_memory_factory_runs "
+        "SET run_status=?,finished_at=COALESCE(finished_at,?),updated_at=? "
+        "WHERE run_id=? AND run_status='RUNNING'",
+        (
+            terminal_status,
+            terminal_at,
+            terminal_at,
+            str(factory_run_id),
+        ),
+    )
+    assert updated.rowcount == 1
+    connection.commit()
+    return {
+        "shared_terminalized": True,
+        "shared_cleanup_count": 1,
+    }
+
+
 def _sha256(path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -356,10 +395,7 @@ def test_real_factory_loop_wakes_future_lifecycle_before_spacing_boundary(
     monkeypatch.setattr(
         four_token_adapter,
         "finalize_four_token_shared_terminal",
-        lambda *args, **kwargs: {
-            "shared_terminalized": True,
-            "shared_cleanup_count": 1,
-        },
+        _complete_stubbed_shared_terminal,
     )
 
     report = factory.run_one_command_15m_factory(
@@ -704,10 +740,7 @@ def test_real_factory_controlled_clock_interleaves_scheduler_yields_and_snapshot
     monkeypatch.setattr(
         four_token_adapter,
         "finalize_four_token_shared_terminal",
-        lambda *args, **kwargs: {
-            "shared_terminalized": True,
-            "shared_cleanup_count": 1,
-        },
+        _complete_stubbed_shared_terminal,
     )
 
     def discovery(_args):

@@ -37,22 +37,22 @@ For cooperative Cycle-2 acquisition:
 
 ## Latest meaningful result
 
-GitHub Actions run `34224400136` on
-`6034f52b9a3b52867c1a098dfd7455d19601e3d0` is green:
+GitHub Actions run `34362009907` on terminal-report repair HEAD
+`84a7fa76e6179ad2a0abd5705bc393d7123269d8` proved the production change but
+exposed two stale wake-ordering fixtures:
 
-- focused post-holder/reconciliation suite: 27 passed;
-- shared-boundary suite: 323 passed, 2 deselected legacy E.44 assertions,
-  32 subtests passed;
-- affected-module `py_compile`: passed;
-- `git diff --check`: passed.
+- focused post-holder/reconciliation tests passed;
+- shared-boundary suite: 329 passed, 2 failed, 2 deselected, 32 subtests passed;
+- both failures monkeypatched `finalize_four_token_shared_terminal` to claim
+  success while leaving `printer_memory_factory_runs.run_status='RUNNING'`;
+- the real Phase-B adapter explicitly rejects that shape and cannot return
+  successful shared terminal evidence until the durable factory row is
+  non-running.
 
-The repair from failing HEAD
-`0795fe90b3cd935192a0a8c285e5951dfc1931c6` to the verified implementation
-HEAD is test/fixture alignment only. No production source file was changed in
-that interval. The remaining CI failures were stale fixture/contract
-expectations, including migration head, campaign-pass terminal truth, canonical
-attempt/FK fixtures, request-scope identity, cooperative diagnostics, and the
-distinction between MARKET_READY and freeze-ready capacity.
+The fixture repair keeps the production fail-closed synchronization unchanged.
+Its shared-terminal stub now preserves the already-persisted stop reason and
+performs only the minimum durable factory terminal transition required by the
+real Phase-B contract.
 
 ## Current audit checkpoint
 
@@ -105,9 +105,9 @@ non-reusable.
 
 ## Exact next permitted action
 
-Run focused disposable verification for the terminal-report synchronization and
-the existing two-cycle Standard-4H terminal integration, review the exact diff,
-then continue the read-only audit through final two-cycle accounting/report
-composition and action-local terminal evidence. No operational authorization,
-provider contact, Printer run, Scheduler operational execution, or authoritative
-DB mutation is permitted by this handoff.
+Verify the fixture-alignment commit in the focused GitHub Actions workflow. If
+green, finish the read-only audit of the final two-cycle accounting/report and
+action-local terminal-evidence surfaces, then record the resulting verified
+HEAD. No operational authorization, provider contact, Printer run, Scheduler
+operational execution, or authoritative DB mutation is permitted by this
+handoff.
