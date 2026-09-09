@@ -1,12 +1,13 @@
-"""V2-9.8B compatibility adapter for bounded Scheduler failure diagnostics.
+"""V2-9.8B Scheduler compatibility and capability-sequencing adapter.
 
-The exact pre-corrective Scheduler implementation is preserved byte-for-byte in
-``_scheduler_base``. This adapter re-exports that surface and overrides only
-``fail_job`` so one exact typed Cycle-2 pre-admission error may durably retain a
-sanitized diagnostic envelope without changing the authoritative categorical
-terminal cause.
+The exact pre-corrective Scheduler implementation is preserved in
+``_scheduler_base``. This adapter re-exports that surface, guards ``enqueue_job``
+against currently locked downstream retrieval/paper-decision targets, and
+overrides ``fail_job`` so one typed Cycle-2 pre-admission error may durably
+retain a sanitized diagnostic envelope without changing the authoritative
+categorical terminal cause.
 
-No source, retry, priority, claim, cooldown, scheduling, or lifecycle policy is
+No source, retry, priority, claim, cooldown, or lifecycle ordering policy is
 changed here.
 """
 from __future__ import annotations
