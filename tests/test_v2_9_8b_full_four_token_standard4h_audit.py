@@ -262,8 +262,127 @@ def test_two_cycle_four_token_real_factory_reaches_shared_terminal_standard4h(
     )
 
     def four_token_setup(db):
+        cycle_one_seed = "cycle1-real-admission-four-hour-seed"
+        origins = (
+            FixtureOriginProof(
+                mint=cycle_one_mints[0],
+                signature="cycle1-origin-a",
+                slot=10,
+                block_time=10,
+                bonding_curve=cycle_one_pools[0],
+                associated_bonding_curve="cycle1-ata-a",
+                creator_address="cycle1-creator-a",
+            ),
+            FixtureOriginProof(
+                mint=cycle_one_mints[1],
+                signature="cycle1-origin-b",
+                slot=11,
+                block_time=11,
+                bonding_curve=cycle_one_pools[1],
+                associated_bonding_curve="cycle1-ata-b",
+                creator_address="cycle1-creator-b",
+            ),
+        )
+        fixtures = CombinedDiscoveryFixtures(
+            cycle_id=CYCLE_ID,
+            cycle_cutoff=(START + timedelta(minutes=6)).isoformat(),
+            campaign_selection_seed=cycle_one_seed,
+            provider_contract_versions={
+                "direct": "V2-9.7D.7B.3A",
+                "dexscreener": "existing",
+            },
+            git_provenance_identity="cycle1-four-hour-admission-proof",
+            evaluated_at=START.isoformat(),
+            dexscreener_ops=(
+                FixtureSourceFact(
+                    request_kind="dexscreener_fresh_profiles",
+                    source_name="dexscreener",
+                    body=[
+                        {
+                            "chainId": "solana",
+                            "baseToken": {"address": mint},
+                            "quoteToken": {
+                                "address": "So11111111111111111111111111111111111111112"
+                            },
+                            "pairAddress": pool,
+                            "dexId": "pumpfun",
+                            "priceUsd": 0.01,
+                            "liquidity": {"usd": 10_000},
+                            "volume": {"m5": 500, "h1": 2_000, "h24": 10_000},
+                            "txns": {
+                                "m5": {"buys": 7, "sells": 3},
+                                "h1": 50,
+                                "h24": 500,
+                            },
+                        }
+                        for mint, pool in zip(
+                            cycle_one_mints, cycle_one_pools, strict=True
+                        )
+                    ],
+                    receipt_time=START.isoformat(),
+                ),
+            ),
+            direct_observations=origins,
+            pumpswap_proofs={
+                origin.mint: FixturePumpSwapProof(
+                    mint=origin.mint,
+                    pool_address=origin.bonding_curve,
+                )
+                for origin in origins
+            },
+        )
+        command = AbstractCampaignCommand(
+            mode=CAMPAIGN_MODE,
+            db_path=str(db),
+            db_target_identity="db-1",
+            campaign_id=CAMPAIGN_ID,
+            configuration_id=CONFIGURATION_ID,
+            configuration_hash="a" * 64,
+            policy_version="policy-1",
+            token_capacity=2,
+            ceilings=CampaignCeilings(
+                campaign_count=1,
+                cycle_count=2,
+                duration_seconds=21_600,
+                source_calls=200,
+                scheduler_work=500,
+                storage_bytes=50_000_000,
+                failures=20,
+            ),
+            report_directory=db.parent,
+            report_directory_identity="path-sha256:" + "c" * 64,
+            launch_git_provenance={
+                "git_head": "d" * 40,
+                "git_tracked_tree_clean": True,
+                "git_staged_changes_present": False,
+                "git_unstaged_changes_present": False,
+                "git_untracked_present": True,
+                "git_provenance_captured_at": START.isoformat(),
+            },
+            run_id=CAMPAIGN_RUN_ID,
+            report_id="cycle1-four-hour-admission-proof",
+        )
+        activation = CombinedPumpfunCampaignExecutor(fixtures).execute(
+            command=command,
+            source_governor=GOVERNOR,
+            central_scheduler=SCHEDULER,
+        )
+        assert activation.terminal_status == "COMPLETED", activation
+        assert len(activation.activated_slots) == 2, activation
+        cycle_one_activation_slots.extend(
+            dict(slot) for slot in activation.activated_slots
+        )
+
         connection = sqlite3.connect(db)
         try:
+            batch_id = materialize_origin_activated_batch(
+                connection,
+                cycle_id=CYCLE_ID,
+                selection_seed=cycle_one_seed,
+            )
+            assert batch_id is not None
+            cycle_one_batch_ids.append(str(batch_id))
+            connection.commit()
             for row_id in (3, 4):
                 connection.execute(
                     "INSERT INTO printer_tokens(id,token_mint,chain) "
