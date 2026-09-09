@@ -777,6 +777,27 @@ def load_eligible_reserve(
     return [dict(r) for r in rows]
 
 
+def _legacy_pump_reserve_projection_allowed(
+    candidate: Mapping[str, Any],
+) -> bool:
+    """Whether a candidate may enter the Pump-registry-bound legacy reserve.
+
+    An explicit non-Pump pool program is authoritative evidence that this
+    compatibility projection does not apply. Carriers that predate the generic
+    identity fields retain the historical behavior so Pump validation still
+    fails closed through the existing foreign key when its registry parent is
+    unexpectedly absent.
+    """
+    from printer_v1.sources.pumpswap import PUMPSWAP_AMM_PROGRAM_ID
+
+    pool_program = str(
+        candidate.get("pool_program")
+        or candidate.get("pumpswap_program_id")
+        or ""
+    ).strip()
+    return not pool_program or pool_program == PUMPSWAP_AMM_PROGRAM_ID
+
+
 def upsert_eligible_reserve(
     connection: sqlite3.Connection,
     *,
@@ -2823,35 +2844,36 @@ def run_persistent_eligible_token_supply(
                     campaign_eligible[mint] = normalized
                     evaluated_mints.add(mint)
                     all_candidates.append(normalized)
-                    upsert_eligible_reserve(
-                        connection,
-                        mint=mint,
-                        pumpswap_pool=str(
-                            candidate.get("pumpswap_pool")
-                            or candidate.get("pool")
-                            or ""
-                        ),
-                        market_identity=str(
-                            candidate.get("market_identity") or ""
-                        ),
-                        provenance=str(
-                            candidate.get("provenance")
-                            or "PROTOCOL_CONFIRMED"
-                        ),
-                        liquidity_usd=(
-                            None
-                            if candidate.get("liquidity_usd") is None
-                            else float(candidate["liquidity_usd"])
-                        ),
-                        liquidity_status=str(
-                            candidate.get("liquidity_status")
-                            or LIQUIDITY_PROVEN
-                        ),
-                        eligibility_status=ELIGIBLE_FRESH,
-                        last_validated_at=now,
-                        source_provenance="protocol_confirmed_market_resume",
-                        last_campaign_id=campaign_id,
-                    )
+                    if _legacy_pump_reserve_projection_allowed(candidate):
+                        upsert_eligible_reserve(
+                            connection,
+                            mint=mint,
+                            pumpswap_pool=str(
+                                candidate.get("pumpswap_pool")
+                                or candidate.get("pool")
+                                or ""
+                            ),
+                            market_identity=str(
+                                candidate.get("market_identity") or ""
+                            ),
+                            provenance=str(
+                                candidate.get("provenance")
+                                or "PROTOCOL_CONFIRMED"
+                            ),
+                            liquidity_usd=(
+                                None
+                                if candidate.get("liquidity_usd") is None
+                                else float(candidate["liquidity_usd"])
+                            ),
+                            liquidity_status=str(
+                                candidate.get("liquidity_status")
+                                or LIQUIDITY_PROVEN
+                            ),
+                            eligibility_status=ELIGIBLE_FRESH,
+                            last_validated_at=now,
+                            source_provenance="protocol_confirmed_market_resume",
+                            last_campaign_id=campaign_id,
+                        )
                 connection.commit()
             remaining_resume = load_protocol_resume_market_due(connection)
             work_queues["PROTOCOL_RESUME_MARKET_DUE"] = list(remaining_resume)
@@ -3233,23 +3255,24 @@ def run_persistent_eligible_token_supply(
 
                 if cand.get("eligible"):
                     campaign_eligible[mint] = cand
-                    upsert_eligible_reserve(
-                        connection,
-                        mint=mint,
-                        pumpswap_pool=str(cand["pumpswap_pool"]),
-                        market_identity=str(cand["market_identity"]),
-                        provenance=str(cand["provenance"]),
-                        liquidity_usd=(
-                            None
-                            if cand.get("liquidity_usd") is None
-                            else float(cand["liquidity_usd"])
-                        ),
-                        liquidity_status=str(cand["liquidity_status"]),
-                        eligibility_status=ELIGIBLE_FRESH,
-                        last_validated_at=now,
-                        source_provenance=str(cand.get("source_path") or ""),
-                        last_campaign_id=campaign_id,
-                    )
+                    if _legacy_pump_reserve_projection_allowed(cand):
+                        upsert_eligible_reserve(
+                            connection,
+                            mint=mint,
+                            pumpswap_pool=str(cand["pumpswap_pool"]),
+                            market_identity=str(cand["market_identity"]),
+                            provenance=str(cand["provenance"]),
+                            liquidity_usd=(
+                                None
+                                if cand.get("liquidity_usd") is None
+                                else float(cand["liquidity_usd"])
+                            ),
+                            liquidity_status=str(cand["liquidity_status"]),
+                            eligibility_status=ELIGIBLE_FRESH,
+                            last_validated_at=now,
+                            source_provenance=str(cand.get("source_path") or ""),
+                            last_campaign_id=campaign_id,
+                        )
                 else:
                     reason = _candidate_rejection_reason(cand)
                     rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
@@ -3497,29 +3520,30 @@ def run_persistent_eligible_token_supply(
                     )
                     evaluated_mints.add(mint)
                     all_candidates.append(campaign_eligible[mint])
-                    upsert_eligible_reserve(
-                        connection,
-                        mint=mint,
-                        pumpswap_pool=str(
-                            cand.get("pumpswap_pool") or cand.get("pool") or ""
-                        ),
-                        market_identity=str(cand.get("market_identity") or ""),
-                        provenance=str(
-                            cand.get("provenance") or "PROTOCOL_CONFIRMED"
-                        ),
-                        liquidity_usd=(
-                            None
-                            if cand.get("liquidity_usd") is None
-                            else float(cand["liquidity_usd"])
-                        ),
-                        liquidity_status=str(
-                            cand.get("liquidity_status") or LIQUIDITY_PROVEN
-                        ),
-                        eligibility_status=ELIGIBLE_FRESH,
-                        last_validated_at=now,
-                        source_provenance="protocol_confirmed_market_resume",
-                        last_campaign_id=campaign_id,
-                    )
+                    if _legacy_pump_reserve_projection_allowed(cand):
+                        upsert_eligible_reserve(
+                            connection,
+                            mint=mint,
+                            pumpswap_pool=str(
+                                cand.get("pumpswap_pool") or cand.get("pool") or ""
+                            ),
+                            market_identity=str(cand.get("market_identity") or ""),
+                            provenance=str(
+                                cand.get("provenance") or "PROTOCOL_CONFIRMED"
+                            ),
+                            liquidity_usd=(
+                                None
+                                if cand.get("liquidity_usd") is None
+                                else float(cand["liquidity_usd"])
+                            ),
+                            liquidity_status=str(
+                                cand.get("liquidity_status") or LIQUIDITY_PROVEN
+                            ),
+                            eligibility_status=ELIGIBLE_FRESH,
+                            last_validated_at=now,
+                            source_provenance="protocol_confirmed_market_resume",
+                            last_campaign_id=campaign_id,
+                        )
                 connection.commit()
             remaining_protocol_resume = load_protocol_resume_market_due(connection)
             work_queues["PROTOCOL_RESUME_MARKET_DUE"] = list(
