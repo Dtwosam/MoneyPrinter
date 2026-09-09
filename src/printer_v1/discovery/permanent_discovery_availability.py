@@ -1399,7 +1399,7 @@ def load_protocol_confirmation_due(
 
 def load_protocol_resume_market_due(
     connection: sqlite3.Connection,
-) -> list[dict[str, str]]:
+) -> list[dict[str, Any]]:
     """Read protocol-confirmed identities still lacking current market proof."""
     rows = connection.execute(
         """SELECT mint_identity,pool_address,venue,token_program_id,
@@ -1417,18 +1417,44 @@ def load_protocol_resume_market_due(
            ORDER BY last_observed_at ASC,mint_identity ASC,pool_address ASC""",
         (CURRENT_POOL_CONFIRMED, MEMORY_OBSERVATION_ELIGIBLE),
     ).fetchall()
-    return [
-        {
-            "mint": str(row[0]),
-            "pool": str(row[1]),
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        mint = str(row[0])
+        pool = str(row[1])
+        protocol_request_id: int | None = None
+        provenance_rows = connection.execute(
+            """SELECT source_provenance_json
+               FROM printer_exact_market_state_transitions
+               WHERE network=? AND mint_identity=? AND pool_address=?
+                 AND new_state=?
+               ORDER BY id DESC""",
+            (NETWORK, mint, pool, CURRENT_POOL_CONFIRMED),
+        ).fetchall()
+        for provenance_row in provenance_rows:
+            try:
+                provenance = json.loads(str(provenance_row[0] or "{}"))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if str(provenance.get("stage") or "") != "protocol_confirmation":
+                continue
+            request_id = provenance.get("request_id")
+            if request_id is None:
+                continue
+            protocol_request_id = int(request_id)
+            break
+        entry: dict[str, Any] = {
+            "mint": mint,
+            "pool": pool,
             "venue": str(row[2] or ""),
             "token_program": str(row[3] or ""),
             "pool_program": str(row[4] or ""),
             "base_mint": str(row[5] or ""),
             "quote_mint": str(row[6] or ""),
         }
-        for row in rows
-    ]
+        if protocol_request_id is not None:
+            entry["protocol_request_id"] = protocol_request_id
+        out.append(entry)
+    return out
 
 
 def build_mint_market_batch_request_key(
@@ -3996,6 +4022,7 @@ def process_protocol_confirmation_queue(
                             "pool_program": pool_program,
                             "base_mint": base_mint,
                             "quote_mint": quote_mint,
+                            "protocol_request_id": int(execution.request_record.id),
                         }
                     )
                     promotion = promote_confirmed_with_retained_liquidity(
@@ -4029,6 +4056,7 @@ def process_protocol_confirmation_queue(
                                 "pool_program": pool_program,
                                 "base_mint": base_mint,
                                 "quote_mint": quote_mint,
+                                "protocol_request_id": int(execution.request_record.id),
                                 "reason": str(promotion.get("reason") or ""),
                             }
                         )
@@ -4160,6 +4188,9 @@ def union_market_revalidation_candidates(
                 value = raw.get(identity_field)
                 if value is not None and str(value).strip():
                     entry[identity_field] = str(value)
+            protocol_request_id = raw.get("protocol_request_id")
+            if protocol_request_id is not None:
+                entry["protocol_request_id"] = int(protocol_request_id)
             reason = raw.get("reason")
             if reason is not None:
                 entry["reason"] = str(reason)
