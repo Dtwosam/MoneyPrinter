@@ -980,12 +980,12 @@ def test_cycle2_deadline_terminalizes_without_starting_unsafe_quantum(
     )
     connection.commit()
     callback_calls = 0
-    now = START + timedelta(seconds=590)
+    now = START + timedelta(seconds=582)
 
     def forbidden_callback(**_kwargs):
         nonlocal callback_calls
         callback_calls += 1
-        raise AssertionError("quantum crossing +10m deadline must not start")
+        raise AssertionError("quantum reaching +10m deadline must not start")
 
     try:
         result = factory._run_four_token_admission_boundary(
@@ -1037,5 +1037,117 @@ def test_cycle2_deadline_terminalizes_without_starting_unsafe_quantum(
             "SELECT COUNT(*) FROM printer_memory_factory_campaign_cycles "
             "WHERE cycle_ordinal=2"
         ).fetchone()[0] == 0
+    finally:
+        connection.close()
+
+
+def test_cycle2_pair_ready_return_after_deadline_cannot_admit(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    db, _backup, _disposable_binding = _prepare(tmp_path)
+    connection = sqlite3.connect(db)
+    connection.row_factory = sqlite3.Row
+    callback_calls = 0
+    admission_calls = 0
+    terminal_calls = []
+    now = START + timedelta(seconds=590)
+    post_now = START + timedelta(seconds=601)
+
+    def callback(**_kwargs):
+        nonlocal callback_calls
+        callback_calls += 1
+        return SimpleNamespace(
+            attempt_id="post-deadline-pair",
+            state="PAIR_READY",
+            first_terminal_cause="EXACT_PAIR_FROZEN",
+        )
+
+    def forbidden_admit(**_kwargs):
+        nonlocal admission_calls
+        admission_calls += 1
+        raise AssertionError("PAIR_READY returned after +10m deadline cannot admit")
+
+    def terminalize_deadline(
+        _connection,
+        *,
+        binding,
+        first_cycle_id,
+        now,
+        deadline_at,
+    ):
+        terminal_calls.append(
+            (
+                binding.campaign_id,
+                first_cycle_id,
+                now,
+                deadline_at,
+            )
+        )
+        return (
+            "post-deadline-pair",
+            "CANCELLED",
+            factory.LATER_CYCLE_ADMISSION_DEADLINE_EXHAUSTED,
+        )
+
+    monkeypatch.setattr(
+        factory,
+        "_terminalize_later_cycle_admission_deadline",
+        terminalize_deadline,
+    )
+    try:
+        result = factory._run_four_token_admission_boundary(
+            connection=connection,
+            controller=_CadenceReadyController(),
+            binding=MultiCycleCampaignBinding(
+                campaign_id=CAMPAIGN_ID,
+                campaign_run_id=CAMPAIGN_RUN_ID,
+                configuration_id=CONFIGURATION_ID,
+                authoritative_factory_run_id=FACTORY_RUN_ID,
+            ),
+            first_cycle_id=CYCLE_ID,
+            now=now,
+            next_due_work_at=None,
+            proof_deadline=START + timedelta(hours=5),
+            project_health=_healthy_projection,
+            evaluate=lambda _projection: FourTokenAdmissionDisposition(
+                FourTokenAdmissionDispositionKind.CYCLE_ADMISSION,
+                "ADMISSION_READY",
+                now,
+                True,
+            ),
+            later_cycle_callback=callback,
+            admit=forbidden_admit,
+            materialize=lambda **_kwargs: (_ for _ in ()).throw(
+                AssertionError("post-deadline PAIR_READY cannot materialize")
+            ),
+            plan_opening=lambda **_kwargs: (_ for _ in ()).throw(
+                AssertionError("post-deadline PAIR_READY cannot plan lifecycle")
+            ),
+            clock=lambda: post_now,
+            acquisition_quantum_worst_case_seconds=5.0,
+            admission_deadline_seconds_after_first_cycle=600,
+        )
+        assert callback_calls == 1
+        assert admission_calls == 0
+        assert terminal_calls == [
+            (
+                CAMPAIGN_ID,
+                CYCLE_ID,
+                post_now,
+                START + timedelta(seconds=600),
+            )
+        ]
+        assert result.admitted is False
+        assert result.attempt_id == "post-deadline-pair"
+        assert result.attempt_state == "CANCELLED"
+        assert (
+            result.attempt_terminal_cause
+            == factory.LATER_CYCLE_ADMISSION_DEADLINE_EXHAUSTED
+        )
+        assert (
+            result.attempt_acquisition_deadline_at
+            == START + timedelta(seconds=600)
+        )
     finally:
         connection.close()

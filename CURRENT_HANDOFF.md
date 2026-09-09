@@ -56,21 +56,25 @@ distinction between MARKET_READY and freeze-ready capacity.
 
 ## Current audit checkpoint
 
-Checkpoint 1 (Cycle-1 discovery/admission) found a concrete post-holder resume
-defect.  The non-quantum cooperative resume deliberately reuses existing
-inventory, but fresh campaign-owned `MEMORY_OBSERVATION_ELIGIBLE` carriers were
-rehydrated only for `:c0002` later-cycle execution IDs.  Cycle 1 could therefore
-measure durable freeze-ready depth while leaving its in-memory eligible carrier
-set empty, then spend remaining discovery budget re-traversing evidence it had
-already persisted.
+Checkpoint 1 repaired Cycle-1 post-holder cooperative resume so this campaign's
+durable fresh MOE carriers are rehydrated before existing-inventory traversal.
 
-The repair extends the existing zero-source campaign-fresh-MOE rehydration to
-non-quantum cooperative resumes as well as the existing Cycle-2 quanta.  It
-still applies the canonical tracking precheck and leaves freeze/selection,
-budgets, source ownership, holder policy, and Scheduler ownership unchanged.
-A focused disposable regression proves the Cycle-1 resume reaches the durable
-MOE loader before existing-inventory traversal and still does not re-enter
-campaign-start source work.
+Checkpoint 2 found a separate Cycle-2 deadline defect at the PAIR_READY boundary.
+The +600s admission deadline was enforced before a bounded acquisition quantum,
+but a quantum that started lawfully could return PAIR_READY after +600s and then
+continue directly into admission. The repair now:
+
+- refuses to start a quantum whose declared worst-case completion reaches or
+  crosses the hard +600s boundary;
+- rechecks the hard deadline using the post-callback clock before post-discovery
+  health/admission;
+- routes an expired PAIR_READY attempt through the existing deadline
+  terminalization/cancellation owner;
+- performs no extra source work, retry, successor, or budget widening.
+
+Focused disposable coverage includes both the exact-boundary pre-quantum guard
+and a callback-return-after-deadline case proving admission/materialization/
+opening cannot proceed.
 
 ## Cycle-1 terminal-truth repair
 
@@ -96,8 +100,9 @@ non-reusable.
 
 ## Exact next permitted action
 
-Continue the read-only line-by-line audit at Checkpoint 2: Cycle-2
-pre-admission/acquisition, beginning from the commit containing this handoff.
-No operational authorization, provider contact, Printer run, Scheduler
+Continue the read-only line-by-line Checkpoint-2 audit from PAIR_READY through
+atomic Cycle-2 admission, frozen tracking authority, materialization, and
+Cycle-2 WINDOW_15M opening. Then proceed to the two-cycle lifecycle/continuation
+path. No operational authorization, provider contact, Printer run, Scheduler
 operational execution, or authoritative DB mutation is permitted by this
 handoff.

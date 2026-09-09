@@ -811,7 +811,7 @@ def _run_four_token_admission_boundary(
     no_safe_quantum_remaining = (
         hard_admission_deadline is not None
         and existing_pair_ready_attempt_id is None
-        and current + timedelta(seconds=quantum_seconds) > hard_admission_deadline
+        and current + timedelta(seconds=quantum_seconds) >= hard_admission_deadline
     )
     if deadline_exhausted or no_safe_quantum_remaining:
         attempt_id, attempt_state, cause = (
@@ -977,6 +977,35 @@ def _run_four_token_admission_boundary(
         )
 
     post_now = (clock or (lambda: now))()
+    post_current = post_now.astimezone(timezone.utc)
+    if (
+        hard_admission_deadline is not None
+        and post_current >= hard_admission_deadline
+    ):
+        deadline_attempt_id, deadline_attempt_state, deadline_cause = (
+            _terminalize_later_cycle_admission_deadline(
+                connection,
+                binding=binding,
+                first_cycle_id=first_cycle_id,
+                now=post_current,
+                deadline_at=hard_admission_deadline,
+            )
+        )
+        return FourTokenAdmissionBoundaryResult(
+            FourTokenAdmissionDisposition(
+                FourTokenAdmissionDispositionKind.COMPLETE,
+                LATER_CYCLE_ADMISSION_DEADLINE_EXHAUSTED,
+                post_current,
+                False,
+            ),
+            False,
+            deadline_attempt_id,
+            deadline_attempt_state,
+            deadline_cause,
+            None,
+            None,
+            hard_admission_deadline,
+        )
     post = _pair_ready_post_discovery_projection(project_health())
     post_disposition = evaluate(post)
     if post_disposition.kind is not FourTokenAdmissionDispositionKind.CYCLE_ADMISSION:
