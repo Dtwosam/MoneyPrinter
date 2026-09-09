@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import hashlib
 import importlib
@@ -24,6 +25,15 @@ MODULE_NAME = (
 )
 AUTHORIZATION_ID = "V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260905T010101Z_00000001"
 MIGRATION_EXECUTION_ID = "MIGRATION_062_TESTONLY"
+ADMISSION_CHECKPOINT_ROOT = (
+    "operator-runs/v2-9-8b-four-token-admission-checkpoint-final-authorization"
+)
+ADMISSION_CHECKPOINT_ID = (
+    "V2_9_8B_FOUR_TOKEN_ADMISSION_CHECKPOINT_AUTH_20260905T010102Z_00000002"
+)
+SECOND_ADMISSION_CHECKPOINT_ID = (
+    "V2_9_8B_FOUR_TOKEN_ADMISSION_CHECKPOINT_AUTH_20260905T010103Z_00000003"
+)
 
 
 def _sha256(path: Path) -> str:
@@ -157,6 +167,148 @@ class DisposableFourTokenPreparationRepository:
 @pytest.fixture
 def disposable_repository(tmp_path: Path) -> DisposableFourTokenPreparationRepository:
     return DisposableFourTokenPreparationRepository(tmp_path)
+
+
+def _patch_standard_four_hour_profile(
+    *,
+    profile: git_auth.GitAuthorizationProfile,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        git_auth, "FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE", profile
+    )
+    monkeypatch.setattr(
+        operational, "FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE", profile
+    )
+    preparation = importlib.import_module(MODULE_NAME)
+    monkeypatch.setattr(
+        preparation,
+        "FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE",
+        profile,
+    )
+
+
+def _write_valid_checkpoint_authorization(
+    *,
+    repository: DisposableFourTokenPreparationRepository,
+    authorization_id: str,
+) -> Path:
+    checkpoint = importlib.import_module(
+        "printer_v1.operator_cli.four_token_admission_checkpoint_one_shot_wrapper"
+    )
+    document = checkpoint.fixture_authorization_document(
+        branch=repository.branch,
+        head=repository.head,
+        database=repository.database_binding(),
+        authorization_id=authorization_id,
+        migration_execution_id=MIGRATION_EXECUTION_ID,
+    )
+    checkpoint.validate_four_token_admission_checkpoint_authorization_document(document)
+    checkpoint_file = (
+        repository.root
+        / ADMISSION_CHECKPOINT_ROOT
+        / authorization_id
+        / "final_authorization.json"
+    )
+    checkpoint_file.parent.mkdir(parents=True)
+    checkpoint_file.write_text(
+        json.dumps(document, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    return checkpoint_file
+
+
+def test_preparation_binds_explicitly_approved_admission_checkpoint_history(
+    disposable_repository: DisposableFourTokenPreparationRepository,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """An approved checkpoint package is history, never current Standard-4H authority."""
+    preparation = importlib.import_module(MODULE_NAME)
+    production = git_auth.FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE
+    profile = replace(
+        disposable_repository.profile,
+        historical_authorization_package_roots=(
+            production.historical_authorization_package_roots
+        ),
+    )
+    _patch_standard_four_hour_profile(profile=profile, monkeypatch=monkeypatch)
+    _write_valid_checkpoint_authorization(
+        repository=disposable_repository,
+        authorization_id=ADMISSION_CHECKPOINT_ID,
+    )
+    _write_valid_checkpoint_authorization(
+        repository=disposable_repository,
+        authorization_id=SECOND_ADMISSION_CHECKPOINT_ID,
+    )
+
+    result = preparation.prepare_four_token_standard_four_hour_authorization(
+        repository_root=disposable_repository.root,
+        branch=disposable_repository.branch,
+        head=disposable_repository.head,
+        authoritative_database=disposable_repository.database_binding(),
+        migration_execution_id=MIGRATION_EXECUTION_ID,
+        prior_authorizations_non_reusable=(
+            ADMISSION_CHECKPOINT_ID,
+            SECOND_ADMISSION_CHECKPOINT_ID,
+        ),
+        authorization_id=AUTHORIZATION_ID,
+        authorized_at=datetime.now(timezone.utc).isoformat(),
+        validity_seconds=600,
+        operator_approved=True,
+        application_root=tmp_path / "applications",
+        temporary_parent=tmp_path,
+    )
+
+    assert ADMISSION_CHECKPOINT_ROOT in profile.historical_authorization_package_roots
+    assert result["inventory_pre_marker_parity_PASS"] is True
+
+
+def test_checkpoint_history_is_rejected_without_explicit_prior_approval(
+    disposable_repository: DisposableFourTokenPreparationRepository,
+) -> None:
+    """A checkpoint directory alone never becomes Standard-4H history authority."""
+    profile = git_auth.FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE
+    _write_valid_checkpoint_authorization(
+        repository=disposable_repository,
+        authorization_id=ADMISSION_CHECKPOINT_ID,
+    )
+
+    with pytest.raises(
+        git_auth.GitProvenanceAuthorizationError,
+        match="unapproved historical authorization package",
+    ):
+        git_auth.enumerate_historical_authorization_evidence(
+            repository_root=disposable_repository.root,
+            current_authorization_id=AUTHORIZATION_ID,
+            approved_historical_authorization_ids=(),
+            authorization_package_roots=profile.historical_authorization_package_roots,
+            current_authorization_package_root=profile.authorization_package_root,
+        )
+
+
+def test_checkpoint_document_cannot_validate_as_current_standard_four_hour_authority(
+    disposable_repository: DisposableFourTokenPreparationRepository,
+) -> None:
+    """Historical visibility does not relax the current profile's schema or mode."""
+    checkpoint = importlib.import_module(
+        "printer_v1.operator_cli.four_token_admission_checkpoint_one_shot_wrapper"
+    )
+    document = checkpoint.fixture_authorization_document(
+        branch=disposable_repository.branch,
+        head=disposable_repository.head,
+        database=disposable_repository.database_binding(),
+        authorization_id=ADMISSION_CHECKPOINT_ID,
+        migration_execution_id=MIGRATION_EXECUTION_ID,
+    )
+    checkpoint.validate_four_token_admission_checkpoint_authorization_document(document)
+
+    with pytest.raises(
+        operational.FourTokenStandardFourHourOneShotWrapperError,
+        match="authorization schema version mismatch",
+    ):
+        operational.validate_four_token_standard_four_hour_authorization_document(
+            document
+        )
 
 
 def test_prepare_creates_one_valid_non_consuming_package(

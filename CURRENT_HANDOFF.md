@@ -56,8 +56,15 @@ distinction between MARKET_READY and freeze-ready capacity.
 
 ## Proven blocker
 
-No unresolved code blocker is proven in the audited Cycle-2 live path by the
-current exact CI.
+Standard-4H pre-marker preparation had one proven provenance blocker: approved
+four-token admission-checkpoint authorization files were visible under their
+own root, but that root was omitted from the Standard-4H historical
+authorization roots. The Standard-4H profile now enumerates that root as
+historical evidence only. Explicit current-document approval remains required;
+unapproved packages still fail closed, and checkpoint documents cannot become
+current Standard-4H authority. Focused disposable-state preparation coverage
+passes, including multiple approved checkpoint IDs and the pre-marker parity
+boundary.
 
 ## Cycle-1 terminal-truth repair
 
@@ -83,9 +90,12 @@ non-reusable.
 
 ## Exact next permitted action
 
-Read-only verification/review of this repair is permitted. No authorization
-preparation/consumption, provider contact, Printer run, Scheduler operational
-execution, or authoritative DB mutation is permitted by this handoff.
+Read-only verification/review of this repair is permitted. The next operational
+workflow step, if explicitly requested after re-resolving the new commit, is
+`RE-RUN_READ_ONLY_STANDARD_4H_READINESS_AND_PREPARE_FRESH_AUTHORIZATION_ON_NEW_HEAD`.
+No authorization preparation/consumption, provider contact, Printer run,
+Scheduler operational execution, or authoritative DB mutation is permitted by
+this handoff.
 
 A new engineering lane may begin from the exact current branch HEAD after
 re-resolving it and reading `AGENTS.md` plus this file. Any future operational

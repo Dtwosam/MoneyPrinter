@@ -779,6 +779,7 @@ FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE = GitAuthorizationProfile(
         "operator-runs/v2-9-8b-standard-four-hour-final-authorization",
         "operator-runs/v2-9-8b-four-token-final-authorization",
         "operator-runs/v2-9-8b-four-token-standard-four-hour-final-authorization",
+        "operator-runs/v2-9-8b-four-token-admission-checkpoint-final-authorization",
     ),
     migration_package_root=MIGRATION_062_PACKAGE_ROOT,
     migration_package_kind=MIGRATION_062_PACKAGE_KIND,
