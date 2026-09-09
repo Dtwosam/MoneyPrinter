@@ -181,17 +181,26 @@ def test_report_only_surfaces_leave_locked_capability_tables_unchanged(db_path) 
     assert after == before
 
     assert lane7["report_only"] is True
+    assert lane7["retrieval_activation_enabled"] is False
+    assert lane7["retrieval_activation_locked"] is True
     assert lane7["retrieval_matches_created"] == 0
     assert lane7["buy_unlock"] is False
     assert lane7["pnl_unlock"] is False
 
     assert lane8a["report_only"] is True
+    assert lane8a["paper_decision_creation_enabled"] is False
+    assert lane8a["paper_decision_creation_locked"] is True
+    assert lane8a["next_required_operator_step"] == (
+        "paper_decision_creation_locked_requires_separate_deliberate_capability_change"
+    )
     assert lane8a["paper_decisions_created"] == 0
     assert lane8a["buy_unlock"] is False
     assert lane8a["position_unlock"] is False
     assert lane8a["pnl_unlock"] is False
 
     assert lane8c["report_only"] is True
+    assert lane8c["paper_decision_creation_enabled"] is False
+    assert lane8c["paper_decision_creation_locked"] is True
     assert lane8c["review_rows_created"] == 0
     assert lane8c["buy_unlock"] is False
     assert lane8c["position_unlock"] is False
