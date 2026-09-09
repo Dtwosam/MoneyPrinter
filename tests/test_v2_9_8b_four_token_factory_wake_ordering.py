@@ -146,6 +146,7 @@ def _prepare(
     tmp_path,
     *,
     tracking_lanes=("TRACK_NORMAL", "TRACK_NORMAL"),
+    pre_admit_cycle_one: bool = True,
 ):
     db = tmp_path / "wake-order.sqlite3"
     backup = tmp_path / "wake-order.backup.sqlite3"
@@ -192,48 +193,68 @@ def _prepare(
             START.isoformat(),
         ),
     )
-    from printer_v1.operator_cli.cadence_authority import (
-        claim_tracking_authority_for_slot_insert,
-    )
+    if pre_admit_cycle_one:
+        from printer_v1.operator_cli.cadence_authority import (
+            claim_tracking_authority_for_slot_insert,
+        )
 
-    for row_id in (1, 2):
-        connection.execute(
-            "INSERT INTO printer_tokens(id,token_mint,chain) VALUES (?,?,'solana')",
-            (row_id, f"mint-{row_id}"),
+        for row_id in (1, 2):
+            connection.execute(
+                "INSERT INTO printer_tokens(id,token_mint,chain) VALUES (?,?,'solana')",
+                (row_id, f"mint-{row_id}"),
+            )
+            connection.execute(
+                "INSERT INTO printer_pairs(id,token_id,pair_address,base_token_mint) "
+                "VALUES (?,?,?,?)",
+                (100 + row_id, row_id, f"pool-{row_id}", f"mint-{row_id}"),
+            )
+        # Design Lane 1: Cycle-1 fixtures must insert-bind exact tracking authority
+        # before WINDOW_15M opening (slot.tracking_queue_id is immutable after insert).
+        if tuple(tracking_lanes) not in {
+            ("TRACK_NORMAL", "TRACK_NORMAL"),
+            ("TRACK_FAST", "TRACK_NORMAL"),
+            ("TRACK_NORMAL", "TRACK_FAST"),
+            ("TRACK_FAST", "TRACK_FAST"),
+        }:
+            raise ValueError("test fixture requires exact FAST/NORMAL tracking lanes")
+        queue_ids = tuple(
+            claim_tracking_authority_for_slot_insert(
+                connection,
+                token_row_id=row_id,
+                pair_row_id=100 + row_id,
+                tracking_lane=lane,
+                now=START,
+            )
+            for row_id, lane in zip((1, 2), tracking_lanes, strict=True)
         )
-        connection.execute(
-            "INSERT INTO printer_pairs(id,token_id,pair_address,base_token_mint) "
-            "VALUES (?,?,?,?)",
-            (100 + row_id, row_id, f"pool-{row_id}", f"mint-{row_id}"),
-        )
-    # Design Lane 1: Cycle-1 fixtures must insert-bind exact tracking authority
-    # before WINDOW_15M opening (slot.tracking_queue_id is immutable after insert).
-    if tuple(tracking_lanes) not in {
-        ("TRACK_NORMAL", "TRACK_NORMAL"),
-        ("TRACK_FAST", "TRACK_NORMAL"),
-        ("TRACK_NORMAL", "TRACK_FAST"),
-        ("TRACK_FAST", "TRACK_FAST"),
-    }:
-        raise ValueError("test fixture requires exact FAST/NORMAL tracking lanes")
-    queue_ids = tuple(
-        claim_tracking_authority_for_slot_insert(
+        create_cycle_with_two_slots(
             connection,
-            token_row_id=row_id,
-            pair_row_id=100 + row_id,
-            tracking_lane=lane,
-            now=START,
+            campaign_id=CAMPAIGN_ID,
+            run_id=CAMPAIGN_RUN_ID,
+            cycle_id=CYCLE_ID,
+            cycle_ordinal=1,
+            slots=(
+                _slot(1, 1, tracking_queue_id=queue_ids[0]),
+                _slot(2, 2, tracking_queue_id=queue_ids[1]),
+            ),
+            now=START.isoformat(),
         )
-        for row_id, lane in zip((1, 2), tracking_lanes, strict=True)
-    )
-    create_cycle_with_two_slots(
-        connection,
-        campaign_id=CAMPAIGN_ID,
-        run_id=CAMPAIGN_RUN_ID,
-        cycle_id=CYCLE_ID,
-        cycle_ordinal=1,
-        slots=(_slot(1, 1, tracking_queue_id=queue_ids[0]), _slot(2, 2, tracking_queue_id=queue_ids[1])),
-        now=START.isoformat(),
-    )
+    else:
+        # Admission-integration fixtures need the real Cycle-1 executor to own
+        # token/pair/queue/slot creation. Seed only the empty campaign cycle.
+        connection.execute(
+            """INSERT INTO printer_memory_factory_campaign_cycles(
+                   cycle_id,campaign_id,run_id,cycle_ordinal,cycle_state,
+                   created_at,updated_at
+               ) VALUES (?,?,?,1,'PLANNED',?,?)""",
+            (
+                CYCLE_ID,
+                CAMPAIGN_ID,
+                CAMPAIGN_RUN_ID,
+                START.isoformat(),
+                START.isoformat(),
+            ),
+        )
     connection.commit()
     connection.close()
     shutil.copy2(db, backup)
