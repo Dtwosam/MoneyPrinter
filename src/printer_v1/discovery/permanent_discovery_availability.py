@@ -1427,7 +1427,7 @@ def load_protocol_resume_market_due(
                FROM printer_exact_market_state_transitions
                WHERE network=? AND mint_identity=? AND pool_address=?
                  AND new_state=?
-               ORDER BY id DESC""",
+               ORDER BY transition_id DESC""",
             (NETWORK, mint, pool, CURRENT_POOL_CONFIRMED),
         ).fetchall()
         for provenance_row in provenance_rows:
