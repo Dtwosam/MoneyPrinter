@@ -606,6 +606,52 @@ def _validate_reconciliation_stage_charge(*, offered: int, actual: int) -> int:
     return actual
 
 
+_ACQUISITION_QUEUE_STAGE = {
+    "MARKET_BATCHING_DUE": "market_batching",
+    "RECONCILIATION_DUE": "reconciliation",
+    "PROTOCOL_CONFIRMATION_DUE": "protocol_confirmation",
+    "PROTOCOL_RESUME_MARKET_DUE": "market_batching",
+}
+
+
+def _lawful_pending_acquisition_work(
+    *,
+    work_queues: Mapping[str, Sequence[Mapping[str, Any]]],
+    stage_budget: StageBudget,
+    source_operations_remaining: int,
+    duration_remaining_seconds: float | None,
+) -> dict[str, dict[str, Any]]:
+    """Return pending acquisition queues that can still lawfully execute.
+
+    A pending row alone is not executable work: its exact owning stage must be
+    unsealed with capacity, the flat source-operation budget must remain, and
+    the acquisition deadline (when present) must still be open.
+    """
+    flat_remaining = max(0, int(source_operations_remaining))
+    if flat_remaining < 1:
+        return {}
+    if (
+        duration_remaining_seconds is not None
+        and float(duration_remaining_seconds) <= 0
+    ):
+        return {}
+    lawful: dict[str, dict[str, Any]] = {}
+    for queue_name, stage_name in _ACQUISITION_QUEUE_STAGE.items():
+        pending = list(work_queues.get(queue_name) or ())
+        if not pending or stage_budget.is_sealed(stage_name):
+            continue
+        stage_available = int(stage_budget.available(stage_name))
+        if stage_available < 1:
+            continue
+        lawful[queue_name] = {
+            "stage": stage_name,
+            "pending_count": len(pending),
+            "stage_operations_available": stage_available,
+            "flat_source_operations_remaining": flat_remaining,
+        }
+    return lawful
+
+
 _TEMPORAL_FRESH_SOURCE_CHANNELS = frozenset({
     "direct_pump_finalized_live_tail",
     "dexscreener_fresh_profiles",
@@ -1659,7 +1705,7 @@ def run_persistent_eligible_token_supply(
     protocol_confirmation_work_remaining = False
     protocol_resume_market_work_remaining = False
     direct_backfill_due = False
-    work_queues: dict[str, list[dict[str, str]]] = {
+    work_queues: dict[str, list[dict[str, Any]]] = {
         "MARKET_BATCHING_DUE": [],
         "RECONCILIATION_DUE": [],
         "PROTOCOL_CONFIRMATION_DUE": [],
@@ -3541,6 +3587,12 @@ def run_persistent_eligible_token_supply(
         # Deterministic non-ranked order by mint identity for handoff stability.
         eligible_list.sort(key=lambda c: str(c["mint"]))
         if permanent_availability:
+            from printer_v1.discovery.permanent_discovery_availability import (
+                load_liquidity_unknown_candidates,
+                load_protocol_confirmation_due,
+                load_protocol_resume_market_due,
+            )
+
             work_queues["HOLDER_SAFETY_DUE"] = [
                 {
                     "mint": str(item.get("mint") or ""),
@@ -3554,6 +3606,20 @@ def run_persistent_eligible_token_supply(
                 {"mint": mint, "pool": ""}
                 for mint in sorted(inventory_mints - evaluated_mints)
             ]
+            work_queues["RECONCILIATION_DUE"] = [
+                {
+                    "mint": str(item.get("mint") or ""),
+                    "pool": str(item.get("pool") or ""),
+                }
+                for item in load_liquidity_unknown_candidates(connection)
+                if not bool(item.get("liquidity_backup_attempted"))
+            ]
+            work_queues["PROTOCOL_CONFIRMATION_DUE"] = list(
+                load_protocol_confirmation_due(connection)
+            )
+            work_queues["PROTOCOL_RESUME_MARKET_DUE"] = list(
+                load_protocol_resume_market_due(connection)
+            )
 
         # Permanent mode: raw eligible_list length is never final capacity.
         # Freeze-ready depth must be proven; unknown depth fails closed at 0.
@@ -3579,6 +3645,16 @@ def run_persistent_eligible_token_supply(
 
         duration_used = (_parse_iso(now) - started_at).total_seconds()
         duration_remaining = _duration_remaining()
+        lawful_pending_acquisition_work = (
+            _lawful_pending_acquisition_work(
+                work_queues=work_queues,
+                stage_budget=stage_budget,
+                source_operations_remaining=_ops_remaining(),
+                duration_remaining_seconds=duration_remaining,
+            )
+            if permanent_availability and not ready
+            else {}
+        )
 
         if (
             permanent_availability
@@ -3631,10 +3707,22 @@ def run_persistent_eligible_token_supply(
             # shortage classification and no exhaustion certificate is emitted,
             # because no shortage has been proven.
             terminal = last_stop_reason
-        elif last_stop_reason == PRE_LIFECYCLE_DISCOVERY_SELECTION_COVERAGE_INSUFFICIENT:
+        elif (
+            last_stop_reason
+            == PRE_LIFECYCLE_DISCOVERY_SELECTION_COVERAGE_INSUFFICIENT
+            and not lawful_pending_acquisition_work
+        ):
             terminal = BLOCKED_INSUFFICIENT_ELIGIBLE_GRADUATED_POOL
         else:
-            terminal = BLOCKED_INSUFFICIENT_ELIGIBLE_GRADUATED_POOL
+            if lawful_pending_acquisition_work:
+                # A generic insufficient-pool terminal is impossible while one
+                # acquisition queue still has its exact lawful source capacity.
+                # Surface the pre-existing architecture fault instead of
+                # misreporting market scarcity, source failure, or budget use.
+                terminal = DISCOVERY_ARCHITECTURE_FALSE_SHORTAGE
+                last_stop_reason = "LAWFUL_WORK_REMAINING_WITH_CAPACITY"
+            else:
+                terminal = BLOCKED_INSUFFICIENT_ELIGIBLE_GRADUATED_POOL
             all_channels_exhausted = (
                 unexplored_remaining == 0
                 and last_stop_reason
@@ -4316,6 +4404,9 @@ def run_persistent_eligible_token_supply(
             "lawful_work_remaining_at_terminal": bool(
                 unexplored_remaining > 0
                 or any(work_queues.get(name) for name in work_queues)
+            ),
+            "lawful_pending_acquisition_work": dict(
+                lawful_pending_acquisition_work
             ),
             "lifecycle_operation_ceiling": LIFECYCLE_OPERATION_CEILING,
             "restart_created": False,
