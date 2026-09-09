@@ -9,7 +9,9 @@ import sqlite3
 from typing import Any
 
 from printer_v1.contracts.capability_locks import (
+    require_paper_audits_enabled,
     require_paper_decisions_enabled,
+    require_paper_monitoring_enabled,
     require_retrieval_activation_enabled,
 )
 from printer_v1.db import apply_migrations
@@ -430,6 +432,7 @@ def run_synthetic_paper_decision(db_path_or_conn: str | Path | sqlite3.Connectio
 
 
 def run_synthetic_paper_monitor(db_path_or_conn: str | Path | sqlite3.Connection) -> dict[str, Any]:
+    require_paper_monitoring_enabled()
     connection, should_close = _connect(db_path_or_conn)
     try:
         decision = connection.execute(
@@ -509,6 +512,7 @@ def run_synthetic_paper_monitor(db_path_or_conn: str | Path | sqlite3.Connection
 
 
 def run_synthetic_paper_audit(db_path_or_conn: str | Path | sqlite3.Connection) -> dict[str, Any]:
+    require_paper_audits_enabled()
     connection, should_close = _connect(db_path_or_conn)
     try:
         position = connection.execute("SELECT * FROM printer_paper_positions LIMIT 1").fetchone()
