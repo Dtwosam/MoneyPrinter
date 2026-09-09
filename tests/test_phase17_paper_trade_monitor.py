@@ -12,6 +12,7 @@ PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 SRC_PATH = PROJECT_ROOT / "src"
 sys.path.insert(0, str(SRC_PATH))
 
+from printer_v1.contracts import capability_locks
 from printer_v1.contracts.enums import DataQualityLabel, SourceStatus
 from printer_v1.db import apply_migrations
 from printer_v1.paper_monitor import events, evidence, monitor, positions, recorder, reports
@@ -61,6 +62,21 @@ FORBIDDEN_COLUMNS = {
 
 class Phase17PaperTradeMonitorTest(unittest.TestCase):
     def setUp(self):
+        previous_positions = capability_locks.PAPER_POSITIONS_ENABLED
+        previous_audits = capability_locks.PAPER_AUDITS_ENABLED
+        previous_pnl = capability_locks.PAPER_PNL_ENABLED
+        capability_locks.PAPER_POSITIONS_ENABLED = True
+        capability_locks.PAPER_AUDITS_ENABLED = True
+        capability_locks.PAPER_PNL_ENABLED = True
+        self.addCleanup(
+            setattr, capability_locks, "PAPER_PNL_ENABLED", previous_pnl
+        )
+        self.addCleanup(
+            setattr, capability_locks, "PAPER_AUDITS_ENABLED", previous_audits
+        )
+        self.addCleanup(
+            setattr, capability_locks, "PAPER_POSITIONS_ENABLED", previous_positions
+        )
         self.tempdir = tempfile.TemporaryDirectory()
         self.db_path = pathlib.Path(self.tempdir.name) / "printer.sqlite3"
         apply_migrations(self.db_path)
