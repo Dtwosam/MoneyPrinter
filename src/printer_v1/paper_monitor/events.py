@@ -3,6 +3,7 @@
 from datetime import datetime, timezone
 from typing import Any
 
+from printer_v1.contracts.capability_locks import require_paper_positions_enabled
 from printer_v1.paper_monitor.contracts import PaperMonitorStateLabel, PaperTradeEventLabel
 
 
@@ -11,6 +12,7 @@ def utc_now() -> datetime:
 
 
 def classify_paper_trade_event_label(event_kind: str) -> PaperTradeEventLabel:
+    require_paper_positions_enabled()
     mapping = {
         "entry_created": PaperTradeEventLabel.PAPER_EVENT_ENTRY_CREATED,
         "entry_blocked": PaperTradeEventLabel.PAPER_EVENT_ENTRY_BLOCKED,
@@ -33,6 +35,7 @@ def build_paper_trade_event_payload(
     event_payload: dict[str, Any] | None = None,
     event_at: datetime | None = None,
 ) -> dict[str, Any]:
+    require_paper_positions_enabled()
     payload = event_payload or {}
     event_label = classify_paper_trade_event_label(event_kind)
     return {
