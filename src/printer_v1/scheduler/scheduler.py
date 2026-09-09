@@ -19,6 +19,7 @@ import re
 import sqlite3
 from typing import Mapping
 
+from printer_v1.contracts.capability_locks import require_scheduler_target_enabled
 from printer_v1.scheduler import _scheduler_base as _base
 
 # Preserve the complete established Scheduler surface for existing callers.
@@ -26,6 +27,34 @@ for _name in dir(_base):
     if _name.startswith("__"):
         continue
     globals()[_name] = getattr(_base, _name)
+
+
+def enqueue_job(
+    db_or_connection: str | Path | sqlite3.Connection,
+    *,
+    job_name: str,
+    job_kind: JobKind | str,
+    target_table: str | None = None,
+    target_id: int | None = None,
+    scheduled_for: datetime | None = None,
+    source_name: str | None = None,
+    source_request_kind: str | None = None,
+    recent_request_count: int = 0,
+) -> tuple[LockResult, int | None]:
+    """Enforce current capability sequencing before Central Scheduler enqueue."""
+
+    require_scheduler_target_enabled(target_table)
+    return _base.enqueue_job(
+        db_or_connection,
+        job_name=job_name,
+        job_kind=job_kind,
+        target_table=target_table,
+        target_id=target_id,
+        scheduled_for=scheduled_for,
+        source_name=source_name,
+        source_request_kind=source_request_kind,
+        recent_request_count=recent_request_count,
+    )
 
 
 _JOB_FAILURE_DIAGNOSTICS: ContextVar[dict[int, tuple[str, str]]] = ContextVar(
