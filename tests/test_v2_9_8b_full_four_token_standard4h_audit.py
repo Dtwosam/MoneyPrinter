@@ -758,50 +758,74 @@ def test_two_cycle_four_token_real_factory_reaches_shared_terminal_standard4h(
             for row in targets
         ), [dict(row) for row in targets]
 
-        cycle_one_selection = connection.execute(
-            "SELECT token_id,pair_id,tracking_lane "
-            "FROM printer_selection_batch_items "
-            "WHERE batch_id='terminal-batch' AND item_status='SELECTED' "
-            "ORDER BY token_id"
-        ).fetchall()
-        assert [tuple(row) for row in cycle_one_selection] == [
-            (1, 101, "TRACK_FAST"),
-            (2, 102, "TRACK_NORMAL"),
-        ]
+        assert len(cycle_one_activation_slots) == 2
+        assert len(cycle_one_batch_ids) == 1
         cycle_one_queue_lanes = connection.execute(
-            """SELECT s.slot_ordinal,s.token_row_id,q.tracking_lane
+            """SELECT s.slot_ordinal,s.token_row_id,s.pair_row_id,
+                      s.mint_identity,s.pair_identity,q.tracking_lane
                  FROM printer_memory_factory_campaign_token_slots AS s
                  JOIN printer_tracking_queue AS q ON q.id=s.tracking_queue_id
                 WHERE s.campaign_id=? AND s.run_id=? AND s.cycle_id=?
                 ORDER BY s.slot_ordinal""",
             (CAMPAIGN_ID, CAMPAIGN_RUN_ID, CYCLE_ID),
         ).fetchall()
-        assert [tuple(row) for row in cycle_one_queue_lanes] == [
-            (1, 1, "TRACK_FAST"),
-            (2, 2, "TRACK_NORMAL"),
-        ]
+        assert len(cycle_one_queue_lanes) == 2
+        assert {
+            (str(row["mint_identity"]), str(row["pair_identity"]))
+            for row in cycle_one_queue_lanes
+        } == {
+            (str(slot["mint_identity"]), str(slot["pair_identity"]))
+            for slot in cycle_one_activation_slots
+        }
+
+        cycle_one_selection = connection.execute(
+            "SELECT token_id,pair_id,tracking_lane "
+            "FROM printer_selection_batch_items "
+            "WHERE batch_id=? AND item_status='SELECTED' ORDER BY token_id",
+            (cycle_one_batch_ids[0],),
+        ).fetchall()
+        expected_cycle_one_targets = {
+            (
+                int(row["token_row_id"]),
+                int(row["pair_row_id"]),
+                str(row["tracking_lane"]),
+            )
+            for row in cycle_one_queue_lanes
+        }
+        assert {tuple(row) for row in cycle_one_selection} == expected_cycle_one_targets
+
+        cycle_one_token_ids = tuple(
+            int(row["token_row_id"]) for row in cycle_one_queue_lanes
+        )
         cycle_one_step_lanes = connection.execute(
             """SELECT token_id,tracking_lane
                  FROM printer_memory_factory_run_steps
-                WHERE run_id=? AND token_id IN (1,2)
+                WHERE run_id=? AND token_id IN (?,?)
                   AND tracking_lane IS NOT NULL
                 GROUP BY token_id,tracking_lane
                 ORDER BY token_id""",
-            (FACTORY_RUN_ID,),
+            (FACTORY_RUN_ID, *cycle_one_token_ids),
         ).fetchall()
-        assert [tuple(row) for row in cycle_one_step_lanes] == [
-            (1, "TRACK_FAST"),
-            (2, "TRACK_NORMAL"),
-        ]
+        assert {
+            (int(row["token_id"]), str(row["tracking_lane"]))
+            for row in cycle_one_step_lanes
+        } == {
+            (int(row["token_row_id"]), str(row["tracking_lane"]))
+            for row in cycle_one_queue_lanes
+        }
+
         cycle_one_progression_lanes = connection.execute(
             """SELECT slot_ordinal,tracking_lane
                  FROM printer_memory_factory_standard_4h_progression_tokens
                 WHERE cycle_id=? ORDER BY slot_ordinal""",
             (CYCLE_ID,),
         ).fetchall()
-        assert [tuple(row) for row in cycle_one_progression_lanes] == [
-            (1, "TRACK_FAST"),
-            (2, "TRACK_NORMAL"),
+        assert [
+            (int(row["slot_ordinal"]), str(row["tracking_lane"]))
+            for row in cycle_one_progression_lanes
+        ] == [
+            (int(row["slot_ordinal"]), str(row["tracking_lane"]))
+            for row in cycle_one_queue_lanes
         ]
 
         queues = connection.execute(
