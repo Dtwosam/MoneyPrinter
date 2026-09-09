@@ -3,6 +3,7 @@
 from math import isclose
 from typing import Any, Mapping
 
+from printer_v1.contracts.capability_locks import require_paper_audits_enabled
 from printer_v1.paper_audit.contracts import (
     PaperAuditIssueLabel,
     PaperAuditResultLabel,
@@ -14,6 +15,7 @@ from printer_v1.paper_audit.contracts import (
 
 
 def collect_paper_audit_issues(evidence: Mapping[str, Any]) -> list[str]:
+    require_paper_audits_enabled()
     issues: list[str] = []
     position = evidence.get("paper_position") or {}
     decision = evidence.get("paper_decision") or {}
@@ -56,6 +58,7 @@ def collect_paper_audit_issues(evidence: Mapping[str, Any]) -> list[str]:
 
 
 def pnl_is_inconsistent(position: Mapping[str, Any]) -> bool:
+    require_paper_audits_enabled()
     if not position or position.get("realized_pnl_usd") is None:
         return False
     entry = float(position.get("entry_price_usd") or position.get("paper_entry_price") or 0.0)
@@ -66,6 +69,7 @@ def pnl_is_inconsistent(position: Mapping[str, Any]) -> bool:
 
 
 def classify_paper_rule_compliance(evidence: Mapping[str, Any]) -> PaperRuleComplianceLabel:
+    require_paper_audits_enabled()
     issues = set(collect_paper_audit_issues(evidence))
     violations = {
         PaperAuditIssueLabel.ISSUE_NO_VALID_DECISION.value,
@@ -85,6 +89,7 @@ def classify_paper_rule_compliance(evidence: Mapping[str, Any]) -> PaperRuleComp
 
 
 def classify_paper_realism(evidence: Mapping[str, Any]) -> PaperRealismLabel:
+    require_paper_audits_enabled()
     issues = set(collect_paper_audit_issues(evidence))
     if PaperAuditIssueLabel.ISSUE_UNREALISTIC_ENTRY.value in issues or PaperAuditIssueLabel.ISSUE_UNREALISTIC_EXIT.value in issues:
         return PaperRealismLabel.PAPER_REALISM_UNREALISTIC
@@ -98,6 +103,7 @@ def classify_paper_realism(evidence: Mapping[str, Any]) -> PaperRealismLabel:
 
 
 def classify_paper_outcome_review(evidence: Mapping[str, Any]) -> PaperOutcomeReviewLabel:
+    require_paper_audits_enabled()
     position = evidence.get("paper_position") or {}
     decision = evidence.get("paper_decision") or {}
     if not position:
@@ -117,6 +123,7 @@ def classify_paper_outcome_review(evidence: Mapping[str, Any]) -> PaperOutcomeRe
 
 
 def classify_paper_data_quality_audit(evidence: Mapping[str, Any]) -> PaperDataQualityAuditLabel:
+    require_paper_audits_enabled()
     hint = evidence.get("data_quality_audit_hint")
     if hint == "CLEAN":
         return PaperDataQualityAuditLabel.PAPER_AUDIT_DATA_CLEAN
@@ -132,6 +139,7 @@ def classify_paper_data_quality_audit(evidence: Mapping[str, Any]) -> PaperDataQ
 
 
 def classify_paper_audit_result(evidence: Mapping[str, Any]) -> PaperAuditResultLabel:
+    require_paper_audits_enabled()
     compliance = classify_paper_rule_compliance(evidence)
     realism = classify_paper_realism(evidence)
     data = classify_paper_data_quality_audit(evidence)
@@ -151,6 +159,7 @@ def classify_paper_audit_result(evidence: Mapping[str, Any]) -> PaperAuditResult
 
 
 def paper_audit_passes(evidence: Mapping[str, Any]) -> bool:
+    require_paper_audits_enabled()
     return classify_paper_audit_result(evidence) in {
         PaperAuditResultLabel.PAPER_AUDIT_PASS,
         PaperAuditResultLabel.PAPER_AUDIT_PASS_WITH_WARNINGS,
@@ -158,6 +167,7 @@ def paper_audit_passes(evidence: Mapping[str, Any]) -> bool:
 
 
 def paper_audit_requires_manual_review(evidence: Mapping[str, Any]) -> bool:
+    require_paper_audits_enabled()
     return classify_paper_audit_result(evidence) in {
         PaperAuditResultLabel.PAPER_AUDIT_INCOMPLETE,
         PaperAuditResultLabel.PAPER_AUDIT_AUDIT_ONLY,
