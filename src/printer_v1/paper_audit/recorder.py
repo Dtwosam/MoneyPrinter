@@ -8,6 +8,7 @@ import json
 import sqlite3
 from typing import Any, Mapping
 
+from printer_v1.contracts.capability_locks import require_paper_audits_enabled
 from printer_v1.paper_audit.classifier import (
     classify_paper_audit_result,
     classify_paper_data_quality_audit,
@@ -50,6 +51,7 @@ def connect(db_or_connection: str | Path | sqlite3.Connection) -> Iterator[sqlit
 
 
 def build_classification_payload(evidence: Mapping[str, Any], scope: PaperAuditScopeLabel = PaperAuditScopeLabel.AUDIT_FULL_PAPER_TRADE) -> dict[str, Any]:
+    require_paper_audits_enabled()
     return {
         "audit_scope_label": scope.value,
         "paper_audit_result_label": classify_paper_audit_result(evidence).value,
@@ -66,6 +68,7 @@ def build_audit_payload(
     audit_at: datetime | None = None,
     scope: PaperAuditScopeLabel = PaperAuditScopeLabel.AUDIT_FULL_PAPER_TRADE,
 ) -> dict[str, Any]:
+    require_paper_audits_enabled()
     current_time = audit_at or utc_now()
     classification = build_classification_payload(evidence, scope)
     report = build_paper_audit_report(evidence, classification)
@@ -97,6 +100,7 @@ def build_audit_payload(
 
 
 def record_paper_audit_report(db_path_or_conn: str | Path | sqlite3.Connection, audit_payload: Mapping[str, Any]) -> int:
+    require_paper_audits_enabled()
     with connect(db_path_or_conn) as connection:
         duplicate = connection.execute(
             """
@@ -159,6 +163,7 @@ def build_and_record_paper_audit(
     paper_decision_id: int | None = None,
     target_time: str | None = None,
 ) -> tuple[int, dict[str, Any]]:
+    require_paper_audits_enabled()
     evidence = collect_paper_audit_evidence(db_path_or_conn, paper_position_id, paper_decision_id, target_time)
     payload = build_audit_payload(evidence)
     audit_id = record_paper_audit_report(db_path_or_conn, payload)
@@ -201,6 +206,7 @@ def enqueue_paper_audit_job(
     scheduled_for: datetime | None = None,
     reason: str | None = None,
 ) -> tuple[LockResult, int | None]:
+    require_paper_audits_enabled()
     target_id = paper_position_id or paper_decision_id
     suffix = reason or "scheduled"
     return enqueue_job(
