@@ -2,14 +2,16 @@
 
 ## Current verified implementation
 
-Branch: `assistant/v2-9-8b-cycle1-cycle2-four-hour-admission-proof`.
+Branch: `assistant/v2-9-8b-paper-position-audit-lockout-audit`.
 
 Latest fully verified code/test HEAD before this handoff-only update:
-`8c47c0833227f1181e5ff12045ea9dd02cf22cbc`.
+`d6a8839d5b18d15b586e9b9dc108d9a06e8e9e92`.
 
-GitHub Actions run `34384741151` is green on that HEAD:
+GitHub Actions run `34401666253`, job `102634783052`, is green on that HEAD:
 
 - focused post-holder/reconciliation boundary: **29 passed**;
+- clean-memory consumer lockout boundary: **27 passed**;
+- paper position/monitor/audit/PnL lockout boundary: **46 passed**;
 - shared discovery/admission/two-cycle Standard-4H boundary:
   **399 passed, 2 deselected, 32 subtests passed**;
 - affected-module compile: passed;
@@ -19,83 +21,93 @@ GitHub Actions run `34384741151` is green on that HEAD:
 
 Printer V1 remains Solana-only, memecoin-only, paper-only. Source Governor is
 the sole governed source-request owner and Central Scheduler is the sole
-Scheduler owner. Retrieval, decision, position, PnL, signing, wallet and live
-trading capabilities remain locked. `WINDOW_5M_MICRO_EVENT` is support-only;
-`WINDOW_12H` and `WINDOW_24H` remain locked.
+Scheduler owner. `WINDOW_5M_MICRO_EVENT` is support-only; `WINDOW_12H` and
+`WINDOW_24H` remain locked.
 
-The verified path now explicitly includes Cycle 1 and Cycle 2 together:
+The earlier discovery/admission/lifecycle work remains green: exact-two Cycle-1
+admission, generic non-Pump present-pool verification and protocol->market
+resume, atomic and campaign-disjoint Cycle-2 admission, and exact four-target
+two-cycle progression through 15m -> 1h -> 4h with clean-memory promotion
+quality-gated to exact physical window identity.
 
-- Cycle-1 admission is owned by the real
-  `CombinedPumpfunCampaignExecutor`, not by pre-seeded test slots;
-- Cycle 1 requires exactly two candidates and atomically commits both token/pair
-  identities, tracking-queue claims, selected slots and first-15m Scheduler
-  handoffs;
-- failure before slot 1, during slot 2, or during the second Scheduler handoff
-  rolls the entire Cycle-1 admission back;
-- the production origin->lifecycle bridge reads the two durable Cycle-1 slots,
-  cancels the executor's superseded first-15m jobs, and materializes an
-  identity-preserving factory selection batch with no reselection;
-- the Standard-4H integration proof begins from an empty Cycle-1 shell, executes
-  real Cycle-1 admission, then admits a fresh/disjoint Cycle 2 through the
-  authoritative later-cycle `PAIR_READY -> CONSUMED` owner;
-- Cycle-1 activation mint/pair identities are required to match the durable
-  Cycle-1 slots, materialized selection rows, tracking lanes, factory run steps
-  and Standard-4H progression rows;
-- Cycle 2 remains campaign-history-disjoint from Cycle 1 and is admitted as an
-  exact two-slot atomic pair;
-- the resulting campaign has exactly four distinct token/pair targets across
-  exactly two cycles;
-- both cycles own exactly two `WINDOW_15M`, two `WINDOW_1H`, and two
-  `WINDOW_4H` lifecycles, for four physical 4h memory windows total;
-- every physical 4h window stays bound to its exact cycle, slot, token and pair;
-- both cycles reach the shared Standard-4H terminal path together;
-- clean-memory promotion remains quality-gated and preserves exact physical
-  window identity in episodes/fingerprints;
-- the integrated four-token run creates no retrieval, paper-decision, position,
-  trade-event or trade-audit activity.
+Current downstream capability sequencing is now code-enforced, not merely
+unreached by the memory factory:
 
-The earlier generic discovery/admission repairs remain covered by the same green
-shared suite: exact-two supply, generic non-Pump present-pool verification and
-protocol->market resume, exact source accounting, MOE recreation, Pump-only
-legacy projections, and the lawful-work false-shortage guard.
+- `RETRIEVAL_ACTIVATION_ENABLED = False`;
+- `PAPER_DECISIONS_ENABLED = False`;
+- `PAPER_POSITIONS_ENABLED = False`;
+- `PAPER_AUDITS_ENABLED = False`;
+- `PAPER_PNL_ENABLED = False`.
+
+The verified locks cover:
+
+- clean memory may be inspected read-only, but cannot persist retrieval queries
+  or matches while retrieval activation is locked;
+- paper-decision recorders and direct action/status helpers cannot emit or
+  persist BUY/SELL/HOLD/WAIT/AVOID/NO_ACTION decision authority while locked;
+- paper position entry, sizing, monitoring, exit decisions, trade-event output,
+  position mutation, and monitor Scheduler enqueue are locked;
+- realized/unrealized PnL calculations, PnL-state output, and PnL reporting are
+  locked;
+- paper audit classification/report output, persistence, trade-audit writes,
+  and audit Scheduler enqueue are locked;
+- Central Scheduler rejects locked downstream target tables and rejects
+  `OPEN_PAPER_TRADE_MONITOR` activation outside the separately locked audit
+  target;
+- `PAPER_MONITORING` cannot be claimed or updated into the tracking queue,
+  durably recorded as a new lifecycle state, scheduled from a historical queue
+  row, or used to write/schedule paper-monitoring snapshots while positions/PnL
+  remain locked;
+- a historical `PAPER_MONITORING` queue row cannot be reactivated to
+  QUEUED/ACTIVE/PAUSED while locked, but can still be archived or otherwise
+  retired safely;
+- synthetic hardening shortcuts cannot bypass the retrieval, decision,
+  position/monitor, audit, or PnL locks;
+- read-only retrieval/history, stored position/audit inspection, and
+  paper-only/no-live-execution validators remain available.
+
+Historical Phase 4/15/16/17/18/20 tests explicitly enable their future
+subsystems only inside disposable test setup and restore the default locks
+afterward. This preserves testability of implemented future engines without
+granting current runtime authority.
 
 ## Latest meaningful result
 
-The previous full four-token audit pre-created Cycle-1 slots, so it proved the
-two-cycle 4h lifecycle but did not prove that the real Cycle-1 admission owner
-could feed that lifecycle.
+The downstream paper engines were implemented and directly callable even though
+current V2-9.8B authority keeps them locked. The repair moved capability
+sequencing to the consumer boundaries themselves and to Central Scheduler, then
+closed two lifecycle bypasses that table-only locking would miss:
 
-That shortcut is removed in the strengthened disposable proof. The test harness
-can now start with only an empty Cycle-1 campaign shell. The real combined
-executor creates Cycle-1 token/pair rows, tracking authority and two slots; the
-production materialization bridge then feeds those exact identities into the
-same factory that admits Cycle 2 and runs both cycles through Standard-4H.
+1. `PAPER_MONITORING` work could be selected by job kind against an unrelated
+   Scheduler target; Scheduler enqueue is now job-kind-aware.
+2. A historical `PAPER_MONITORING` tracking row could be reactivated by
+   changing only its queue status; live ownership reactivation is now rejected
+   while archival/cleanup remains possible.
 
-The first strengthened CI run exposed only a test-harness API mistake: the
-low-level executor returns `CampaignExecutionResult`, while `activated_slots`
-belongs to the higher-level driver result. The proof was corrected to read the
-durably committed Cycle-1 slots through the same `_read_activated_slots` owner
-used by the production bridge. No production defect or runtime code change was
-required.
+The focused regression proves those paths fail before mutation while ordinary
+TRACK_FAST tracking and ordinary memory-window Scheduler work remain unchanged.
 
 ## Proven blocker
 
-None remains in the scoped Cycle-1 admission + Cycle-2 admission + joint
-Standard-4H memory engineering lane.
+None remains in the scoped clean-memory -> retrieval/decision -> paper
+position/monitor/audit/PnL lockout engineering lane.
 
 This is **not** operational authorization and does not establish authoritative
 database or live-run readiness. No operational Printer run, live provider/RPC
-execution, Scheduler operation, or authoritative database mutation was
-performed.
+or WebSocket execution, Scheduler operation, wallet/signing action, or
+authoritative database mutation was performed.
 
 Default branch `master` remains historically divergent from this active
 development lineage and is not a safe blind merge/rebase target.
 
 ## Exact next permitted action
 
-Begin the next narrow read/test-only boundary from this green state, or resolve
-the intended active integration lineage for this branch. A logical downstream
-engineering boundary is clean-memory -> retrieval/paper-decision lockout.
+Begin a narrow read/test-only audit of downstream reporting/operator-review
+surfaces that consume historical memory/paper tables. Prove those surfaces
+remain read-only and cannot synthesize or activate retrieval, paper decisions,
+positions, monitoring, audits, or PnL while the current capability locks are
+false. Repair only a concrete reachable unlock if found.
 
-Do not run Printer operationally or mutate the authoritative database without a
-new explicit authorization boundary.
+Do not activate any locked capability, run Printer operationally, use live
+providers, operate Scheduler jobs, or mutate the authoritative database without
+a new explicit authorization boundary.
