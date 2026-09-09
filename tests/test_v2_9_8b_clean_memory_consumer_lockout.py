@@ -19,6 +19,7 @@ from printer_v1.hardening.flow_validation import (
     run_synthetic_memory_retrieval,
     run_synthetic_paper_decision,
 )
+from printer_v1.memory.fingerprints import record_memory_fingerprint
 from printer_v1.memory_retrieval.recorder import (
     build_and_record_memory_retrieval_report,
     enqueue_memory_retrieval_job,
@@ -181,6 +182,131 @@ def test_central_scheduler_cannot_bypass_consumer_locks(db_path) -> None:
     _assert_locked(exc, "PAPER_DECISIONS_LOCKED")
 
     assert _count(db_path, "printer_scheduler_jobs") == 1
+
+
+def test_clean_four_hour_memory_is_visible_but_cannot_activate_consumers(
+    db_path,
+) -> None:
+    connection = sqlite3.connect(db_path)
+    try:
+        token_id = int(
+            connection.execute(
+                "INSERT INTO printer_tokens(token_mint,chain) VALUES ('clean-4h-mint','solana')"
+            ).lastrowid
+        )
+        pair_id = int(
+            connection.execute(
+                "INSERT INTO printer_pairs(token_id,pair_address,dex,pool_source) "
+                "VALUES (?,'clean-4h-pair','pumpswap','fixture')",
+                (token_id,),
+            ).lastrowid
+        )
+        window_id = int(
+            connection.execute(
+                """INSERT INTO printer_memory_windows(
+                       token_id,pair_id,window_kind,opened_at,closed_at,
+                       memory_status,data_quality_label,memory_quality_label,
+                       do_not_train
+                   ) VALUES (?,?, 'WINDOW_4H', ?, ?,
+                       'CLEAN_MEMORY','CLEAN_DATA','CLEAN_MEMORY',0)""",
+                (
+                    token_id,
+                    pair_id,
+                    "2026-09-09T08:00:00+00:00",
+                    NOW.isoformat(),
+                ),
+            ).lastrowid
+        )
+        episode_id = int(
+            connection.execute(
+                """INSERT INTO printer_episodes(
+                       memory_window_id,token_id,pair_id,episode_kind,
+                       episode_status,memory_status,data_quality_label,
+                       window_kind,episode_outcome_label,memory_quality_label,
+                       action_lesson_label,do_not_train
+                   ) VALUES (?,?,?,'WINDOW_4H_CLEAN_MEMORY','EPISODE_BUILT',
+                       'CLEAN_MEMORY','CLEAN_DATA','WINDOW_4H','SUSTAINED_PUMP',
+                       'CLEAN_MEMORY','ACTION_WAIT_FAILED',0)""",
+                (window_id, token_id, pair_id),
+            ).lastrowid
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    record_memory_fingerprint(
+        db_path,
+        episode_id,
+        {
+            "episode_id": episode_id,
+            "window_id": window_id,
+            "window_kind": "WINDOW_4H",
+            "outcome_label": "SUSTAINED_PUMP",
+            "market_regime_label": "RISK_ON",
+            "chain_heat_label": "SOLANA_HOT",
+            "safety_status_label": "SAFETY_CLEAN",
+            "liquidity_state_label": "LIQUIDITY_USABLE",
+            "exit_realism_label": "EXIT_REALISTIC",
+            "flow_direction_label": "FLOW_ACCUMULATION",
+            "flow_pressure_label": "PRESSURE_STRONG_INFLOW",
+            "trend_structure_label": "TREND_UP",
+            "volatility_label": "VOLATILITY_ELEVATED",
+            "candle_path_label": "PATH_STEADY_CLIMB",
+            "micro_event_state_label": "TRADABLE_MICRO_PUMP",
+            "source_status": "COMPLETE",
+            "data_quality_label": "CLEAN_DATA",
+        },
+        "CLEAN_MEMORY",
+    )
+
+    query_payload = {
+        "query_type": "CURRENT_SETUP_QUERY",
+        "token_id": token_id,
+        "pair_id": pair_id,
+        "context": {
+            "window_kind": "WINDOW_4H",
+            "outcome_label": "SUSTAINED_PUMP",
+            "market_regime_label": "RISK_ON",
+            "chain_heat_label": "SOLANA_HOT",
+            "safety_status_label": "SAFETY_CLEAN",
+            "liquidity_state_label": "LIQUIDITY_USABLE",
+            "exit_realism_label": "EXIT_REALISTIC",
+            "flow_direction_label": "FLOW_ACCUMULATION",
+            "flow_pressure_label": "PRESSURE_STRONG_INFLOW",
+            "trend_structure_label": "TREND_UP",
+            "volatility_label": "VOLATILITY_ELEVATED",
+            "candle_path_label": "PATH_STEADY_CLIMB",
+            "micro_event_state_label": "TRADABLE_MICRO_PUMP",
+            "source_status": "COMPLETE",
+            "data_quality_label": "CLEAN_DATA",
+        },
+    }
+    matches = retrieve_memory_matches_for_current_setup(db_path, query_payload)
+    assert len(matches) == 1
+    assert int(matches[0]["episode_id"]) == episode_id
+    assert matches[0]["window_kind"] == "WINDOW_4H"
+    assert matches[0]["included_as_clean_evidence"] is True
+
+    with pytest.raises(CapabilityLockedError) as exc:
+        build_and_record_memory_retrieval_report(db_path, query_payload, NOW)
+    _assert_locked(exc, "RETRIEVAL_ACTIVATION_LOCKED")
+
+    with pytest.raises(CapabilityLockedError) as exc:
+        build_decision_payload(
+            {
+                "token_id": token_id,
+                "pair_id": pair_id,
+                "retrieval_result_label": "RETRIEVAL_HAS_CLEAN_MATCHES",
+                "memory_evidence_label": "MEMORY_EVIDENCE_STRONG",
+            }
+        )
+    _assert_locked(exc, "PAPER_DECISIONS_LOCKED")
+
+    assert _count(db_path, "printer_memory_retrieval_queries") == 0
+    assert _count(db_path, "printer_memory_retrieval_matches") == 0
+    assert _count(db_path, "printer_paper_decisions") == 0
+    assert _count(db_path, "printer_paper_decision_audits") == 0
+    assert _count(db_path, "printer_scheduler_jobs") == 0
 
 
 def test_read_only_memory_and_decision_inspection_remain_available(db_path) -> None:
