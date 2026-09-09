@@ -504,7 +504,60 @@ def test_two_cycle_four_token_real_factory_reaches_shared_terminal_standard4h(
                 "lease_released": cleanup.get("lease_released") is True,
             }
 
+        def admitted_cycle_one_discovery(_args):
+            return {
+                "selection_handoff_report": {
+                    "batch_id": cycle_one_batch_ids[0],
+                    "selection_seed": cycle_one_seed,
+                    "eligible_pool_size": 2,
+                },
+                "discovery_results": [],
+            }
+
+        cycle_one_pool_by_mint = dict(
+            zip(cycle_one_mints, cycle_one_pools, strict=True)
+        )
+
+        def admitted_snapshot_adapter(*, token_mint, timeout_seconds):
+            pool = cycle_one_pool_by_mint.get(str(token_mint))
+            if pool is None:
+                return _factory_loop_snapshot_adapter(
+                    token_mint=token_mint,
+                    timeout_seconds=timeout_seconds,
+                )
+            return build_fixture_source_adapter(
+                "dexscreener",
+                fixture_payload={
+                    "pairs": [
+                        {
+                            "chain": "solana",
+                            "token_mint": str(token_mint),
+                            "pair_address": pool,
+                            "price_usd": 1.0,
+                            "liquidity_usd": 10_000.0,
+                            "volume_5m": 500.0,
+                            "volume_1h": 2_000.0,
+                            "volume_24h": 10_000.0,
+                            "txns_5m": 10,
+                            "txns_1h": 50,
+                            "txns_24h": 500,
+                            "buys_5m": 7,
+                            "sells_5m": 3,
+                            "buys_1h": 30,
+                            "sells_1h": 20,
+                            "buys_24h": 280,
+                            "sells_24h": 220,
+                            "price_change_5m": 1.0,
+                            "price_change_1h": 2.0,
+                            "price_change_24h": 3.0,
+                        }
+                    ]
+                },
+            )
+
         return {
+            "discovery_runner": admitted_cycle_one_discovery,
+            "snapshot_adapter_factory": admitted_snapshot_adapter,
             "four_token_proof_controller": FourTokenProofController.exact(),
             "later_cycle_discovery_callback": later_callback,
             "later_cycle_acquisition_quantum_seconds": (
@@ -530,7 +583,7 @@ def test_two_cycle_four_token_real_factory_reaches_shared_terminal_standard4h(
             operational_binding="VALID",
             disposable_binding=None,
             four_token_setup=four_token_setup,
-            cycle_one_tracking_lanes=("TRACK_FAST", "TRACK_NORMAL"),
+            pre_admit_cycle_one=False,
         )
     except Exception as exc:
         latest = aggregate_observations[-1] if aggregate_observations else {}
