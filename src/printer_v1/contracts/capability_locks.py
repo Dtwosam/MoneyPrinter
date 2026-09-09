@@ -80,6 +80,11 @@ def require_paper_pnl_enabled() -> None:
         raise CapabilityLockedError("PAPER_PNL_LOCKED")
 
 
+def require_paper_monitoring_enabled() -> None:
+    require_paper_positions_enabled()
+    require_paper_pnl_enabled()
+
+
 def require_scheduler_target_enabled(target_table: str | None) -> None:
     target = "" if target_table is None else str(target_table)
     if target in RETRIEVAL_TARGET_TABLES:
@@ -100,5 +105,9 @@ def require_scheduler_enqueue_enabled(
 
     require_scheduler_target_enabled(target_table)
     kind = str(getattr(job_kind, "value", job_kind))
-    if kind == OPEN_PAPER_TRADE_MONITOR_JOB_KIND:
-        require_paper_positions_enabled()
+    target = "" if target_table is None else str(target_table)
+    if (
+        kind == OPEN_PAPER_TRADE_MONITOR_JOB_KIND
+        and target not in PAPER_AUDIT_TARGET_TABLES
+    ):
+        require_paper_monitoring_enabled()
