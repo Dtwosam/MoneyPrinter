@@ -109,12 +109,14 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 SRC_PATH = PROJECT_ROOT / "src"
 sys.path.insert(0, str(SRC_PATH))
 
 from printer_v1.db import apply_migrations
+from printer_v1.operator_cli import e2w_5m_linkage_report as e2w_report
 from printer_v1.operator_cli.e2w_5m_linkage_report import (
     E2W_COMMAND_NAME,
     E2W_PARENT_KIND,
@@ -878,6 +880,31 @@ class LaneE2WProofFlagTests(_DbBase):
 # ---------------------------------------------------------------------------
 
 class LaneE2WReadOnlyTests(_DbBase):
+    def test_read_only_connection_enforces_query_only(self):
+        conn = e2w_report._connect_ro(self.db_path)
+        try:
+            self.assertEqual(conn.execute("PRAGMA query_only").fetchone()[0], 1)
+            with self.assertRaises(sqlite3.OperationalError):
+                conn.execute(
+                    "INSERT INTO printer_tokens (token_mint, chain) VALUES ('blocked', 'solana')"
+                )
+        finally:
+            conn.close()
+        self.assertEqual(self._count("printer_tokens"), 0)
+
+    def test_read_only_open_failure_never_falls_back_to_writable_connect(self):
+        with mock.patch.object(
+            e2w_report.sqlite3,
+            "connect",
+            side_effect=sqlite3.OperationalError("read-only open failed"),
+        ) as connect_mock:
+            with self.assertRaisesRegex(sqlite3.OperationalError, "read-only open failed"):
+                e2w_report._connect_ro(self.db_path)
+        self.assertEqual(connect_mock.call_count, 1)
+        args, kwargs = connect_mock.call_args
+        self.assertIn("mode=ro", args[0])
+        self.assertTrue(kwargs.get("uri"))
+
     def test_zero_delta_empty_db(self):
         r = self._run()
         self.assertEqual(r["read_only_delta_violations"], [])
