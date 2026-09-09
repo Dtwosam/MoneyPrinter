@@ -8,6 +8,11 @@ import json
 import sqlite3
 from typing import Any, Mapping
 
+from printer_v1.contracts.capability_locks import (
+    require_paper_audits_enabled,
+    require_paper_pnl_enabled,
+    require_paper_positions_enabled,
+)
 from printer_v1.contracts.enums import DataQualityLabel, SourceStatus
 from printer_v1.paper_monitor.contracts import (
     PaperEntryStatusLabel,
@@ -43,6 +48,8 @@ def connect(db_or_connection: str | Path | sqlite3.Connection) -> Iterator[sqlit
 
 
 def record_paper_position(db_path_or_conn: str | Path | sqlite3.Connection, position_payload: Mapping[str, Any]) -> int:
+    require_paper_positions_enabled()
+    require_paper_pnl_enabled()
     with connect(db_path_or_conn) as connection:
         existing = connection.execute(
             """
@@ -99,6 +106,8 @@ def record_paper_position(db_path_or_conn: str | Path | sqlite3.Connection, posi
 
 
 def record_paper_trade_event(db_path_or_conn: str | Path | sqlite3.Connection, event_payload: Mapping[str, Any]) -> int:
+    require_paper_positions_enabled()
+    require_paper_pnl_enabled()
     with connect(db_path_or_conn) as connection:
         cursor = connection.execute(
             """
@@ -130,6 +139,8 @@ def record_paper_trade_event(db_path_or_conn: str | Path | sqlite3.Connection, e
 
 
 def record_paper_trade_audit(db_path_or_conn: str | Path | sqlite3.Connection, audit_payload: Mapping[str, Any]) -> int:
+    require_paper_audits_enabled()
+    require_paper_pnl_enabled()
     with connect(db_path_or_conn) as connection:
         cursor = connection.execute(
             """
@@ -159,6 +170,8 @@ def open_paper_position_from_decision(
     paper_decision_id: int,
     now: datetime | None = None,
 ) -> tuple[int | None, dict[str, Any]]:
+    require_paper_positions_enabled()
+    require_paper_pnl_enabled()
     evidence = collect_paper_entry_evidence(db_path_or_conn, paper_decision_id)
     decision = evidence.get("paper_decision")
     if not decision:
@@ -196,6 +209,8 @@ def monitor_paper_position(
     paper_position_id: int,
     target_time: str | None = None,
 ) -> dict[str, Any]:
+    require_paper_positions_enabled()
+    require_paper_pnl_enabled()
     update = build_monitor_update(db_path_or_conn, paper_position_id, target_time)
     with connect(db_path_or_conn) as connection:
         row = connection.execute("SELECT * FROM printer_paper_positions WHERE id = ?", (paper_position_id,)).fetchone()
@@ -252,6 +267,8 @@ def close_paper_position(
     exit_payload: Mapping[str, Any],
     now: datetime | None = None,
 ) -> dict[str, Any]:
+    require_paper_positions_enabled()
+    require_paper_pnl_enabled()
     current_time = now or utc_now()
     with connect(db_path_or_conn) as connection:
         row = connection.execute("SELECT * FROM printer_paper_positions WHERE id = ?", (paper_position_id,)).fetchone()
@@ -310,6 +327,8 @@ def close_paper_position(
 
 
 def close_from_monitor_update(db_path_or_conn: str | Path | sqlite3.Connection, paper_position_id: int, now: datetime | None = None) -> dict[str, Any]:
+    require_paper_positions_enabled()
+    require_paper_pnl_enabled()
     with connect(db_path_or_conn) as connection:
         row = connection.execute("SELECT * FROM printer_paper_positions WHERE id = ?", (paper_position_id,)).fetchone()
         position = dict(row) if row else {}
@@ -353,6 +372,8 @@ def enqueue_paper_monitor_job(
     scheduled_for: datetime,
     reason: str | None = None,
 ) -> tuple[LockResult, int | None]:
+    require_paper_positions_enabled()
+    require_paper_pnl_enabled()
     suffix = reason or "scheduled"
     return enqueue_job(
         db_path_or_conn,
