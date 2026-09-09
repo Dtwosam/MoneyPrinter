@@ -8,6 +8,7 @@ import json
 import sqlite3
 from typing import Any, Mapping
 
+from printer_v1.contracts.capability_locks import require_retrieval_activation_enabled
 from printer_v1.contracts.enums import DataQualityLabel, SourceStatus
 from printer_v1.memory_retrieval.contracts import MemoryEvidenceLabel, RetrievalQueryTypeLabel, RetrievalResultLabel
 from printer_v1.memory_retrieval.fingerprint_builder import build_current_setup_fingerprint
@@ -46,6 +47,7 @@ def record_memory_retrieval_query(
     query_payload: Mapping[str, Any],
     result_payload: Mapping[str, Any],
 ) -> int:
+    require_retrieval_activation_enabled()
     query = normalize_retrieval_query_payload(query_payload)
     fingerprint = result_payload.get("current_fingerprint") or build_current_setup_fingerprint(query)
     with connect(db_path_or_conn) as connection:
@@ -77,6 +79,7 @@ def record_memory_retrieval_query(
 
 
 def record_memory_retrieval_matches(db_path_or_conn: str | Path | sqlite3.Connection, retrieval_query_id: int, matches: list[Mapping[str, Any]]) -> None:
+    require_retrieval_activation_enabled()
     with connect(db_path_or_conn) as connection:
         for match in matches:
             connection.execute(
@@ -116,6 +119,7 @@ def build_and_record_memory_retrieval_report(
     query_payload: Mapping[str, Any],
     now: datetime | None = None,
 ) -> tuple[int, dict[str, Any]]:
+    require_retrieval_activation_enabled()
     del now
     matches = retrieve_memory_matches_for_current_setup(db_path_or_conn, query_payload)
     result = {
@@ -136,6 +140,7 @@ def enqueue_memory_retrieval_job(
     scheduled_for: datetime,
     reason: str | None = None,
 ) -> tuple[LockResult, int | None]:
+    require_retrieval_activation_enabled()
     suffix = reason or "scheduled"
     return enqueue_job(
         db_path_or_conn,
