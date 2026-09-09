@@ -61,6 +61,7 @@ PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 SRC_PATH = PROJECT_ROOT / "src"
 sys.path.insert(0, str(SRC_PATH))
 
+from printer_v1.contracts import capability_locks
 from printer_v1.db import apply_migrations
 from printer_v1.operator_cli.commands import (
     build_conservative_paper_decision_payload,
@@ -75,6 +76,14 @@ def count_rows(conn: sqlite3.Connection, table: str) -> int:
 class Lane8BConservativePaperDecisionTests(unittest.TestCase):
 
     def setUp(self) -> None:
+        previous = capability_locks.PAPER_DECISIONS_ENABLED
+        capability_locks.PAPER_DECISIONS_ENABLED = True
+        self.addCleanup(
+            setattr,
+            capability_locks,
+            "PAPER_DECISIONS_ENABLED",
+            previous,
+        )
         self.tempdir = tempfile.TemporaryDirectory()
         self.db_path = pathlib.Path(self.tempdir.name) / "lane8b.sqlite3"
         apply_migrations(self.db_path)
