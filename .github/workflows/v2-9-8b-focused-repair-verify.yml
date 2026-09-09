@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - assistant/v2-9-8b-later-cycle-mint-market-replay-repair
+      - assistant/v2-9-8b-cycle1-cycle2-four-hour-admission-proof
   workflow_dispatch:
 
 permissions:
@@ -62,6 +63,8 @@ jobs:
             tests/test_v2_9_8b_window_15m_checkpoint8_owner_invocation_wiring.py \
             tests/test_v2_9_8b_discovery_selection_full_system_consolidation.py \
             tests/test_v2_9_7e_8_origin_to_lifecycle_integration.py \
+            tests/test_v2_9_7d_7b_4d_1_atomic_two_slot_handoff.py \
+            tests/test_v2_9_7d_7b_4d_combined_discovery_executor.py \
             tests/test_v2_9_8b_operational_selective_1h.py \
             tests/test_v2_9_8b_first_hour_safety_provenance_repair.py \
             tests/test_post_dtw100_first_hour_lifecycle_policy.py \
