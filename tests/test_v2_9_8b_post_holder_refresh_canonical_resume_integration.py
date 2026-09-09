@@ -658,8 +658,8 @@ def test_post_holder_resumed_budget_exhaustion_preserves_terminal_and_certificat
                     source_operations=1,
                     source_request_ids=(request_id,),
                     source_request_coverage=(coverage,),
-                    reserve_depth_before=2,
-                    reserve_depth_after=2,
+                    reserve_depth_before=1,
+                    reserve_depth_after=1,
                 )
 
         refresh_owner = RefreshOwner()
@@ -678,8 +678,8 @@ def test_post_holder_resumed_budget_exhaustion_preserves_terminal_and_certificat
                     frozen_at=str(kwargs["at"]),
                     selection_authority={
                         "coverage_blocker": True,
-                        "valid_fresh_unique_observation_depth": 2,
-                        "observation_eligible_count": 2,
+                        "valid_fresh_unique_observation_depth": 1,
+                        "observation_eligible_count": 1,
                     },
                 )
             return FrozenEligibleReserve(
