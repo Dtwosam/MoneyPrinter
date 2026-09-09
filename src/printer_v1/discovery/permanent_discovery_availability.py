@@ -2233,13 +2233,19 @@ def run_dexscreener_batch_market_resolution(
                         report["state_transition_ids"].append(
                             upsert_state(historical_pool, state, evidence.reason)
                         )
-                        record_market_floor_state(
-                            connection,
-                            mint=mint,
-                            pool=historical_pool,
-                            liquidity=evidence,
-                            now=now,
-                        )
+                        if pumpswap_identity:
+                            # This durable cooldown table is a child of the
+                            # immutable PumpSwap-graduated registry. Generic
+                            # present-pool identities have no lawful parent row;
+                            # their current liquidity truth remains in the exact
+                            # market state/reserve layers instead.
+                            record_market_floor_state(
+                                connection,
+                                mint=mint,
+                                pool=historical_pool,
+                                liquidity=evidence,
+                                now=now,
+                            )
                         cooldown_ok, cooldown_reason = _cooldown_ok(
                             connection, mint, historical_pool, 1
                         )
