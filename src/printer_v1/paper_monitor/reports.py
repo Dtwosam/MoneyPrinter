@@ -2,8 +2,14 @@
 
 from typing import Any, Mapping
 
+from printer_v1.contracts.capability_locks import (
+    require_paper_pnl_enabled,
+    require_paper_positions_enabled,
+)
+
 
 def summarize_paper_pnl(position_payload: Mapping[str, Any]) -> dict[str, Any]:
+    require_paper_pnl_enabled()
     return {
         "unrealized_pnl_usd": position_payload.get("unrealized_pnl_usd"),
         "unrealized_pnl_percent": position_payload.get("unrealized_pnl_percent"),
@@ -14,6 +20,7 @@ def summarize_paper_pnl(position_payload: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def build_paper_position_report(position_payload: Mapping[str, Any]) -> dict[str, Any]:
+    require_paper_positions_enabled()
     return {
         "mode": "paper_only",
         "paper_position_id": position_payload.get("id"),
@@ -26,6 +33,7 @@ def build_paper_position_report(position_payload: Mapping[str, Any]) -> dict[str
 
 
 def build_paper_monitor_update_report(position_payload: Mapping[str, Any], monitor_payload: Mapping[str, Any]) -> dict[str, Any]:
+    require_paper_positions_enabled()
     return {
         "mode": "paper_only",
         "paper_position_id": position_payload.get("id"),
@@ -38,6 +46,7 @@ def build_paper_monitor_update_report(position_payload: Mapping[str, Any], monit
 
 
 def build_paper_close_report(position_payload: Mapping[str, Any], exit_payload: Mapping[str, Any]) -> dict[str, Any]:
+    require_paper_positions_enabled()
     return {
         "mode": "paper_only",
         "paper_position_id": position_payload.get("id"),
