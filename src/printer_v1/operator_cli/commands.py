@@ -9342,6 +9342,16 @@ _LANE7_EXCLUDED_DATA_QUALITY_MISSING = "MISSING_CRITICAL_DATA"
 _LANE7_EXCLUDED_WINDOW_KIND_5M = "WINDOW_5M_MICRO_EVENT"
 
 
+def _open_report_read_only_connection(db_path: str | Path) -> sqlite3.Connection:
+    """Open a report/review DB connection that cannot mutate the database."""
+
+    resolved = Path(db_path).resolve(strict=True)
+    connection = sqlite3.connect(resolved.as_uri() + "?mode=ro", uri=True)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA query_only=ON")
+    return connection
+
+
 def _validate_clean_memory_retrieval_report_args(args: argparse.Namespace) -> None:
     if not args.operator_approved:
         raise ValueError("clean memory retrieval report requires explicit operator approval")
@@ -9469,9 +9479,7 @@ def build_clean_memory_retrieval_report_once_payload(args: argparse.Namespace) -
         raise FileNotFoundError(f"Operator DB does not exist: {resolved}")
 
     before_counts = get_core_table_counts(resolved, project_root)
-    connection = sqlite3.connect(resolved)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA foreign_keys = ON")
+    connection = _open_report_read_only_connection(resolved)
     try:
         scan = _scan_memory_windows_for_retrieval_eligibility(connection)
         paper_decision_count = int(
@@ -9746,9 +9754,7 @@ def build_wait_avoid_no_action_readiness_payload(
         raise FileNotFoundError(f"Operator DB does not exist: {resolved}")
 
     before_counts = get_core_table_counts(resolved, project_root)
-    connection = sqlite3.connect(resolved)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA foreign_keys = ON")
+    connection = _open_report_read_only_connection(resolved)
     try:
         scan = _scan_memory_windows_for_retrieval_eligibility(connection)
         paper_decision_count = int(
@@ -10494,9 +10500,7 @@ def build_conservative_paper_decision_audit_review_payload(
 
     before_counts = get_core_table_counts(resolved, project_root)
 
-    connection = sqlite3.connect(resolved)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA foreign_keys = ON")
+    connection = _open_report_read_only_connection(resolved)
     decision: dict[str, Any] | None = None
     decision_action: str | None = None
     memory_window_id: int | None = None
