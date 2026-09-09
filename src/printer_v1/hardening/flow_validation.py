@@ -8,6 +8,10 @@ from pathlib import Path
 import sqlite3
 from typing import Any
 
+from printer_v1.contracts.capability_locks import (
+    require_paper_decisions_enabled,
+    require_retrieval_activation_enabled,
+)
 from printer_v1.db import apply_migrations
 from printer_v1.hardening.contracts import (
     SyntheticFlowStageLabel,
@@ -339,6 +343,7 @@ def run_synthetic_memory_build(db_path_or_conn: str | Path | sqlite3.Connection)
 
 
 def run_synthetic_memory_retrieval(db_path_or_conn: str | Path | sqlite3.Connection) -> dict[str, Any]:
+    require_retrieval_activation_enabled()
     connection, should_close = _connect(db_path_or_conn)
     try:
         episode = connection.execute("SELECT * FROM printer_episodes WHERE memory_quality_label = 'CLEAN_MEMORY' LIMIT 1").fetchone()
@@ -389,6 +394,7 @@ def run_synthetic_memory_retrieval(db_path_or_conn: str | Path | sqlite3.Connect
 
 
 def run_synthetic_paper_decision(db_path_or_conn: str | Path | sqlite3.Connection) -> dict[str, Any]:
+    require_paper_decisions_enabled()
     connection, should_close = _connect(db_path_or_conn)
     try:
         clean_match = connection.execute(
