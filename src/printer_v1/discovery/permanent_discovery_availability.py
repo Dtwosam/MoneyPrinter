@@ -1598,6 +1598,17 @@ def run_dexscreener_batch_market_resolution(
     ):
         mint = str(row.get("mint_identity") or "")
         pool = str(row.get("pumpswap_pool") or "")
+        if bool(row.get("protocol_confirmed")):
+            protocol_identity = (
+                row.get("token_program") or row.get("token_program_id"),
+                row.get("pool_program") or row.get("pool_program_id"),
+                row.get("base_mint"),
+                row.get("quote_mint"),
+                row.get("venue"),
+                row.get("protocol_request_id"),
+            )
+            if not all(str(value or "").strip() for value in protocol_identity):
+                raise ValueError("PROTOCOL_RESUME_IDENTITY_OR_PROVENANCE_INCOMPLETE")
         prior = connection.execute(
             """SELECT * FROM printer_exact_market_states
                WHERE network=? AND mint_identity=? AND pool_address=?""",
@@ -2286,6 +2297,84 @@ def run_dexscreener_batch_market_resolution(
                     campaign_id=campaign_id,
                 )
                 report["market_ready_count"] += 1
+                if bool(row.get("protocol_confirmed")):
+                    market_response_id = (
+                        None
+                        if execution.response_record is None
+                        else int(execution.response_record.id)
+                    )
+                    liquidity_payload = dict(evidence.to_dict())
+                    liquidity_payload["base_mint"] = base_mint
+                    liquidity_payload["quote_mint"] = quote_mint
+                    liquidity_payload["liquidity_observed_at"] = (
+                        resolve_source_derived_liquidity_observed_at(
+                            connection,
+                            candidate_observed_at=now,
+                            fallback_now=now,
+                            source_response_id=market_response_id,
+                            source_request_id=int(execution.request_record.id),
+                            source_name=DEXSCREENER_SOURCE_NAME,
+                            mint_identity=mint,
+                            pair_identity=historical_pool,
+                        )
+                    )
+                    promotion_provenance = {
+                        "stage": "protocol_resume_market_promotion",
+                        "campaign_id": campaign_id,
+                        "protocol_request_id": int(row["protocol_request_id"]),
+                        "market_request_id": int(execution.request_record.id),
+                        "market_response_id": market_response_id,
+                        "promotion_path": (
+                            "PROTOCOL_CONFIRMED_FRESH_MARKET_REVALIDATION"
+                        ),
+                        "base_mint": base_mint,
+                        "quote_mint": quote_mint,
+                        "venue": venue,
+                        "pool": historical_pool,
+                        "source": DEXSCREENER_SOURCE_NAME,
+                        "request_id": int(execution.request_record.id),
+                        "response_id": market_response_id,
+                    }
+                    upsert_reserve_layer(
+                        connection,
+                        network=NETWORK,
+                        mint=mint,
+                        pool=historical_pool,
+                        layer=MEMORY_OBSERVATION_ELIGIBLE,
+                        reserve_state="ACTIVE",
+                        reason=(
+                            "IDENTITY_POOL_LIQUIDITY_MEMORY_OBSERVATION_PASS"
+                        ),
+                        observed_at=now,
+                        next_lawful_action_at=None,
+                        evidence_expires_at=due_boundary,
+                        source_provenance=promotion_provenance,
+                        evidence={
+                            "liquidity": liquidity_payload,
+                            "base_mint": base_mint,
+                            "quote_mint": quote_mint,
+                            "venue": venue,
+                            "pool": historical_pool,
+                            "token_program": token_program,
+                            "pool_program": pool_program,
+                            "market_evidence_contract_version": (
+                                "DEXSCREENER_TOKENS_V1_2026_08_04"
+                            ),
+                            "memory_observation_eligible": True,
+                            "future_action_eligibility": "BLOCKED_OR_UNKNOWN",
+                            "holder_condition": "UNKNOWN",
+                            "holder_evidence_status": "NOT_YET_ENRICHED",
+                        },
+                        campaign_id=campaign_id,
+                    )
+                    candidate.update(
+                        {
+                            "memory_observation_eligible": True,
+                            "future_action_eligibility": "BLOCKED_OR_UNKNOWN",
+                            "admission_authority": "MARKET_PRESENT_POOL",
+                            "exact_present_pool_confirmed": True,
+                        }
+                    )
         connection.commit()
 
     ordered_mints = sorted(
