@@ -622,6 +622,14 @@ def test_protocol_resume_uses_canonical_default_dex_transport_and_preserves_gene
             == 1
         )
         assert load_protocol_resume_market_due(check) == []
+        assert (
+            check.execute(
+                "SELECT COUNT(*) FROM printer_graduated_market_floor_state "
+                "WHERE mint_identity=?",
+                (MINT,),
+            ).fetchone()[0]
+            == 0
+        )
     finally:
         check.close()
 
@@ -703,6 +711,12 @@ def test_protocol_resume_charges_exact_two_batches_and_leaves_overflow_durable(
             ).fetchone()[0]
         )
         assert moe_count == 60
+        assert (
+            check.execute(
+                "SELECT COUNT(*) FROM printer_graduated_market_floor_state"
+            ).fetchone()[0]
+            == 0
+        )
     finally:
         check.close()
 
