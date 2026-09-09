@@ -362,6 +362,25 @@ def test_paper_monitoring_lane_and_snapshot_activation_are_unreachable(db_path) 
     due = get_due_tracking_items(db_path, now=NOW)
     assert [row["tracking_lane"] for row in due] == [TokenLifecycleState.TRACK_FAST.value]
 
+    connection = sqlite3.connect(db_path)
+    try:
+        connection.execute(
+            "UPDATE printer_tracking_queue SET tracking_lane='PAPER_MONITORING' WHERE id=?",
+            (queue_id,),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    with pytest.raises(CapabilityLockedError) as exc:
+        sync_tracking_state_with_scheduler(
+            db_path,
+            queue_id=queue_id,
+            scheduled_for=NOW,
+        )
+    _assert_locked(exc, "PAPER_POSITIONS_LOCKED")
+    assert _count(db_path, "printer_scheduler_jobs") == 0
+
 
 def test_central_scheduler_cannot_bypass_paper_financial_locks(db_path) -> None:
     acquired, ordinary_job_id = scheduler.enqueue_job(
