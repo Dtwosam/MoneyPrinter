@@ -214,6 +214,7 @@ def test_two_cycle_four_token_real_factory_reaches_shared_terminal_standard4h(
         LaterCycleSourceEvidence,
     )
     from printer_v1.operator_cli.origin_lifecycle_campaign import (
+        _read_activated_slots,
         materialize_origin_activated_batch,
     )
     from printer_v1.operator_cli.unified_terminal_closure import (
@@ -368,13 +369,15 @@ def test_two_cycle_four_token_real_factory_reaches_shared_terminal_standard4h(
             central_scheduler=SCHEDULER,
         )
         assert activation.terminal_status == "COMPLETED", activation
-        assert len(activation.activated_slots) == 2, activation
-        cycle_one_activation_slots.extend(
-            dict(slot) for slot in activation.activated_slots
-        )
 
         connection = sqlite3.connect(db)
+        connection.row_factory = sqlite3.Row
         try:
+            committed_cycle_one_slots = _read_activated_slots(
+                connection, CYCLE_ID
+            )
+            assert len(committed_cycle_one_slots) == 2, committed_cycle_one_slots
+            cycle_one_activation_slots.extend(committed_cycle_one_slots)
             batch_id = materialize_origin_activated_batch(
                 connection,
                 cycle_id=CYCLE_ID,
