@@ -2,20 +2,23 @@
 
 ## Current verified implementation
 
-Branch: `assistant/v2-9-8b-paper-position-audit-lockout-audit`.
+Branch: `assistant/v2-9-8b-operator-review-readonly-lockout-audit`.
 
 Latest fully verified code/test HEAD before this handoff-only update:
-`d6a8839d5b18d15b586e9b9dc108d9a06e8e9e92`.
+`58adc67614c3af4c0ce4df3f16ab8117abdf7c31`.
 
-GitHub Actions run `34401666253`, job `102634783052`, is green on that HEAD:
+GitHub Actions run `34411148811`, job `102665605816`, is green on that HEAD:
 
-- focused post-holder/reconciliation boundary: **29 passed**;
-- clean-memory consumer lockout boundary: **27 passed**;
-- paper position/monitor/audit/PnL lockout boundary: **46 passed**;
-- shared discovery/admission/two-cycle Standard-4H boundary:
-  **399 passed, 2 deselected, 32 subtests passed**;
-- affected-module compile: passed;
+- focused reporting/operator-review boundary:
+  **526 passed, 3 subtests passed** in 415.43s;
+- affected report-module compile: passed;
 - diff whitespace check: passed.
+
+The previous broad downstream/lifecycle verification remains green on
+`d6a8839d5b18d15b586e9b9dc108d9a06e8e9e92` via run
+`34401666253`: 29 focused + 27 clean-memory consumer + 46 paper-financial +
+399 shared, 2 deselected, 32 subtests, plus compile and diff checks. This
+reporting-only lane did not re-run that unrelated shared lifecycle suite.
 
 ## Current capability
 
@@ -24,14 +27,7 @@ the sole governed source-request owner and Central Scheduler is the sole
 Scheduler owner. `WINDOW_5M_MICRO_EVENT` is support-only; `WINDOW_12H` and
 `WINDOW_24H` remain locked.
 
-The earlier discovery/admission/lifecycle work remains green: exact-two Cycle-1
-admission, generic non-Pump present-pool verification and protocol->market
-resume, atomic and campaign-disjoint Cycle-2 admission, and exact four-target
-two-cycle progression through 15m -> 1h -> 4h with clean-memory promotion
-quality-gated to exact physical window identity.
-
-Current downstream capability sequencing is now code-enforced, not merely
-unreached by the memory factory:
+Current capability locks remain false:
 
 - `RETRIEVAL_ACTIVATION_ENABLED = False`;
 - `PAPER_DECISIONS_ENABLED = False`;
@@ -39,58 +35,77 @@ unreached by the memory factory:
 - `PAPER_AUDITS_ENABLED = False`;
 - `PAPER_PNL_ENABLED = False`.
 
-The verified locks cover:
+The verified discovery -> two-cycle 15m/1h/4h -> clean-memory path and the
+clean-memory/downstream lockout repairs remain unchanged.
 
-- clean memory may be inspected read-only, but cannot persist retrieval queries
-  or matches while retrieval activation is locked;
-- paper-decision recorders and direct action/status helpers cannot emit or
-  persist BUY/SELL/HOLD/WAIT/AVOID/NO_ACTION decision authority while locked;
-- paper position entry, sizing, monitoring, exit decisions, trade-event output,
-  position mutation, and monitor Scheduler enqueue are locked;
-- realized/unrealized PnL calculations, PnL-state output, and PnL reporting are
-  locked;
-- paper audit classification/report output, persistence, trade-audit writes,
-  and audit Scheduler enqueue are locked;
-- Central Scheduler rejects locked downstream target tables and rejects
-  `OPEN_PAPER_TRADE_MONITOR` activation outside the separately locked audit
-  target;
-- `PAPER_MONITORING` cannot be claimed or updated into the tracking queue,
-  durably recorded as a new lifecycle state, scheduled from a historical queue
-  row, or used to write/schedule paper-monitoring snapshots while positions/PnL
-  remain locked;
-- a historical `PAPER_MONITORING` queue row cannot be reactivated to
-  QUEUED/ACTIVE/PAUSED while locked, but can still be archived or otherwise
-  retired safely;
-- synthetic hardening shortcuts cannot bypass the retrieval, decision,
-  position/monitor, audit, or PnL locks;
-- read-only retrieval/history, stored position/audit inspection, and
-  paper-only/no-live-execution validators remain available.
+The reporting/operator-review boundary is now explicitly fail-closed:
 
-Historical Phase 4/15/16/17/18/20 tests explicitly enable their future
-subsystems only inside disposable test setup and restore the default locks
-afterward. This preserves testability of implemented future engines without
-granting current runtime authority.
+- E2U 15m closeout and E2W 5m linkage readers no longer fall back from
+  `mode=ro` to an ordinary writable SQLite connection;
+- E2U and E2W require an existing DB, open with `mode=ro`, enable
+  `PRAGMA query_only=ON`, and propagate read-only-open failure;
+- post-RC Lane 7 clean-memory retrieval reporting, Lane 8A conservative-action
+  readiness review, and Lane 8C conservative-decision audit review share a
+  strict read-only opener with the same `mode=ro` + `query_only` contract;
+- Lane V clean-memory retrieval reporting is likewise physically read-only;
+- those report/review functions contain no write SQL and do not call retrieval,
+  decision, position, monitor, audit, or PnL producer APIs;
+- Lane 7 explicitly reports current retrieval activation as disabled/locked;
+- Lane 8A and Lane 8C explicitly report current paper-decision creation as
+  disabled/locked;
+- Lane 8A may still report that clean memory is suitable for *review*, but while
+  `PAPER_DECISIONS_ENABLED` is false it can no longer recommend proceeding to
+  Lane 8B decision creation. Its next step is the separate deliberate
+  capability-change requirement;
+- legacy fields such as `retrieval_eligible` and
+  `memory_window_retrieval_eligible` remain evidence/review classifications
+  only. Targeted search found no production consumer using them as activation
+  authority;
+- dedicated `operator_review` report persistence remains intentional and is
+  limited to `printer_operator_review_*` tables. Its evidence/summarization
+  reads do not mutate retrieval/paper/lifecycle tables;
+- operator DB historical state labels are descriptive status outputs. Targeted
+  search found no production consumer treating those state constants as
+  permission to activate a locked subsystem.
 
 ## Latest meaningful result
 
-The downstream paper engines were implemented and directly callable even though
-current V2-9.8B authority keeps them locked. The repair moved capability
-sequencing to the consumer boundaries themselves and to Central Scheduler, then
-closed two lifecycle bypasses that table-only locking would miss:
+The audit found two concrete reporting defects and one semantic authorization
+defect.
 
-1. `PAPER_MONITORING` work could be selected by job kind against an unrelated
-   Scheduler target; Scheduler enqueue is now job-kind-aware.
-2. A historical `PAPER_MONITORING` tracking row could be reactivated by
-   changing only its queue status; live ownership reactivation is now rejected
-   while archival/cleanup remains possible.
+1. E2U and E2W claimed to be read-only but caught any read-only-open failure and
+   silently reopened SQLite writable.
+2. Lane V and the post-RC Lane 7/8A/8C report/review functions also claimed
+   report-only behavior while opening ordinary writable SQLite connections.
+3. Lane 8A could synthesize the operator recommendation
+   `operator_may_proceed_to_lane8b_conservative_decision_creation` solely from
+   clean-memory review readiness even though the real paper-decision capability
+   lock remained false.
 
-The focused regression proves those paths fail before mutation while ordinary
-TRACK_FAST tracking and ordinary memory-window Scheduler work remain unchanged.
+All three are repaired. The focused regression proves the relevant connections
+are physically non-writable, cannot retry as writable when a read-only open
+fails, leave all locked capability tables unchanged, and expose current
+capability-lock state separately from evidence/review eligibility.
 
-## Proven blocker
+## Proven blocker / adjacent defect
 
-None remains in the scoped clean-memory -> retrieval/decision -> paper
-position/monitor/audit/PnL lockout engineering lane.
+No blocker remains in the scoped reporting/operator-review read-only lane.
+
+A separate, concrete adjacent legacy bypass is now proven in
+`src/printer_v1/operator_cli/commands.py`:
+
+- `build_conservative_paper_decision_payload()` (post-RC Lane 8B) opens the DB
+  writable;
+- after local eligibility checks it calls
+  `_lane8b_insert_conservative_decision()`;
+- that helper directly inserts into `printer_paper_decisions`;
+- this path does not call `require_paper_decisions_enabled()`.
+
+Therefore the earlier statement that all direct paper-decision creation
+surfaces are locked is incomplete: the primary recorder is locked, but this
+legacy Lane 8B command is still a reachable direct-write bypass. It was not
+modified in the reporting-only lane because Lane 8B is deliberately mutating
+and belongs to the next engineering boundary.
 
 This is **not** operational authorization and does not establish authoritative
 database or live-run readiness. No operational Printer run, live provider/RPC
@@ -102,12 +117,22 @@ development lineage and is not a safe blind merge/rebase target.
 
 ## Exact next permitted action
 
-Begin a narrow read/test-only audit of downstream reporting/operator-review
-surfaces that consume historical memory/paper tables. Prove those surfaces
-remain read-only and cannot synthesize or activate retrieval, paper decisions,
-positions, monitoring, audits, or PnL while the current capability locks are
-false. Repair only a concrete reachable unlock if found.
+Begin a narrow development/test-only repair of the legacy post-RC Lane 8B paper
+decision creation boundary in `src/printer_v1/operator_cli/commands.py`.
 
-Do not activate any locked capability, run Printer operationally, use live
-providers, operate Scheduler jobs, or mutate the authoritative database without
-a new explicit authorization boundary.
+Prove that `build_conservative_paper_decision_payload()`,
+`_lane8b_insert_conservative_decision()`, and the Lane 8B CLI entry cannot
+emit decision-authority output or insert `printer_paper_decisions` while
+`PAPER_DECISIONS_ENABLED` is false. Reuse the existing capability-lock owner;
+do not create an independent permission system. Preserve disposable historical
+tests by enabling the future capability only inside their test fixture where
+needed.
+
+Repair only this concrete reachable bypass and any directly necessary
+Scheduler/command seam exposed by focused tests. Do not activate retrieval,
+paper positions, monitoring, audits, PnL, live execution, or any operational
+Printer path.
+
+Do not run Printer operationally, use live providers, operate Scheduler jobs, or
+mutate the authoritative database without a new explicit authorization
+boundary.
