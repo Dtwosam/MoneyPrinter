@@ -17,8 +17,32 @@ class Phase20HardeningSyntheticValidationTest(unittest.TestCase):
     def setUp(self):
         previous_retrieval = capability_locks.RETRIEVAL_ACTIVATION_ENABLED
         previous_decisions = capability_locks.PAPER_DECISIONS_ENABLED
+        previous_positions = capability_locks.PAPER_POSITIONS_ENABLED
+        previous_audits = capability_locks.PAPER_AUDITS_ENABLED
+        previous_pnl = capability_locks.PAPER_PNL_ENABLED
         capability_locks.RETRIEVAL_ACTIVATION_ENABLED = True
         capability_locks.PAPER_DECISIONS_ENABLED = True
+        capability_locks.PAPER_POSITIONS_ENABLED = True
+        capability_locks.PAPER_AUDITS_ENABLED = True
+        capability_locks.PAPER_PNL_ENABLED = True
+        self.addCleanup(
+            setattr,
+            capability_locks,
+            "PAPER_PNL_ENABLED",
+            previous_pnl,
+        )
+        self.addCleanup(
+            setattr,
+            capability_locks,
+            "PAPER_AUDITS_ENABLED",
+            previous_audits,
+        )
+        self.addCleanup(
+            setattr,
+            capability_locks,
+            "PAPER_POSITIONS_ENABLED",
+            previous_positions,
+        )
         self.addCleanup(
             setattr,
             capability_locks,
