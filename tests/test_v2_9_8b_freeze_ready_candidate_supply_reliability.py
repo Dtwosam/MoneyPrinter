@@ -303,7 +303,7 @@ def _direct_item(
     }
 
 
-def test_01_four_moe_only_two_freeze_ready_capacity_not_met(db) -> None:
+def test_01_two_freeze_ready_candidates_meet_two_slot_capacity(db) -> None:
     from printer_v1.discovery.memory_observation_activation import (
         measure_freeze_ready_candidates,
     )
@@ -339,19 +339,20 @@ def test_01_four_moe_only_two_freeze_ready_capacity_not_met(db) -> None:
 
     measured = measure_freeze_ready_candidates(db, rows, now=NOW, **bag.kwargs())
     assert measured.freeze_ready_depth == 2
-    assert acquisition_capacity_met(freeze_ready_depth=measured.freeze_ready_depth) is False
-    assert measured.capacity_stop_reason != "ELIGIBLE_CAPACITY_MET"
+    assert acquisition_capacity_met(freeze_ready_depth=measured.freeze_ready_depth) is True
+    assert measured.capacity_stop_reason == "ELIGIBLE_CAPACITY_MET"
     depth = observation_reserve_depth_status(measured.freeze_ready_depth)
-    assert depth["coverage_blocker"] is True
+    assert depth["coverage_blocker"] is False
+    assert depth["surplus_target_met"] is False
 
 
-def test_02_depth_below_four_with_horizon_continues_not_terminal() -> None:
+def test_02_depth_below_two_with_horizon_continues_not_terminal() -> None:
     from printer_v1.discovery.eligible_token_supply import (
         decide_pre_lifecycle_supply_continuation,
     )
 
     decision = decide_pre_lifecycle_supply_continuation(
-        freeze_ready_depth=2,
+        freeze_ready_depth=1,
         enrichment_work_remaining=False,
         source_operations_remaining=10,
         acquisition_deadline_at="2026-09-01T12:16:19+00:00",
@@ -499,7 +500,7 @@ def test_06_honest_exhaustion_terminals_coverage_insufficient() -> None:
     )
 
     decision = decide_pre_lifecycle_supply_continuation(
-        freeze_ready_depth=2,
+        freeze_ready_depth=1,
         enrichment_work_remaining=False,
         source_operations_remaining=10,
         acquisition_deadline_at="2026-09-01T11:40:00+00:00",
@@ -536,9 +537,9 @@ def test_07_duplicate_and_cooldown_cannot_refill_depth(db) -> None:
 
 
 def test_08_refresh_eligibility_uses_freeze_ready_depth_not_moe_count() -> None:
-    # MOE count 4 must not trip CAPACITY_ALREADY_MET when freeze-ready depth is 2.
+    # One freeze-ready carrier is below exact-two cycle capacity.
     eligibility = evaluate_wait_eligibility(
-        reserve_depth=2,
+        reserve_depth=1,
         required_capacity=MINIMUM_FREEZE_DEPTH,
         universe_state="ALL_REACHABLE_CANDIDATES_EVALUATED",
         now=NOW,
@@ -553,7 +554,7 @@ def test_08_refresh_eligibility_uses_freeze_ready_depth_not_moe_count() -> None:
     assert eligibility.reason == WAITING_FOR_ELIGIBLE_SUPPLY
 
     met = evaluate_wait_eligibility(
-        reserve_depth=4,
+        reserve_depth=2,
         required_capacity=MINIMUM_FREEZE_DEPTH,
         universe_state="ALL_REACHABLE_CANDIDATES_EVALUATED",
         now=NOW,

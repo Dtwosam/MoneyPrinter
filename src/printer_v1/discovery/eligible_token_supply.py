@@ -1380,9 +1380,9 @@ def run_persistent_eligible_token_supply(
     if direct_acquisition_mode not in DIRECT_ACQUISITION_MODES:
         raise EligibleTokenSupplyError("DIRECT_ACQUISITION_MODE_INVALID")
     if permanent_availability:
-        # Two selected plus one fully eligible alternate per slot. This is a
-        # reserve capacity, never a ranking or permission to consume four slots.
-        required_token_capacity = max(4, required_token_capacity)
+        # One operational cycle consumes exactly two slots. Additional eligible
+        # candidates are nonblocking surplus and never raise the hard capacity.
+        required_token_capacity = max(REQUIRED_TOKEN_CAPACITY, required_token_capacity)
 
     now = now or _utc_now_iso()
     started_at = _parse_iso(now)

@@ -190,9 +190,9 @@ def test_non_executable_pool_owner_program_fails_closed(database):
     ).fetchone()[0] == 0
 
 
-def test_four_generic_present_pools_reach_freeze_floor_and_rehydrate_for_cycle(database):
+def test_two_generic_present_pools_reach_exact_two_freeze_floor(database):
     _path, connection = database
-    observations = _nominate(connection, count=4, campaign_id="two-cycle-campaign")
+    observations = _nominate(connection, count=2, campaign_id="two-cycle-campaign")
     report = process_protocol_confirmation_queue(
         connection,
         stage_budget=StageBudget.permanent_discovery_default(),
@@ -217,5 +217,5 @@ def test_four_generic_present_pools_reach_freeze_floor_and_rehydrate_for_cycle(d
         at=NOW,
     )
     assert len(frozen.selected) == 2
-    assert len(frozen.alternates) == 2
+    assert len(frozen.alternates) == 0
     assert all(item["admission_authority"] == "MARKET_PRESENT_POOL" for item in carriers)

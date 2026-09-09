@@ -77,7 +77,9 @@ PROTOCOL_DUE_REASONS = frozenset(
     }
 )
 
-MINIMUM_FREEZE_DEPTH = 4
+# Exact hard floor for one two-slot operational cycle. Extra candidates remain
+# useful resilience/surplus, but surplus can never block an otherwise lawful pair.
+MINIMUM_FREEZE_DEPTH = 2
 OBSERVATION_SURPLUS_TARGET = 8
 SELECTION_FLOOR_USD = 3000.0
 MAX_DEXSCREENER_MARKET_BATCH_MINTS = 30

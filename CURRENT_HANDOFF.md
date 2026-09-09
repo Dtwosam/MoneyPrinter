@@ -56,31 +56,28 @@ real Phase-B contract.
 
 ## Current audit checkpoint
 
-Discovery/admission hardening found a structural multi-source starvation defect.
-The active authority allows exact present-market candidates from DexScreener and
-GeckoTerminal without Pump lineage, but fresh nominations were filtered by
-provider venue and every above-floor row was forced through a PumpSwap-only pool
-decoder. Valid non-Pump/unknown-origin present pools therefore could never reach
-`MEMORY_OBSERVATION_ELIGIBLE`.
+Discovery/admission hardening has removed two structural supply-starvation paths.
 
-The repair keeps one conversion owner and one stage budget. Pump/PumpSwap rows
-retain the existing exact PumpSwap decoder. Other above-floor rows use one new
-Source-Governed Solana request kind,
-`generic_present_pool_account_batch`, which proves the supported SPL/Token-2022
-mint program, exact provider mint/base/allowed-quote relationship, exact pool
-account owner, and that the exact owner program account is executable. Provider
-venue remains provenance only and is never promoted to program authority.
+First, exact DexScreener/Gecko present-pool nominations can now reach
+`MARKET_PRESENT_POOL` without being forced through PumpSwap lineage. Pump rows
+keep the PumpSwap decoder; other supported present pools use the Source-Governed
+generic pool-account conversion and preserve exact token program, pool program,
+venue and market evidence. Fresh MOE rehydration is no longer PumpSwap-only.
 
-Promotion now preserves the exact observed token program, pool program and venue
-instead of hardcoding SPL/PumpSwap identities. Campaign fresh-MOE rehydration is
-no longer PumpSwap-only, so the same generic carriers are available to Cycle 1
-post-holder resume and Cycle 2 cooperative resume. Cooperative protocol stage
-sequence reconstruction includes both governed conversion request kinds.
+Second, the hard observation freeze floor now matches the actual operational
+cycle contract: exactly two freeze-ready candidates are sufficient to select and
+admit the cycle's two slots. The prior four-deep gate was software-only surplus
+policy and could falsely reject a completely lawful pair. The eight-candidate
+surplus target remains diagnostic/nonblocking.
 
-This does not add a second selector, source preference, retry, endpoint rotation,
-or request budget. Holder/safety/tradeability remain their existing downstream
-categorical evidence surfaces; this repair only restores the already-defined
-`MARKET_PRESENT_POOL` memory-observation admission authority.
+No liquidity floor, evidence role, current-run provenance, freshness, identity,
+tracking, safety, Source Governor budget, retry, endpoint or Scheduler rule is
+weakened.
+
+Next checkpoint: prove that no terminal insufficient-pool result can be emitted
+while a durable market/reconciliation/protocol/enrichment queue still has lawful
+capacity, then inspect Cycle-2 cooperative phase progression for the same
+work-remaining invariant.
 
 ## Cycle-1 terminal-truth repair
 
@@ -106,10 +103,7 @@ non-reusable.
 
 ## Exact next permitted action
 
-Run focused GitHub verification for the generic present-pool conversion repair.
-Then continue the read-only discovery/admission audit for false-shortage
-conditions in cohort caps, durable work-remaining/universe-exhaustion
-classification, Cycle-1 refresh opportunity, Cycle-2 cooperative quantum
-opportunity, freeze surplus handling and exact two-slot admission. No operational
-authorization, provider contact, Printer run, Scheduler operational execution,
-or authoritative DB mutation is permitted by this handoff.
+Verify generic present-pool plus exact-two freeze hardening, then repair any
+remaining false-shortage terminal where actionable durable work still exists.
+Continue through Cycle-2 cooperative phase progression and exact pair admission.
+No operational execution or authoritative DB mutation is permitted.
