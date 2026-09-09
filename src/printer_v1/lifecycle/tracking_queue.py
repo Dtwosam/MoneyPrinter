@@ -8,6 +8,7 @@ from pathlib import Path
 import json
 import sqlite3
 
+from printer_v1.contracts.capability_locks import require_paper_monitoring_enabled
 from printer_v1.contracts.enums import DataQualityLabel, SourceStatus
 from printer_v1.lifecycle.contracts import (
     TRACKING_LANE_DUE_ORDER,
@@ -368,6 +369,8 @@ def claim_tracking_item(
     """
     lane = TokenLifecycleState(tracking_lane)
     action = LifecycleEvent(tracking_action)
+    if lane is TokenLifecycleState.PAPER_MONITORING:
+        require_paper_monitoring_enabled()
     with connect(db_or_connection) as connection:
         assessment = assess_tracking_handoff(
             connection,
@@ -452,6 +455,8 @@ def update_tracking_lane(
 ) -> None:
     lane = TokenLifecycleState(tracking_lane)
     action = LifecycleEvent(tracking_action)
+    if lane is TokenLifecycleState.PAPER_MONITORING:
+        require_paper_monitoring_enabled()
     with connect(db_or_connection) as connection:
         connection.execute(
             """
@@ -572,6 +577,8 @@ def record_lifecycle_event(
         TokenLifecycleState(previous_state).value if previous_state is not None else None
     )
     new_value = TokenLifecycleState(new_state).value
+    if new_value == TokenLifecycleState.PAPER_MONITORING.value:
+        require_paper_monitoring_enabled()
     event = LifecycleEvent(lifecycle_event)
     payload_json = json.dumps(event_payload or {}, sort_keys=True)
     with connect(db_or_connection) as connection:
@@ -620,6 +627,8 @@ def sync_tracking_state_with_scheduler(
         return LockResult.NOT_FOUND, None
 
     lane = TokenLifecycleState(row["tracking_lane"])
+    if lane is TokenLifecycleState.PAPER_MONITORING:
+        require_paper_monitoring_enabled()
     if lane not in SCHEDULER_KIND_BY_LANE:
         return LockResult.NOT_FOUND, None
 
