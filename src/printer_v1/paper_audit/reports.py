@@ -2,8 +2,11 @@
 
 from typing import Any, Mapping
 
+from printer_v1.contracts.capability_locks import require_paper_audits_enabled
+
 
 def summarize_rule_compliance(evidence: Mapping[str, Any], issues: list[str]) -> dict[str, Any]:
+    require_paper_audits_enabled()
     return {
         "paper_decision_id": (evidence.get("paper_decision") or {}).get("id"),
         "paper_position_id": (evidence.get("paper_position") or {}).get("id"),
@@ -12,6 +15,7 @@ def summarize_rule_compliance(evidence: Mapping[str, Any], issues: list[str]) ->
 
 
 def summarize_paper_realism(evidence: Mapping[str, Any]) -> dict[str, Any]:
+    require_paper_audits_enabled()
     position = evidence.get("paper_position") or {}
     return {
         "entry_status_label": position.get("entry_status_label"),
@@ -21,6 +25,7 @@ def summarize_paper_realism(evidence: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def summarize_outcome_review(evidence: Mapping[str, Any]) -> dict[str, Any]:
+    require_paper_audits_enabled()
     position = evidence.get("paper_position") or {}
     return {
         "realized_pnl_usd": position.get("realized_pnl_usd"),
@@ -31,6 +36,7 @@ def summarize_outcome_review(evidence: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def summarize_data_quality_audit(evidence: Mapping[str, Any]) -> dict[str, Any]:
+    require_paper_audits_enabled()
     return {
         "data_quality_audit_hint": evidence.get("data_quality_audit_hint"),
         "entry_context_available": bool(evidence.get("entry_context")),
@@ -40,6 +46,7 @@ def summarize_data_quality_audit(evidence: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def build_paper_audit_report(evidence: Mapping[str, Any], classification_payload: Mapping[str, Any]) -> dict[str, Any]:
+    require_paper_audits_enabled()
     issues = list(classification_payload.get("audit_issues") or [])
     return {
         "mode": "paper_only",
