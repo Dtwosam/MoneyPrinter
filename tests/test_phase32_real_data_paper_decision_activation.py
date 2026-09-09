@@ -11,6 +11,7 @@ PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 SRC_PATH = PROJECT_ROOT / "src"
 sys.path.insert(0, str(SRC_PATH))
 
+from printer_v1.contracts import capability_locks
 from printer_v1.db import apply_migrations
 from printer_v1.operator_cli.commands import (
     CONTEXT_TABLES,
@@ -32,6 +33,16 @@ def table_count(connection, table_name):
 
 
 class Phase32RealDataPaperDecisionActivationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        previous = capability_locks.PAPER_DECISIONS_ENABLED
+        capability_locks.PAPER_DECISIONS_ENABLED = True
+        self.addCleanup(
+            setattr,
+            capability_locks,
+            "PAPER_DECISIONS_ENABLED",
+            previous,
+        )
+
     def make_db(self):
         temp_dir = tempfile.TemporaryDirectory()
         db_path = pathlib.Path(temp_dir.name) / "phase32.sqlite3"
