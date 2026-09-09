@@ -7044,6 +7044,7 @@ def _insert_blocked_paper_decision(
     gate_summary: dict[str, Any],
     report: dict[str, Any],
 ) -> int:
+    capability_locks.require_paper_decisions_enabled()
     decided_at = _utc_now_text()
     reasons = ["REASON_NOT_ENOUGH_CLEAN_MEMORY"]
     blocking = [
@@ -7105,6 +7106,7 @@ def _insert_blocked_paper_decision(
 
 def build_create_paper_decision_once_payload(args: argparse.Namespace) -> dict[str, Any]:
     _validate_paper_decision_once_args(args)
+    capability_locks.require_paper_decisions_enabled()
     project_root = _project_root(args.project_root)
     resolved = resolve_operator_db_path(args.db_path, project_root)
     if not resolved.is_file():
