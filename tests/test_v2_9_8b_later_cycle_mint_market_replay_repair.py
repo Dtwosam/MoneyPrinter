@@ -19,10 +19,16 @@ from printer_v1.discovery.eligible_token_supply import (
     run_persistent_eligible_token_supply,
 )
 from printer_v1.discovery.permanent_discovery_availability import (
+    CURRENT_POOL_CONFIRMED,
+    MEMORY_OBSERVATION_ELIGIBLE,
+    ExactMarketObservation,
     StageBudget,
     build_campaign_source_request_scope,
+    load_protocol_resume_market_due,
+    record_exact_market_transition,
 )
 from printer_v1.sources.dexscreener import fixture_success_transport
+from printer_v1.sources.generic_present_pool_account_batch import TOKEN_PROGRAM_ID
 from printer_v1.sources.pumpswap_graduated_registry import (
     PERSISTED_GRADUATED_CHANNEL,
     record_graduated_candidate,
@@ -37,6 +43,9 @@ MINT = "6wtZueu89AGwQkGUki3HcerjCDFxLA9PyVUBWQbMpump"
 OTHER_MINT = "71pkkHscUWYPjLb6ZgU7X7iLh6Pkk86EbbgTWrPcAN3G"
 SIGNATURE = "ijqgk3HtkePfN1tJfCdQAxNfGbCrrgZJeFuiy4idNSnVBP1Ev2YqsNq1nUWLaX5t1kKu9S84AZk5usESaaaaaaa"
 POOL = "6TJuebvz9hqJaybCWpKm7ygmFqcxHxJ3Azi5BJhmHak"
+USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+GENERIC_VENUE = "raydium"
+GENERIC_POOL_PROGRAM = "GenericAmmProgramResume1111111111111111111111111"
 
 
 def _scope():
@@ -472,3 +481,231 @@ def test_cooperative_market_batch_defers_reconciliation_to_fast_safe_quantum(
         assert tuple(row) == ("CONTRACT_BLOCKED", "LIQUIDITY_UNKNOWN")
     finally:
         check.close()
+
+
+def _record_generic_protocol_confirmed(
+    connection: sqlite3.Connection,
+    *,
+    mint: str,
+    pool: str,
+    protocol_request_id: int,
+    pool_program: str = GENERIC_POOL_PROGRAM,
+) -> None:
+    record_exact_market_transition(
+        connection,
+        ExactMarketObservation(
+            network="solana-mainnet",
+            mint=mint,
+            pool=pool,
+            token_program=TOKEN_PROGRAM_ID,
+            pool_program=pool_program,
+            base_mint=mint,
+            quote_mint=USDC,
+            venue=GENERIC_VENUE,
+            state=CURRENT_POOL_CONFIRMED,
+            reason="GENERIC_POOL_CONFIRMED",
+            observed_at=NOW,
+            next_lawful_action_at=None,
+            source_provenance={
+                "stage": "protocol_confirmation",
+                "request_id": int(protocol_request_id),
+                "verification_kind": "GENERIC",
+            },
+            contract_version="GENERIC_PROTOCOL_RESUME_TEST_V1",
+        ),
+        now=NOW,
+    )
+
+
+def _generic_dex_pair(*, mint: str, pool: str) -> dict[str, object]:
+    return {
+        "chainId": "solana",
+        "pairAddress": pool,
+        "dexId": GENERIC_VENUE,
+        "baseToken": {"address": mint, "symbol": "GEN"},
+        "quoteToken": {"address": USDC, "symbol": "USDC"},
+        "liquidity": {"usd": 7_500.0},
+        "priceUsd": "0.001",
+    }
+
+
+def test_protocol_resume_uses_canonical_default_dex_transport_and_preserves_generic_identity(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "generic-protocol-resume-default.sqlite3"
+    apply_migrations(db_path)
+    connection = sqlite3.connect(db_path)
+    connection.row_factory = sqlite3.Row
+    _record_generic_protocol_confirmed(
+        connection,
+        mint=MINT,
+        pool=POOL,
+        protocol_request_id=701,
+    )
+    connection.commit()
+    due_before = load_protocol_resume_market_due(connection)
+    assert due_before == [
+        {
+            "mint": MINT,
+            "pool": POOL,
+            "venue": GENERIC_VENUE,
+            "token_program": TOKEN_PROGRAM_ID,
+            "pool_program": GENERIC_POOL_PROGRAM,
+            "base_mint": MINT,
+            "quote_mint": USDC,
+            "protocol_request_id": 701,
+        }
+    ]
+    connection.close()
+
+    default_transport_calls: list[tuple[str, ...]] = []
+
+    def default_transport(mints):
+        ordered = tuple(sorted(str(mint) for mint in mints))
+        default_transport_calls.append(ordered)
+        assert ordered == (MINT,)
+        return fixture_success_transport(
+            {"pairs": [_generic_dex_pair(mint=MINT, pool=POOL)]}
+        )
+
+    monkeypatch.setattr(
+        "printer_v1.sources.dexscreener.build_dexscreener_mint_batch_transport",
+        default_transport,
+    )
+
+    result = run_persistent_eligible_token_supply(
+        db_path,
+        cycle_seed="generic-protocol-resume-default-seed",
+        migration_transport=lambda _context: {"result": []},
+        now=NOW,
+        permanent_availability=True,
+        enable_geckoterminal_reconciliation=False,
+        persist_terminal_certificate=False,
+    )
+
+    assert default_transport_calls == [(MINT,)]
+    assert (
+        result.diagnostics["stage_capacity"]["used_by_stage"]["market_batching"]
+        == 1
+    )
+
+    check = sqlite3.connect(db_path)
+    check.row_factory = sqlite3.Row
+    try:
+        state = check.execute(
+            """
+            SELECT token_program_id,pool_program_id,base_mint,quote_mint,venue
+            FROM printer_exact_market_states
+            WHERE mint_identity=? AND pool_address=?
+            """,
+            (MINT, POOL),
+        ).fetchone()
+        assert dict(state) == {
+            "token_program_id": TOKEN_PROGRAM_ID,
+            "pool_program_id": GENERIC_POOL_PROGRAM,
+            "base_mint": MINT,
+            "quote_mint": USDC,
+            "venue": GENERIC_VENUE,
+        }
+        assert (
+            check.execute(
+                """
+                SELECT COUNT(*) FROM printer_discovery_reserve_layers
+                WHERE mint_identity=? AND pool_address=?
+                  AND reserve_layer=? AND reserve_state='ACTIVE'
+                """,
+                (MINT, POOL, MEMORY_OBSERVATION_ELIGIBLE),
+            ).fetchone()[0]
+            == 1
+        )
+        assert load_protocol_resume_market_due(check) == []
+    finally:
+        check.close()
+
+
+def test_protocol_resume_charges_exact_two_batches_and_leaves_overflow_durable(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "generic-protocol-resume-batching.sqlite3"
+    apply_migrations(db_path)
+    connection = sqlite3.connect(db_path)
+    connection.row_factory = sqlite3.Row
+
+    expected_pool_by_mint: dict[str, str] = {}
+    for index in range(61):
+        mint = f"GenericResumeMint{index:03d}"
+        pool = f"GenericResumePool{index:03d}"
+        expected_pool_by_mint[mint] = pool
+        _record_generic_protocol_confirmed(
+            connection,
+            mint=mint,
+            pool=pool,
+            protocol_request_id=800 + index,
+            pool_program=f"GenericAmmProgram{index:03d}",
+        )
+    connection.commit()
+    connection.close()
+
+    batch_calls: list[tuple[str, ...]] = []
+
+    def batch_factory(mints):
+        ordered = tuple(sorted(str(mint) for mint in mints))
+        batch_calls.append(ordered)
+        return fixture_success_transport(
+            {
+                "pairs": [
+                    _generic_dex_pair(
+                        mint=mint,
+                        pool=expected_pool_by_mint[mint],
+                    )
+                    for mint in ordered
+                ]
+            }
+        )
+
+    result = run_persistent_eligible_token_supply(
+        db_path,
+        cycle_seed="generic-protocol-resume-batching-seed",
+        migration_transport=lambda _context: {"result": []},
+        dexscreener_batch_transport_factory=batch_factory,
+        now=NOW,
+        permanent_availability=True,
+        enable_geckoterminal_reconciliation=False,
+        persist_terminal_certificate=False,
+    )
+
+    assert [len(batch) for batch in batch_calls] == [30, 30]
+    stage = result.diagnostics["stage_capacity"]
+    assert stage["used_by_stage"]["market_batching"] == 2
+    assert stage["remaining_by_stage"]["market_batching"] == 0
+    assert result.shortage_classification == BUDGET_EXHAUSTION
+
+    check = sqlite3.connect(db_path)
+    check.row_factory = sqlite3.Row
+    try:
+        remaining = load_protocol_resume_market_due(check)
+        assert len(remaining) == 1
+        remaining_mint = remaining[0]["mint"]
+        assert remaining_mint in expected_pool_by_mint
+        assert remaining[0]["pool"] == expected_pool_by_mint[remaining_mint]
+        assert remaining[0]["venue"] == GENERIC_VENUE
+        assert remaining[0]["quote_mint"] == USDC
+        moe_count = int(
+            check.execute(
+                """
+                SELECT COUNT(*) FROM printer_discovery_reserve_layers
+                WHERE reserve_layer=? AND reserve_state='ACTIVE'
+                """,
+                (MEMORY_OBSERVATION_ELIGIBLE,),
+            ).fetchone()[0]
+        )
+        assert moe_count == 60
+    finally:
+        check.close()
+
+    pending = result.diagnostics["pending_work_by_queue"][
+        "PROTOCOL_RESUME_MARKET_DUE"
+    ]
+    assert len(pending) == 1
+    assert pending[0]["mint"] == remaining_mint
