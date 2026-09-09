@@ -797,6 +797,78 @@ def test_two_cycle_four_token_real_factory_reaches_shared_terminal_standard4h(
         assert len(progression) == 2
         assert all(str(row["attempt_state"]) == "HANDOFF_COMMITTED" for row in progression)
 
+        # Clean-memory promotion is allowed only after the exact owned window
+        # closes. Any promoted object must preserve the originating physical
+        # window identity/kind and have exactly one canonical fingerprint.
+        clean_objects = connection.execute(
+            """SELECT e.id AS episode_id,e.memory_window_id,e.token_id,e.pair_id,
+                      e.window_kind,e.episode_kind,e.memory_status,
+                      e.memory_quality_label,e.data_quality_label,e.do_not_train,
+                      mw.window_kind AS source_window_kind,
+                      COUNT(f.id) AS fingerprint_count
+                 FROM printer_episodes AS e
+                 JOIN printer_memory_windows AS mw ON mw.id=e.memory_window_id
+                 LEFT JOIN printer_memory_fingerprints AS f
+                   ON f.episode_id=e.id
+                  AND f.fingerprint_kind='STATIC_CONDITION_SUMMARY'
+                WHERE e.memory_status='CLEAN_MEMORY'
+                GROUP BY e.id,e.memory_window_id,e.token_id,e.pair_id,
+                         e.window_kind,e.episode_kind,e.memory_status,
+                         e.memory_quality_label,e.data_quality_label,e.do_not_train,
+                         mw.window_kind
+                ORDER BY e.id"""
+        ).fetchall()
+        assert len({int(row["memory_window_id"]) for row in clean_objects}) == len(
+            clean_objects
+        )
+        for row in clean_objects:
+            assert str(row["window_kind"]) == str(row["source_window_kind"])
+            assert str(row["episode_kind"]) == (
+                f"{row['source_window_kind']}_CLEAN_MEMORY"
+            )
+            assert str(row["memory_quality_label"]) == "CLEAN_MEMORY"
+            assert str(row["data_quality_label"]) == "CLEAN_DATA"
+            assert int(row["do_not_train"]) == 0
+            assert int(row["fingerprint_count"]) == 1
+
+        clean_four_hour = connection.execute(
+            """SELECT cw.cycle_id,cw.token_slot_id,e.id AS episode_id,
+                      e.memory_window_id,e.window_kind,f.fingerprint_payload_json
+                 FROM printer_memory_factory_campaign_windows AS cw
+                 JOIN printer_episodes AS e
+                   ON e.memory_window_id=cw.memory_window_row_id
+                  AND e.memory_status='CLEAN_MEMORY'
+                 JOIN printer_memory_fingerprints AS f
+                   ON f.episode_id=e.id
+                  AND f.fingerprint_kind='STATIC_CONDITION_SUMMARY'
+                WHERE cw.window_kind='WINDOW_4H'
+                ORDER BY cw.cycle_id,cw.token_slot_id"""
+        ).fetchall()
+        assert len({int(row["episode_id"]) for row in clean_four_hour}) == len(
+            clean_four_hour
+        )
+        assert len({int(row["memory_window_id"]) for row in clean_four_hour}) == len(
+            clean_four_hour
+        )
+        for row in clean_four_hour:
+            payload = json.loads(str(row["fingerprint_payload_json"] or "{}"))
+            assert int(payload["episode_id"]) == int(row["episode_id"])
+            assert int(payload["window_id"]) == int(row["memory_window_id"])
+            assert str(payload["window_kind"]) == "WINDOW_4H"
+
+        # Memory growth does not activate retrieval or decision/trading surfaces.
+        for table in (
+            "printer_memory_retrieval_queries",
+            "printer_memory_retrieval_matches",
+            "printer_paper_decisions",
+            "printer_paper_positions",
+            "printer_paper_trade_events",
+            "printer_paper_trade_audits",
+        ):
+            assert int(
+                connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            ) == 0
+
         assert int(
             connection.execute(
                 "SELECT COUNT(*) FROM printer_memory_factory_campaign_windows "
