@@ -3,6 +3,10 @@
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
+from printer_v1.contracts.capability_locks import (
+    require_paper_pnl_enabled,
+    require_paper_positions_enabled,
+)
 from printer_v1.paper_decision.contracts import DecisionGateLabel, PaperDecisionActionLabel, PaperDecisionStatusLabel
 from printer_v1.paper_monitor.contracts import PaperEntryStatusLabel, PaperPnlStateLabel, PaperPositionStatusLabel
 
@@ -15,10 +19,12 @@ def utc_now() -> datetime:
 
 
 def validate_paper_entry_allowed(decision_row_or_payload: Mapping[str, Any]) -> bool:
+    require_paper_positions_enabled()
     return classify_entry_status(decision_row_or_payload, {}) == PaperEntryStatusLabel.PAPER_ENTRY_ALLOWED
 
 
 def classify_entry_status(decision_row_or_payload: Mapping[str, Any] | None, entry_evidence: Mapping[str, Any]) -> PaperEntryStatusLabel:
+    require_paper_positions_enabled()
     if not decision_row_or_payload:
         return PaperEntryStatusLabel.PAPER_ENTRY_BLOCKED_NO_DECISION
     if decision_row_or_payload.get("paper_decision_status_label") == PaperDecisionStatusLabel.PAPER_DECISION_AUDIT_ONLY.value:
@@ -41,6 +47,7 @@ def classify_entry_status(decision_row_or_payload: Mapping[str, Any] | None, ent
 
 
 def classify_initial_position_status(entry_status_label: PaperEntryStatusLabel | str) -> PaperPositionStatusLabel:
+    require_paper_positions_enabled()
     if PaperEntryStatusLabel(entry_status_label) == PaperEntryStatusLabel.PAPER_ENTRY_ALLOWED:
         return PaperPositionStatusLabel.PAPER_POSITION_OPEN
     if PaperEntryStatusLabel(entry_status_label) == PaperEntryStatusLabel.PAPER_ENTRY_AUDIT_ONLY:
@@ -49,12 +56,14 @@ def classify_initial_position_status(entry_status_label: PaperEntryStatusLabel |
 
 
 def calculate_paper_token_amount(paper_size_usd: float, entry_price_usd: float) -> float:
+    require_paper_positions_enabled()
     if entry_price_usd <= 0:
         return 0.0
     return paper_size_usd / entry_price_usd
 
 
 def calculate_unrealized_pnl(entry_price_usd: float, current_price_usd: float, paper_token_amount: float) -> tuple[float, float]:
+    require_paper_pnl_enabled()
     pnl_usd = (current_price_usd - entry_price_usd) * paper_token_amount
     basis = entry_price_usd * paper_token_amount
     pnl_percent = 0.0 if basis == 0 else (pnl_usd / basis) * 100
@@ -62,10 +71,12 @@ def calculate_unrealized_pnl(entry_price_usd: float, current_price_usd: float, p
 
 
 def calculate_realized_pnl(entry_price_usd: float, exit_price_usd: float, paper_token_amount: float) -> tuple[float, float]:
+    require_paper_pnl_enabled()
     return calculate_unrealized_pnl(entry_price_usd, exit_price_usd, paper_token_amount)
 
 
 def classify_paper_pnl_state(unrealized_pnl_usd: float | None = None, realized_pnl_usd: float | None = None) -> PaperPnlStateLabel:
+    require_paper_pnl_enabled()
     value = realized_pnl_usd if realized_pnl_usd is not None else unrealized_pnl_usd
     if value is None:
         return PaperPnlStateLabel.PNL_UNKNOWN
@@ -85,6 +96,8 @@ def build_paper_position_payload(
     entry_evidence: Mapping[str, Any],
     now: datetime | None = None,
 ) -> dict[str, Any]:
+    require_paper_positions_enabled()
+    require_paper_pnl_enabled()
     current_time = now or utc_now()
     decision = dict(decision_row_or_payload)
     token_snapshot = entry_evidence.get("token_snapshot") or {}
