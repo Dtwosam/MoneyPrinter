@@ -9894,6 +9894,7 @@ def main_review_wait_avoid_no_action_readiness_once(
 # by a Lane 7 eligible clean memory window.  BUY/SELL/HOLD remain blocked.
 # No positions, trade events, PnL, or live execution.  Solana-only.
 # Paper-only.  No paid API.  No scoring, ranking, confidence, or weighted logic.
+# Current capability sequencing must explicitly enable paper decisions first.
 # Memory window must pass Lane 7 eligibility before any decision is written.
 # ---------------------------------------------------------------------------
 
@@ -10050,6 +10051,7 @@ def _lane8b_insert_conservative_decision(
     window_kind: str,
 ) -> int:
     """Direct controlled INSERT of one conservative paper decision row."""
+    capability_locks.require_paper_decisions_enabled()
     decided_at = datetime.now(timezone.utc).isoformat()
     expires_at = (datetime.now(timezone.utc) + timedelta(minutes=15)).isoformat()
 
@@ -10174,6 +10176,7 @@ def _lane8b_rejection_result(
 
 def build_conservative_paper_decision_payload(args: argparse.Namespace) -> dict[str, Any]:
     _validate_lane8b_args(args)
+    capability_locks.require_paper_decisions_enabled()
     project_root = _project_root(args.project_root)
     resolved = resolve_operator_db_path(args.db_path, project_root)
     if not resolved.is_file():
