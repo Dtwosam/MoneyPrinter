@@ -29,6 +29,13 @@ from printer_v1.memory_retrieval.recorder import (
 from printer_v1.memory_retrieval.retriever import (
     retrieve_memory_matches_for_current_setup,
 )
+from printer_v1.paper_decision.classifier import (
+    classify_final_paper_action,
+    classify_paper_decision_status,
+    classify_requested_action_from_memory_evidence,
+    paper_decision_can_be_recorded,
+    paper_decision_can_open_position_later,
+)
 from printer_v1.paper_decision.recorder import (
     build_and_record_paper_decision,
     build_decision_payload,
@@ -112,6 +119,43 @@ def test_retrieval_activation_apis_fail_before_any_write(db_path) -> None:
 
 
 def test_paper_decision_output_and_writes_fail_before_any_mutation(db_path) -> None:
+    action_evidence = {
+        "token_id": 1,
+        "pair_id": 1,
+        "memory_retrieval": {
+            "clean_matches": [
+                {
+                    "outcome_label": "SUSTAINED_PUMP",
+                    "action_lesson_label": "ACTION_BUY_WORKED",
+                }
+            ]
+        },
+        "current_context": {
+            "exit_realism_label": "EXIT_REALISTIC",
+            "entry_realism_label": "ENTRY_REALISTIC",
+            "realism_gate_label": "REALISM_CONTEXT_ACCEPTABLE",
+        },
+    }
+    for callable_, args in (
+        (classify_requested_action_from_memory_evidence, (action_evidence,)),
+        (classify_final_paper_action, (action_evidence,)),
+        (classify_paper_decision_status, (action_evidence,)),
+        (paper_decision_can_be_recorded, (action_evidence,)),
+        (
+            paper_decision_can_open_position_later,
+            (
+                {
+                    "final_action_label": "BUY",
+                    "paper_decision_status_label": "PAPER_DECISION_PROPOSED",
+                    "decision_gate_label": "DECISION_ALLOWED",
+                },
+            ),
+        ),
+    ):
+        with pytest.raises(CapabilityLockedError) as exc:
+            callable_(*args)
+        _assert_locked(exc, "PAPER_DECISIONS_LOCKED")
+
     with pytest.raises(CapabilityLockedError) as exc:
         build_decision_payload({})
     _assert_locked(exc, "PAPER_DECISIONS_LOCKED")
