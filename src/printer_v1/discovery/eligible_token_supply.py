@@ -3400,81 +3400,81 @@ def run_persistent_eligible_token_supply(
                     next_mint_market_batch_stage_sequence,
                 )
 
-                    # Continue monotonic market-batch sequence after protocol work.
-                    resume_stage_sequence = next_mint_market_batch_stage_sequence(
+                # Continue monotonic market-batch sequence after protocol work.
+                resume_stage_sequence = next_mint_market_batch_stage_sequence(
+                    connection,
+                    request_key_prefix=str(front_door_request_key_prefix),
+                )
+                resume_request_key = build_mint_market_batch_request_key(
+                    request_key_prefix=str(front_door_request_key_prefix),
+                    stage_sequence=resume_stage_sequence,
+                    kind="protocol_resume",
+                )
+                resume_report = run_dexscreener_batch_market_resolution(
+                    connection,
+                    inventory_rows=resume_rows,
+                    transport_factory=dexscreener_batch_transport_factory,
+                    geckoterminal_transport_factory=None,
+                    enable_geckoterminal_fallback=False,
+                    request_key=resume_request_key,
+                    now=now,
+                    campaign_id=campaign_id,
+                    recent_request_count=fresh_market_checks,
+                    run_id=run_id,
+                    cycle_id=cycle_id,
+                    stage_evidence_sink=stage_evidence_sink,
+                    transport_identity_observer=transport_identity_observer,
+                    stage_sequence=resume_stage_sequence,
+                )
+                permanent_market_reports.append(resume_report)
+                market_calls = int(
+                    (resume_report.get("calls_by_stage") or {}).get(
+                        "market_batching", 0
+                    )
+                )
+                if market_calls > resume_batch_capacity:
+                    raise EligibleTokenSupplyError(
+                        "PROTOCOL_RESUME_MARKET_ACCOUNTING_EXCEEDED"
+                    )
+                if market_calls:
+                    stage_budget.consume("market_batching", market_calls)
+                fresh_market_checks += market_calls
+                ops_used += market_calls
+                for cand in resume_report.get("candidates") or ():
+                    if not cand.get("eligible"):
+                        continue
+                    mint = str(cand.get("mint") or "")
+                    if not mint or mint in campaign_eligible:
+                        continue
+                    campaign_eligible[mint] = _candidate_from_front_door_item(
+                        cand
+                    )
+                    evaluated_mints.add(mint)
+                    all_candidates.append(campaign_eligible[mint])
+                    upsert_eligible_reserve(
                         connection,
-                        request_key_prefix=str(front_door_request_key_prefix),
+                        mint=mint,
+                        pumpswap_pool=str(
+                            cand.get("pumpswap_pool") or cand.get("pool") or ""
+                        ),
+                        market_identity=str(cand.get("market_identity") or ""),
+                        provenance=str(
+                            cand.get("provenance") or "PROTOCOL_CONFIRMED"
+                        ),
+                        liquidity_usd=(
+                            None
+                            if cand.get("liquidity_usd") is None
+                            else float(cand["liquidity_usd"])
+                        ),
+                        liquidity_status=str(
+                            cand.get("liquidity_status") or LIQUIDITY_PROVEN
+                        ),
+                        eligibility_status=ELIGIBLE_FRESH,
+                        last_validated_at=now,
+                        source_provenance="protocol_confirmed_market_resume",
+                        last_campaign_id=campaign_id,
                     )
-                    resume_request_key = build_mint_market_batch_request_key(
-                        request_key_prefix=str(front_door_request_key_prefix),
-                        stage_sequence=resume_stage_sequence,
-                        kind="protocol_resume",
-                    )
-                    resume_report = run_dexscreener_batch_market_resolution(
-                        connection,
-                        inventory_rows=resume_rows,
-                        transport_factory=dexscreener_batch_transport_factory,
-                        geckoterminal_transport_factory=None,
-                        enable_geckoterminal_fallback=False,
-                        request_key=resume_request_key,
-                        now=now,
-                        campaign_id=campaign_id,
-                        recent_request_count=fresh_market_checks,
-                        run_id=run_id,
-                        cycle_id=cycle_id,
-                        stage_evidence_sink=stage_evidence_sink,
-                        transport_identity_observer=transport_identity_observer,
-                        stage_sequence=resume_stage_sequence,
-                    )
-                    permanent_market_reports.append(resume_report)
-                    market_calls = int(
-                        (resume_report.get("calls_by_stage") or {}).get(
-                            "market_batching", 0
-                        )
-                    )
-                    if market_calls > resume_batch_capacity:
-                        raise EligibleTokenSupplyError(
-                            "PROTOCOL_RESUME_MARKET_ACCOUNTING_EXCEEDED"
-                        )
-                    if market_calls:
-                        stage_budget.consume("market_batching", market_calls)
-                    fresh_market_checks += market_calls
-                    ops_used += market_calls
-                    for cand in resume_report.get("candidates") or ():
-                        if not cand.get("eligible"):
-                            continue
-                        mint = str(cand.get("mint") or "")
-                        if not mint or mint in campaign_eligible:
-                            continue
-                        campaign_eligible[mint] = _candidate_from_front_door_item(
-                            cand
-                        )
-                        evaluated_mints.add(mint)
-                        all_candidates.append(campaign_eligible[mint])
-                        upsert_eligible_reserve(
-                            connection,
-                            mint=mint,
-                            pumpswap_pool=str(
-                                cand.get("pumpswap_pool") or cand.get("pool") or ""
-                            ),
-                            market_identity=str(cand.get("market_identity") or ""),
-                            provenance=str(
-                                cand.get("provenance") or "PROTOCOL_CONFIRMED"
-                            ),
-                            liquidity_usd=(
-                                None
-                                if cand.get("liquidity_usd") is None
-                                else float(cand["liquidity_usd"])
-                            ),
-                            liquidity_status=str(
-                                cand.get("liquidity_status") or LIQUIDITY_PROVEN
-                            ),
-                            eligibility_status=ELIGIBLE_FRESH,
-                            last_validated_at=now,
-                            source_provenance="protocol_confirmed_market_resume",
-                            last_campaign_id=campaign_id,
-                        )
-                    connection.commit()
+                connection.commit()
             remaining_protocol_resume = load_protocol_resume_market_due(connection)
             work_queues["PROTOCOL_RESUME_MARKET_DUE"] = list(
                 remaining_protocol_resume
