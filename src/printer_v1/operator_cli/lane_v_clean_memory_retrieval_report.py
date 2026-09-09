@@ -53,6 +53,16 @@ _HARD_LOCKS: dict[str, bool] = {
 }
 
 
+def _connect_ro(db_path: str | Path) -> sqlite3.Connection:
+    """Open the report database in enforced read-only mode."""
+
+    resolved = Path(db_path).resolve(strict=True)
+    connection = sqlite3.connect(resolved.as_uri() + "?mode=ro", uri=True)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA query_only=ON")
+    return connection
+
+
 def build_clean_memory_retrieval_report(
     db_path: str | Path | None,
     *,
@@ -72,10 +82,7 @@ def build_clean_memory_retrieval_report(
     if not p.is_file():
         return _blocked([f"db_path not found: {db_path}"])
 
-    resolved = p.resolve(strict=True)
-    conn = sqlite3.connect(resolved.as_uri() + "?mode=ro", uri=True)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA query_only=ON")
+    conn = _connect_ro(p)
     try:
         return _run_report(
             conn,
