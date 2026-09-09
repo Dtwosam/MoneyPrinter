@@ -1645,6 +1645,7 @@ def _run_standard_factory_loop(
     progression_predecessor_observations=None,
     four_token_setup=None,
     cycle_one_tracking_lanes=None,
+    pre_admit_cycle_one: bool = True,
 ):
     from printer_v1.operator_cli import one_command_15m_factory as factory
     from printer_v1.operator_cli import operational_standard_4h as standard
@@ -1662,12 +1663,20 @@ def _run_standard_factory_loop(
     )
 
     db, backup, prepared_disposable = (
-        _prepare(tmp_path)
+        _prepare(tmp_path, pre_admit_cycle_one=pre_admit_cycle_one)
         if cycle_one_tracking_lanes is None
-        else _prepare(tmp_path, tracking_lanes=cycle_one_tracking_lanes)
+        else _prepare(
+            tmp_path,
+            tracking_lanes=cycle_one_tracking_lanes,
+            pre_admit_cycle_one=pre_admit_cycle_one,
+        )
     )
     four_token_kwargs = (
         dict(four_token_setup(db)) if four_token_setup is not None else {}
+    )
+    discovery_runner = four_token_kwargs.pop("discovery_runner", _discovery(db))
+    snapshot_adapter_factory = four_token_kwargs.pop(
+        "snapshot_adapter_factory", _factory_loop_snapshot_adapter
     )
     if disposable_binding == "PREPARED":
         disposable_binding = prepared_disposable
@@ -1862,8 +1871,8 @@ def _run_standard_factory_loop(
         operational_persistent_mode=True,
         operational_database_target_binding=operational_binding,
         disposable_public_composition_proof_binding=disposable_binding,
-        discovery_runner=_discovery(db),
-        snapshot_adapter_factory=_factory_loop_snapshot_adapter,
+        discovery_runner=discovery_runner,
+        snapshot_adapter_factory=snapshot_adapter_factory,
         context_adapter_factories=_factory_loop_context_adapters(clock),
         launch_provenance={
             "git_head": "d" * 40,
