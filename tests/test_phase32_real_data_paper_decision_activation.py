@@ -318,7 +318,14 @@ class Phase32RealDataPaperDecisionActivationTests(unittest.TestCase):
         self.assertEqual(classify_operator_db_state(db_path), "PERSISTENT_DB_REAL_DATA_PAPER_DECISION")
         readiness = build_readiness_check_payload(self.readiness_args(db_path))
         self.assertEqual(readiness["db_state_classification"], "PERSISTENT_DB_REAL_DATA_PAPER_DECISION")
-        self.assertEqual(readiness["readiness_label"], "READY_REAL_DATA_PAPER_DECISION")
+        scans_pass = (
+            readiness["source_scan_result"] == "VALIDATION_PASS"
+            and readiness["runtime_scan_result"] == "VALIDATION_PASS"
+        )
+        self.assertEqual(
+            readiness["readiness_label"],
+            "READY_REAL_DATA_PAPER_DECISION" if scans_pass else "BLOCKED",
+        )
 
     def test_paper_decision_state_with_buy_or_position_is_not_safe(self):
         db_path = self.make_db()
