@@ -1402,7 +1402,8 @@ def load_protocol_resume_market_due(
 ) -> list[dict[str, str]]:
     """Read protocol-confirmed identities still lacking current market proof."""
     rows = connection.execute(
-        """SELECT mint_identity,pool_address,venue
+        """SELECT mint_identity,pool_address,venue,token_program_id,
+                  pool_program_id,base_mint,quote_mint
            FROM printer_exact_market_states
            WHERE current_state=?
              AND NOT EXISTS (
@@ -1420,7 +1421,11 @@ def load_protocol_resume_market_due(
         {
             "mint": str(row[0]),
             "pool": str(row[1]),
-            "venue": str(row[2] or "pumpswap"),
+            "venue": str(row[2] or ""),
+            "token_program": str(row[3] or ""),
+            "pool_program": str(row[4] or ""),
+            "base_mint": str(row[5] or ""),
+            "quote_mint": str(row[6] or ""),
         }
         for row in rows
     ]
@@ -1914,7 +1919,24 @@ def run_dexscreener_batch_market_resolution(
         for row in batch:
             mint = str(row["mint_identity"])
             historical_pool = str(row["pumpswap_pool"])
-            pool_program = str(row.get("pumpswap_program_id") or PUMPSWAP_AMM_PROGRAM_ID)
+            token_program = str(
+                row.get("token_program")
+                or row.get("token_program_id")
+                or SPL_TOKEN_PROGRAM_ID
+            )
+            pool_program = str(
+                row.get("pool_program")
+                or row.get("pool_program_id")
+                or row.get("pumpswap_program_id")
+                or PUMPSWAP_AMM_PROGRAM_ID
+            )
+            base_mint = str(row.get("base_mint") or mint)
+            quote_mint = str(
+                row.get("quote_mint")
+                or "So11111111111111111111111111111111111111112"
+            )
+            venue = str(row.get("venue") or PUMPSWAP_VENUE)
+            pumpswap_identity = pool_program == PUMPSWAP_AMM_PROGRAM_ID
             gt_entry = fallback.get(mint)
             deferred_reconciliation = bool(
                 defer_geckoterminal_fallback
@@ -1940,11 +1962,11 @@ def run_dexscreener_batch_market_resolution(
             common = dict(
                 network=NETWORK,
                 mint=mint,
-                token_program=SPL_TOKEN_PROGRAM_ID,
+                token_program=token_program,
                 pool_program=pool_program,
-                base_mint=mint,
-                quote_mint="So11111111111111111111111111111111111111112",
-                venue=PUMPSWAP_VENUE,
+                base_mint=base_mint,
+                quote_mint=quote_mint,
+                venue=venue,
                 observed_at=now,
                 source_provenance=provenance,
                 contract_version="DEXSCREENER_TOKENS_V1_2026_08_04",
@@ -2008,13 +2030,20 @@ def run_dexscreener_batch_market_resolution(
                         historical_pool=historical_pool,
                         observed_pool=observed.pool,
                         exact_identity=(observed.base_mint == mint),
-                        supported_contract=observed.venue.casefold() in SUPPORTED_PUMPSWAP_PROVIDER_VENUES,
+                        supported_contract=(
+                            observed.venue.casefold()
+                            in SUPPORTED_PUMPSWAP_PROVIDER_VENUES
+                            if pumpswap_identity
+                            else True
+                        ),
                         protocol_confirmed=False,
                     )
                     report["reconciliation_outcomes"].append(outcome.__dict__)
                     changed_common = dict(common)
                     changed_common["quote_mint"] = observed.quote_mint
-                    changed_common["venue"] = observed.venue or PUMPSWAP_VENUE
+                    changed_common["venue"] = observed.venue or venue
+                    if not pumpswap_identity:
+                        changed_common["pool_program"] = "UNRESOLVED_POOL_PROGRAM"
                     report["state_transition_ids"].append(
                         record_exact_market_transition(
                             connection,
@@ -2087,19 +2116,22 @@ def run_dexscreener_batch_market_resolution(
                     common["source_provenance"] = provenance
                     exact_contract_state = None
                     exact_contract_reason = None
-                    if any(
+                    if pumpswap_identity and any(
                         item.venue.casefold() not in SUPPORTED_PUMPSWAP_PROVIDER_VENUES
                         for item in exact_rows
                     ):
                         exact_contract_state = UNSUPPORTED_VENUE
                         exact_contract_reason = "EXACT_POOL_PROVIDER_VENUE_UNSUPPORTED"
-                    elif any(
-                        item.quote_mint
-                        != "So11111111111111111111111111111111111111112"
-                        for item in exact_rows
-                    ):
+                    elif any(item.base_mint != base_mint for item in exact_rows):
+                        exact_contract_state = IDENTITY_CONFLICT
+                        exact_contract_reason = "EXACT_POOL_BASE_MINT_IDENTITY_CONFLICT"
+                    elif any(item.quote_mint != quote_mint for item in exact_rows):
                         exact_contract_state = CONTRACT_BLOCKED
-                        exact_contract_reason = "EXACT_POOL_QUOTE_CONTRACT_UNSUPPORTED"
+                        exact_contract_reason = (
+                            "EXACT_POOL_QUOTE_CONTRACT_UNSUPPORTED"
+                            if pumpswap_identity
+                            else "EXACT_POOL_QUOTE_IDENTITY_CONFLICT"
+                        )
                     if exact_contract_state is not None:
                         evidence = classify_liquidity(
                             None,
@@ -2178,10 +2210,18 @@ def run_dexscreener_batch_market_resolution(
                 "mint": mint,
                 "pool": historical_pool,
                 "pumpswap_pool": historical_pool,
-                "market_identity": str(row.get("market_identity") or f"solana-mainnet:{PUMPSWAP_VENUE}:{historical_pool}"),
+                "market_identity": str(
+                    row.get("market_identity")
+                    or f"solana-mainnet:{venue}:{historical_pool}"
+                ),
                 "provenance": str(row.get("latest_channel") or "PERSISTED_GRADUATED"),
                 "lifecycle_state": str(row.get("lifecycle_state") or GRADUATED_LIFECYCLE),
                 "graduation_block_time": row.get("graduation_block_time"),
+                "token_program": token_program,
+                "pool_program": pool_program,
+                "base_mint": base_mint,
+                "quote_mint": quote_mint,
+                "venue": venue,
                 "liquidity": evidence.to_dict(),
                 "evidence_expires_at": due_boundary,
                 "eligible": rejection is None,
@@ -3952,6 +3992,10 @@ def process_protocol_confirmation_queue(
                                 if verification_kind == "PUMPSWAP"
                                 else "UNKNOWN_VENUE"
                             ),
+                            "token_program": token_program,
+                            "pool_program": pool_program,
+                            "base_mint": base_mint,
+                            "quote_mint": quote_mint,
                         }
                     )
                     promotion = promote_confirmed_with_retained_liquidity(
@@ -3976,7 +4020,15 @@ def process_protocol_confirmation_queue(
                             {
                                 "mint": mint,
                                 "pool": pool,
-                                "venue": venue,
+                                "venue": venue or (
+                                    "pumpswap"
+                                    if verification_kind == "PUMPSWAP"
+                                    else "UNKNOWN_VENUE"
+                                ),
+                                "token_program": token_program,
+                                "pool_program": pool_program,
+                                "base_mint": base_mint,
+                                "quote_mint": quote_mint,
                                 "reason": str(promotion.get("reason") or ""),
                             }
                         )
@@ -4099,6 +4151,15 @@ def union_market_revalidation_candidates(
                 "pool": pool,
                 "venue": venue,
             }
+            for identity_field in (
+                "token_program",
+                "pool_program",
+                "base_mint",
+                "quote_mint",
+            ):
+                value = raw.get(identity_field)
+                if value is not None and str(value).strip():
+                    entry[identity_field] = str(value)
             reason = raw.get("reason")
             if reason is not None:
                 entry["reason"] = str(reason)
