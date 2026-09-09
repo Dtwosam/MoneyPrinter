@@ -37,7 +37,9 @@ jobs:
             tests/test_v2_9_8b_clean_memory_consumer_lockout.py \
             tests/test_phase15_memory_retrieval_similarity_engine.py \
             tests/test_phase16_paper_decision_engine.py \
-            tests/test_phase20_hardening_synthetic_validation.py
+            tests/test_phase20_hardening_synthetic_validation.py::Phase20HardeningSyntheticValidationTest::test_synthetic_memory_retrieval_decision_monitor_audit_and_review_flow \
+            tests/test_phase20_hardening_synthetic_validation.py::Phase20HardeningSyntheticValidationTest::test_synthetic_gates_block_decision_without_clean_memory_and_position_without_decision \
+            tests/test_phase20_hardening_synthetic_validation.py::Phase20HardeningSyntheticValidationTest::test_full_synthetic_validation_flow_records_run_and_items
       - name: Run shared-boundary regression suite
         run: |
           # Two legacy E.44 assertions are deselected because both were proven
