@@ -54,17 +54,23 @@ expectations, including migration head, campaign-pass terminal truth, canonical
 attempt/FK fixtures, request-scope identity, cooperative diagnostics, and the
 distinction between MARKET_READY and freeze-ready capacity.
 
-## Proven blocker
+## Current audit checkpoint
 
-Standard-4H pre-marker preparation had one proven provenance blocker: approved
-four-token admission-checkpoint authorization files were visible under their
-own root, but that root was omitted from the Standard-4H historical
-authorization roots. The Standard-4H profile now enumerates that root as
-historical evidence only. Explicit current-document approval remains required;
-unapproved packages still fail closed, and checkpoint documents cannot become
-current Standard-4H authority. Focused disposable-state preparation coverage
-passes, including multiple approved checkpoint IDs and the pre-marker parity
-boundary.
+Checkpoint 1 (Cycle-1 discovery/admission) found a concrete post-holder resume
+defect.  The non-quantum cooperative resume deliberately reuses existing
+inventory, but fresh campaign-owned `MEMORY_OBSERVATION_ELIGIBLE` carriers were
+rehydrated only for `:c0002` later-cycle execution IDs.  Cycle 1 could therefore
+measure durable freeze-ready depth while leaving its in-memory eligible carrier
+set empty, then spend remaining discovery budget re-traversing evidence it had
+already persisted.
+
+The repair extends the existing zero-source campaign-fresh-MOE rehydration to
+non-quantum cooperative resumes as well as the existing Cycle-2 quanta.  It
+still applies the canonical tracking precheck and leaves freeze/selection,
+budgets, source ownership, holder policy, and Scheduler ownership unchanged.
+A focused disposable regression proves the Cycle-1 resume reaches the durable
+MOE loader before existing-inventory traversal and still does not re-enter
+campaign-start source work.
 
 ## Cycle-1 terminal-truth repair
 
@@ -90,15 +96,8 @@ non-reusable.
 
 ## Exact next permitted action
 
-Read-only verification/review of this repair is permitted. The next operational
-workflow step, if explicitly requested after re-resolving the new commit, is
-`RE-RUN_READ_ONLY_STANDARD_4H_READINESS_AND_PREPARE_FRESH_AUTHORIZATION_ON_NEW_HEAD`.
-No authorization preparation/consumption, provider contact, Printer run,
-Scheduler operational execution, or authoritative DB mutation is permitted by
-this handoff.
-
-A new engineering lane may begin from the exact current branch HEAD after
-re-resolving it and reading `AGENTS.md` plus this file. Any future operational
-readiness work must begin with read-only HEAD/DB/migration/integrity/FK/
-zero-active-work/prior-authorization-non-reuse checks and still requires fresh
-explicit operator approval before execution.
+Continue the read-only line-by-line audit at Checkpoint 2: Cycle-2
+pre-admission/acquisition, beginning from the commit containing this handoff.
+No operational authorization, provider contact, Printer run, Scheduler
+operational execution, or authoritative DB mutation is permitted by this
+handoff.

@@ -323,6 +323,25 @@ def test_non_quantum_resume_rehydrates_inventory_before_campaign_start_acquisiti
         forbidden,
     )
 
+    # Regression for the live Cycle-1 post-holder seam: the canonical
+    # non-quantum resume must restore this campaign's durable fresh MOE before
+    # traversing the existing graduated inventory.  This is zero-source reuse,
+    # not a fresh discovery call.
+    from printer_v1.discovery import later_cycle_fresh_inventory as fresh_inventory
+
+    rehydration_calls: list[tuple[str, str]] = []
+    original_loader = fresh_inventory.load_campaign_fresh_moe_candidates
+
+    def tracked_loader(connection, *, campaign_id: str, at: str):
+        rehydration_calls.append((campaign_id, at))
+        return original_loader(connection, campaign_id=campaign_id, at=at)
+
+    monkeypatch.setattr(
+        fresh_inventory,
+        "load_campaign_fresh_moe_candidates",
+        tracked_loader,
+    )
+
     def reached_inventory(_connection):
         raise ReachedDurableInventory("durable inventory reached")
 
@@ -357,6 +376,9 @@ def test_non_quantum_resume_rehydrates_inventory_before_campaign_start_acquisiti
             front_door_request_key_prefix="resume-root",
         )
 
+    assert rehydration_calls == [
+        ("campaign", "2026-09-06T15:45:12+00:00")
+    ]
 
 
 def test_cycle1_terminal_owner_persists_exact_certificate_once_and_conflicts_fail(

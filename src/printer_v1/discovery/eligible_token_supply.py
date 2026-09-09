@@ -1672,16 +1672,22 @@ def run_persistent_eligible_token_supply(
             )
             evaluated_mints.update(completed_cooperative_market_mints)
 
-        # V2-9.8B corrective program: a later cooperative quantum must not
-        # forget fresh protocol-confirmed MOE persisted by an earlier quantum.
-        # Rehydrate only this exact Cycle-2 campaign and still apply the existing
-        # tracking precheck. Freeze/selection remain downstream authorities.
-        if (
+        # Cooperative resume must not forget fresh protocol-confirmed MOE that
+        # this exact campaign already persisted.  Cycle-2 quanta need this across
+        # Scheduler yields, and the Cycle-1 post-holder non-quantum resume needs
+        # the same zero-source rehydration before it traverses existing inventory.
+        # The existing tracking precheck still runs for every carrier and
+        # freeze/selection remain the downstream admission authorities.
+        rehydrate_current_campaign_moe = bool(
             permanent_availability
             and cooperative_resume
-            and str(execution_id or "").endswith(":c0002")
             and str(campaign_id or "").strip()
-        ):
+            and (
+                resume_existing_inventory_only
+                or str(execution_id or "").endswith(":c0002")
+            )
+        )
+        if rehydrate_current_campaign_moe:
             from printer_v1.discovery.later_cycle_fresh_inventory import (
                 load_campaign_fresh_moe_candidates,
             )
