@@ -12,6 +12,7 @@ PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 SRC_PATH = PROJECT_ROOT / "src"
 sys.path.insert(0, str(SRC_PATH))
 
+from printer_v1.contracts import capability_locks
 from printer_v1.contracts.enums import DataQualityLabel, SourceStatus
 from printer_v1.db import apply_migrations
 from printer_v1.memory.contracts import ActionLessonLabel, EpisodeOutcomeLabel, MemoryQualityLabel
@@ -46,6 +47,14 @@ FORBIDDEN_FRAGMENTS = {"score", "confidence", "rank", "rating", "weight", "priva
 
 class Phase15MemoryRetrievalTest(unittest.TestCase):
     def setUp(self):
+        previous = capability_locks.RETRIEVAL_ACTIVATION_ENABLED
+        capability_locks.RETRIEVAL_ACTIVATION_ENABLED = True
+        self.addCleanup(
+            setattr,
+            capability_locks,
+            "RETRIEVAL_ACTIVATION_ENABLED",
+            previous,
+        )
         self.tempdir = tempfile.TemporaryDirectory()
         self.db_path = pathlib.Path(self.tempdir.name) / "printer.sqlite3"
         apply_migrations(self.db_path)
