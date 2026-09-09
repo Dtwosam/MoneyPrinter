@@ -10,6 +10,7 @@ import sqlite3
 
 from tests.test_v2_9_8b_lane3_standard_4h_progression import (
     _FactoryLoopDateTime,
+    _factory_loop_snapshot_adapter,
     _run_standard_factory_loop,
 )
 
@@ -184,9 +185,22 @@ def test_two_cycle_four_token_real_factory_reaches_shared_terminal_standard4h(
     tmp_path,
     monkeypatch,
 ) -> None:
-    """Drive the missing real overlap seam on disposable fixture-only state."""
+    """Drive real Cycle-1 admission and Cycle-2 through shared Standard-4H."""
     import json
+    from datetime import timedelta
 
+    from printer_v1.discovery.combined_executor import (
+        CombinedDiscoveryFixtures,
+        CombinedPumpfunCampaignExecutor,
+        FixtureOriginProof,
+        FixturePumpSwapProof,
+        FixtureSourceFact,
+    )
+    from printer_v1.operator_cli.abstract_campaign_command import (
+        AbstractCampaignCommand,
+        CAMPAIGN_MODE,
+        CampaignCeilings,
+    )
     from printer_v1.operator_cli.authoritative_live_operational_campaign import (
         AuthoritativeLiveOperationalCampaignOwner,
         later_cycle_gate_quantum_seconds,
@@ -199,9 +213,13 @@ def test_two_cycle_four_token_real_factory_reaches_shared_terminal_standard4h(
         LaterCycleCandidateSupply,
         LaterCycleSourceEvidence,
     )
+    from printer_v1.operator_cli.origin_lifecycle_campaign import (
+        materialize_origin_activated_batch,
+    )
     from printer_v1.operator_cli.unified_terminal_closure import (
         reconcile_admitted_campaign_terminal,
     )
+    from printer_v1.sources.governed_execution import build_fixture_source_adapter
     from tests.test_v2_9_8b_callback_consume_materialize_integration import (
         GOVERNOR,
         NOW,
@@ -214,54 +232,14 @@ def test_two_cycle_four_token_real_factory_reaches_shared_terminal_standard4h(
         CONFIGURATION_ID,
         CYCLE_ID,
         FACTORY_RUN_ID,
+        START,
         _healthy_projection,
     )
 
-    def mixed_cycle_one_discovery(db_path):
-        def run(_args):
-            connection = sqlite3.connect(db_path)
-            try:
-                connection.execute(
-                    "INSERT INTO printer_selection_batches("
-                    "batch_id,batch_status,window_kind,candidate_pool_total,"
-                    "selected_count,operator_approved) VALUES "
-                    "('terminal-batch','ASSEMBLED','WINDOW_15M',2,2,1)"
-                )
-                for row_id, lane in (
-                    (1, "TRACK_FAST"),
-                    (2, "TRACK_NORMAL"),
-                ):
-                    connection.execute(
-                        "INSERT INTO printer_selection_batch_items("
-                        "batch_id,item_status,token_id,pair_id,token_mint,"
-                        "pair_address,tracking_lane,operator_approved) VALUES "
-                        "('terminal-batch','SELECTED',?,?,?,?,?,1)",
-                        (
-                            row_id,
-                            100 + row_id,
-                            f"mint-{row_id}",
-                            f"pool-{row_id}",
-                            lane,
-                        ),
-                    )
-                connection.commit()
-            finally:
-                connection.close()
-            return {
-                "selection_handoff_report": {
-                    "batch_id": "terminal-batch",
-                    "selection_seed": "terminal-seed",
-                    "eligible_pool_size": 2,
-                },
-                "discovery_results": [],
-            }
-
-        return run
-
-    monkeypatch.setattr(
-        "tests.test_v2_9_8b_four_token_factory_terminal_integration._discovery",
-        mixed_cycle_one_discovery,
-    )
+    cycle_one_mints = ("A" * 32, "B" * 32)
+    cycle_one_pools = ("C" * 32, "D" * 32)
+    cycle_one_batch_ids: list[str] = []
+    cycle_one_activation_slots: list[dict[str, object]] = []
 
     supply_calls = 0
     aggregate_observations = []
