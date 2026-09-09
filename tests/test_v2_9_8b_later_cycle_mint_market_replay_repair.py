@@ -14,6 +14,8 @@ from printer_v1.discovery.eligible_token_supply import (
     ACQUISITION_QUANTUM_YIELDED,
     AcquisitionQuantumKind,
     BUDGET_EXHAUSTION,
+    DISCOVERY_ARCHITECTURE_FALSE_SHORTAGE,
+    _lawful_pending_acquisition_work,
     acquisition_quantum_bound,
     load_completed_cooperative_mint_market_batch_mints,
     run_persistent_eligible_token_supply,
@@ -709,3 +711,105 @@ def test_protocol_resume_charges_exact_two_batches_and_leaves_overflow_durable(
     ]
     assert len(pending) == 1
     assert pending[0]["mint"] == remaining_mint
+
+
+
+def test_lawful_acquisition_queue_guard_uses_exact_owner_capacity() -> None:
+    budget = StageBudget.permanent_discovery_default()
+    work_queues = {
+        "MARKET_BATCHING_DUE": [{"mint": "MarketMint", "pool": "MarketPool"}],
+        "RECONCILIATION_DUE": [],
+        "PROTOCOL_CONFIRMATION_DUE": [
+            {"mint": "ProtocolMint", "pool": "ProtocolPool"}
+        ],
+        "PROTOCOL_RESUME_MARKET_DUE": [],
+        "HOLDER_SAFETY_DUE": [{"mint": "HolderMint", "pool": "HolderPool"}],
+    }
+
+    lawful = _lawful_pending_acquisition_work(
+        work_queues=work_queues,
+        stage_budget=budget,
+        source_operations_remaining=5,
+        duration_remaining_seconds=60.0,
+    )
+    assert set(lawful) == {
+        "MARKET_BATCHING_DUE",
+        "PROTOCOL_CONFIRMATION_DUE",
+    }
+
+    budget.consume("market_batching", 2)
+    lawful_after_market_exhaustion = _lawful_pending_acquisition_work(
+        work_queues=work_queues,
+        stage_budget=budget,
+        source_operations_remaining=5,
+        duration_remaining_seconds=60.0,
+    )
+    assert set(lawful_after_market_exhaustion) == {
+        "PROTOCOL_CONFIRMATION_DUE"
+    }
+
+    budget.seal("protocol_confirmation")
+    assert (
+        _lawful_pending_acquisition_work(
+            work_queues=work_queues,
+            stage_budget=budget,
+            source_operations_remaining=5,
+            duration_remaining_seconds=60.0,
+        )
+        == {}
+    )
+    assert (
+        _lawful_pending_acquisition_work(
+            work_queues=work_queues,
+            stage_budget=StageBudget.permanent_discovery_default(),
+            source_operations_remaining=0,
+            duration_remaining_seconds=60.0,
+        )
+        == {}
+    )
+    assert (
+        _lawful_pending_acquisition_work(
+            work_queues=work_queues,
+            stage_budget=StageBudget.permanent_discovery_default(),
+            source_operations_remaining=5,
+            duration_remaining_seconds=0.0,
+        )
+        == {}
+    )
+
+
+def test_generic_insufficient_terminal_is_replaced_by_architecture_fault_when_work_is_lawful(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "lawful-work-terminal-invariant.sqlite3"
+    apply_migrations(db_path)
+
+    monkeypatch.setattr(
+        "printer_v1.discovery.eligible_token_supply._lawful_pending_acquisition_work",
+        lambda **_kwargs: {
+            "PROTOCOL_CONFIRMATION_DUE": {
+                "stage": "protocol_confirmation",
+                "pending_count": 1,
+                "stage_operations_available": 1,
+                "flat_source_operations_remaining": 1,
+            }
+        },
+    )
+
+    result = run_persistent_eligible_token_supply(
+        db_path,
+        cycle_seed="lawful-work-terminal-invariant-seed",
+        migration_transport=lambda _context: {"result": []},
+        now=NOW,
+        permanent_availability=True,
+        enable_geckoterminal_reconciliation=False,
+        persist_terminal_certificate=False,
+    )
+
+    assert result.terminal == DISCOVERY_ARCHITECTURE_FALSE_SHORTAGE
+    assert result.shortage_classification == DISCOVERY_ARCHITECTURE_FALSE_SHORTAGE
+    assert (
+        result.exhaustion_certificate.last_reason_discovery_could_not_continue
+        == "LAWFUL_WORK_REMAINING_WITH_CAPACITY"
+    )
