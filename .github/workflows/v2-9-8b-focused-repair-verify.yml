@@ -39,6 +39,9 @@ jobs:
             tests/test_v2_9_8b_cycle2_pump_live_tail_refresh_reentry_repair.py \
             tests/test_v2_9_8b_standard4h_budget_and_cycle2_refresh_reentry_joint_seam.py \
             tests/test_v2_9_8b_later_cycle_mint_market_replay_repair.py \
+            tests/test_v2_9_8b_cycle_disjointness_repair.py \
+            tests/test_v2_9_8b_pre_admission_atomic_cycle2_consumption.py \
+            tests/test_v2_9_8b_pre_admission_frozen_pair_materialization.py \
             tests/test_v2_9_8b_permanent_discovery_availability.py \
             tests/test_v2_9_8b_generic_present_pool_conversion.py \
             tests/test_v2_9_8b_freeze_ready_candidate_supply_reliability.py \
