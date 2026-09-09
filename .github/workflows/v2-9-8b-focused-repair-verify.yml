@@ -86,6 +86,7 @@ jobs:
             src/printer_v1/contracts/capability_locks.py \
             src/printer_v1/scheduler/scheduler.py \
             src/printer_v1/memory_retrieval/recorder.py \
+            src/printer_v1/paper_decision/classifier.py \
             src/printer_v1/paper_decision/recorder.py \
             src/printer_v1/hardening/flow_validation.py \
             src/printer_v1/discovery/combined_executor.py \
