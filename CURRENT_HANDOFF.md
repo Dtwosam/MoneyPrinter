@@ -59,22 +59,22 @@ distinction between MARKET_READY and freeze-ready capacity.
 Checkpoint 1 repaired Cycle-1 post-holder cooperative resume so campaign-owned
 durable fresh MOE carriers survive the post-holder resume boundary.
 
-Checkpoint 2 has now repaired two independent Cycle-2 seams:
+Checkpoint 2 has one retained repair: the hard +600s Cycle-2 admission deadline
+is now enforced both before a cooperative acquisition quantum and again after a
+PAIR_READY return, so a bounded quantum cannot cross the deadline and still
+admit.
 
-1. The hard +600s admission deadline is enforced both before a cooperative
-   acquisition quantum and again after PAIR_READY returns, so a quantum cannot
-   cross the admission boundary and still admit.
-2. An admitted Cycle 2 that fails before creating any WINDOW_15M window or
-   lifecycle work now archives its exact insert-bound tracking claims during
-   shared cycle terminal reconciliation. Generic post-cycle tracking cleanup is
-   rooted in the original Cycle-1 selection batch and cannot discover this
-   pre-opening Cycle-2 authority on its own.
+The subsequent Cycle-2 terminal-tracking concern was audited through the full
+production call chain and was **not** a defect. Phase A cycle reconciliation is
+immediately followed by the canonical shared terminal owner,
+`reconcile_admitted_campaign_terminal`, which iterates every admitted cycle and
+owns each slot/queue terminal disposition. A temporary audit patch that archived
+unstarted Cycle-2 queues in Phase A was therefore reverted so it cannot preempt
+the canonical Phase-B `SKIPPED/MANUAL_REVIEW` or `COOLDOWN` disposition.
 
-The new cleanup is restricted to non-success Cycle 2 with zero cycle-owned
-windows and zero cycle-owned lifecycle work. It reuses the canonical
-`terminalize_unstarted_cycle_tracking_claims` owner; started lifecycle cycles
-retain their existing reconciliation path. No source budget, retry, successor,
-selection, cadence policy, or Scheduler ownership is widened.
+Cycle-2 atomic admission, frozen tracking authority, materialization, WINDOW_15M
+opening ownership, Scheduler cycle resolution/fairness, and the cycle-scoped
+15m-to-1h barrier have been reviewed with no additional retained defect so far.
 
 ## Cycle-1 terminal-truth repair
 
@@ -100,8 +100,8 @@ non-reusable.
 
 ## Exact next permitted action
 
-Continue the read-only audit at the Cycle-2 WINDOW_15M opening/execution boundary,
-then audit two-cycle Scheduler interleaving, WINDOW_15M close, 1h continuation,
-4h continuation, canonical accounting, and shared terminal cleanup. No
-operational authorization, provider contact, Printer run, Scheduler operational
-execution, or authoritative DB mutation is permitted by this handoff.
+Continue the read-only line-by-line audit through standard WINDOW_1H collection,
+the cycle-scoped 1h→4h progression/handoff, WINDOW_4H execution/close, canonical
+two-cycle accounting, and shared terminal/cleanup. No operational authorization,
+provider contact, Printer run, Scheduler operational execution, or authoritative
+DB mutation is permitted by this handoff.

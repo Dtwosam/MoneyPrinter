@@ -1295,27 +1295,6 @@ def reconcile_four_token_cycle_terminal(
         "WHERE campaign_id=? AND run_id=? AND cycle_id=? ORDER BY slot_ordinal",
         (campaign, run, cycle),
     ).fetchall()
-    if (
-        int(row[0]) == 2
-        and str(run_status) != "COMPLETED"
-        and not work_rows
-        and not window_rows
-    ):
-        from printer_v1.operator_cli.cadence_authority import (
-            terminalize_unstarted_cycle_tracking_claims,
-        )
-
-        # Cycle 2 claims tracking authority atomically with admission, before
-        # materialization/opening. If a later pre-opening invariant fails, the
-        # generic report reconciliation cannot see these queues because its
-        # selected-target surface is rooted in the original Cycle-1 batch.
-        # Close only this exact zero-window/zero-work shape here; lifecycle-started
-        # cycles retain their normal tracking reconciliation owner.
-        terminalize_unstarted_cycle_tracking_claims(
-            connection,
-            cycle_id=cycle,
-            now=instant,
-        )
     # Canonical TERMINAL_SUCCESS already proves each slot reached its lawful
     # terminal lifecycle disposition (for example WINDOW_4H_CLOSED, or an
     # earlier token-local ineligible close).  Rewriting those facts to
