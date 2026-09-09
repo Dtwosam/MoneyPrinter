@@ -1442,6 +1442,11 @@ def load_protocol_resume_market_due(
                 continue
             protocol_request_id = int(request_id)
             break
+        if protocol_request_id is None:
+            # CURRENT_POOL_CONFIRMED is also used by ordinary market
+            # confirmation. Only rows with durable protocol-confirmation
+            # provenance belong to the protocol->market resume queue.
+            continue
         entry: dict[str, Any] = {
             "mint": mint,
             "pool": pool,
@@ -1450,9 +1455,8 @@ def load_protocol_resume_market_due(
             "pool_program": str(row[4] or ""),
             "base_mint": str(row[5] or ""),
             "quote_mint": str(row[6] or ""),
+            "protocol_request_id": protocol_request_id,
         }
-        if protocol_request_id is not None:
-            entry["protocol_request_id"] = protocol_request_id
         out.append(entry)
     return out
 
