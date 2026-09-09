@@ -8,12 +8,29 @@ PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 SRC_PATH = PROJECT_ROOT / "src"
 sys.path.insert(0, str(SRC_PATH))
 
+from printer_v1.contracts import capability_locks
 from printer_v1.db import apply_migrations
 from printer_v1.hardening import contracts, fixtures, flow_validation, recorder, reports, schema_checks
 
 
 class Phase20HardeningSyntheticValidationTest(unittest.TestCase):
     def setUp(self):
+        previous_retrieval = capability_locks.RETRIEVAL_ACTIVATION_ENABLED
+        previous_decisions = capability_locks.PAPER_DECISIONS_ENABLED
+        capability_locks.RETRIEVAL_ACTIVATION_ENABLED = True
+        capability_locks.PAPER_DECISIONS_ENABLED = True
+        self.addCleanup(
+            setattr,
+            capability_locks,
+            "PAPER_DECISIONS_ENABLED",
+            previous_decisions,
+        )
+        self.addCleanup(
+            setattr,
+            capability_locks,
+            "RETRIEVAL_ACTIVATION_ENABLED",
+            previous_retrieval,
+        )
         self.tempdir = tempfile.TemporaryDirectory()
         self.temp_root = pathlib.Path(self.tempdir.name)
         self.db_path = self.temp_root / "phase20.sqlite3"
