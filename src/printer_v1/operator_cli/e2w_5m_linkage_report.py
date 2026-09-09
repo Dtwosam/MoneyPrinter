@@ -67,15 +67,12 @@ _HARD_LOCKS: dict[str, bool] = {
 
 
 def _connect_ro(db_path: str | Path) -> sqlite3.Connection:
-    try:
-        uri = Path(db_path).resolve().as_uri() + "?mode=ro"
-        conn = sqlite3.connect(uri, uri=True)
-        conn.row_factory = sqlite3.Row
-        return conn
-    except Exception:
-        conn = sqlite3.connect(str(db_path))
-        conn.row_factory = sqlite3.Row
-        return conn
+    """Open DB strictly read-only and fail closed if that cannot be enforced."""
+    uri = Path(db_path).resolve(strict=True).as_uri() + "?mode=ro"
+    conn = sqlite3.connect(uri, uri=True)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA query_only=ON")
+    return conn
 
 
 def _safe_count(conn: sqlite3.Connection, table: str) -> int | str:
