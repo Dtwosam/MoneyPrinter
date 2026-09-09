@@ -2,6 +2,7 @@
 
 from typing import Any, Mapping
 
+from printer_v1.contracts.capability_locks import require_paper_decisions_enabled
 from printer_v1.memory.contracts import ActionLessonLabel, EpisodeOutcomeLabel
 from printer_v1.paper_decision.contracts import (
     DecisionGateLabel,
@@ -62,6 +63,7 @@ def current_context_is_mixed_but_not_unsafe(evidence: Mapping[str, Any]) -> bool
 
 
 def classify_requested_action_from_memory_evidence(evidence: Mapping[str, Any]) -> PaperDecisionActionLabel:
+    require_paper_decisions_enabled()
     matches = clean_matches(evidence)
     if not matches:
         return PaperDecisionActionLabel.NO_ACTION
@@ -79,6 +81,7 @@ def classify_requested_action_from_memory_evidence(evidence: Mapping[str, Any]) 
 
 
 def classify_final_paper_action(evidence: Mapping[str, Any]) -> PaperDecisionActionLabel:
+    require_paper_decisions_enabled()
     gate = classify_decision_gate(evidence)
     if gate != DecisionGateLabel.DECISION_ALLOWED:
         return PaperDecisionActionLabel.NO_ACTION
@@ -92,6 +95,7 @@ def classify_final_paper_action(evidence: Mapping[str, Any]) -> PaperDecisionAct
 
 
 def classify_paper_decision_status(evidence: Mapping[str, Any]) -> PaperDecisionStatusLabel:
+    require_paper_decisions_enabled()
     gate = classify_decision_gate(evidence)
     if gate == DecisionGateLabel.DECISION_ALLOWED:
         return PaperDecisionStatusLabel.PAPER_DECISION_PROPOSED
@@ -101,10 +105,12 @@ def classify_paper_decision_status(evidence: Mapping[str, Any]) -> PaperDecision
 
 
 def paper_decision_can_be_recorded(evidence: Mapping[str, Any]) -> bool:
+    require_paper_decisions_enabled()
     return bool(evidence.get("token_id"))
 
 
 def paper_decision_can_open_position_later(decision_row_or_payload: Mapping[str, Any]) -> bool:
+    require_paper_decisions_enabled()
     return (
         decision_row_or_payload.get("final_action_label") == PaperDecisionActionLabel.BUY.value
         and decision_row_or_payload.get("paper_decision_status_label") == PaperDecisionStatusLabel.PAPER_DECISION_PROPOSED.value
