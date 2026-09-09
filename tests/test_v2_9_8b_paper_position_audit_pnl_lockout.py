@@ -21,11 +21,12 @@ from printer_v1.hardening.flow_validation import (
     run_synthetic_paper_audit,
     run_synthetic_paper_monitor,
 )
-from printer_v1.lifecycle.contracts import LifecycleEvent, TokenLifecycleState
+from printer_v1.lifecycle.contracts import LifecycleEvent, QueueStatus, TokenLifecycleState
 from printer_v1.lifecycle.tracking_queue import (
     claim_tracking_item,
     get_due_tracking_items,
     record_lifecycle_event,
+    set_queue_status,
     sync_tracking_state_with_scheduler,
     update_tracking_lane,
 )
@@ -371,6 +372,38 @@ def test_paper_monitoring_lane_and_snapshot_activation_are_unreachable(db_path) 
         connection.commit()
     finally:
         connection.close()
+
+    with pytest.raises(CapabilityLockedError) as exc:
+        set_queue_status(
+            db_path,
+            queue_id=queue_id,
+            queue_status=QueueStatus.ACTIVE,
+        )
+    _assert_locked(exc, "PAPER_POSITIONS_LOCKED")
+    connection = sqlite3.connect(db_path)
+    try:
+        status = connection.execute(
+            "SELECT queue_status FROM printer_tracking_queue WHERE id=?",
+            (queue_id,),
+        ).fetchone()[0]
+    finally:
+        connection.close()
+    assert status == QueueStatus.QUEUED.value
+
+    set_queue_status(
+        db_path,
+        queue_id=queue_id,
+        queue_status=QueueStatus.ARCHIVED,
+    )
+    connection = sqlite3.connect(db_path)
+    try:
+        status = connection.execute(
+            "SELECT queue_status FROM printer_tracking_queue WHERE id=?",
+            (queue_id,),
+        ).fetchone()[0]
+    finally:
+        connection.close()
+    assert status == QueueStatus.ARCHIVED.value
 
     with pytest.raises(CapabilityLockedError) as exc:
         sync_tracking_state_with_scheduler(
