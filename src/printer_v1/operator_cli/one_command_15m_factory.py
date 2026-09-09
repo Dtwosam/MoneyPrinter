@@ -10117,6 +10117,61 @@ def _final_report(
     }
 
 
+def _synchronize_four_token_report_terminal_from_durable_factory(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    report: dict[str, Any],
+    require_match: bool = False,
+) -> dict[str, Any]:
+    """Project canonical shared-terminal factory truth into the public report."""
+    row = conn.execute(
+        "SELECT run_status,stop_reason,finished_at "
+        "FROM printer_memory_factory_runs WHERE run_id=?",
+        (str(run_id),),
+    ).fetchone()
+    if row is None:
+        raise ValueError("four-token durable factory terminal row missing")
+    durable_status = str(row["run_status"] or "").strip()
+    durable_reason = str(row["stop_reason"] or "").strip()
+    durable_finished_at = (
+        None
+        if row["finished_at"] is None
+        else str(row["finished_at"]).strip() or None
+    )
+    if durable_status in {"", "PENDING", "RUNNING"}:
+        raise ValueError("four-token durable factory terminal is still active")
+    if not durable_reason:
+        raise ValueError("four-token durable factory terminal cause missing")
+
+    if require_match:
+        if (
+            str(report.get("run_status") or "").strip() != durable_status
+            or str(report.get("stop_reason") or "").strip() != durable_reason
+            or (
+                durable_finished_at is not None
+                and str(report.get("finished_at") or "").strip()
+                != durable_finished_at
+            )
+        ):
+            raise ValueError(
+                "four-token report terminal diverged from durable factory terminal"
+            )
+    else:
+        report["run_status"] = durable_status
+        report["stop_reason"] = durable_reason
+        if durable_finished_at is not None:
+            report["finished_at"] = durable_finished_at
+
+    projection = {
+        "run_status": durable_status,
+        "stop_reason": durable_reason,
+        "finished_at": durable_finished_at,
+    }
+    report["durable_four_token_terminal_projection"] = projection
+    return projection
+
+
 def _apply_post_report_integrity(report: dict[str, Any]) -> None:
     """Attach cleanup/integrity details without replacing an earlier cause."""
     details = report.setdefault("secondary_terminal_details", [])
@@ -12620,11 +12675,23 @@ def run_one_command_15m_factory(
                 shared_terminalizer=_shared_terminal_from_accounting,
             )
             four_token_terminal.update(phase_b)
+            _synchronize_four_token_report_terminal_from_durable_factory(
+                conn,
+                run_id=run_id,
+                report=report,
+            )
         report["post_cycle_lifecycle_reconciliation"] = lifecycle_reconciliation
         report["campaign_discovery_cleanup"] = discovery_cleanup
         if four_token_terminal is not None:
             report["four_token_terminal"] = four_token_terminal
         _apply_post_report_integrity(report)
+        if four_token_terminal is not None:
+            _synchronize_four_token_report_terminal_from_durable_factory(
+                conn,
+                run_id=run_id,
+                report=report,
+                require_match=True,
+            )
         report["full_run_evidence_deltas"] = dict(report["table_deltas"])
         report["recovery_evidence_deltas"] = {
             table: 0 for table in report["table_deltas"]

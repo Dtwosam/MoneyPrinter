@@ -160,6 +160,57 @@ def _add_second_cycle(db) -> None:
     connection.close()
 
 
+def test_four_token_report_terminal_uses_durable_shared_terminal_truth() -> None:
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    try:
+        connection.execute(
+            "CREATE TABLE printer_memory_factory_runs("
+            "run_id TEXT PRIMARY KEY,run_status TEXT,stop_reason TEXT,finished_at TEXT)"
+        )
+        connection.execute(
+            "INSERT INTO printer_memory_factory_runs VALUES (?,?,?,?)",
+            (
+                FACTORY_RUN_ID,
+                "SAFE_STOPPED",
+                "CYCLE2_STRUCTURAL_FAILURE",
+                (START + timedelta(hours=4)).isoformat(),
+            ),
+        )
+        report = {
+            "run_status": "COMPLETED",
+            "stop_reason": factory.STOP_COMPLETED,
+            "finished_at": START.isoformat(),
+        }
+
+        projection = (
+            factory._synchronize_four_token_report_terminal_from_durable_factory(
+                connection,
+                run_id=FACTORY_RUN_ID,
+                report=report,
+            )
+        )
+
+        assert report["run_status"] == "SAFE_STOPPED"
+        assert report["stop_reason"] == "CYCLE2_STRUCTURAL_FAILURE"
+        assert report["finished_at"] == (START + timedelta(hours=4)).isoformat()
+        assert projection == report["durable_four_token_terminal_projection"]
+
+        report["run_status"] = "COMPLETED"
+        with pytest.raises(
+            ValueError,
+            match="four-token report terminal diverged from durable factory terminal",
+        ):
+            factory._synchronize_four_token_report_terminal_from_durable_factory(
+                connection,
+                run_id=FACTORY_RUN_ID,
+                report=report,
+                require_match=True,
+            )
+    finally:
+        connection.close()
+
+
 @pytest.mark.parametrize("two_cycles", (True, False))
 def test_real_factory_terminal_path_runs_cycle_phase_then_shared_owner_once(
     tmp_path, monkeypatch, two_cycles
@@ -278,9 +329,18 @@ def test_real_factory_terminal_path_runs_cycle_phase_then_shared_owner_once(
     assert connection.execute(
         "SELECT run_state FROM printer_memory_factory_campaign_runs"
     ).fetchone()[0] == "TERMINAL_BLOCKED"
-    assert connection.execute(
-        "SELECT run_status FROM printer_memory_factory_runs"
-    ).fetchone()[0] == "SAFE_STOPPED"
+    durable_factory_terminal = connection.execute(
+        "SELECT run_status,stop_reason,finished_at FROM printer_memory_factory_runs"
+    ).fetchone()
+    assert durable_factory_terminal[0] == "SAFE_STOPPED"
+    assert report["run_status"] == str(durable_factory_terminal[0])
+    assert report["stop_reason"] == str(durable_factory_terminal[1])
+    assert report["finished_at"] == str(durable_factory_terminal[2])
+    assert report["durable_four_token_terminal_projection"] == {
+        "run_status": str(durable_factory_terminal[0]),
+        "stop_reason": str(durable_factory_terminal[1]),
+        "finished_at": str(durable_factory_terminal[2]),
+    }
     attempt = connection.execute(
             "SELECT attempt_state,first_terminal_cause,consumed_cycle_id "
             "FROM printer_pre_admission_discovery_attempts"

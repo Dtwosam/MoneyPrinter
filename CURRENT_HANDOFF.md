@@ -59,22 +59,27 @@ distinction between MARKET_READY and freeze-ready capacity.
 Checkpoint 1 repaired Cycle-1 post-holder cooperative resume so campaign-owned
 durable fresh MOE carriers survive the post-holder resume boundary.
 
-Checkpoint 2 has one retained repair: the hard +600s Cycle-2 admission deadline
-is now enforced both before a cooperative acquisition quantum and again after a
-PAIR_READY return, so a bounded quantum cannot cross the deadline and still
-admit.
+Checkpoint 2 repaired the hard +600s Cycle-2 admission seam: the boundary is
+enforced both before a cooperative acquisition quantum and again after a
+PAIR_READY return.
 
-The subsequent Cycle-2 terminal-tracking concern was audited through the full
-production call chain and was **not** a defect. Phase A cycle reconciliation is
-immediately followed by the canonical shared terminal owner,
-`reconcile_admitted_campaign_terminal`, which iterates every admitted cycle and
-owns each slot/queue terminal disposition. A temporary audit patch that archived
-unstarted Cycle-2 queues in Phase A was therefore reverted so it cannot preempt
-the canonical Phase-B `SKIPPED/MANUAL_REVIEW` or `COOLDOWN` disposition.
+The later lifecycle audit found Cycle-2 atomic admission/materialization,
+WINDOW_15M opening, Scheduler cycle ownership/fairness, WINDOW_1H collection,
+cycle-scoped 1h→4h progression, WINDOW_4H execution/close, and canonical shared
+terminal cleanup structurally cycle-safe.
 
-Cycle-2 atomic admission, frozen tracking authority, materialization, WINDOW_15M
-opening ownership, Scheduler cycle resolution/fairness, and the cycle-scoped
-15m-to-1h barrier have been reviewed with no additional retained defect so far.
+A separate terminal-report contradiction was then proven. The generic factory
+report can be computed from Cycle-1-rooted validation before canonical Phase-B
+two-cycle accounting terminalizes the shared factory row. A Cycle-2 structural
+failure could therefore leave the durable factory row SAFE_STOPPED while its own
+`final_report_json.run_status` still said COMPLETED.
+
+The repair does not add another classifier. After canonical Phase B, the report
+now projects the already-committed non-running factory `run_status`,
+`stop_reason`, and `finished_at`. Missing/active/no-cause durable terminal
+truth fails closed. Post-report integrity then runs, followed by a second exact
+match check so later integrity logic cannot silently re-diverge the report from
+the durable canonical terminal.
 
 ## Cycle-1 terminal-truth repair
 
@@ -100,8 +105,9 @@ non-reusable.
 
 ## Exact next permitted action
 
-Continue the read-only line-by-line audit through standard WINDOW_1H collection,
-the cycle-scoped 1h→4h progression/handoff, WINDOW_4H execution/close, canonical
-two-cycle accounting, and shared terminal/cleanup. No operational authorization,
+Run focused disposable verification for the terminal-report synchronization and
+the existing two-cycle Standard-4H terminal integration, review the exact diff,
+then continue the read-only audit through final two-cycle accounting/report
+composition and action-local terminal evidence. No operational authorization,
 provider contact, Printer run, Scheduler operational execution, or authoritative
 DB mutation is permitted by this handoff.
