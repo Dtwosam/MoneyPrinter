@@ -8,9 +8,9 @@ import tempfile
 import pytest
 
 from printer_v1.db import apply_migrations
-from printer_v1.discovery.memory_observation_activation import freeze_memory_activation_set
 from printer_v1.discovery.permanent_discovery_availability import (
     CONTRACT_BLOCKED,
+    freeze_eligible_reserve,
     MEMORY_OBSERVATION_ELIGIBLE,
     MINIMUM_FREEZE_DEPTH,
     StageBudget,
@@ -211,7 +211,7 @@ def test_four_generic_present_pools_reach_freeze_floor_and_rehydrate_for_cycle(d
         "meteora-damm-v2",
         "raydium",
     }
-    frozen = freeze_memory_activation_set(
+    frozen = freeze_eligible_reserve(
         carriers,
         cycle_seed="cycle-1",
         at=NOW,
