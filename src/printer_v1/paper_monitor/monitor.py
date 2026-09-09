@@ -3,6 +3,10 @@
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
+from printer_v1.contracts.capability_locks import (
+    require_paper_pnl_enabled,
+    require_paper_positions_enabled,
+)
 from printer_v1.paper_monitor.contracts import PaperExitReasonLabel, PaperMonitorStateLabel
 from printer_v1.paper_monitor.evidence import collect_paper_monitor_evidence
 from printer_v1.paper_monitor.positions import calculate_realized_pnl, calculate_unrealized_pnl, classify_paper_pnl_state
@@ -13,6 +17,8 @@ def utc_now() -> datetime:
 
 
 def update_position_extremes(position_payload: Mapping[str, Any], current_price_usd: float) -> dict[str, float]:
+    require_paper_positions_enabled()
+    require_paper_pnl_enabled()
     entry_price = float(position_payload.get("entry_price_usd") or position_payload.get("paper_entry_price") or 0.0)
     if entry_price <= 0:
         return {
@@ -27,6 +33,7 @@ def update_position_extremes(position_payload: Mapping[str, Any], current_price_
 
 
 def classify_paper_monitor_state(position_payload: Mapping[str, Any], monitor_evidence: Mapping[str, Any]) -> PaperMonitorStateLabel:
+    require_paper_positions_enabled()
     if position_payload.get("paper_position_status_label") == "PAPER_POSITION_CLOSED":
         return PaperMonitorStateLabel.MONITOR_CLOSED
     if monitor_evidence.get("paper_monitor_quality_label") == "PAPER_MONITOR_CONTEXT_STALE":
@@ -51,6 +58,7 @@ def classify_paper_monitor_state(position_payload: Mapping[str, Any], monitor_ev
 
 
 def classify_exit_reason(position_payload: Mapping[str, Any], monitor_evidence: Mapping[str, Any]) -> PaperExitReasonLabel:
+    require_paper_positions_enabled()
     state = classify_paper_monitor_state(position_payload, monitor_evidence)
     if state == PaperMonitorStateLabel.MONITOR_ROUTE_RISK:
         return PaperExitReasonLabel.EXIT_REASON_ROUTE_FAILED
@@ -66,10 +74,13 @@ def classify_exit_reason(position_payload: Mapping[str, Any], monitor_evidence: 
 
 
 def paper_position_should_close(position_payload: Mapping[str, Any], monitor_evidence: Mapping[str, Any]) -> bool:
+    require_paper_positions_enabled()
     return classify_exit_reason(position_payload, monitor_evidence) != PaperExitReasonLabel.EXIT_REASON_NO_EXIT
 
 
 def build_paper_exit_payload(position_payload: Mapping[str, Any], monitor_evidence: Mapping[str, Any], now: datetime | None = None) -> dict[str, Any]:
+    require_paper_positions_enabled()
+    require_paper_pnl_enabled()
     current_time = now or utc_now()
     token_snapshot = monitor_evidence.get("token_snapshot") or {}
     exit_price = float(token_snapshot.get("price_usd") or position_payload.get("current_price_usd") or 0.0)
@@ -92,6 +103,8 @@ def build_paper_exit_payload(position_payload: Mapping[str, Any], monitor_eviden
 
 
 def build_monitor_update(db_path_or_conn, paper_position_id: int, target_time: str | None = None) -> dict[str, Any]:
+    require_paper_positions_enabled()
+    require_paper_pnl_enabled()
     evidence = collect_paper_monitor_evidence(db_path_or_conn, paper_position_id, target_time)
     position = evidence.get("paper_position") or {}
     token_snapshot = evidence.get("token_snapshot") or {}
