@@ -8,6 +8,7 @@ import json
 import sqlite3
 from typing import Any, Mapping
 
+from printer_v1.contracts.capability_locks import require_paper_decisions_enabled
 from printer_v1.contracts.enums import DataQualityLabel, SourceStatus
 from printer_v1.paper_decision.classifier import (
     classify_final_paper_action,
@@ -56,6 +57,7 @@ def build_decision_payload(
     requested_action_label: PaperDecisionActionLabel | str | None = None,
     decided_at: datetime | None = None,
 ) -> dict[str, Any]:
+    require_paper_decisions_enabled()
     current_time = decided_at or utc_now()
     enriched = dict(evidence)
     if requested_action_label is not None:
@@ -98,6 +100,7 @@ def build_decision_payload(
 
 
 def record_paper_decision(db_path_or_conn: str | Path | sqlite3.Connection, decision_payload: Mapping[str, Any]) -> int:
+    require_paper_decisions_enabled()
     final_action = PaperDecisionActionLabel(decision_payload["final_action_label"]).value
     status = PaperDecisionStatusLabel(decision_payload["paper_decision_status_label"]).value
     with connect(db_path_or_conn) as connection:
@@ -162,6 +165,7 @@ def record_paper_decision_audit(
     paper_decision_id: int,
     audit_payload: Mapping[str, Any],
 ) -> int:
+    require_paper_decisions_enabled()
     with connect(db_path_or_conn) as connection:
         cursor = connection.execute(
             """
@@ -188,6 +192,7 @@ def build_and_record_paper_decision(
     requested_action_label: PaperDecisionActionLabel | str | None = None,
     target_time: str | None = None,
 ) -> tuple[int, dict[str, Any]]:
+    require_paper_decisions_enabled()
     evidence = collect_paper_decision_evidence(db_path_or_conn, token_id, pair_id, target_time)
     payload = build_decision_payload(evidence, requested_action_label)
     decision_id = record_paper_decision(db_path_or_conn, payload)
@@ -239,6 +244,7 @@ def enqueue_paper_decision_job(
     scheduled_for: datetime,
     reason: str | None = None,
 ) -> tuple[LockResult, int | None]:
+    require_paper_decisions_enabled()
     suffix = reason or "scheduled"
     return enqueue_job(
         db_path_or_conn,
