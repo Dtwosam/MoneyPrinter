@@ -8,6 +8,7 @@ import json
 import sqlite3
 from typing import Any, Mapping
 
+from printer_v1.contracts.capability_locks import require_paper_monitoring_enabled
 from printer_v1.contracts.enums import DataQualityLabel, SourceStatus
 from printer_v1.lifecycle.contracts import TokenLifecycleState
 from printer_v1.scheduler.contracts import JobKind, LockResult
@@ -142,6 +143,8 @@ def record_token_snapshot(
     now: datetime | None = None,
 ) -> tuple[bool, int]:
     normalized = normalize_snapshot_payload(payload)
+    if normalized.get("tracking_lane") == TokenLifecycleState.PAPER_MONITORING.value:
+        require_paper_monitoring_enabled()
     with connect(db_path_or_conn) as connection:
         token_id, pair_id = resolve_token_pair_ids(connection, normalized)
         normalized["token_id"] = token_id
@@ -259,6 +262,8 @@ def enqueue_next_snapshot_job(
 ) -> tuple[LockResult, int | None]:
     lane = TokenLifecycleState(tracking_lane)
     mode = SnapshotMode(snapshot_mode)
+    if lane is TokenLifecycleState.PAPER_MONITORING:
+        require_paper_monitoring_enabled()
     return enqueue_job(
         db_path_or_conn,
         job_name=f"token_snapshot_{token_id}_{pair_id or 0}_{mode.value}",
@@ -284,6 +289,9 @@ def record_snapshot_gap_audit(
     source_status: SourceStatus | str,
     data_quality_label: DataQualityLabel | str,
 ) -> int:
+    lane = TokenLifecycleState(tracking_lane)
+    if lane is TokenLifecycleState.PAPER_MONITORING:
+        require_paper_monitoring_enabled()
     with connect(db_path_or_conn) as connection:
         cursor = connection.execute(
             """
@@ -305,7 +313,7 @@ def record_snapshot_gap_audit(
             (
                 token_id,
                 pair_id,
-                TokenLifecycleState(tracking_lane).value,
+                lane.value,
                 SnapshotMode(snapshot_mode).value,
                 to_timestamp(expected_captured_at),
                 to_timestamp(actual_captured_at) if actual_captured_at else None,
