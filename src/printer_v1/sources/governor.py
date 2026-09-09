@@ -26,6 +26,7 @@ TOKEN_LEVEL_REQUEST_KINDS = frozenset(
         "candidate_market_batch",
         "birdeye_new_listing_nomination",
         "candidate_mint_account_batch",
+        "generic_present_pool_account_batch",
         "pumpfun_migration_signature_page",
         "pumpfun_migration_transaction",
         "pumpswap_pool_account_batch",

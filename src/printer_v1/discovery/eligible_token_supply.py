@@ -1106,7 +1106,7 @@ def _protocol_promotion_candidate(promo: Mapping[str, Any]) -> dict[str, Any]:
         "pumpswap_pool": str(promo.get("pool") or ""),
         "market_identity": str(
             promo.get("market_identity")
-            or f"solana-mainnet:pumpswap:{promo.get('pool')}"
+            or f"solana-mainnet:{promo.get('venue') or 'unknown'}:{promo.get('pool')}"
         ),
         "provenance": "FRESH_AGGREGATOR_PROTOCOL_CONFIRMED",
         "liquidity_usd": promo.get("liquidity_usd"),
@@ -3307,7 +3307,7 @@ def run_persistent_eligible_token_supply(
                     "pumpswap_pool": str(promo.get("pool") or ""),
                     "market_identity": str(
                         promo.get("market_identity")
-                        or f"solana-mainnet:pumpswap:{promo.get('pool')}"
+                        or f"solana-mainnet:{promo.get('venue') or 'unknown'}:{promo.get('pool')}"
                     ),
                     "provenance": "FRESH_AGGREGATOR_PROTOCOL_CONFIRMED",
                     "liquidity_usd": promo.get("liquidity_usd"),

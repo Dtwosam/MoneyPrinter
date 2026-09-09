@@ -86,13 +86,11 @@ def load_campaign_fresh_moe_candidates(
         if str(row["current_state"] or "") not in VISIBLE_STATES:
             continue
         venue = str(row["venue"] or "").strip().lower()
-        if venue != PUMPSWAP_VENUE:
-            continue
         token_program = str(row["token_program_id"] or "").strip()
         pool_program = str(row["pool_program_id"] or "").strip()
-        if not token_program or not pool_program:
+        if token_program not in SUPPORTED_TOKEN_PROGRAMS or not pool_program:
             continue
-        if token_program.startswith(("UNRESOLVED_", "UNKNOWN_")) or pool_program.startswith(("UNRESOLVED_", "UNKNOWN_")):
+        if pool_program.startswith(("UNRESOLVED_", "UNKNOWN_")):
             continue
         expiry_raw = row["evidence_expires_at"]
         if expiry_raw is None or not str(expiry_raw).strip():
@@ -116,13 +114,13 @@ def load_campaign_fresh_moe_candidates(
             continue
         base_mint = str(row["base_mint"] or evidence.get("base_mint") or "").strip()
         quote_mint = str(row["quote_mint"] or evidence.get("quote_mint") or "").strip()
-        if not base_mint or not quote_mint:
+        if base_mint != mint or quote_mint not in ALLOWED_QUOTE_MINTS:
             continue
         candidate = {
             "mint": mint,
             "pool": pool,
             "pumpswap_pool": pool,
-            "market_identity": f"{NETWORK}:{PUMPSWAP_VENUE}:{pool}",
+            "market_identity": f"{NETWORK}:{venue or 'unknown'}:{pool}",
             "provenance": source,
             "nomination_source": source,
             "admission_authority": "MARKET_PRESENT_POOL",
@@ -142,7 +140,7 @@ def load_campaign_fresh_moe_candidates(
             "eligible": True,
             "rejection": None,
             "current_eligibility_status": "ELIGIBLE_FRESH",
-            "source_path": "campaign_fresh_protocol_confirmed_moe_rehydration",
+            "source_path": "campaign_fresh_present_pool_moe_rehydration",
             "raw": {"reserve_evidence": evidence, "reserve_provenance": provenance},
         }
         result.append(candidate)

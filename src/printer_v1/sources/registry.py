@@ -220,6 +220,7 @@ SOURCE_REGISTRY: dict[str, SourceDefinition] = {
             "pumpfun_origin_transaction_reference",
             # V2-9.8B capacity-neutral candidate-acquisition foundation.
             "candidate_mint_account_batch",
+            "generic_present_pool_account_batch",
             "pumpfun_migration_signature_page",
             "pumpfun_migration_transaction",
             "pumpswap_pool_account_batch",

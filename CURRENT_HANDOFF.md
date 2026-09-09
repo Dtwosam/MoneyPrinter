@@ -56,30 +56,31 @@ real Phase-B contract.
 
 ## Current audit checkpoint
 
-Checkpoint 1 repaired Cycle-1 post-holder cooperative resume so campaign-owned
-durable fresh MOE carriers survive the post-holder resume boundary.
+Discovery/admission hardening found a structural multi-source starvation defect.
+The active authority allows exact present-market candidates from DexScreener and
+GeckoTerminal without Pump lineage, but fresh nominations were filtered by
+provider venue and every above-floor row was forced through a PumpSwap-only pool
+decoder. Valid non-Pump/unknown-origin present pools therefore could never reach
+`MEMORY_OBSERVATION_ELIGIBLE`.
 
-Checkpoint 2 repaired the hard +600s Cycle-2 admission seam: the boundary is
-enforced both before a cooperative acquisition quantum and again after a
-PAIR_READY return.
+The repair keeps one conversion owner and one stage budget. Pump/PumpSwap rows
+retain the existing exact PumpSwap decoder. Other above-floor rows use one new
+Source-Governed Solana request kind,
+`generic_present_pool_account_batch`, which proves the supported SPL/Token-2022
+mint program, exact provider mint/base/allowed-quote relationship, exact pool
+account owner, and that the exact owner program account is executable. Provider
+venue remains provenance only and is never promoted to program authority.
 
-The later lifecycle audit found Cycle-2 atomic admission/materialization,
-WINDOW_15M opening, Scheduler cycle ownership/fairness, WINDOW_1H collection,
-cycle-scoped 1h→4h progression, WINDOW_4H execution/close, and canonical shared
-terminal cleanup structurally cycle-safe.
+Promotion now preserves the exact observed token program, pool program and venue
+instead of hardcoding SPL/PumpSwap identities. Campaign fresh-MOE rehydration is
+no longer PumpSwap-only, so the same generic carriers are available to Cycle 1
+post-holder resume and Cycle 2 cooperative resume. Cooperative protocol stage
+sequence reconstruction includes both governed conversion request kinds.
 
-A separate terminal-report contradiction was then proven. The generic factory
-report can be computed from Cycle-1-rooted validation before canonical Phase-B
-two-cycle accounting terminalizes the shared factory row. A Cycle-2 structural
-failure could therefore leave the durable factory row SAFE_STOPPED while its own
-`final_report_json.run_status` still said COMPLETED.
-
-The repair does not add another classifier. After canonical Phase B, the report
-now projects the already-committed non-running factory `run_status`,
-`stop_reason`, and `finished_at`. Missing/active/no-cause durable terminal
-truth fails closed. Post-report integrity then runs, followed by a second exact
-match check so later integrity logic cannot silently re-diverge the report from
-the durable canonical terminal.
+This does not add a second selector, source preference, retry, endpoint rotation,
+or request budget. Holder/safety/tradeability remain their existing downstream
+categorical evidence surfaces; this repair only restores the already-defined
+`MARKET_PRESENT_POOL` memory-observation admission authority.
 
 ## Cycle-1 terminal-truth repair
 
@@ -105,9 +106,10 @@ non-reusable.
 
 ## Exact next permitted action
 
-Verify the fixture-alignment commit in the focused GitHub Actions workflow. If
-green, finish the read-only audit of the final two-cycle accounting/report and
-action-local terminal-evidence surfaces, then record the resulting verified
-HEAD. No operational authorization, provider contact, Printer run, Scheduler
-operational execution, or authoritative DB mutation is permitted by this
-handoff.
+Run focused GitHub verification for the generic present-pool conversion repair.
+Then continue the read-only discovery/admission audit for false-shortage
+conditions in cohort caps, durable work-remaining/universe-exhaustion
+classification, Cycle-1 refresh opportunity, Cycle-2 cooperative quantum
+opportunity, freeze surplus handling and exact two-slot admission. No operational
+authorization, provider contact, Printer run, Scheduler operational execution,
+or authoritative DB mutation is permitted by this handoff.
