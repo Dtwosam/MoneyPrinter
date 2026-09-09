@@ -20,7 +20,7 @@ import re
 import sqlite3
 from typing import Mapping
 
-from printer_v1.contracts.capability_locks import require_scheduler_target_enabled
+from printer_v1.contracts.capability_locks import require_scheduler_enqueue_enabled
 from printer_v1.scheduler import _scheduler_base as _base
 
 # Preserve the complete established Scheduler surface for existing callers.
@@ -44,7 +44,7 @@ def enqueue_job(
 ) -> tuple[LockResult, int | None]:
     """Enforce current capability sequencing before Central Scheduler enqueue."""
 
-    require_scheduler_target_enabled(target_table)
+    require_scheduler_enqueue_enabled(job_kind, target_table)
     return _base.enqueue_job(
         db_or_connection,
         job_name=job_name,
