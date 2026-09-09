@@ -12,6 +12,10 @@ import json
 import sqlite3
 from typing import Any, Mapping
 
+from printer_v1.sources.generic_present_pool_account_batch import (
+    SUPPORTED_TOKEN_PROGRAMS,
+)
+
 NETWORK = "solana-mainnet"
 MOE_LAYER = "MEMORY_OBSERVATION_ELIGIBLE"
 VISIBLE_STATES = frozenset({"CURRENT_VISIBLE", "CURRENT_POOL_CONFIRMED", "SAME_POOL_REOBSERVED"})

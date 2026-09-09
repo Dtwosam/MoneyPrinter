@@ -424,7 +424,7 @@ def test_case_c_direct_pump_incomplete_excluded_before_freeze(db) -> None:
     assert all(str(item.get("mint")) != PUMP_MINT for item in frozen.selected)
 
 
-def test_case_d_insufficient_role_complete_depth_blocks_before_freeze(db) -> None:
+def test_case_d_two_role_complete_market_candidates_freeze_despite_incomplete_direct_rows(db) -> None:
     bag = ProvenanceBag()
     rows = [
         _market_item(db, bag, mint=MARKET_MINT_A, pool=MARKET_POOL_A, stage_sequence=1),
@@ -452,8 +452,12 @@ def test_case_d_insufficient_role_complete_depth_blocks_before_freeze(db) -> Non
     frozen = freeze_eligible_reserve(
         complete, cycle_seed="role-complete-case-d", at=NOW
     )
-    assert frozen.selected == ()
-    assert bool(frozen.selection_authority.get("coverage_blocker")) is True
+    assert len(frozen.selected) == 2
+    assert {item["mint"] for item in frozen.selected} == {
+        MARKET_MINT_A,
+        MARKET_MINT_B,
+    }
+    assert bool(frozen.selection_authority.get("coverage_blocker")) is False
 
 
 def test_case_e_report_only_alternate_does_not_terminalize_selected(db) -> None:

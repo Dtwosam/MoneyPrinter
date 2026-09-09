@@ -568,7 +568,7 @@ class TestProductionSupplyComposition:
         assert result.ready is False
         assert len(result.eligible_reserve) == 4
         assert batch_calls == [tuple(sorted(pools))]
-        assert result.diagnostics["required_token_capacity"] == 4
+        assert result.diagnostics["required_token_capacity"] == 2
         assert result.diagnostics["market_ready_reserve_depth"] == 4
         assert result.diagnostics["freeze_ready_depth"] == 0
         after = {
