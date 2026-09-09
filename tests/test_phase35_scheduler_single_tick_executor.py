@@ -35,13 +35,21 @@ def table_count(connection, table_name):
 
 class Phase35SchedulerSingleTickExecutorTests(unittest.TestCase):
     def setUp(self) -> None:
-        previous = capability_locks.PAPER_DECISIONS_ENABLED
+        previous_retrieval = capability_locks.RETRIEVAL_ACTIVATION_ENABLED
+        previous_decisions = capability_locks.PAPER_DECISIONS_ENABLED
+        capability_locks.RETRIEVAL_ACTIVATION_ENABLED = True
         capability_locks.PAPER_DECISIONS_ENABLED = True
         self.addCleanup(
             setattr,
             capability_locks,
             "PAPER_DECISIONS_ENABLED",
-            previous,
+            previous_decisions,
+        )
+        self.addCleanup(
+            setattr,
+            capability_locks,
+            "RETRIEVAL_ACTIVATION_ENABLED",
+            previous_retrieval,
         )
 
     def make_db(self):
