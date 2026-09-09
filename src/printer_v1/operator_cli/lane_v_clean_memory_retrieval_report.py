@@ -72,8 +72,10 @@ def build_clean_memory_retrieval_report(
     if not p.is_file():
         return _blocked([f"db_path not found: {db_path}"])
 
-    conn = sqlite3.connect(str(p))
+    resolved = p.resolve(strict=True)
+    conn = sqlite3.connect(resolved.as_uri() + "?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA query_only=ON")
     try:
         return _run_report(
             conn,
