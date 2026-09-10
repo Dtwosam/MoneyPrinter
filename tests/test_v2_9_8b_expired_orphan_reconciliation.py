@@ -246,6 +246,17 @@ class ExpiredOrphanFixture:
             encoding="utf-8",
         )
 
+    def inspect(self, orphan_module, *, now: datetime = NOW):
+        return orphan_module.inspect_expired_orphan(
+            self.db,
+            campaign_id=self.campaign_id,
+            run_id=self.run_id,
+            artifact_root=self.artifact_root,
+            expected_db_path=self.db,
+            process_inventory=lambda: (),
+            now=now,
+        )
+
     def close(self) -> None:
         self.tmp.cleanup()
 
@@ -263,15 +274,7 @@ class ExpiredOrphanInspectionTests(unittest.TestCase):
             self.orphan,
             "expired orphan inspector is not implemented",
         )
-        return self.orphan.inspect_expired_orphan(
-            self.fx.db,
-            campaign_id=self.fx.campaign_id,
-            run_id=self.fx.run_id,
-            artifact_root=self.fx.artifact_root,
-            expected_db_path=self.fx.db,
-            process_inventory=lambda: (),
-            now=now,
-        )
+        return self.fx.inspect(self.orphan, now=now)
 
     def test_inspection_detects_exact_eligible_pre_admission_expired_orphan(self) -> None:
         result = self._inspect()
@@ -287,6 +290,88 @@ class ExpiredOrphanInspectionTests(unittest.TestCase):
         first = self._inspect(now=NOW)
         second = self._inspect(now=NOW + timedelta(minutes=10))
         self.assertEqual(first["inspection_sha256"], second["inspection_sha256"])
+
+
+class ExpiredOrphanTerminalizationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.orphan = _load_orphan_module()
+        self.fx = ExpiredOrphanFixture()
+
+    def tearDown(self) -> None:
+        self.fx.close()
+
+    def test_terminalize_pre_admission_orphan_fails_closed_and_releases_exact_lease(self) -> None:
+        self.assertIsNotNone(self.orphan)
+        inspection = self.fx.inspect(self.orphan)
+        self.assertIs(inspection["eligible"], True)
+
+        result = self.orphan.terminalize_expired_orphan(
+            self.fx.db,
+            campaign_id=self.fx.campaign_id,
+            run_id=self.fx.run_id,
+            artifact_root=self.fx.artifact_root,
+            expected_db_path=self.fx.db,
+            inspection_sha256=inspection["inspection_sha256"],
+            operator_approved=True,
+            process_inventory=lambda: (),
+            now=NOW,
+        )
+
+        self.assertEqual(result["status"], "RECOVERED_TERMINAL_FAILED")
+        self.assertEqual(result["first_terminal_cause"], self.orphan.RECOVERY_CAUSE)
+        self.assertEqual(result["source_calls"], 0)
+        self.assertEqual(result["scheduler_runtime_calls"], 0)
+        self.assertFalse(self.fx.lease_path.exists())
+
+        connection = sqlite3.connect(self.fx.db)
+        connection.row_factory = sqlite3.Row
+        try:
+            campaign = connection.execute(
+                "SELECT campaign_state,first_terminal_cause FROM "
+                "printer_memory_factory_campaigns WHERE campaign_id=?",
+                (self.fx.campaign_id,),
+            ).fetchone()
+            run = connection.execute(
+                "SELECT run_state,first_terminal_cause FROM "
+                "printer_memory_factory_campaign_runs WHERE run_id=?",
+                (self.fx.run_id,),
+            ).fetchone()
+            cycle = connection.execute(
+                "SELECT cycle_state,first_terminal_cause FROM "
+                "printer_memory_factory_campaign_cycles WHERE cycle_id=?",
+                (self.fx.cycle_id,),
+            ).fetchone()
+            supervision = connection.execute(
+                """SELECT supervision_state,terminal_status,first_terminal_cause,
+                          cleanup_completed_at,lease_released_at
+                   FROM printer_memory_factory_campaign_supervision
+                   WHERE supervision_id=?""",
+                (self.fx.supervision_id,),
+            ).fetchone()
+        finally:
+            connection.close()
+        self.assertEqual(campaign["campaign_state"], "TERMINAL_FAILED")
+        self.assertEqual(run["run_state"], "TERMINAL_FAILED")
+        self.assertEqual(cycle["cycle_state"], "TERMINAL_FAILED")
+        self.assertEqual(supervision["supervision_state"], "TERMINAL")
+        self.assertEqual(supervision["terminal_status"], "FAILED")
+        self.assertEqual(supervision["first_terminal_cause"], self.orphan.RECOVERY_CAUSE)
+        self.assertIsNotNone(supervision["cleanup_completed_at"])
+        self.assertIsNotNone(supervision["lease_released_at"])
+
+        recovery_root = (
+            self.fx.artifact_root
+            / self.fx.execution_id
+            / "orphan-recovery"
+            / inspection["inspection_sha256"]
+        )
+        self.assertTrue(
+            (recovery_root / "printer_v1.pre-recovery.backup.sqlite3").is_file()
+        )
+        self.assertTrue(
+            (recovery_root / "printer_v1.restore-rehearsal.sqlite3").is_file()
+        )
+        self.assertTrue((recovery_root / "terminal-only-recovery.json").is_file())
 
 
 if __name__ == "__main__":
