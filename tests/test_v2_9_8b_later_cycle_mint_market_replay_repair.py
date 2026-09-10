@@ -841,3 +841,14 @@ def test_generic_insufficient_terminal_is_replaced_by_architecture_fault_when_wo
         result.exhaustion_certificate.last_reason_discovery_could_not_continue
         == "LAWFUL_WORK_REMAINING_WITH_CAPACITY"
     )
+
+
+def test_permanent_market_stage_charges_only_measured_market_calls() -> None:
+    import inspect
+
+    source = inspect.getsource(run_persistent_eligible_token_supply)
+    resolver = source.index("permanent_report = run_dexscreener_batch_market_resolution(")
+    measured = source.index("market_calls = int(front_door.get(\"market_calls\") or 0)")
+    charge = source.index('stage_budget.consume("market_batching", market_calls)')
+    assert resolver < measured < charge
+    assert 'stage_budget.consume("market_batching", 1)' not in source[:resolver]

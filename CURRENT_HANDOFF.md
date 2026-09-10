@@ -4,11 +4,11 @@
 
 Branch: `assistant/v2-9-8b-later-cycle-mint-market-replay-repair`.
 
-The 2026-09-10 four-token Standard-4H operational attempt on HEAD
-`465f55a8ad0cad46fcfde06b6f21a8f3b75fe584` consumed authorization
-`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260910T163157Z_387091e1` once and failed
-closed before lifecycle admission. The exact terminal cause was a duplicate
-six-unit stage identity at `PROTOCOL_CONFIRMATION|2`.
+The 2026-09-10 second four-token Standard-4H operational attempt ran on HEAD
+`ed5c82f950b56f332e6894a5b2375fd1b234316a` under one-shot authorization
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260910T175519Z_b7431591`. It passed the
+previous duplicate `PROTOCOL_CONFIRMATION|2` failure, then failed closed before
+Cycle-1 admission with `BUDGET_EXHAUSTION`.
 
 ## Current capability
 
@@ -18,38 +18,40 @@ the sole source-request owner and Central Scheduler the sole scheduler owner.
 remain locked. Retrieval, decision, position, PnL, wallet, signing and live
 trading capabilities remain locked.
 
-The live failure exposed a non-cooperative protocol-stage sequencing defect:
-early protocol confirmation owns stage 1; refresh ordinal N owns protocol stage
-N+1; final residual protocol was incorrectly hard-coded to stage 2. After any
-refresh ordinal 1 this collided with the refresh-owned stage 2 and the canonical
-duplicate-stage guard correctly terminalized the campaign.
+The second live failure proved a market-stage accounting defect. Permanent
+supply consumed one `market_batching` reservation before calling the canonical
+market resolver, even when the resolver emitted zero measured market calls.
+After a temporal refresh marked the two retained eligible candidates stale for
+mandatory revalidation, the false pre-charge could exhaust the two-slot market
+stage while 13 flat source operations and acquisition time still remained.
 
-The repair preserves the duplicate guard and all source/evidence/budget/admission
-contracts. Final residual protocol now advances beyond the highest refresh-owned
-protocol stage, while remaining stage 2 when no refresh occurred.
+The repair preserves the two-operation `market_batching` ceiling. It keeps the
+pre-call capacity gate but charges the stage only after the resolver returns,
+using the resolver's measured `market_calls`; zero-transport suppressed rounds
+consume zero stage capacity.
 
 ## Latest meaningful result
 
-Focused local verification after the repair:
+Focused local verification after this repair:
 
-- protocol/local-validation boundary: 6 passed;
+- later-cycle mint-market replay repair boundary: 13 passed;
 - integrated four-token Standard-4H audit: 3 passed;
 - affected-module compile: passed;
 - `git diff --check`: passed.
 
-The failed operational campaign is terminal failed, cleanup complete, lease
-released, and has zero active Scheduler work. Its authorization is permanently
-consumed and must never be reused.
+The second failed operational campaign is terminal failed, cleanup complete,
+lease released, and has zero active Scheduler work. Its authorization is
+permanently consumed and must never be reused.
 
 ## Proven blocker
 
-The duplicate non-cooperative residual `PROTOCOL_CONFIRMATION|2` assignment is
-repaired at code/test level. No new operational run has been authorized or
-performed on the repaired HEAD, so live four-memory success is not yet proven.
+The false `market_batching` pre-charge is repaired at code/test level. No new
+operational run has been authorized or performed on the repaired HEAD, so
+literal Cycle-1 admission and four clean 4h memories are not yet proven.
 
 ## Exact next permitted action
 
-Complete focused code review and branch verification for this repair. A later
-operational attempt requires a fresh authorization bound to the exact repaired
-HEAD and current authoritative DB, with the normal read-only migration,
-integrity/FK, zero-active-work, provenance, and prior-non-reuse gates first.
+Review and commit/push this repair, then require a fresh operational authorization
+bound to the exact repaired HEAD and current authoritative DB before any further
+Printer/provider/RPC/Scheduler execution. Do not reuse either consumed 2026-09-10
+authorization.

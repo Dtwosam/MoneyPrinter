@@ -3028,13 +3028,7 @@ def run_persistent_eligible_token_supply(
                         stage_budget.seal("market_batching")
                     last_stop_reason = "DISCOVERY_OPERATION_BUDGET_EXHAUSTED"
                     break
-                try:
-                    stage_budget.consume("market_batching", 1)
-                except ValueError:
-                    budget_exhausted_stage = "market_batching"
-                    budget_exhausted_required_operations = 1
-                    last_stop_reason = "DISCOVERY_OPERATION_BUDGET_EXHAUSTED"
-                    break
+                market_batch_capacity_before = stage_budget.available("market_batching")
                 quantum_rounds += 1
                 from printer_v1.discovery.permanent_discovery_availability import (
                     build_mint_market_batch_request_key,
@@ -3137,6 +3131,13 @@ def run_persistent_eligible_token_supply(
                 )
             last_front_door = front_door
             market_calls = int(front_door.get("market_calls") or 0)
+            if permanent_availability:
+                if market_calls > market_batch_capacity_before:
+                    raise EligibleTokenSupplyError(
+                        "MINT_MARKET_BATCH_ACCOUNTING_EXCEEDED"
+                    )
+                if market_calls:
+                    stage_budget.consume("market_batching", market_calls)
             fresh_market_checks += market_calls
             ops_used += market_calls
             cooldown_skips += int(front_door.get("cooldown_skip_count") or 0)
