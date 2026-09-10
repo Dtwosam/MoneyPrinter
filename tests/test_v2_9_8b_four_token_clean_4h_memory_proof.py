@@ -66,30 +66,30 @@ def _compact_quality_diagnostic(
     ]
 
     return {
-        "cycle_id": str(row["cycle_id"]),
-        "slot_ordinal": int(row["slot_ordinal"]),
-        "physical_window_id": int(row["physical_window_id"]),
-        "campaign_window_state": str(row["campaign_window_state"]),
-        "source_memory_status": str(row["source_memory_status"]),
-        "source_memory_quality_label": str(row["source_memory_quality_label"]),
-        "source_data_quality_label": str(row["source_data_quality_label"]),
-        "source_do_not_train": int(row["source_do_not_train"]),
-        "source_outcome_label": row["source_outcome_label"],
-        "shared_context_ready": shared.get("clean_memory_context_ready"),
-        "close_audit_count": len(close_rows),
-        "lane_k_status": pipeline.get("lane_k_status"),
-        "lane_u2_status": lane_u2.get("lane_u2_status"),
-        "lane_u2_pass_ids": lane_u2.get("coverage_pass_ids"),
-        "e2q_status": e2q.get("e2q_status"),
-        "e2q_blocked_reasons": e2q.get("blocked_reasons"),
-        "lane_q_status": lane_q.get("lane_q_guard_status"),
-        "lane_q_valid_ids": lane_q.get("valid_window_ids"),
-        "lane_q_blocked_ids": lane_q.get("blocked_window_ids"),
-        "lane_q_blocked_reasons": lane_q_reasons,
-        "e2z_status": memory.get("e2z_status"),
-        "e2z_blocked_reasons": memory.get("blocked_reasons"),
-        "episode_id": row["episode_id"],
-        "fingerprint_id": row["fingerprint_id"],
+        "cycle": str(row["cycle_id"]),
+        "slot": int(row["slot_ordinal"]),
+        "wid": int(row["physical_window_id"]),
+        "cw": str(row["campaign_window_state"]),
+        "ms": str(row["source_memory_status"]),
+        "mq": str(row["source_memory_quality_label"]),
+        "dq": str(row["source_data_quality_label"]),
+        "dnt": int(row["source_do_not_train"]),
+        "out": row["source_outcome_label"],
+        "ctx": shared.get("clean_memory_context_ready"),
+        "close_n": len(close_rows),
+        "k": pipeline.get("lane_k_status"),
+        "u2": lane_u2.get("lane_u2_status"),
+        "u2pass": lane_u2.get("coverage_pass_ids"),
+        "e2q": e2q.get("e2q_status"),
+        "e2qr": e2q.get("blocked_reasons"),
+        "q": lane_q.get("lane_q_guard_status"),
+        "qv": lane_q.get("valid_window_ids"),
+        "qb": lane_q.get("blocked_window_ids"),
+        "qr": lane_q_reasons,
+        "z": memory.get("e2z_status"),
+        "zr": memory.get("blocked_reasons"),
+        "ep": row["episode_id"],
+        "fp": row["fingerprint_id"],
     }
 
 
@@ -151,24 +151,24 @@ def test_two_cycle_four_token_real_factory_forms_exactly_four_clean_4h_memories(
         diagnostics = [
             _compact_quality_diagnostic(connection, row) for row in clean_four_hour
         ]
-        assert len(clean_four_hour) == 4, diagnostics
+        assert len(clean_four_hour) == 4, json.dumps(diagnostics, sort_keys=True)
         assert len(
             {
                 (str(row["cycle_id"]), int(row["slot_ordinal"]))
                 for row in clean_four_hour
             }
-        ) == 4, diagnostics
+        ) == 4, json.dumps(diagnostics, sort_keys=True)
         assert len(
             {int(row["physical_window_id"]) for row in clean_four_hour}
-        ) == 4, diagnostics
-        assert all(row["episode_id"] is not None for row in clean_four_hour), diagnostics
-        assert all(
-            row["fingerprint_id"] is not None for row in clean_four_hour
-        ), diagnostics
-        assert len({int(row["episode_id"]) for row in clean_four_hour}) == 4, diagnostics
-        assert len(
-            {int(row["fingerprint_id"]) for row in clean_four_hour}
-        ) == 4, diagnostics
+        ) == 4, json.dumps(diagnostics, sort_keys=True)
+
+        for row, diagnostic in zip(clean_four_hour, diagnostics, strict=True):
+            message = json.dumps(diagnostic, sort_keys=True, separators=(",", ":"))
+            assert row["episode_id"] is not None, message
+            assert row["fingerprint_id"] is not None, message
+
+        assert len({int(row["episode_id"]) for row in clean_four_hour}) == 4
+        assert len({int(row["fingerprint_id"]) for row in clean_four_hour}) == 4
 
         for row in clean_four_hour:
             assert int(row["memory_window_row_id"]) == int(row["physical_window_id"])
