@@ -1034,3 +1034,25 @@ def test_no_score_rank_confidence_weighting_added():
             "weighted_score",
         ):
             assert banned not in text
+
+
+def test_memory_activation_selected_pair_does_not_require_surplus_alternates(db):
+    from dataclasses import replace
+    from test_v2_9_8b_window_15m_source_specific_admission_retained_evidence_repair import (
+        NOW as ACTIVATION_NOW,
+        _activation,
+        _market as build_market_activation,
+    )
+
+    first, first_entries = build_market_activation(
+        db, ordinal=1, source="dexscreener", mint=DEX_MINT, pool=DEX_POOL
+    )
+    second, second_entries = build_market_activation(
+        db, ordinal=2, source="geckoterminal", mint=GECKO_MINT, pool=GECKO_POOL
+    )
+    activation = replace(
+        _activation((first, second), (first_entries, second_entries)),
+        alternates=(),
+    )
+    report = validate_memory_activation_set(db, activation, now=ACTIVATION_NOW)
+    assert report["reconciliation_status"] == "PASS"

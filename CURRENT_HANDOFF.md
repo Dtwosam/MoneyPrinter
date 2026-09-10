@@ -4,11 +4,12 @@
 
 Branch: `assistant/v2-9-8b-later-cycle-mint-market-replay-repair`.
 
-The 2026-09-10 second four-token Standard-4H operational attempt ran on HEAD
-`ed5c82f950b56f332e6894a5b2375fd1b234316a` under one-shot authorization
-`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260910T175519Z_b7431591`. It passed the
-previous duplicate `PROTOCOL_CONFIRMATION|2` failure, then failed closed before
-Cycle-1 admission with `BUDGET_EXHAUSTION`.
+The 2026-09-10 third four-token Standard-4H operational attempt ran untouched
+from Terminal on HEAD `b56c4366acf5f27e4ffe2e936b1ff7a726185ee3` under one-shot
+authorization `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260910T185027Z_e8409028`.
+It passed the prior protocol-sequence and zero-call market-budget defects, reached
+holder/safety enrichment, then failed closed before Cycle-1 admission with
+`ACTIVATION_REPORT_ALTERNATES_INCOMPLETE`.
 
 ## Current capability
 
@@ -18,40 +19,44 @@ the sole source-request owner and Central Scheduler the sole scheduler owner.
 remain locked. Retrieval, decision, position, PnL, wallet, signing and live
 trading capabilities remain locked.
 
-The second live failure proved a market-stage accounting defect. Permanent
-supply consumed one `market_batching` reservation before calling the canonical
-market resolver, even when the resolver emitted zero measured market calls.
-After a temporal refresh marked the two retained eligible candidates stale for
-mandatory revalidation, the false pre-charge could exhaust the two-slot market
-stage while 13 flat source operations and acquisition time still remained.
+The third live failure proved a residual four-candidate assumption in the memory
+activation validator. The canonical freeze gate correctly requires only two fresh
+observation-eligible candidates (`MINIMUM_FREEZE_DEPTH = 2`), and surplus target
+8 is diagnostic only, but activation still required exactly two report-only
+alternates in addition to the two selected slots.
 
-The repair preserves the two-operation `market_batching` ceiling. It keeps the
-pre-call capacity gate but charges the stage only after the resolver returns,
-using the resolver's measured `market_calls`; zero-transport suppressed rounds
-consume zero stage capacity.
+The repair removes only the mandatory alternate-count gate. Exactly two selected
+candidates remain mandatory and retain all identity, tracking, expiry, evidence
+role, manifest, transport and source-response validation. Any 0-2 alternates
+remain report-only diagnostics and do not acquire activation authority.
 
 ## Latest meaningful result
 
 Focused local verification after this repair:
 
-- later-cycle mint-market replay repair boundary: 13 passed;
+- dedicated activation-route boundary: 5 passed;
+- targeted retained-evidence/zero-alternate checks: passed;
 - integrated four-token Standard-4H audit: 3 passed;
 - affected-module compile: passed;
 - `git diff --check`: passed.
 
-The second failed operational campaign is terminal failed, cleanup complete,
-lease released, and has zero active Scheduler work. Its authorization is
-permanently consumed and must never be reused.
+Targeted Cycle-1 admission search found no other production gate requiring 3, 4
+or 8 freeze-ready candidates. Remaining `alternates[:2]` uses are report/state
+projections and tolerate fewer than two items.
+
+The third failed campaign is terminal failed, cleanup complete, lease released,
+and has zero active locked Scheduler work. Its authorization is permanently
+consumed and must never be reused.
 
 ## Proven blocker
 
-The false `market_batching` pre-charge is repaired at code/test level. No new
-operational run has been authorized or performed on the repaired HEAD, so
-literal Cycle-1 admission and four clean 4h memories are not yet proven.
+`ACTIVATION_REPORT_ALTERNATES_INCOMPLETE` is repaired at code/test level. Literal
+Cycle-1 admission and four clean 4h memories remain unproven until a separately
+authorized operational attempt on the repaired exact HEAD.
 
 ## Exact next permitted action
 
-Review and commit/push this repair, then require a fresh operational authorization
-bound to the exact repaired HEAD and current authoritative DB before any further
-Printer/provider/RPC/Scheduler execution. Do not reuse either consumed 2026-09-10
-authorization.
+Review and commit/push this repair. Any further operational attempt requires a
+fresh one-shot authorization bound to the repaired exact HEAD and current
+authoritative DB after the normal integrity/FK/zero-active-work/non-reuse gates.
+Do not reuse any consumed authorization.

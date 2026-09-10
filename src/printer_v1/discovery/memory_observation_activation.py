@@ -1454,10 +1454,6 @@ def validate_memory_activation_set(
         raise MemoryObservationActivationError("ACTIVATION_SET_EXPIRED")
     if len(activation.selected) != 2:
         raise MemoryObservationActivationError("ACTIVATION_SELECTED_PAIR_INCOMPLETE")
-    if len(activation.alternates) != 2:
-        raise MemoryObservationActivationError(
-            "ACTIVATION_REPORT_ALTERNATES_INCOMPLETE"
-        )
     if [item.slot_ordinal for item in activation.selected] != [1, 2]:
         raise MemoryObservationActivationError("ACTIVATION_SLOT_ORDER_INVALID")
     if len(set(activation.manifest_request_ids)) != len(
