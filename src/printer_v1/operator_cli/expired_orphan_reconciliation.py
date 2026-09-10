@@ -1,10 +1,10 @@
-"""Terminal-only expired-orphan inspection for operational four-token Standard-4H.
+"""Terminal-only expired-orphan recovery for operational four-token Standard-4H.
 
-This module is intentionally read-only in its inspection surface.  It proves an
-exact, consumed, non-reusable operational 4/2/2 campaign is abandoned before a
-later terminal-only recovery is permitted.  It performs no source request,
-Scheduler execution, lifecycle continuation, memory promotion, retry, resume,
-restart, rerun, or successor creation.
+Inspection is read-only. Terminalization requires an operator-approved stable
+inspection SHA, a verified backup/restore rehearsal, and a second matching
+inspection immediately before mutation. The recovery never resumes lifecycle
+work, reuses authorization, performs source work, promotes memory, or creates a
+retry/restart/rerun/successor.
 """
 
 from __future__ import annotations
@@ -14,12 +14,14 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import sqlite3
 from typing import Any, Callable, Iterable, Mapping
 
 from printer_v1.db.migrate import canonical_migration_names
 from printer_v1.operator_cli.campaign_active_work import campaign_active_work_report
 from printer_v1.operator_cli.campaign_persistence import campaign_evidence_sha256
+from printer_v1.operator_cli.campaign_supervision import cleanup_campaign_supervision
 from printer_v1.operator_cli.four_token_operational_composition import (
     FOUR_TOKEN_STANDARD_FOUR_HOUR_MODE,
     build_operational_multi_cycle_controller,
@@ -31,14 +33,25 @@ from printer_v1.operator_cli.four_token_proof_zero_state_gate import (
 from printer_v1.operator_cli.multi_cycle_campaign_coordinator import (
     multi_cycle_configuration_contract,
 )
+from printer_v1.operator_cli.operational_backup_restore_preflight import (
+    operational_backup_restore_preflight,
+)
 from printer_v1.operator_cli.operational_campaign_recovery import host_process_inventory
+from printer_v1.operator_cli.unified_terminal_closure import (
+    reconcile_admitted_campaign_terminal,
+    reconcile_campaign_terminal,
+)
 
 
 INSPECTION_SCHEMA_VERSION = (
     "PRINTER_V1_FOUR_TOKEN_STANDARD_4H_EXPIRED_ORPHAN_INSPECTION_V1"
 )
+RECOVERY_SCHEMA_VERSION = (
+    "PRINTER_V1_FOUR_TOKEN_STANDARD_4H_TERMINAL_ONLY_RECOVERY_V1"
+)
 RECOVERY_CAUSE = "OPERATIONAL_CAMPAIGN_ORPHANED_AFTER_LEASE_EXPIRY"
 AUTHORIZED_MODE = FOUR_TOKEN_STANDARD_FOUR_HOUR_MODE
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 class ExpiredOrphanReconciliationError(RuntimeError):
@@ -117,8 +130,8 @@ def _jsonable(value: Any) -> Any:
     return str(value)
 
 
-def _canonical_sha(payload: Mapping[str, Any]) -> str:
-    encoded = (
+def _canonical_bytes(payload: Mapping[str, Any]) -> bytes:
+    return (
         json.dumps(
             _jsonable(payload),
             sort_keys=True,
@@ -128,7 +141,10 @@ def _canonical_sha(payload: Mapping[str, Any]) -> str:
         )
         + "\n"
     ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+
+
+def _canonical_sha(payload: Mapping[str, Any]) -> str:
+    return hashlib.sha256(_canonical_bytes(payload)).hexdigest()
 
 
 def _block(blockers: list[str], code: str) -> None:
@@ -378,6 +394,19 @@ def _memory_snapshot(
     }
 
 
+def _row_counts(
+    connection: sqlite3.Connection,
+    tables: Iterable[str],
+) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for table in tables:
+        if _table_exists(connection, table):
+            counts[table] = int(
+                connection.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
+            )
+    return counts
+
+
 def inspect_expired_orphan(
     db_path: str | Path,
     *,
@@ -462,7 +491,7 @@ def inspect_expired_orphan(
             supervision = dict(supervisions[0])
             try:
                 decoded = json.loads(str(configuration_row["configuration_json"]))
-            except (TypeError, ValueError, json.JSONDecodeError):
+            except (TypeError, ValueError):
                 decoded = None
             if not isinstance(decoded, dict):
                 _block(blockers, "ORPHAN_AUTHORIZATION_EVIDENCE_INVALID")
@@ -556,21 +585,16 @@ def inspect_expired_orphan(
             ).resolve()
             if lease_path != expected_lease_path:
                 _block(blockers, "ORPHAN_LEASE_OWNERSHIP_MISMATCH")
-            lease_payload: dict[str, Any] | None = None
-            if (
-                not lease_path.is_file()
-                or lease_path.is_symlink()
-            ):
+            if not lease_path.is_file() or lease_path.is_symlink():
                 _block(blockers, "ORPHAN_LEASE_FILE_MISSING")
             else:
                 try:
                     raw = json.loads(lease_path.read_text(encoding="utf-8"))
-                except (OSError, ValueError, json.JSONDecodeError):
+                except (OSError, ValueError):
                     raw = None
                 if not isinstance(raw, dict):
                     _block(blockers, "ORPHAN_LEASE_FILE_MALFORMED")
                 else:
-                    lease_payload = raw
                     expected_scope = {
                         "scope": "OPERATIONAL_CAMPAIGN",
                         "supervision_id": supervision.get("supervision_id"),
@@ -634,14 +658,15 @@ def inspect_expired_orphan(
         if first_causes and any(cause != RECOVERY_CAUSE for cause in first_causes):
             _block(blockers, "ORPHAN_FIRST_CAUSE_CONFLICT")
 
+        factory_run_id = (
+            None
+            if run is None or not run.get("authoritative_run_id")
+            else str(run["authoritative_run_id"])
+        )
         active_work = (
             campaign_active_work_report(
                 connection,
-                factory_run_id=(
-                    None
-                    if run is None or not run.get("authoritative_run_id")
-                    else str(run["authoritative_run_id"])
-                ),
+                factory_run_id=factory_run_id,
                 campaign_id=campaign_id,
                 run_id=run_id,
                 cycle_id=None,
@@ -666,7 +691,7 @@ def inspect_expired_orphan(
                 "origin_cycle_id": origin_cycle_id,
                 "supervision_id": None if supervision is None else supervision.get("supervision_id"),
                 "owner_id": None if supervision is None else supervision.get("owner_id"),
-                "factory_run_id": None if run is None else run.get("authoritative_run_id"),
+                "factory_run_id": factory_run_id,
             },
             "command_mode": configuration.get("command_mode"),
             "policy_version": configuration.get("policy_version"),
@@ -709,10 +734,318 @@ def inspect_expired_orphan(
         connection.close()
 
 
+def _post_terminal_evidence(
+    path: Path,
+    *,
+    campaign_id: str,
+    run_id: str,
+    inspection: Mapping[str, Any],
+) -> dict[str, Any]:
+    identity = dict(inspection.get("identity") or {})
+    supervision_id = str(identity.get("supervision_id") or "")
+    factory_run_id = identity.get("factory_run_id")
+    connection = _read_only(path)
+    try:
+        campaign = _one(
+            connection,
+            "SELECT campaign_state,first_terminal_cause FROM "
+            "printer_memory_factory_campaigns WHERE campaign_id=?",
+            (campaign_id,),
+        )
+        run = _one(
+            connection,
+            "SELECT run_state,first_terminal_cause,authoritative_run_id FROM "
+            "printer_memory_factory_campaign_runs WHERE campaign_id=? AND run_id=?",
+            (campaign_id, run_id),
+        )
+        cycles = [
+            dict(row)
+            for row in connection.execute(
+                """SELECT cycle_id,cycle_ordinal,cycle_state,first_terminal_cause
+                   FROM printer_memory_factory_campaign_cycles
+                   WHERE campaign_id=? AND run_id=? ORDER BY cycle_ordinal,cycle_id""",
+                (campaign_id, run_id),
+            ).fetchall()
+        ]
+        supervision = _one(
+            connection,
+            """SELECT supervision_state,terminal_status,first_terminal_cause,
+                      cleanup_completed_at,lease_released_at,lease_lock_path
+               FROM printer_memory_factory_campaign_supervision
+               WHERE supervision_id=? AND campaign_id=? AND run_id=?""",
+            (supervision_id, campaign_id, run_id),
+        )
+        active = campaign_active_work_report(
+            connection,
+            factory_run_id=(None if not factory_run_id else str(factory_run_id)),
+            campaign_id=campaign_id,
+            run_id=run_id,
+            cycle_id=None,
+        )
+        memory = _memory_snapshot(connection, campaign_id=campaign_id, run_id=run_id)
+        counts = _row_counts(
+            connection,
+            (
+                "printer_source_requests",
+                "printer_scheduler_jobs",
+                "printer_episodes",
+                "printer_memory_fingerprints",
+                "printer_memory_factory_campaigns",
+                "printer_memory_factory_campaign_cycles",
+            ),
+        )
+    finally:
+        connection.close()
+    lease_path = Path(str((supervision or {}).get("lease_lock_path") or ""))
+    terminal = bool(
+        campaign
+        and campaign.get("campaign_state") == "TERMINAL_FAILED"
+        and campaign.get("first_terminal_cause") == RECOVERY_CAUSE
+        and run
+        and run.get("run_state") == "TERMINAL_FAILED"
+        and run.get("first_terminal_cause") == RECOVERY_CAUSE
+        and cycles
+        and all(
+            str(row.get("cycle_state")) == "TERMINAL_FAILED"
+            and row.get("first_terminal_cause") == RECOVERY_CAUSE
+            for row in cycles
+        )
+        and supervision
+        and supervision.get("supervision_state") == "TERMINAL"
+        and supervision.get("terminal_status") == "FAILED"
+        and supervision.get("first_terminal_cause") == RECOVERY_CAUSE
+        and supervision.get("cleanup_completed_at") is not None
+        and supervision.get("lease_released_at") is not None
+        and not lease_path.exists()
+        and active.get("clean_terminal") is True
+    )
+    return {
+        "terminal_proven": terminal,
+        "campaign": campaign,
+        "run": run,
+        "cycles": cycles,
+        "supervision": supervision,
+        "active_work": active,
+        "memory": memory,
+        "row_counts": counts,
+        "lease_lock_absent": not lease_path.exists(),
+    }
+
+
+def terminalize_expired_orphan(
+    db_path: str | Path,
+    *,
+    campaign_id: str,
+    run_id: str,
+    artifact_root: str | Path,
+    inspection_sha256: str,
+    operator_approved: bool,
+    expected_db_path: str | Path | None = None,
+    process_inventory: Callable[[], Iterable[tuple[int, str]]] | None = None,
+    now: datetime | None = None,
+    backup_preflight: Callable[..., Mapping[str, Any]] = (
+        operational_backup_restore_preflight
+    ),
+) -> dict[str, Any]:
+    """Explicitly terminalize one approved expired orphan; never resume it."""
+    if operator_approved is not True:
+        raise ExpiredOrphanReconciliationError("ORPHAN_OPERATOR_APPROVAL_REQUIRED")
+    approved_sha = str(inspection_sha256 or "")
+    if _SHA256_RE.fullmatch(approved_sha) is None:
+        raise ExpiredOrphanReconciliationError("ORPHAN_INSPECTION_SHA_INVALID")
+
+    path = Path(db_path).resolve()
+    expected_path = Path(expected_db_path or db_path).resolve()
+    artifacts = Path(artifact_root).resolve()
+    initial = inspect_expired_orphan(
+        path,
+        campaign_id=campaign_id,
+        run_id=run_id,
+        artifact_root=artifacts,
+        expected_db_path=expected_path,
+        process_inventory=process_inventory,
+        now=now,
+    )
+    if initial.get("eligible") is not True:
+        raise ExpiredOrphanReconciliationError(
+            "ORPHAN_INSPECTION_BLOCKED:" + ",".join(initial.get("blockers") or ())
+        )
+    if initial.get("inspection_sha256") != approved_sha:
+        raise ExpiredOrphanReconciliationError("ORPHAN_INSPECTION_SHA_MISMATCH")
+
+    identity = dict(initial["identity"])
+    execution_id = str(identity["execution_id"])
+    recovery_root = (
+        artifacts / execution_id / "orphan-recovery" / approved_sha
+    ).resolve()
+    if recovery_root.exists():
+        raise ExpiredOrphanReconciliationError("ORPHAN_RECOVERY_ARTIFACT_ALREADY_EXISTS")
+    recovery_root.mkdir(parents=True, exist_ok=False)
+    backup_path = recovery_root / "printer_v1.pre-recovery.backup.sqlite3"
+    restore_path = recovery_root / "printer_v1.restore-rehearsal.sqlite3"
+
+    before_connection = _read_only(path)
+    try:
+        before_counts = _row_counts(
+            before_connection,
+            (
+                "printer_source_requests",
+                "printer_scheduler_jobs",
+                "printer_episodes",
+                "printer_memory_fingerprints",
+                "printer_memory_factory_campaigns",
+                "printer_memory_factory_campaign_cycles",
+            ),
+        )
+    finally:
+        before_connection.close()
+    before_memory = _jsonable(initial.get("memory") or {})
+
+    try:
+        backup = dict(
+            backup_preflight(
+                path,
+                expected_source_path=expected_path,
+                expected_source_identity=f"sha256:{initial['database']['sha256']}",
+                backup_path=backup_path,
+                disposable_restore_root=recovery_root,
+                restore_path=restore_path,
+            )
+        )
+    except Exception as exc:
+        raise ExpiredOrphanReconciliationError(
+            f"ORPHAN_BACKUP_PREFLIGHT_BLOCKED:{type(exc).__name__}"
+        ) from exc
+
+    repeated = inspect_expired_orphan(
+        path,
+        campaign_id=campaign_id,
+        run_id=run_id,
+        artifact_root=artifacts,
+        expected_db_path=expected_path,
+        process_inventory=process_inventory,
+        now=now,
+    )
+    if repeated.get("eligible") is not True:
+        raise ExpiredOrphanReconciliationError("ORPHAN_REINSPECTION_BLOCKED")
+    if repeated.get("inspection_sha256") != approved_sha:
+        raise ExpiredOrphanReconciliationError("ORPHAN_INSPECTION_SHA_MISMATCH")
+
+    shape = str(repeated["admitted_shape"])
+    origin_cycle_id = str(identity["origin_cycle_id"])
+    factory_run_id = identity.get("factory_run_id")
+    if shape == "PRE_ADMISSION":
+        reconciliation = reconcile_campaign_terminal(
+            path,
+            campaign_id=campaign_id,
+            run_id=run_id,
+            cycle_id=origin_cycle_id,
+            terminal_cause=RECOVERY_CAUSE,
+            run_status="FAILED",
+            factory_run_id=(None if not factory_run_id else str(factory_run_id)),
+            lifecycle_started=bool(factory_run_id),
+            now=_utc(now).isoformat(),
+        )
+    elif shape in {"CYCLE_1_ADMITTED", "TWO_CYCLES_ADMITTED"}:
+        reconciliation = reconcile_admitted_campaign_terminal(
+            path,
+            campaign_id=campaign_id,
+            run_id=run_id,
+            primary_cycle_id=origin_cycle_id,
+            terminal_cause=RECOVERY_CAUSE,
+            run_status="FAILED",
+            factory_run_id=(None if not factory_run_id else str(factory_run_id)),
+            lifecycle_started=bool(factory_run_id),
+            now=_utc(now).isoformat(),
+        )
+    else:  # defensive: inspection owns admitted-shape validity
+        raise ExpiredOrphanReconciliationError("ORPHAN_ADMITTED_SHAPE_INVALID")
+
+    cleanup = cleanup_campaign_supervision(
+        path,
+        supervision_id=str(identity["supervision_id"]),
+        campaign_id=campaign_id,
+        configuration_id=str(identity["configuration_id"]),
+        run_id=run_id,
+        owner_id=str(identity["owner_id"]),
+        terminal_status="FAILED",
+        first_terminal_cause=RECOVERY_CAUSE,
+        now=_utc(now),
+    )
+
+    post = _post_terminal_evidence(
+        path,
+        campaign_id=campaign_id,
+        run_id=run_id,
+        inspection=repeated,
+    )
+    if post.get("terminal_proven") is not True:
+        raise ExpiredOrphanReconciliationError("ORPHAN_TERMINAL_POSTCONDITION_FAILED")
+    if post.get("row_counts") != before_counts:
+        raise ExpiredOrphanReconciliationError("ORPHAN_FORBIDDEN_ROW_CREATION_DETECTED")
+
+    after_memory = _jsonable(post.get("memory") or {})
+    before_episodes = before_memory.get("episodes", [])
+    before_fingerprints = before_memory.get("fingerprints", [])
+    if after_memory.get("episodes", []) != before_episodes:
+        raise ExpiredOrphanReconciliationError("ORPHAN_MEMORY_EPISODE_CHANGED")
+    if after_memory.get("fingerprints", []) != before_fingerprints:
+        raise ExpiredOrphanReconciliationError("ORPHAN_MEMORY_FINGERPRINT_CHANGED")
+
+    artifact_payload = {
+        "schema_version": RECOVERY_SCHEMA_VERSION,
+        "status": "RECOVERED_TERMINAL_FAILED",
+        "approved_inspection_sha256": approved_sha,
+        "target": identity,
+        "admitted_shape": shape,
+        "first_terminal_cause": RECOVERY_CAUSE,
+        "backup": backup,
+        "reconciliation": _jsonable(reconciliation),
+        "cleanup": _jsonable(cleanup),
+        "postconditions": _jsonable(post),
+        "source_calls": 0,
+        "scheduler_runtime_calls": 0,
+        "restart_created": False,
+        "rerun_created": False,
+        "resume_created": False,
+        "successor_created": False,
+        "new_clean_memory_created": False,
+    }
+    artifact_path = recovery_root / "terminal-only-recovery.json"
+    artifact_error: str | None = None
+    try:
+        with artifact_path.open("x", encoding="utf-8") as handle:
+            handle.write(_canonical_bytes(artifact_payload).decode("utf-8"))
+    except OSError as exc:
+        artifact_error = f"{type(exc).__name__}:{exc}"
+
+    return {
+        "status": "RECOVERED_TERMINAL_FAILED",
+        "first_terminal_cause": RECOVERY_CAUSE,
+        "inspection_sha256": approved_sha,
+        "admitted_shape": shape,
+        "backup": backup,
+        "reconciliation": _jsonable(reconciliation),
+        "cleanup": _jsonable(cleanup),
+        "postconditions": _jsonable(post),
+        "recovery_artifact_path": str(artifact_path),
+        "recovery_artifact_written": artifact_error is None,
+        "recovery_artifact_error": artifact_error,
+        "source_calls": 0,
+        "scheduler_runtime_calls": 0,
+        "restart_created": False,
+        "rerun_created": False,
+        "resume_created": False,
+        "successor_created": False,
+    }
+
+
 __all__ = [
     "AUTHORIZED_MODE",
     "ExpiredOrphanReconciliationError",
     "INSPECTION_SCHEMA_VERSION",
     "RECOVERY_CAUSE",
+    "RECOVERY_SCHEMA_VERSION",
     "inspect_expired_orphan",
+    "terminalize_expired_orphan",
 ]
