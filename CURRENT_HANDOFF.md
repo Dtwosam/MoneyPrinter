@@ -2,137 +2,54 @@
 
 ## Current verified implementation
 
-Branch: `assistant/v2-9-8b-operator-review-readonly-lockout-audit`.
+Branch: `assistant/v2-9-8b-lane8b-paper-decision-lockout-repair`.
 
-Latest fully verified code/test HEAD before this handoff-only update:
-`58adc67614c3af4c0ce4df3f16ab8117abdf7c31`.
+Verified code/test HEAD: `8a5940c83b70eac00a28129b099d38f9a57770cd`.
 
-GitHub Actions run `34411148811`, job `102665605816`, is green on that HEAD:
+GitHub Actions run `34418256952`, job `102687854610`, is green:
 
-- focused reporting/operator-review boundary:
-  **526 passed, 3 subtests passed** in 415.43s;
-- affected report-module compile: passed;
-- diff whitespace check: passed.
-
-The previous broad downstream/lifecycle verification remains green on
-`d6a8839d5b18d15b586e9b9dc108d9a06e8e9e92` via run
-`34401666253`: 29 focused + 27 clean-memory consumer + 46 paper-financial +
-399 shared, 2 deselected, 32 subtests, plus compile and diff checks. This
-reporting-only lane did not re-run that unrelated shared lifecycle suite.
+- focused post-holder/reconciliation: **29 passed**;
+- clean-memory consumer lockout: **27 passed**;
+- legacy Lane 8B / historical decision path group: **100 passed**;
+- paper position/monitor/audit/PnL lockout: **46 passed**;
+- shared discovery/admission/two-cycle Standard-4H: **399 passed, 2 deselected, 32 subtests passed**;
+- affected-module compile and diff whitespace checks passed.
 
 ## Current capability
 
-Printer V1 remains Solana-only, memecoin-only, paper-only. Source Governor is
-the sole governed source-request owner and Central Scheduler is the sole
-Scheduler owner. `WINDOW_5M_MICRO_EVENT` is support-only; `WINDOW_12H` and
-`WINDOW_24H` remain locked.
+Printer V1 remains Solana-only, memecoin-only, paper-only. Source Governor and Central Scheduler remain the sole owners of governed source requests and scheduling. `WINDOW_5M` is support-only; `WINDOW_12H` and `WINDOW_24H` remain locked.
 
-Current capability locks remain false:
+Current capability locks remain false for retrieval activation, paper decisions, paper positions/monitoring, paper audits, and paper PnL.
 
-- `RETRIEVAL_ACTIVATION_ENABLED = False`;
-- `PAPER_DECISIONS_ENABLED = False`;
-- `PAPER_POSITIONS_ENABLED = False`;
-- `PAPER_AUDITS_ENABLED = False`;
-- `PAPER_PNL_ENABLED = False`.
+The legacy post-RC Lane 8B decision bypass is repaired:
 
-The verified discovery -> two-cycle 15m/1h/4h -> clean-memory path and the
-clean-memory/downstream lockout repairs remain unchanged.
+- `build_conservative_paper_decision_payload()` requires the shared paper-decision capability before DB resolution;
+- `_lane8b_insert_conservative_decision()` independently requires the same capability before SQL;
+- the older `build_create_paper_decision_once_payload()` and `_insert_blocked_paper_decision()` are guarded the same way;
+- both CLI surfaces fail with `PAPER_DECISIONS_LOCKED` and create no decision rows while the capability is false;
+- historical future-engine tests enable retrieval/decision capability only inside disposable fixtures and restore the locked defaults afterward.
 
-The reporting/operator-review boundary is now explicitly fail-closed:
-
-- E2U 15m closeout and E2W 5m linkage readers no longer fall back from
-  `mode=ro` to an ordinary writable SQLite connection;
-- E2U and E2W require an existing DB, open with `mode=ro`, enable
-  `PRAGMA query_only=ON`, and propagate read-only-open failure;
-- post-RC Lane 7 clean-memory retrieval reporting, Lane 8A conservative-action
-  readiness review, and Lane 8C conservative-decision audit review share a
-  strict read-only opener with the same `mode=ro` + `query_only` contract;
-- Lane V clean-memory retrieval reporting is likewise physically read-only;
-- those report/review functions contain no write SQL and do not call retrieval,
-  decision, position, monitor, audit, or PnL producer APIs;
-- Lane 7 explicitly reports current retrieval activation as disabled/locked;
-- Lane 8A and Lane 8C explicitly report current paper-decision creation as
-  disabled/locked;
-- Lane 8A may still report that clean memory is suitable for *review*, but while
-  `PAPER_DECISIONS_ENABLED` is false it can no longer recommend proceeding to
-  Lane 8B decision creation. Its next step is the separate deliberate
-  capability-change requirement;
-- legacy fields such as `retrieval_eligible` and
-  `memory_window_retrieval_eligible` remain evidence/review classifications
-  only. Targeted search found no production consumer using them as activation
-  authority;
-- dedicated `operator_review` report persistence remains intentional and is
-  limited to `printer_operator_review_*` tables. Its evidence/summarization
-  reads do not mutate retrieval/paper/lifecycle tables;
-- operator DB historical state labels are descriptive status outputs. Targeted
-  search found no production consumer treating those state constants as
-  permission to activate a locked subsystem.
+Targeted review found no production consumer treating historical readiness labels such as `READY_REAL_DATA_PAPER_DECISION` as activation authority. They remain descriptive/display outputs; actual mutation is independently capability-gated.
 
 ## Latest meaningful result
 
-The audit found two concrete reporting defects and one semantic authorization
-defect.
-
-1. E2U and E2W claimed to be read-only but caught any read-only-open failure and
-   silently reopened SQLite writable.
-2. Lane V and the post-RC Lane 7/8A/8C report/review functions also claimed
-   report-only behavior while opening ordinary writable SQLite connections.
-3. Lane 8A could synthesize the operator recommendation
-   `operator_may_proceed_to_lane8b_conservative_decision_creation` solely from
-   clean-memory review readiness even though the real paper-decision capability
-   lock remained false.
-
-All three are repaired. The focused regression proves the relevant connections
-are physically non-writable, cannot retry as writable when a read-only open
-fails, leave all locked capability tables unchanged, and expose current
-capability-lock state separately from evidence/review eligibility.
+A direct legacy command path that could write `printer_paper_decisions` outside the shared recorder was closed with five production guard lines. The current repair fails before DB/SQL at both public and private writer boundaries and leaves the previously verified Cycle-1/Cycle-2/4h path unchanged.
 
 ## Proven blocker / adjacent defect
 
-No blocker remains in the scoped reporting/operator-review read-only lane.
+No blocker remains in the Lane 8B paper-decision lockout lane.
 
-A separate, concrete adjacent legacy bypass is now proven in
-`src/printer_v1/operator_cli/commands.py`:
+A separate development-safety defect is now proven in the synthetic validation command path:
 
-- `build_conservative_paper_decision_payload()` (post-RC Lane 8B) opens the DB
-  writable;
-- after local eligibility checks it calls
-  `_lane8b_insert_conservative_decision()`;
-- that helper directly inserts into `printer_paper_decisions`;
-- this path does not call `require_paper_decisions_enabled()`.
+- `build_synthetic_validation_payload()` accepts an explicit `--db-path` and passes it to `run_full_synthetic_validation_flow()`;
+- that full flow mutates synthetic discovery/context/memory state before reaching the already-locked retrieval/decision stages;
+- `run_full_synthetic_validation_flow()` nevertheless reports `temp_db_only: True` unconditionally;
+- therefore an explicit non-temporary DB can be mutated by a command represented as temporary synthetic validation.
 
-Therefore the earlier statement that all direct paper-decision creation
-surfaces are locked is incomplete: the primary recorder is locked, but this
-legacy Lane 8B command is still a reachable direct-write bypass. It was not
-modified in the reporting-only lane because Lane 8B is deliberately mutating
-and belongs to the next engineering boundary.
-
-This is **not** operational authorization and does not establish authoritative
-database or live-run readiness. No operational Printer run, live provider/RPC
-or WebSocket execution, Scheduler operation, wallet/signing action, or
-authoritative database mutation was performed.
-
-Default branch `master` remains historically divergent from this active
-development lineage and is not a safe blind merge/rebase target.
+This violates the development rule that synthetic/testing work use disposable state.
 
 ## Exact next permitted action
 
-Begin a narrow development/test-only repair of the legacy post-RC Lane 8B paper
-decision creation boundary in `src/printer_v1/operator_cli/commands.py`.
+Repair only the synthetic-validation disposable-state boundary. Make the public synthetic-validation command incapable of running the mutating full synthetic flow against an operator-supplied/persistent DB path. Prefer an internally created temporary DB and fail closed on attempts to target another DB. Add focused tests proving an explicit DB path is not opened or mutated and the temporary validation flow remains testable.
 
-Prove that `build_conservative_paper_decision_payload()`,
-`_lane8b_insert_conservative_decision()`, and the Lane 8B CLI entry cannot
-emit decision-authority output or insert `printer_paper_decisions` while
-`PAPER_DECISIONS_ENABLED` is false. Reuse the existing capability-lock owner;
-do not create an independent permission system. Preserve disposable historical
-tests by enabling the future capability only inside their test fixture where
-needed.
-
-Repair only this concrete reachable bypass and any directly necessary
-Scheduler/command seam exposed by focused tests. Do not activate retrieval,
-paper positions, monitoring, audits, PnL, live execution, or any operational
-Printer path.
-
-Do not run Printer operationally, use live providers, operate Scheduler jobs, or
-mutate the authoritative database without a new explicit authorization
-boundary.
+Do not activate retrieval, paper decisions, positions, monitoring, audits, PnL, live execution, providers/RPC/WebSockets, operational Scheduler work, or authoritative database mutation.
