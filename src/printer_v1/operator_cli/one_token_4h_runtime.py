@@ -1586,6 +1586,80 @@ def close_current_run_4h(
         window_id = int(cursor.lastrowid)
     else:
         window_id = int(existing[0])
+    if authority == FourHourExecutionAuthority.STANDARD_CAMPAIGN:
+        scheduler_job_id = close_step["scheduler_job_id"]
+        if scheduler_job_id is None:
+            raise ValueError("standard four-hour close lacks Scheduler ownership identity")
+        bindings = connection.execute(
+            """SELECT DISTINCT w.window_id,w.token_row_id,w.pair_row_id,
+                      w.window_kind,w.window_state,w.memory_window_row_id,
+                      w.first_terminal_cause,w.terminal_at,s.token_state
+                 FROM printer_memory_factory_campaign_scheduler_work AS work
+                 JOIN printer_memory_factory_campaign_windows AS w
+                   ON w.campaign_id=work.campaign_id
+                  AND w.run_id=work.run_id
+                  AND w.cycle_id=work.cycle_id
+                  AND w.token_slot_id=work.token_slot_id
+                  AND w.window_id=work.window_id
+                 JOIN printer_memory_factory_campaign_token_slots AS s
+                   ON s.campaign_id=w.campaign_id
+                  AND s.run_id=w.run_id
+                  AND s.cycle_id=w.cycle_id
+                  AND s.token_slot_id=w.token_slot_id
+                WHERE work.scheduler_job_id=?
+                  AND work.factory_run_id=?
+                  AND work.ownership_contract_version='V2_STAGE_SCOPED'
+                  AND work.work_scope='WINDOW_LIFECYCLE'
+                  AND work.stage_id='WINDOW_4H'
+                  AND work.target_category='CAMPAIGN_WINDOW'
+                  AND work.target_identity=w.window_id
+                  AND w.window_kind='WINDOW_4H'""",
+            (int(scheduler_job_id), str(run_id)),
+        ).fetchall()
+        if len(bindings) != 1:
+            raise ValueError(
+                "standard four-hour close campaign binding missing or ambiguous"
+            )
+        owned = bindings[0]
+        if (
+            int(owned["token_row_id"]) != token_id
+            or int(owned["pair_row_id"]) != pair_id
+            or str(owned["window_kind"]) != WINDOW_KIND
+            or str(owned["window_state"]) != "CLOSE_PENDING"
+            or str(owned["token_state"]) != "WINDOW_4H_CONTINUING"
+            or owned["first_terminal_cause"] is not None
+            or owned["terminal_at"] is not None
+        ):
+            raise ValueError(
+                "standard four-hour pre-quality campaign binding identity/state mismatch"
+            )
+        campaign_ownership.bind_window_memory_row_id(
+            connection,
+            window_id=str(owned["window_id"]),
+            memory_window_row_id=window_id,
+        )
+        verify = connection.execute(
+            """SELECT w.memory_window_row_id,w.window_state,
+                      w.first_terminal_cause,w.terminal_at,s.token_state
+                 FROM printer_memory_factory_campaign_windows AS w
+                 JOIN printer_memory_factory_campaign_token_slots AS s
+                   ON s.campaign_id=w.campaign_id
+                  AND s.run_id=w.run_id
+                  AND s.cycle_id=w.cycle_id
+                  AND s.token_slot_id=w.token_slot_id
+                WHERE w.window_id=?""",
+            (str(owned["window_id"]),),
+        ).fetchone()
+        if not (
+            verify is not None
+            and verify["memory_window_row_id"] is not None
+            and int(verify["memory_window_row_id"]) == window_id
+            and str(verify["window_state"]) == "CLOSE_PENDING"
+            and verify["first_terminal_cause"] is None
+            and verify["terminal_at"] is None
+            and str(verify["token_state"]) == "WINDOW_4H_CONTINUING"
+        ):
+            raise ValueError("standard four-hour pre-quality campaign bind readback failed")
     return {
         "closed": True,
         "window_id": window_id,
