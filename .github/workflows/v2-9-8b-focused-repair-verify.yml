@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   focused-repair:
@@ -27,6 +27,183 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e .
           python -m pip install pytest
+      - name: Apply exact recovery CLI wiring once
+        if: github.event_name == 'push'
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("src/printer_v1/operator_cli/operational_memory_factory_command.py")
+          text = path.read_text(encoding="utf-8")
+          sentinel = 'INSPECT_EXPIRED_ORPHAN_MODE = "inspect-expired-orphan"'
+          if sentinel in text:
+              print("recovery CLI wiring already present")
+              raise SystemExit(0)
+
+          def replace_once(old: str, new: str, label: str) -> None:
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label} anchor count={count}, expected exactly 1")
+              text = text.replace(old, new, 1)
+
+          replace_once(
+              '''from printer_v1.operator_cli.operational_campaign_recovery import (
+              production_recovery_paths,
+              recover_exact_orphan,
+          )
+          ''',
+              '''from printer_v1.operator_cli.operational_campaign_recovery import (
+              production_recovery_paths,
+              recover_exact_orphan,
+          )
+          from printer_v1.operator_cli.expired_orphan_reconciliation import (
+              inspect_expired_orphan,
+              terminalize_expired_orphan,
+          )
+          ''',
+              "recovery import",
+          )
+          replace_once(
+              'FOUR_TOKEN_STANDARD_FOUR_HOUR_MODE = "four-token-standard-four-hour-run"\n',
+              'FOUR_TOKEN_STANDARD_FOUR_HOUR_MODE = "four-token-standard-four-hour-run"\n'
+              'INSPECT_EXPIRED_ORPHAN_MODE = "inspect-expired-orphan"\n'
+              'TERMINALIZE_EXPIRED_ORPHAN_MODE = "terminalize-expired-orphan"\n',
+              "recovery mode constants",
+          )
+          replace_once(
+              '''            FOUR_TOKEN_ADMISSION_CHECKPOINT_MODE,
+                      "status", "cooperative-stop", "recover-orphan",
+                      "report-only", "discovery-only",
+          ''',
+              '''            FOUR_TOKEN_ADMISSION_CHECKPOINT_MODE,
+                      INSPECT_EXPIRED_ORPHAN_MODE, TERMINALIZE_EXPIRED_ORPHAN_MODE,
+                      "status", "cooperative-stop", "recover-orphan",
+                      "report-only", "discovery-only",
+          ''',
+              "parser mode choices",
+          )
+          replace_once(
+              '''    parser.add_argument(
+                  "--run-id",
+                  default=None,
+                  help="Exact run identity for report-only (requires --campaign-id).",
+              )
+              args = parser.parse_args(list(argv) if argv is not None else None)
+          ''',
+              '''    parser.add_argument(
+                  "--run-id",
+                  default=None,
+                  help="Exact run identity for report/recovery modes (requires --campaign-id).",
+              )
+              parser.add_argument(
+                  "--inspection-sha256",
+                  default=None,
+                  help="Approved stable inspection SHA for terminalize-expired-orphan only.",
+              )
+              args = parser.parse_args(list(argv) if argv is not None else None)
+          ''',
+              "recovery CLI arguments",
+          )
+          replace_once(
+              '''        if args.mode != "report-only" and (
+                      args.campaign_id is not None or args.run_id is not None
+                  ):
+                      raise OperationalMemoryFactoryError(
+                          "campaign-id/run-id are only valid for report-only"
+                      )
+          ''',
+              '''        exact_identity_modes = {
+                      "report-only",
+                      INSPECT_EXPIRED_ORPHAN_MODE,
+                      TERMINALIZE_EXPIRED_ORPHAN_MODE,
+                  }
+                  if args.mode not in exact_identity_modes and (
+                      args.campaign_id is not None or args.run_id is not None
+                  ):
+                      raise OperationalMemoryFactoryError(
+                          "campaign-id/run-id are only valid for exact report/recovery modes"
+                      )
+                  if args.mode in {
+                      INSPECT_EXPIRED_ORPHAN_MODE,
+                      TERMINALIZE_EXPIRED_ORPHAN_MODE,
+                  } and (not args.campaign_id or not args.run_id):
+                      raise OperationalMemoryFactoryError(
+                          "expired-orphan recovery requires exact campaign-id and run-id"
+                      )
+                  if (
+                      args.mode != TERMINALIZE_EXPIRED_ORPHAN_MODE
+                      and args.inspection_sha256 is not None
+                  ):
+                      raise OperationalMemoryFactoryError(
+                          "inspection-sha256 is only valid for terminalize-expired-orphan"
+                      )
+                  if args.mode == TERMINALIZE_EXPIRED_ORPHAN_MODE:
+                      if not args.inspection_sha256:
+                          raise OperationalMemoryFactoryError(
+                              "terminalize-expired-orphan requires inspection-sha256"
+                          )
+                      if not args.operator_approved:
+                          raise OperationalMemoryFactoryError(
+                              "terminalize-expired-orphan requires explicit operator approval"
+                          )
+          ''',
+              "exact recovery identity validation",
+          )
+          replace_once(
+              '''        elif args.mode == "cooperative-stop":
+                      result = cooperative_stop(operator_approved=args.operator_approved)
+                  elif args.mode == "recover-orphan":
+                      result = recover_orphan(operator_approved=args.operator_approved)
+                  else:
+          ''',
+              '''        elif args.mode == "cooperative-stop":
+                      result = cooperative_stop(operator_approved=args.operator_approved)
+                  elif args.mode == INSPECT_EXPIRED_ORPHAN_MODE:
+                      result = inspect_expired_orphan(
+                          AUTHORITATIVE_DB,
+                          campaign_id=args.campaign_id,
+                          run_id=args.run_id,
+                          artifact_root=ARTIFACT_ROOT,
+                          expected_db_path=AUTHORITATIVE_DB,
+                      )
+                  elif args.mode == TERMINALIZE_EXPIRED_ORPHAN_MODE:
+                      result = terminalize_expired_orphan(
+                          AUTHORITATIVE_DB,
+                          campaign_id=args.campaign_id,
+                          run_id=args.run_id,
+                          artifact_root=ARTIFACT_ROOT,
+                          expected_db_path=AUTHORITATIVE_DB,
+                          inspection_sha256=args.inspection_sha256,
+                          operator_approved=args.operator_approved,
+                      )
+                  elif args.mode == "recover-orphan":
+                      result = recover_orphan(operator_approved=args.operator_approved)
+                  else:
+          ''',
+              "recovery dispatch",
+          )
+          replace_once(
+              '''            "four-token-admission-checkpoint-run, status, cooperative-stop, "
+                      "recover-orphan, "
+          ''',
+              '''            "four-token-admission-checkpoint-run, inspect-expired-orphan, "
+                      "terminalize-expired-orphan, status, cooperative-stop, recover-orphan, "
+          ''',
+              "CLI description",
+          )
+          path.write_text(text, encoding="utf-8", newline="\n")
+          PY
+          git diff --check -- src/printer_v1/operator_cli/operational_memory_factory_command.py
+          if git diff --quiet -- src/printer_v1/operator_cli/operational_memory_factory_command.py; then
+            echo "No CLI patch required"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/printer_v1/operator_cli/operational_memory_factory_command.py
+          git commit -m "feat: wire expired orphan recovery CLI"
+          git push origin HEAD:${GITHUB_REF_NAME}
       - name: Run expired orphan recovery contract
         run: |
           python -m pytest -q \
