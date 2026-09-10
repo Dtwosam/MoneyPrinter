@@ -314,3 +314,21 @@ class DTW93LocalValidationObserverTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_noncooperative_residual_protocol_stage_is_after_refresh_owned_stage():
+    source = textwrap.dedent(
+        inspect.getsource(eligible_token_supply.run_persistent_eligible_token_supply)
+    )
+    tree = ast.parse(source)
+    residual_calls = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            if node.func.id == "process_protocol_confirmation_queue":
+                residual_calls.append(node)
+    assert len(residual_calls) == 1
+    keywords = {kw.arg: kw.value for kw in residual_calls[0].keywords}
+    stage_sequence = keywords["stage_sequence"]
+    assert not (
+        isinstance(stage_sequence, ast.Constant) and stage_sequence.value == 2
+    ), "residual protocol stage must not collide with refresh ordinal 1 stage 2"

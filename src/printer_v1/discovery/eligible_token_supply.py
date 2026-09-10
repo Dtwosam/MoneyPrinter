@@ -3379,6 +3379,18 @@ def run_persistent_eligible_token_supply(
             ):
                 stage_budget.seal("reconciliation")
             # Residual protocol due only (early pass may have already run).
+            # Refresh ordinal N already owns PROTOCOL_CONFIRMATION stage N+1, so
+            # the final residual must advance beyond every completed refresh stage.
+            residual_protocol_stage_sequence = 2
+            if acquisition_ledger is not None:
+                refresh_ordinals = [
+                    int(item.get("refresh_ordinal") or 0)
+                    for item in acquisition_ledger.outcomes
+                    if isinstance(item, Mapping)
+                    and int(item.get("refresh_ordinal") or 0) > 0
+                ]
+                if refresh_ordinals:
+                    residual_protocol_stage_sequence = max(refresh_ordinals) + 2
             residual_protocol = process_protocol_confirmation_queue(
                 connection,
                 stage_budget=stage_budget,
@@ -3395,10 +3407,10 @@ def run_persistent_eligible_token_supply(
                 local_validation_identity_observer=(
                     local_validation_identity_observer
                 ),
-                stage_sequence=2,
+                stage_sequence=residual_protocol_stage_sequence,
                 request_key_prefix=f"{discovery_request_key_prefix}-protocol-residual",
             )
-            # Deterministic merge of protocol sequence 1 and 2.
+            # Deterministic merge of the early and residual protocol stages.
             from printer_v1.discovery.permanent_discovery_availability import (
                 merge_protocol_confirmation_reports,
                 union_market_revalidation_candidates,
