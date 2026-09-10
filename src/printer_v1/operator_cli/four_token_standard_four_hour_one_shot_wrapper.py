@@ -600,6 +600,32 @@ def _default_zero_state_gate(
         ) from exc
 
 
+def _default_pre_launch_check(
+    *, repository_root: Path, environment: Mapping[str, str]
+) -> None:
+    """Reject deterministic source/composition faults before one-shot consumption."""
+    try:
+        from printer_v1.operator_cli.window_15m_concrete_composition import (
+            ConcreteCompositionError,
+            run_window_15m_concrete_composition_preflight,
+        )
+        from printer_v1.sources.operational_source_contracts import (
+            SolanaRpcConfigurationError,
+            validate_window_15m_source_configuration,
+        )
+
+        validate_window_15m_source_configuration(environment)
+        run_window_15m_concrete_composition_preflight(
+            repository_root=str(repository_root),
+            timeout_seconds=5.0,
+            environment=environment,
+        )
+    except (SolanaRpcConfigurationError, ConcreteCompositionError) as exc:
+        raise FourTokenStandardFourHourOneShotWrapperError(
+            "authorization blocked before consumption: "
+            f"composition/source preflight: {exc}"
+        ) from exc
+
 def apply_authorization_once(
     *,
     authorization_file: str | Path,
@@ -693,6 +719,10 @@ def apply_authorization_once(
         or {}
     )
 
+    _default_pre_launch_check(
+        repository_root=root,
+        environment=child_env_preview,
+    )
     staging_dir = app_root / ".staging" / f"{authorization_id}-{uuid.uuid4().hex}"
     staging_active = False
     canonical_created = False

@@ -245,6 +245,41 @@ class OperationalOneShotWrapperTests(unittest.TestCase):
         with _patched_profile(self.fx.profile):
             return operational.apply_authorization_once(**arguments)
 
+    def test_concrete_composition_blocker_leaves_authorization_unconsumed(self) -> None:
+        from printer_v1.operator_cli import window_15m_concrete_composition as concrete
+
+        marker = (
+            self.application_root
+            / self.fx.authorization_id
+            / "application-marker.json"
+        )
+        observed_marker_states: list[bool] = []
+
+        def blocked(**_kwargs):
+            observed_marker_states.append(marker.exists())
+            raise concrete.ConcreteCompositionError(
+                "BROKEN_DETERMINISTIC_COMPOSITION"
+            )
+
+        launcher = _Launcher()
+        with mock.patch.object(
+            concrete,
+            "run_window_15m_concrete_composition_preflight",
+            side_effect=blocked,
+        ):
+            with self.assertRaises(
+                operational.FourTokenStandardFourHourOneShotWrapperError
+            ) as caught:
+                self._apply(launcher)
+
+        self.assertIn(
+            "authorization blocked before consumption",
+            str(caught.exception),
+        )
+        self.assertEqual(observed_marker_states, [False])
+        self.assertEqual(launcher.calls, [])
+        self.assertFalse(marker.exists())
+
     # --- identity -----------------------------------------------------------
 
     def test_authorized_mode_and_schema_identity(self) -> None:

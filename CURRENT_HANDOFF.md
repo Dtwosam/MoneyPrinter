@@ -1,89 +1,86 @@
 # Printer V1 Handoff
 
-## Current verified implementation
+## Current implementation
 
 Branch: `assistant/v2-9-8b-cycle1-cycle2-four-hour-admission-proof`.
 
-Latest fully verified production code/test HEAD before this handoff-only update:
+The current branch HEAD contains the four-token Standard-4H pre-consumption
+composition repair described below. The immediately preceding fully verified
+four-clean-memory production anchor is
 `7b3f7ae2253ae20ee58c1193b2b5b60f57129cc2`.
-
-GitHub Actions run `34471715199` is green on that HEAD:
-
-- focused post-holder/reconciliation boundary: **29 passed**;
-- exact two-cycle/four-token clean-4h-memory proof: **1 passed**;
-- shared discovery/admission/two-cycle Standard-4H boundary: **399 passed, 2 deselected, 32 subtests passed**;
-- affected-module compile: passed;
-- diff whitespace check: passed.
 
 ## Current capability
 
-Printer V1 remains Solana-only, memecoin-only, paper-only. Source Governor remains
-the governed source-request owner and Central Scheduler remains the Scheduler
-owner. Retrieval, decision, position, PnL, signing, wallet and live-trading
-capabilities remain locked. `WINDOW_5M_MICRO_EVENT` is support-only;
+Printer V1 remains Solana-only, memecoin-only, paper-only. Source Governor
+remains the sole governed source-request owner and Central Scheduler remains the
+sole Scheduler owner. Retrieval, decisions, positions, PnL, signing, wallets and
+live trading remain locked. `WINDOW_5M_MICRO_EVENT` is support-only;
 `WINDOW_12H` and `WINDOW_24H` remain locked.
 
-The disposable Standard-4H proof now verifies the requested full four-token,
-two-cycle clean-memory success path: real Cycle-1 admission creates exactly two
-owned slots, Cycle 2 admits a fresh/disjoint exact two-slot pair, both cycles
-progress through their owned `WINDOW_15M -> WINDOW_1H -> WINDOW_4H` lifecycles,
-and the four physical 4h windows each produce one exact clean episode and one
-canonical fingerprint when the governed evidence is clean. Cycle/slot/token/pair/
-physical-window identities and outcomes are required to match throughout.
+The deterministic four-token/two-cycle path still proves exactly two Cycle-1
+slots plus a fresh/disjoint two-slot Cycle 2 can progress through owned
+`WINDOW_15M -> WINDOW_1H -> WINDOW_4H` lifecycles and form four exact clean 4h
+episode/fingerprint pairs when governed evidence is clean.
 
-Cadence, safety, source-quality, snapshot-coverage and clean-memory requirements
-were not weakened. Dirty, stale, conflicting or incomplete evidence remains
-blocked from clean promotion.
+The operational four-token one-shot wrapper now also performs the existing
+zero-I/O source/composition construction preflight before it creates the
+irreversible application marker. A deterministic missing, disabled,
+transportless, wrong-source or invalid RPC configuration therefore blocks while
+the authorization is still unconsumed and before any child launch.
+
+No network reachability probe, retry, endpoint rotation, source ownership,
+Scheduler ownership, evidence gate or clean-memory threshold was added or
+relaxed.
 
 ## Latest meaningful result
 
-The strengthened four-clean-memory regression first proved a real production
-sequencing defect. A clean physical `WINDOW_4H` reached U2 and E2Q successfully,
-but Lane Q returned `CAMPAIGN_WINDOW_BINDING_MISSING`; E2Z therefore never ran
-and the campaign window terminalized as `NO_PROMOTION`.
+A read-only wall-clock operational-readiness audit found a real one-shot
+sequencing defect: unlike the hardened ordinary and two-token Standard-4H
+wrappers, the four-token Standard-4H wrapper could consume its one-use marker
+before running the concrete composition preflight. The child would detect that
+same deterministic local dependency failure only after consumption, while
+retry/rerun/resume/restart/successor are all forbidden.
 
-Root cause: Standard-4H quality gates ran before the owned campaign `WINDOW_4H`
-was identity-bound to its newly closed physical memory row, while Lane Q's
-historical cadence authority intentionally resolves through that exact campaign
-window -> token slot -> tracking queue ownership graph.
+The repair adds the same zero-I/O pre-launch guard before pre-marker staging and
+a focused regression proving a forced `ConcreteCompositionError` sees no marker,
+launches no child and returns an `authorization blocked before consumption`
+error.
 
-Production repair `7b3f7ae2253ae20ee58c1193b2b5b60f57129cc2` fixes only that sequencing.
-For `STANDARD_CAMPAIGN` closes, `close_current_run_4h` now requires the exact
-V2 stage-scoped Scheduler/campaign owner, verifies token/pair/window/state
-identity, binds the physical row through the existing
-`campaign_ownership.bind_window_memory_row_id` owner, and read-back verifies that
-the campaign window remains `CLOSE_PENDING`, the slot remains
-`WINDOW_4H_CONTINUING`, and no terminal cause/time was introduced. The existing
-terminal reconciler still exclusively owns clean/dirty/no-promotion terminal
-classification after U2 -> E2Q -> Lane Q -> E2Z.
-
-The exact regression is green after the repair and proves all four owned 4h
-windows have distinct clean episodes and canonical fingerprints with exact
-identity and matching non-unknown outcomes.
+TDD was demonstrated in an isolated CI checkout: the new test first failed
+because `FourTokenStandardFourHourOneShotWrapperError` was not raised, then
+passed after the repair. The focused wrapper/operational-command/composition set
+then passed with **44 passed, 7 subtests passed**, followed by compile and
+whitespace checks. Treat completion claims as contingent on fresh verification
+of the clean final branch HEAD after temporary CI scaffolding is removed.
 
 ## Proven blocker
 
-No code blocker remains proven in the audited disposable four-token/two-cycle
-Standard-4H clean-memory path.
+No additional deterministic code blocker is currently proven in the audited
+pre-consumption wrapper boundary after this repair.
 
-This does not guarantee that a live market run will always yield four clean
-memories: real candidate scarcity or dirty/stale/conflicting/missing governed
-evidence can lawfully prevent admission or clean promotion. The deterministic
-proof also simulates elapsed time; it is not a four-wall-clock-hour host-uptime
-proof.
+Two operational dependencies remain intentionally outside this deterministic
+proof:
 
-No live provider/RPC execution, authoritative database mutation, wallet/signing,
-or trading operation was authorized or performed in this lane.
+- provider/RPC reachability is learned through the governed runtime, not by an
+  unowned pre-authorization network probe;
+- the one-shot campaign has no generic resume/restart takeover path. A process or
+  host interruption is fail-closed and consumes that authorization, so successful
+  real operation requires the supervised child/host to remain viable through the
+  bounded campaign lifetime.
 
-Default branch `master` remains historically divergent from this active
-development lineage and is not a safe blind merge/rebase target.
+These are not authorization to add retries, endpoint rotation, ungoverned source
+calls or restart semantics.
+
+No live provider/RPC execution, Scheduler operation, authoritative database
+mutation, wallet/signing or trading operation was performed in this lane.
+
+Default branch `master` remains historically divergent from this development
+lineage and is not a safe blind merge/rebase target.
 
 ## Exact next permitted action
 
-Treat `7b3f7ae2253ae20ee58c1193b2b5b60f57129cc2` as the verified production-code
-anchor for this lane. If continuing toward operational use, open a new narrow
-read/test-only readiness lane that explicitly checks real wall-clock supervision,
-provider/RPC readiness and authorization against this anchor. Do not weaken any
-admission, cadence, evidence or clean-memory gate, and do not execute Printer
-operationally or mutate the authoritative database without a new explicit
-authorization boundary.
+Freshly verify and review the clean branch HEAD containing this repair. If that
+is green, the next narrow read/test-only readiness boundary is host/process
+continuity for the full bounded Standard-4H wall-clock lifetime and governed
+provider/RPC failure handling. Do not run Printer operationally or mutate the
+authoritative database without a new explicit authorization boundary.
