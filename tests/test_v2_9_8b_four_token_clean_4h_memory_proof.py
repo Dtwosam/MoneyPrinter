@@ -40,6 +40,12 @@ def test_two_cycle_four_token_real_factory_forms_exactly_four_clean_4h_memories(
                       mw.id AS physical_window_id,
                       mw.window_kind AS source_window_kind,
                       mw.outcome_label AS source_outcome_label,
+                      mw.memory_status AS source_memory_status,
+                      mw.memory_quality_label AS source_memory_quality_label,
+                      mw.data_quality_label AS source_data_quality_label,
+                      mw.do_not_train AS source_do_not_train,
+                      mw.supporting_context_json AS source_context_json,
+                      cw.window_state AS campaign_window_state,
                       e.id AS episode_id,
                       e.token_id AS episode_token_id,
                       e.pair_id AS episode_pair_id,
@@ -65,22 +71,27 @@ def test_two_cycle_four_token_real_factory_forms_exactly_four_clean_4h_memories(
                 ORDER BY cw.cycle_id,slot.slot_ordinal"""
         ).fetchall()
 
-        assert len(clean_four_hour) == 4, [dict(row) for row in clean_four_hour]
+        diagnostics = [dict(row) for row in clean_four_hour]
+        assert len(clean_four_hour) == 4, diagnostics
         assert len(
             {
                 (str(row["cycle_id"]), int(row["slot_ordinal"]))
                 for row in clean_four_hour
             }
-        ) == 4
+        ) == 4, diagnostics
         assert len(
             {int(row["physical_window_id"]) for row in clean_four_hour}
-        ) == 4
-        assert len({int(row["episode_id"]) for row in clean_four_hour}) == 4
-        assert len({int(row["fingerprint_id"]) for row in clean_four_hour}) == 4
+        ) == 4, diagnostics
+        assert all(row["episode_id"] is not None for row in clean_four_hour), diagnostics
+        assert all(
+            row["fingerprint_id"] is not None for row in clean_four_hour
+        ), diagnostics
+        assert len({int(row["episode_id"]) for row in clean_four_hour}) == 4, diagnostics
+        assert len(
+            {int(row["fingerprint_id"]) for row in clean_four_hour}
+        ) == 4, diagnostics
 
         for row in clean_four_hour:
-            assert row["episode_id"] is not None, dict(row)
-            assert row["fingerprint_id"] is not None, dict(row)
             assert int(row["memory_window_row_id"]) == int(row["physical_window_id"])
             assert int(row["episode_token_id"]) == int(row["expected_token_id"])
             assert int(row["episode_pair_id"]) == int(row["expected_pair_id"])
