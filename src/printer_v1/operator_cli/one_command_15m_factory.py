@@ -601,7 +601,28 @@ def _later_cycle_admission_deadline(
         admitted_times.append(admitted_at.astimezone(timezone.utc))
     if admitted_times[0] != admitted_times[1]:
         raise ValueError("Cycle-1 pair admission timestamp is not atomic")
-    return admitted_times[0] + timedelta(
+    admission_anchor = admitted_times[0]
+    factory_run_id = str(
+        getattr(binding, "authoritative_factory_run_id", "") or ""
+    ).strip()
+    if factory_run_id:
+        row = connection.execute(
+            "SELECT started_at FROM printer_memory_factory_runs WHERE run_id=?",
+            (factory_run_id,),
+        ).fetchone()
+        if row is not None:
+            factory_started_at = datetime.fromisoformat(
+                str(row[0]).replace("Z", "+00:00")
+            )
+            if (
+                factory_started_at.tzinfo is None
+                or factory_started_at.utcoffset() is None
+            ):
+                raise ValueError("authoritative factory run start is malformed")
+            admission_anchor = max(
+                admission_anchor, factory_started_at.astimezone(timezone.utc)
+            )
+    return admission_anchor + timedelta(
         seconds=seconds_after_first_cycle
     )
 

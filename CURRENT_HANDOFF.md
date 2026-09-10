@@ -60,3 +60,11 @@ Review and commit/push this repair. Any further operational attempt requires a
 fresh one-shot authorization bound to the repaired exact HEAD and current
 authoritative DB after the normal integrity/FK/zero-active-work/non-reuse gates.
 Do not reuse any consumed authorization.
+
+## Isolated Cycle-2 deadline repair
+
+The fourth four-token Standard-4H operational attempt on HEAD `0328296a66e6ace9f6b7552c79ef3e46ba5e3016` durably admitted both Cycle-1 slots. Cycle 2 was immediately terminalized `BLOCKED` with `LATER_CYCLE_ADMISSION_DEADLINE_EXHAUSTED` because its 600-second deadline was anchored to Cycle-1 slot `created_at`, while real pre-lifecycle discovery consumed roughly that entire interval before the authoritative factory run started.
+
+This isolated repair anchors the Cycle-2 deadline to the later of atomic Cycle-1 slot creation and `printer_memory_factory_runs.started_at`. The 600-second policy and 300-second minimum admission spacing are unchanged. Focused verification: 19 passed across wake ordering, deadline handling, admission checkpoint, and integrated Standard-4H audit; compile and `git diff --check` passed.
+
+Exact next permitted action: do not alter the checkout used by the still-running operational attempt. After that attempt is terminal, integrate this repair into the operational branch and require a fresh one-shot authorization before any new operational execution.
