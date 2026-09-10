@@ -456,8 +456,19 @@ class AdmittedExpiredOrphanRecoveryTests(unittest.TestCase):
                     (fx.campaign_id, fx.run_id),
                 ).fetchall()
                 slots = connection.execute(
-                    """SELECT token_state FROM printer_memory_factory_campaign_token_slots
+                    """SELECT token_state,first_terminal_cause,tracking_queue_id
+                       FROM printer_memory_factory_campaign_token_slots
                        WHERE campaign_id=? AND run_id=? ORDER BY token_slot_id""",
+                    (fx.campaign_id, fx.run_id),
+                ).fetchall()
+                queues = connection.execute(
+                    """SELECT queue_status,tracking_action
+                       FROM printer_tracking_queue
+                       WHERE id IN (
+                           SELECT tracking_queue_id
+                           FROM printer_memory_factory_campaign_token_slots
+                           WHERE campaign_id=? AND run_id=?
+                       ) ORDER BY id""",
                     (fx.campaign_id, fx.run_id),
                 ).fetchall()
                 factory = connection.execute(
@@ -472,7 +483,13 @@ class AdmittedExpiredOrphanRecoveryTests(unittest.TestCase):
                 all(row["first_terminal_cause"] == orphan.RECOVERY_CAUSE for row in cycles)
             )
             self.assertEqual(len(slots), 2 * admitted_cycles)
-            self.assertTrue(all(row["token_state"] == "FAILED" for row in slots))
+            self.assertTrue(all(row["token_state"] == "MANUAL_REVIEW" for row in slots))
+            self.assertTrue(
+                all(row["first_terminal_cause"] == orphan.RECOVERY_CAUSE for row in slots)
+            )
+            self.assertEqual(len(queues), 2 * admitted_cycles)
+            self.assertTrue(all(row["queue_status"] == "SKIPPED" for row in queues))
+            self.assertTrue(all(row["tracking_action"] == "MANUAL_REVIEW" for row in queues))
             self.assertNotIn(factory["run_status"], {"PENDING", "RUNNING"})
         finally:
             fx.close()
