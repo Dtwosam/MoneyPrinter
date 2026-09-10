@@ -84,6 +84,10 @@ from printer_v1.operator_cli.operational_campaign_recovery import (
     production_recovery_paths,
     recover_exact_orphan,
 )
+from printer_v1.operator_cli.expired_orphan_reconciliation import (
+    inspect_expired_orphan,
+    terminalize_expired_orphan,
+)
 from printer_v1.operator_cli.operational_standard_4h import (
     standard_four_hour_capacity_contract,
 )
@@ -155,6 +159,8 @@ FOUR_TOKEN_PROOF_MODE = "four-token-bounded-capacity-proof-run"
 # widens ``standard-four-hour-run`` nor promotes the proof mode to production
 # authority, and it is unreachable without its own one-shot wrapper.
 FOUR_TOKEN_STANDARD_FOUR_HOUR_MODE = "four-token-standard-four-hour-run"
+INSPECT_EXPIRED_ORPHAN_MODE = "inspect-expired-orphan"
+TERMINALIZE_EXPIRED_ORPHAN_MODE = "terminalize-expired-orphan"
 from printer_v1.operator_cli.four_token_admission_checkpoint import (
     CHECKPOINT_RUNTIME_SECONDS as FOUR_TOKEN_ADMISSION_CHECKPOINT_RUNTIME_SECONDS,
     FOUR_TOKEN_ADMISSION_CHECKPOINT_MODE,
@@ -6994,8 +7000,8 @@ def main(argv: Iterable[str] | None = None) -> int:
             "Modes: preflight-only, run, selective-1h-preflight, "
             "selective-1h-proof, standard-four-hour-preflight, "
             "standard-four-hour-run, four-token-standard-four-hour-run, "
-            "four-token-admission-checkpoint-run, status, cooperative-stop, "
-            "recover-orphan, "
+            "four-token-admission-checkpoint-run, inspect-expired-orphan, "
+            "terminalize-expired-orphan, status, cooperative-stop, recover-orphan, "
             "report-only, discovery-only. Candidate acquisition and cursor "
             "recovery are deferred and are not operational prerequisites."
         )
@@ -7008,6 +7014,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             STANDARD_FOUR_HOUR_MODE, FOUR_TOKEN_PROOF_MODE,
             FOUR_TOKEN_STANDARD_FOUR_HOUR_MODE,
             FOUR_TOKEN_ADMISSION_CHECKPOINT_MODE,
+            INSPECT_EXPIRED_ORPHAN_MODE, TERMINALIZE_EXPIRED_ORPHAN_MODE,
             "status", "cooperative-stop", "recover-orphan",
             "report-only", "discovery-only",
         ),
@@ -7021,7 +7028,12 @@ def main(argv: Iterable[str] | None = None) -> int:
     parser.add_argument(
         "--run-id",
         default=None,
-        help="Exact run identity for report-only (requires --campaign-id).",
+        help="Exact run identity for report/recovery modes (requires --campaign-id).",
+    )
+    parser.add_argument(
+        "--inspection-sha256",
+        default=None,
+        help="Approved stable inspection SHA for terminalize-expired-orphan only.",
     )
     args = parser.parse_args(list(argv) if argv is not None else None)
     # Reset action-local identity at the start of every public invocation so a
@@ -7044,12 +7056,40 @@ def main(argv: Iterable[str] | None = None) -> int:
     )
     child_terminal_binding = None
     try:
-        if args.mode != "report-only" and (
+        exact_identity_modes = {
+            "report-only",
+            INSPECT_EXPIRED_ORPHAN_MODE,
+            TERMINALIZE_EXPIRED_ORPHAN_MODE,
+        }
+        if args.mode not in exact_identity_modes and (
             args.campaign_id is not None or args.run_id is not None
         ):
             raise OperationalMemoryFactoryError(
-                "campaign-id/run-id are only valid for report-only"
+                "campaign-id/run-id are only valid for exact report/recovery modes"
             )
+        if args.mode in {
+            INSPECT_EXPIRED_ORPHAN_MODE,
+            TERMINALIZE_EXPIRED_ORPHAN_MODE,
+        } and (not args.campaign_id or not args.run_id):
+            raise OperationalMemoryFactoryError(
+                "expired-orphan recovery requires exact campaign-id and run-id"
+            )
+        if (
+            args.mode != TERMINALIZE_EXPIRED_ORPHAN_MODE
+            and args.inspection_sha256 is not None
+        ):
+            raise OperationalMemoryFactoryError(
+                "inspection-sha256 is only valid for terminalize-expired-orphan"
+            )
+        if args.mode == TERMINALIZE_EXPIRED_ORPHAN_MODE:
+            if not args.inspection_sha256:
+                raise OperationalMemoryFactoryError(
+                    "terminalize-expired-orphan requires inspection-sha256"
+                )
+            if not args.operator_approved:
+                raise OperationalMemoryFactoryError(
+                    "terminalize-expired-orphan requires explicit operator approval"
+                )
         # Preserve the original direct-run fail-closed classification when no
         # wrapper provenance bindings exist. A valid wrapper supplies all four
         # values; only then establish reporting before their deeper validation
@@ -7136,6 +7176,24 @@ def main(argv: Iterable[str] | None = None) -> int:
             result = operational_status()
         elif args.mode == "cooperative-stop":
             result = cooperative_stop(operator_approved=args.operator_approved)
+        elif args.mode == INSPECT_EXPIRED_ORPHAN_MODE:
+            result = inspect_expired_orphan(
+                AUTHORITATIVE_DB,
+                campaign_id=args.campaign_id,
+                run_id=args.run_id,
+                artifact_root=ARTIFACT_ROOT,
+                expected_db_path=AUTHORITATIVE_DB,
+            )
+        elif args.mode == TERMINALIZE_EXPIRED_ORPHAN_MODE:
+            result = terminalize_expired_orphan(
+                AUTHORITATIVE_DB,
+                campaign_id=args.campaign_id,
+                run_id=args.run_id,
+                artifact_root=ARTIFACT_ROOT,
+                expected_db_path=AUTHORITATIVE_DB,
+                inspection_sha256=args.inspection_sha256,
+                operator_approved=args.operator_approved,
+            )
         elif args.mode == "recover-orphan":
             result = recover_orphan(operator_approved=args.operator_approved)
         else:
