@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import hashlib
+import importlib
 import json
 from pathlib import Path
 import sqlite3
@@ -14,6 +15,7 @@ import tempfile
 import unittest
 
 from printer_v1.db import apply_migrations
+from printer_v1.db.migrate import canonical_migration_count, canonical_migration_names
 from printer_v1.operator_cli.campaign_ownership import create_campaign_run
 from printer_v1.operator_cli.campaign_persistence import (
     DB_MODE_OPERATIONAL_PERSISTENT,
@@ -35,11 +37,19 @@ from printer_v1.operator_cli.operational_database_target_binding import (
     PRODUCTION_AUTHORITATIVE,
     build_durable_operational_database_target_expectation,
 )
-from printer_v1.operator_cli import expired_orphan_reconciliation as orphan
 
 
 NOW = datetime(2026, 9, 10, 12, 0, tzinfo=timezone.utc)
 NOW_ISO = NOW.isoformat()
+
+
+def _load_orphan_module():
+    try:
+        return importlib.import_module(
+            "printer_v1.operator_cli.expired_orphan_reconciliation"
+        )
+    except ModuleNotFoundError:
+        return None
 
 
 def _sha256(path: Path) -> str:
@@ -114,8 +124,8 @@ class ExpiredOrphanFixture:
             successor_allowed=False,
             authorized_db_path=str(self.db),
             authorized_pre_mutation_sha256="a" * 64,
-            migration_count=58,
-            migration_head="058_direct_pump_migration_cursor.sql",
+            migration_count=canonical_migration_count(),
+            migration_head=canonical_migration_names()[-1],
         )
         multi_cycle = multi_cycle_configuration_contract(
             build_four_token_proof_policy(
@@ -131,7 +141,7 @@ class ExpiredOrphanFixture:
             "configuration_id": self.configuration_id,
             "run_id": self.run_id,
             "cycle_id": self.cycle_id,
-            "command_mode": expected["policy_version"] and "four-token-standard-four-hour-run",
+            "command_mode": "four-token-standard-four-hour-run",
             "policy_version": POLICY_VERSION,
             "token_capacity": 2,
             "ceilings": {
@@ -242,13 +252,18 @@ class ExpiredOrphanFixture:
 
 class ExpiredOrphanInspectionTests(unittest.TestCase):
     def setUp(self) -> None:
+        self.orphan = _load_orphan_module()
         self.fx = ExpiredOrphanFixture()
 
     def tearDown(self) -> None:
         self.fx.close()
 
     def _inspect(self, *, now: datetime = NOW):
-        return orphan.inspect_expired_orphan(
+        self.assertIsNotNone(
+            self.orphan,
+            "expired orphan inspector is not implemented",
+        )
+        return self.orphan.inspect_expired_orphan(
             self.fx.db,
             campaign_id=self.fx.campaign_id,
             run_id=self.fx.run_id,
