@@ -16,6 +16,83 @@ from tests.test_v2_9_8b_full_four_token_standard4h_audit import (
 )
 
 
+def _compact_quality_diagnostic(
+    connection: sqlite3.Connection,
+    row: sqlite3.Row,
+) -> dict[str, object]:
+    close_rows = connection.execute(
+        """SELECT id,result_json
+             FROM printer_memory_factory_run_steps
+            WHERE token_id=? AND pair_id=?
+              AND step_kind='LONG_CONTINUATION_CLOSE_AUDIT'
+            ORDER BY id""",
+        (int(row["expected_token_id"]), int(row["expected_pair_id"])),
+    ).fetchall()
+    pipeline: dict[str, object] = {}
+    if len(close_rows) == 1:
+        try:
+            close_result = json.loads(str(close_rows[0]["result_json"] or "{}"))
+        except json.JSONDecodeError:
+            close_result = {}
+        if isinstance(close_result, dict):
+            candidate = close_result.get("memory_pipeline")
+            if isinstance(candidate, dict):
+                pipeline = candidate
+
+    source_context = json.loads(str(row["source_context_json"] or "{}"))
+    shared = source_context.get("shared_window_4h_context_evidence", {})
+    if not isinstance(shared, dict):
+        shared = {}
+    lane_u2 = pipeline.get("lane_u2", {})
+    if not isinstance(lane_u2, dict):
+        lane_u2 = {}
+    e2q = pipeline.get("e2q", {})
+    if not isinstance(e2q, dict):
+        e2q = {}
+    lane_q = pipeline.get("lane_q", {})
+    if not isinstance(lane_q, dict):
+        lane_q = {}
+    memory = pipeline.get("memory", {})
+    if not isinstance(memory, dict):
+        memory = {}
+    verdicts = lane_q.get("window_verdicts", [])
+    if not isinstance(verdicts, list):
+        verdicts = []
+    lane_q_reasons = [
+        reason
+        for verdict in verdicts
+        if isinstance(verdict, dict)
+        for reason in (verdict.get("blocked_reasons") or [])
+    ]
+
+    return {
+        "cycle_id": str(row["cycle_id"]),
+        "slot_ordinal": int(row["slot_ordinal"]),
+        "physical_window_id": int(row["physical_window_id"]),
+        "campaign_window_state": str(row["campaign_window_state"]),
+        "source_memory_status": str(row["source_memory_status"]),
+        "source_memory_quality_label": str(row["source_memory_quality_label"]),
+        "source_data_quality_label": str(row["source_data_quality_label"]),
+        "source_do_not_train": int(row["source_do_not_train"]),
+        "source_outcome_label": row["source_outcome_label"],
+        "shared_context_ready": shared.get("clean_memory_context_ready"),
+        "close_audit_count": len(close_rows),
+        "lane_k_status": pipeline.get("lane_k_status"),
+        "lane_u2_status": lane_u2.get("lane_u2_status"),
+        "lane_u2_pass_ids": lane_u2.get("coverage_pass_ids"),
+        "e2q_status": e2q.get("e2q_status"),
+        "e2q_blocked_reasons": e2q.get("blocked_reasons"),
+        "lane_q_status": lane_q.get("lane_q_guard_status"),
+        "lane_q_valid_ids": lane_q.get("valid_window_ids"),
+        "lane_q_blocked_ids": lane_q.get("blocked_window_ids"),
+        "lane_q_blocked_reasons": lane_q_reasons,
+        "e2z_status": memory.get("e2z_status"),
+        "e2z_blocked_reasons": memory.get("blocked_reasons"),
+        "episode_id": row["episode_id"],
+        "fingerprint_id": row["fingerprint_id"],
+    }
+
+
 def test_two_cycle_four_token_real_factory_forms_exactly_four_clean_4h_memories(
     tmp_path,
     monkeypatch,
@@ -71,7 +148,9 @@ def test_two_cycle_four_token_real_factory_forms_exactly_four_clean_4h_memories(
                 ORDER BY cw.cycle_id,slot.slot_ordinal"""
         ).fetchall()
 
-        diagnostics = [dict(row) for row in clean_four_hour]
+        diagnostics = [
+            _compact_quality_diagnostic(connection, row) for row in clean_four_hour
+        ]
         assert len(clean_four_hour) == 4, diagnostics
         assert len(
             {
