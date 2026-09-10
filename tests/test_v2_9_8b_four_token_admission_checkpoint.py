@@ -207,6 +207,43 @@ def test_cycle2_deadline_is_anchored_to_atomic_cycle1_slot_admission() -> None:
     assert deadline != setup + timedelta(minutes=10)
 
 
+def test_cycle2_deadline_does_not_expire_during_cycle1_pre_lifecycle_setup() -> None:
+    connection = sqlite3.connect(":memory:")
+    connection.executescript(
+        """
+        CREATE TABLE printer_memory_factory_campaign_token_slots(
+          cycle_id TEXT, campaign_id TEXT, run_id TEXT, slot_ordinal INTEGER,
+          created_at TEXT
+        );
+        CREATE TABLE printer_memory_factory_runs(
+          run_id TEXT PRIMARY KEY, started_at TEXT NOT NULL
+        );
+        """
+    )
+    slot_created = datetime(2026, 9, 10, 19, 42, 24, tzinfo=timezone.utc)
+    factory_started = datetime(2026, 9, 10, 19, 52, 36, tzinfo=timezone.utc)
+    for ordinal in (1, 2):
+        connection.execute(
+            "INSERT INTO printer_memory_factory_campaign_token_slots VALUES (?,?,?,?,?)",
+            ("c1", "camp", "run", ordinal, slot_created.isoformat()),
+        )
+    connection.execute(
+        "INSERT INTO printer_memory_factory_runs VALUES (?,?)",
+        ("factory-1", factory_started.isoformat()),
+    )
+    deadline = _later_cycle_admission_deadline(
+        connection,
+        binding=SimpleNamespace(
+            campaign_id="camp",
+            campaign_run_id="run",
+            authoritative_factory_run_id="factory-1",
+        ),
+        first_cycle_id="c1",
+        seconds_after_first_cycle=600,
+    )
+    assert deadline == factory_started + timedelta(minutes=10)
+
+
 def test_checkpoint_command_is_classified_as_live_printer_runtime() -> None:
     command = (
         "python -m printer_v1.operator_cli.operational_memory_factory_command "
