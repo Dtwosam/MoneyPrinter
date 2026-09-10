@@ -4,98 +4,86 @@
 
 Branch: `assistant/v2-9-8b-cycle1-cycle2-four-hour-admission-proof`.
 
-Latest fully verified code/test HEAD before this handoff-only update:
-`8c47c0833227f1181e5ff12045ea9dd02cf22cbc`.
+Latest fully verified production code/test HEAD before this handoff-only update:
+`7b3f7ae2253ae20ee58c1193b2b5b60f57129cc2`.
 
-GitHub Actions run `34384741151` is green on that HEAD:
+GitHub Actions run `34471715199` is green on that HEAD:
 
 - focused post-holder/reconciliation boundary: **29 passed**;
-- shared discovery/admission/two-cycle Standard-4H boundary:
-  **399 passed, 2 deselected, 32 subtests passed**;
+- exact two-cycle/four-token clean-4h-memory proof: **1 passed**;
+- shared discovery/admission/two-cycle Standard-4H boundary: **399 passed, 2 deselected, 32 subtests passed**;
 - affected-module compile: passed;
 - diff whitespace check: passed.
 
 ## Current capability
 
-Printer V1 remains Solana-only, memecoin-only, paper-only. Source Governor is
-the sole governed source-request owner and Central Scheduler is the sole
-Scheduler owner. Retrieval, decision, position, PnL, signing, wallet and live
-trading capabilities remain locked. `WINDOW_5M_MICRO_EVENT` is support-only;
+Printer V1 remains Solana-only, memecoin-only, paper-only. Source Governor remains
+the governed source-request owner and Central Scheduler remains the Scheduler
+owner. Retrieval, decision, position, PnL, signing, wallet and live-trading
+capabilities remain locked. `WINDOW_5M_MICRO_EVENT` is support-only;
 `WINDOW_12H` and `WINDOW_24H` remain locked.
 
-The verified path now explicitly includes Cycle 1 and Cycle 2 together:
+The disposable Standard-4H proof now verifies the requested full four-token,
+two-cycle clean-memory success path: real Cycle-1 admission creates exactly two
+owned slots, Cycle 2 admits a fresh/disjoint exact two-slot pair, both cycles
+progress through their owned `WINDOW_15M -> WINDOW_1H -> WINDOW_4H` lifecycles,
+and the four physical 4h windows each produce one exact clean episode and one
+canonical fingerprint when the governed evidence is clean. Cycle/slot/token/pair/
+physical-window identities and outcomes are required to match throughout.
 
-- Cycle-1 admission is owned by the real
-  `CombinedPumpfunCampaignExecutor`, not by pre-seeded test slots;
-- Cycle 1 requires exactly two candidates and atomically commits both token/pair
-  identities, tracking-queue claims, selected slots and first-15m Scheduler
-  handoffs;
-- failure before slot 1, during slot 2, or during the second Scheduler handoff
-  rolls the entire Cycle-1 admission back;
-- the production origin->lifecycle bridge reads the two durable Cycle-1 slots,
-  cancels the executor's superseded first-15m jobs, and materializes an
-  identity-preserving factory selection batch with no reselection;
-- the Standard-4H integration proof begins from an empty Cycle-1 shell, executes
-  real Cycle-1 admission, then admits a fresh/disjoint Cycle 2 through the
-  authoritative later-cycle `PAIR_READY -> CONSUMED` owner;
-- Cycle-1 activation mint/pair identities are required to match the durable
-  Cycle-1 slots, materialized selection rows, tracking lanes, factory run steps
-  and Standard-4H progression rows;
-- Cycle 2 remains campaign-history-disjoint from Cycle 1 and is admitted as an
-  exact two-slot atomic pair;
-- the resulting campaign has exactly four distinct token/pair targets across
-  exactly two cycles;
-- both cycles own exactly two `WINDOW_15M`, two `WINDOW_1H`, and two
-  `WINDOW_4H` lifecycles, for four physical 4h memory windows total;
-- every physical 4h window stays bound to its exact cycle, slot, token and pair;
-- both cycles reach the shared Standard-4H terminal path together;
-- clean-memory promotion remains quality-gated and preserves exact physical
-  window identity in episodes/fingerprints;
-- the integrated four-token run creates no retrieval, paper-decision, position,
-  trade-event or trade-audit activity.
-
-The earlier generic discovery/admission repairs remain covered by the same green
-shared suite: exact-two supply, generic non-Pump present-pool verification and
-protocol->market resume, exact source accounting, MOE recreation, Pump-only
-legacy projections, and the lawful-work false-shortage guard.
+Cadence, safety, source-quality, snapshot-coverage and clean-memory requirements
+were not weakened. Dirty, stale, conflicting or incomplete evidence remains
+blocked from clean promotion.
 
 ## Latest meaningful result
 
-The previous full four-token audit pre-created Cycle-1 slots, so it proved the
-two-cycle 4h lifecycle but did not prove that the real Cycle-1 admission owner
-could feed that lifecycle.
+The strengthened four-clean-memory regression first proved a real production
+sequencing defect. A clean physical `WINDOW_4H` reached U2 and E2Q successfully,
+but Lane Q returned `CAMPAIGN_WINDOW_BINDING_MISSING`; E2Z therefore never ran
+and the campaign window terminalized as `NO_PROMOTION`.
 
-That shortcut is removed in the strengthened disposable proof. The test harness
-can now start with only an empty Cycle-1 campaign shell. The real combined
-executor creates Cycle-1 token/pair rows, tracking authority and two slots; the
-production materialization bridge then feeds those exact identities into the
-same factory that admits Cycle 2 and runs both cycles through Standard-4H.
+Root cause: Standard-4H quality gates ran before the owned campaign `WINDOW_4H`
+was identity-bound to its newly closed physical memory row, while Lane Q's
+historical cadence authority intentionally resolves through that exact campaign
+window -> token slot -> tracking queue ownership graph.
 
-The first strengthened CI run exposed only a test-harness API mistake: the
-low-level executor returns `CampaignExecutionResult`, while `activated_slots`
-belongs to the higher-level driver result. The proof was corrected to read the
-durably committed Cycle-1 slots through the same `_read_activated_slots` owner
-used by the production bridge. No production defect or runtime code change was
-required.
+Production repair `7b3f7ae2253ae20ee58c1193b2b5b60f57129cc2` fixes only that sequencing.
+For `STANDARD_CAMPAIGN` closes, `close_current_run_4h` now requires the exact
+V2 stage-scoped Scheduler/campaign owner, verifies token/pair/window/state
+identity, binds the physical row through the existing
+`campaign_ownership.bind_window_memory_row_id` owner, and read-back verifies that
+the campaign window remains `CLOSE_PENDING`, the slot remains
+`WINDOW_4H_CONTINUING`, and no terminal cause/time was introduced. The existing
+terminal reconciler still exclusively owns clean/dirty/no-promotion terminal
+classification after U2 -> E2Q -> Lane Q -> E2Z.
+
+The exact regression is green after the repair and proves all four owned 4h
+windows have distinct clean episodes and canonical fingerprints with exact
+identity and matching non-unknown outcomes.
 
 ## Proven blocker
 
-None remains in the scoped Cycle-1 admission + Cycle-2 admission + joint
-Standard-4H memory engineering lane.
+No code blocker remains proven in the audited disposable four-token/two-cycle
+Standard-4H clean-memory path.
 
-This is **not** operational authorization and does not establish authoritative
-database or live-run readiness. No operational Printer run, live provider/RPC
-execution, Scheduler operation, or authoritative database mutation was
-performed.
+This does not guarantee that a live market run will always yield four clean
+memories: real candidate scarcity or dirty/stale/conflicting/missing governed
+evidence can lawfully prevent admission or clean promotion. The deterministic
+proof also simulates elapsed time; it is not a four-wall-clock-hour host-uptime
+proof.
+
+No live provider/RPC execution, authoritative database mutation, wallet/signing,
+or trading operation was authorized or performed in this lane.
 
 Default branch `master` remains historically divergent from this active
 development lineage and is not a safe blind merge/rebase target.
 
 ## Exact next permitted action
 
-Begin the next narrow read/test-only boundary from this green state, or resolve
-the intended active integration lineage for this branch. A logical downstream
-engineering boundary is clean-memory -> retrieval/paper-decision lockout.
-
-Do not run Printer operationally or mutate the authoritative database without a
-new explicit authorization boundary.
+Treat `7b3f7ae2253ae20ee58c1193b2b5b60f57129cc2` as the verified production-code
+anchor for this lane. If continuing toward operational use, open a new narrow
+read/test-only readiness lane that explicitly checks real wall-clock supervision,
+provider/RPC readiness and authorization against this anchor. Do not weaken any
+admission, cadence, evidence or clean-memory gate, and do not execute Printer
+operationally or mutate the authoritative database without a new explicit
+authorization boundary.
