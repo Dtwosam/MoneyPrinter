@@ -1,6 +1,6 @@
 # Printer V1 Terminal-Only Expired-Orphan Reconciliation Design
 
-Status: approved design for implementation planning; implementation has not started.
+Status: approved design; written spec awaiting user review; implementation has not started.
 
 Design baseline: branch `assistant/v2-9-8b-cycle1-cycle2-four-hour-admission-proof` at `4403d8e7215a25c055a229497fc05163a9411d98`.
 
@@ -81,7 +81,7 @@ Both require explicit `--campaign-id` and `--run-id`. Neither may fall back to a
 - `--operator-approved`
 - `--inspection-sha256 <sha256>`
 
-The historical `recover-orphan` mode remains byte-for-byte behaviorally separate.
+The historical `recover-orphan` mode remains behaviorally separate and unchanged.
 
 These are recovery/inspection modes, not wrapper-bound run modes. They never accept run authorization bindings and never create a child process.
 
@@ -153,13 +153,13 @@ For an initial orphan candidate, the exact supervision row must be `ACTIVE` or `
 The configured lease file must:
 
 - exist;
-- be a regular readable file;
+- be a regular readable non-symlink file;
 - decode to the exact expected campaign/configuration/run/supervision/owner scope;
 - carry the same authoritative ownership identity as the supervision row.
 
-A missing, malformed, symlinked, or ownership-mismatched lease is not auto-repaired by this first implementation. It is a forensic blocker.
+A missing, malformed, symlinked, or ownership-mismatched lease is not auto-repaired for an initial orphan. It is a forensic blocker.
 
-A terminal-supervision replay is eligible only for one narrow cleanup-completion case: all campaign/factory/work ownership is already terminal and zero-active, the first cause is the recovery cause, but the exact lease release/lock removal did not finish. That replay may invoke only the existing idempotent lease-release cleanup path.
+A terminal-supervision replay is eligible only for one narrow cleanup-completion case: reconciliation/cleanup state is already terminal with zero exact active ownership and the first cause is the recovery cause, but lease release is incomplete. In that case the only permitted mutation is the existing idempotent supervision cleanup/release path. The replay may cover either an exact still-present owned lease file or the case where the file is already absent but `lease_released_at` was not durably finished; any ownership ambiguity still blocks.
 
 ### 6.6 Four-token admitted-shape proof
 
@@ -189,7 +189,7 @@ The recovery owner never broad-cancels by status alone.
 
 The first implementation handles the pure abrupt-orphan case and its own idempotent continuation.
 
-Before first recovery mutation, every existing campaign/run/cycle/supervision first-terminal-cause field must be either null or absent. The recovery cause is then:
+Before first recovery mutation, every existing campaign/run/cycle/supervision first-terminal-cause field must be null or absent. The recovery cause is then:
 
 `OPERATIONAL_CAMPAIGN_ORPHANED_AFTER_LEASE_EXPIRY`
 
@@ -206,8 +206,9 @@ The read-only inspector returns a canonical mapping with a versioned schema. At 
 - command mode and exact policy/capacity evidence;
 - immutable authorization and non-reuse facts;
 - current database path/SHA/integrity/migration evidence;
-- host-process evidence;
-- supervision/lease/lease-file evidence;
+- recovery-code Git provenance;
+- matched live Printer process IDs only, which must be empty for eligibility;
+- supervision/lease/lease-file durable evidence;
 - admitted cycle/slot shape;
 - linked factory-run identity, if any;
 - exact active work/Scheduler identities;
@@ -216,9 +217,11 @@ The read-only inspector returns a canonical mapping with a versioned schema. At 
 - the expected recovery first cause;
 - eligibility status and blocker codes.
 
-`inspection_sha256` is the SHA-256 of the canonical inspection payload excluding the `inspection_sha256` field itself.
+`inspection_sha256` is the SHA-256 of a stable canonical inspection payload excluding the `inspection_sha256` field itself.
 
-The mutating command must rerun the complete inspection immediately before recovery and require exact SHA equality with `--inspection-sha256`. Any state drift blocks before database mutation.
+Volatile observation metadata must not enter the hash. In particular, the wall-clock time at which inspection ran, host-enumeration timing, elapsed durations, or other values that change merely because the same unchanged state is inspected later are excluded. Lease hashing uses the durable heartbeat/expiry values plus the boolean `lease_expired`; process hashing uses the sorted matched Printer runtime PID set; database hashing uses the current durable file identity/SHA. Therefore an unchanged eligible orphan produces the same inspection SHA on an immediate later reinspection, while any meaningful durable/process/authorization/ownership change produces a different SHA.
+
+The mutating command must rerun the complete inspection immediately before recovery and require exact SHA equality with `--inspection-sha256`. Any meaningful state drift blocks before database mutation.
 
 This is not a new campaign authorization. It is a stale-state guard over an explicitly approved terminal-only recovery action.
 
@@ -226,9 +229,15 @@ This is not a new campaign authorization. It is a stale-state guard over an expl
 
 An eligible terminalization must create a verified pre-recovery backup and restore rehearsal using the existing `operational_backup_restore_preflight` owner before authoritative database mutation.
 
+Recovery artifacts are scoped deterministically by the approved inspection SHA:
+
+- `<execution-root>/orphan-recovery/<inspection_sha256>/printer_v1.pre-recovery.backup.sqlite3`
+- `<execution-root>/orphan-recovery/<inspection_sha256>/printer_v1.restore-rehearsal.sqlite3`
+- `<execution-root>/orphan-recovery/<inspection_sha256>/terminal-only-recovery.json`
+
 The backup is bound to the current recovery-time database SHA, not the historical pre-run authorization SHA.
 
-After backup creation, the recovery owner reruns the read-only inspection. If its canonical SHA differs from the operator-approved inspection SHA, recovery stops before database mutation.
+After backup creation, the recovery owner reruns the read-only inspection. If its stable canonical SHA differs from the operator-approved inspection SHA, recovery stops before database mutation.
 
 The backup is forensic protection only. This design does not authorize automatically restoring the authoritative database from it.
 
@@ -294,9 +303,9 @@ A recovery command must not report success if these postconditions are not prove
 
 ## 12. Recovery artifact
 
-After terminal postconditions are proven, write one immutable recovery artifact under the original execution artifact root, for example:
+After terminal postconditions are proven, write exactly one immutable recovery artifact at:
 
-`<execution-root>/orphan-recovery/terminal-only-recovery.json`
+`<execution-root>/orphan-recovery/<inspection_sha256>/terminal-only-recovery.json`
 
 It contains:
 
@@ -382,31 +391,32 @@ The zero-state gate, historical `recover-orphan`, source owners, Scheduler runti
 Implementation begins with failing disposable-state tests. The minimum matrix is:
 
 1. eligible expired orphan is detected read-only;
-2. visible live Printer process blocks;
-3. non-expired lease blocks;
-4. missing/malformed/mismatched lease blocks;
-5. wrong command mode/policy blocks;
-6. malformed or reusable authorization facts block;
-7. second active supervision/ambiguous ownership blocks;
-8. invalid cycle/slot shape blocks;
-9. changed state causes inspection-SHA mismatch before mutation;
-10. backup/restore-preflight failure causes zero authoritative mutation;
-11. pre-admission orphan terminalizes without creating lifecycle work;
-12. one-cycle/two-slot orphan terminalizes through existing shared owner;
-13. two-cycle/four-slot orphan terminalizes both cycles and all exact slots;
-14. linked factory run/steps become non-active;
-15. exact active Scheduler/discovery/pre-admission/refresh ownership becomes zero;
-16. already-clean 4h episodes/fingerprints are preserved byte-for-byte in identity/payload terms;
-17. incomplete windows create zero new clean episodes/fingerprints;
-18. no new source-request or Scheduler-job rows are created;
-19. retrieval/decision/position/PnL/trading and 12h/24h deltas remain zero;
-20. recovery replay after reconcile-before-cleanup partial state succeeds with the same cause;
-21. lease-release-only cleanup replay succeeds;
-22. fully recovered state is a zero-mutation no-op;
-23. conflicting first cause/terminal residue blocks;
-24. existing historical `recover-orphan` behavior remains unchanged;
-25. existing four-token zero-state tests remain read-only and unchanged in semantics;
-26. existing four-token two-cycle clean-memory integration proof remains green.
+2. repeated inspection of unchanged state produces the same inspection SHA;
+3. visible live Printer process blocks;
+4. non-expired lease blocks;
+5. missing/malformed/mismatched initial-orphan lease blocks;
+6. wrong command mode/policy blocks;
+7. malformed or reusable authorization facts block;
+8. second active supervision/ambiguous ownership blocks;
+9. invalid cycle/slot shape blocks;
+10. meaningful changed state causes inspection-SHA mismatch before mutation;
+11. backup/restore-preflight failure causes zero authoritative mutation;
+12. pre-admission orphan terminalizes without creating lifecycle work;
+13. one-cycle/two-slot orphan terminalizes through existing shared owner;
+14. two-cycle/four-slot orphan terminalizes both cycles and all exact slots;
+15. linked factory run/steps become non-active;
+16. exact active Scheduler/discovery/pre-admission/refresh ownership becomes zero;
+17. already-clean 4h episodes/fingerprints are preserved byte-for-byte in identity/payload terms;
+18. incomplete windows create zero new clean episodes/fingerprints;
+19. no new source-request or Scheduler-job rows are created;
+20. retrieval/decision/position/PnL/trading and 12h/24h deltas remain zero;
+21. recovery replay after reconcile-before-cleanup partial state succeeds with the same cause;
+22. lease-release-only cleanup replay succeeds;
+23. fully recovered state is a zero-mutation no-op;
+24. conflicting first cause/terminal residue blocks;
+25. existing historical `recover-orphan` behavior remains unchanged;
+26. existing four-token zero-state tests remain read-only and unchanged in semantics;
+27. existing four-token two-cycle clean-memory integration proof remains green.
 
 No test may contact live providers/RPC/WebSockets or mutate the authoritative production database.
 
