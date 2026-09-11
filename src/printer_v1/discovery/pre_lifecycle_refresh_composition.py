@@ -909,7 +909,11 @@ def build_pre_lifecycle_refresh_stage(
                     request_key_prefix=request_key_prefix,
                 )
                 if cooperative_yield
-                else refresh_stage_sequence
+                else _next_stage_sequence(
+                    _stage_evidence_sink,
+                    stage_kind="PROTOCOL_CONFIRMATION",
+                    fallback=refresh_stage_sequence,
+                )
             )
             report = dict(
                 process_protocol_confirmation_queue(

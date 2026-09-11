@@ -890,6 +890,72 @@ def test_real_protocol_stage_seals_are_unique_across_cooperative_producers(
     connection.close()
 
 
+def test_noncooperative_refresh_uses_owned_protocol_sequence_after_residual(
+    monkeypatch, tmp_path
+) -> None:
+    path = tmp_path / "refresh-protocol-owned-sequence.sqlite3"
+    apply_migrations(path)
+    connection = sqlite3.connect(path)
+    captured: list[tuple[int, str]] = []
+
+    class Sink:
+        def __call__(self, _evidence):
+            return None
+
+        def next_stage_sequence(self, stage_kind):
+            if stage_kind == "PROTOCOL_CONFIRMATION":
+                return 4
+            if stage_kind == "UNKNOWN_LIQUIDITY_BACKUP":
+                return 3
+            raise AssertionError(stage_kind)
+
+    monkeypatch.setattr(
+        "printer_v1.operator_cli.graduated_supply_front_door.run_fresh_profile_locator",
+        lambda *_args, **_kwargs: {
+            "source_requests": 1,
+            "status": "empty",
+            "pool_observations": [],
+            "request_id": 1,
+            "response_id": 1,
+        },
+    )
+    monkeypatch.setattr(
+        refresh_composition,
+        "run_bounded_unknown_liquidity_backup",
+        lambda *_args, **_kwargs: {"source_requests": 0},
+    )
+
+    def protocol(_connection, *, stage_sequence, request_key_prefix, **_kwargs):
+        captured.append((stage_sequence, request_key_prefix))
+        return {
+            "source_requests": 0,
+            "promoted_observation_eligible": [],
+            "shared_source_failures": 0,
+        }
+
+    monkeypatch.setattr(refresh_composition, "process_protocol_confirmation_queue", protocol)
+    stage = refresh_composition.build_pre_lifecycle_refresh_stage(
+        db_path=path,
+        request_key_prefix=ROOT,
+        locator_transport=object(),
+        stage_evidence_sink=Sink(),
+    )
+
+    stage(
+        connection,
+        campaign_id="campaign-g-residual",
+        run_id="run-g-residual",
+        cycle_id="cycle-g-residual",
+        discovery_work_id="work-g-residual",
+        scheduler_job_id=1,
+        refresh_ordinal=2,
+        source_operations_remaining=4,
+        now=NOW,
+    )
+
+    assert captured == [(4, f"{ROOT}-refresh-2-protocol")]
+    connection.close()
+
 def test_cooperative_refresh_uses_shared_protocol_sequence_allocator(
     monkeypatch, tmp_path
 ) -> None:
