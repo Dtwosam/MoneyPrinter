@@ -1801,7 +1801,10 @@ def _run_standard_factory_loop(
     def close_audit_with_clean_first_hour(connection, step, **kwargs):
         result = real_close_audit(connection, step, **kwargs)
         if (
-            str(step["step_kind"]) == "CONTINUATION_CLOSE_AUDIT"
+            str(step["step_kind"]) in {
+                "CONTINUATION_CLOSE_AUDIT",
+                "LONG_CONTINUATION_CLOSE_AUDIT",
+            }
             and result.get("ok")
             and result.get("memory_window_id") is not None
         ):
@@ -1813,6 +1816,12 @@ def _run_standard_factory_loop(
                 window_id=int(result["memory_window_id"]),
                 snapshot_id=int(result.get("snapshot_id") or 1),
             )
+            if str(step["step_kind"]) == "LONG_CONTINUATION_CLOSE_AUDIT":
+                pipeline = dict(result.get("memory_pipeline") or {})
+                memory_event = dict(pipeline.get("memory") or {})
+                memory_event["e2z_status"] = "E2Z_MEMORY_CREATED"
+                pipeline["memory"] = memory_event
+                result["memory_pipeline"] = pipeline
         return result
 
     monkeypatch.setattr(

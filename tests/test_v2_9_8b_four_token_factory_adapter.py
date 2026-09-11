@@ -320,7 +320,7 @@ class FourTokenFactoryAdapterTests(unittest.TestCase):
             result["reasons"],
         )
 
-    def test_four_token_strict_4h_validation_accepts_two_truthful_terminal_memories(
+    def test_four_token_strict_4h_validation_rejects_nonclean_terminal_memories(
         self,
     ) -> None:
         strict_complete = {
@@ -363,11 +363,14 @@ class FourTokenFactoryAdapterTests(unittest.TestCase):
                 factory_run_id="factory-1",
                 cycle_id="cycle-1",
             )
-        self.assertTrue(result["four_token_through_4h_complete"])
-        self.assertEqual(result["reasons"], [])
-        self.assertEqual(
-            result["durable_token_slot_ids"],
-            ["slot-cycle-1-1", "slot-cycle-1-2"],
+        self.assertFalse(result["four_token_through_4h_complete"])
+        self.assertIn(
+            "FOUR_TOKEN_4H_MEMORY_NOT_CLEAN:slot-cycle-1-1",
+            result["reasons"],
+        )
+        self.assertIn(
+            "FOUR_TOKEN_4H_MEMORY_NOT_CLEAN:slot-cycle-1-2",
+            result["reasons"],
         )
 
     def test_four_token_strict_4h_validation_rejects_foreign_slot_set(self) -> None:

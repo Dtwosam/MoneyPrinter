@@ -776,12 +776,12 @@ def test_protocol_stage_sequence_allocator_is_monotonic_for_every_producer(
     connection = sqlite3.connect(path)
     allocated: list[int] = []
     producer_keys = (
-        lambda sequence: f"{ROOT}-protocol-q{sequence}-1",
-        lambda sequence: f"{ROOT}-protocol-q{sequence}-1",
-        lambda sequence: f"{ROOT}-protocol-residual-q{sequence}-1",
-        lambda sequence: f"{ROOT}-refresh-2-protocol-q{sequence}-1",
+        (lambda sequence: f"{ROOT}-protocol-q{sequence}-1", "generic_present_pool_account_batch"),
+        (lambda sequence: f"{ROOT}-protocol-q{sequence}-1", "pumpswap_pool_account_batch"),
+        (lambda sequence: f"{ROOT}-protocol-residual-q{sequence}-1", "generic_present_pool_account_batch"),
+        (lambda sequence: f"{ROOT}-refresh-2-protocol-q{sequence}-1", "pumpswap_pool_account_batch"),
     )
-    for build_key in producer_keys:
+    for build_key, request_kind in producer_keys:
         sequence = availability.next_protocol_confirmation_stage_sequence(
             connection, request_key_prefix=ROOT
         )
@@ -790,8 +790,8 @@ def test_protocol_stage_sequence_allocator_is_monotonic_for_every_producer(
             connection.execute(
                 "INSERT INTO printer_source_requests("
                 "source_name,request_kind,request_key,requested_at,source_status,data_quality_label) "
-                "VALUES ('solana_rpc','pumpswap_pool_account_batch',?,?, 'COMPLETE','CLEAN_DATA')",
-                (build_key(sequence), NOW),
+                "VALUES ('solana_rpc',?,?,?, 'COMPLETE','CLEAN_DATA')",
+                (request_kind, build_key(sequence), NOW),
             ).lastrowid
         )
         connection.execute(

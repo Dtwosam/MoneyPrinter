@@ -256,6 +256,51 @@ def test_supply_failure_terminalizes_once_without_retry_or_successor(database) -
         connection.close()
 
 
+
+def test_supply_failure_terminal_timestamp_follows_completed_source_work(database) -> None:
+    path, _, _ = database
+
+    def failed_supply(**_):
+        observed = datetime.now(timezone.utc)
+        connection = sqlite3.connect(path)
+        try:
+            connection.execute(
+                "INSERT INTO printer_source_requests("
+                "source_name,request_kind,request_key,requested_at,source_status,data_quality_label) "
+                "VALUES ('solana_rpc','pumpswap_pool_account_batch','cycle2-late-source',?,"
+                "'COMPLETE','CLEAN_DATA')",
+                (observed.isoformat(),),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        raise RuntimeError("injected accounting failure after source work")
+
+    callback = AuthoritativeLiveOperationalCampaignOwner(
+        later_cycle_candidate_supply=failed_supply
+    )._build_later_cycle_discovery_callback(
+        db_path=path, configuration_id="configuration-1"
+    )
+    result = _invoke(callback)
+    assert result.state == "FAILED"
+
+    connection = sqlite3.connect(path)
+    try:
+        terminal_at = datetime.fromisoformat(
+            connection.execute(
+                "SELECT terminal_at FROM printer_pre_admission_discovery_attempts"
+            ).fetchone()[0]
+        )
+        requested_at = datetime.fromisoformat(
+            connection.execute(
+                "SELECT requested_at FROM printer_source_requests "
+                "WHERE request_key='cycle2-late-source'"
+            ).fetchone()[0]
+        )
+    finally:
+        connection.close()
+    assert terminal_at >= requested_at
+
 def test_missing_supply_terminalizes_blocked_and_cancels_scheduler(database) -> None:
     path, _, _ = database
     callback = AuthoritativeLiveOperationalCampaignOwner()._build_later_cycle_discovery_callback(

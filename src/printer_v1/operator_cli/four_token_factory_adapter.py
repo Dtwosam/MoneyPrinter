@@ -352,8 +352,11 @@ def four_token_cycle_through_4h_validation(
             strict_reasons.append(f"FOUR_TOKEN_4H_SLOT_NOT_CLOSED:{slot_id}")
         if item.get("memory_window_row_id") is None:
             strict_reasons.append(f"FOUR_TOKEN_4H_MEMORY_NOT_BOUND:{slot_id}")
-        if str(item.get("window_state") or "") not in terminal_states:
+        window_state = str(item.get("window_state") or "")
+        if window_state not in terminal_states:
             strict_reasons.append(f"FOUR_TOKEN_4H_WINDOW_NOT_SUCCESS_TERMINAL:{slot_id}")
+        if window_state not in {"CLEAN_PROMOTED", "ALREADY_EXISTS_IDEMPOTENT"}:
+            strict_reasons.append(f"FOUR_TOKEN_4H_MEMORY_NOT_CLEAN:{slot_id}")
         if list(item.get("reasons") or ()):
             strict_reasons.append(f"FOUR_TOKEN_4H_WINDOW_VALIDATION_FAILED:{slot_id}")
 

@@ -9,6 +9,7 @@ import pytest
 from printer_v1.operator_cli import four_token_factory_adapter as adapter
 from printer_v1.operator_cli import one_command_15m_factory as factory
 from printer_v1.operator_cli import one_token_4h_runtime
+from printer_v1.memory.clean_object_promotion import promote_clean_object
 from printer_v1.operator_cli.campaign_ownership import (
     campaign_scheduler_work_id,
     project_campaign_scheduler_job,
@@ -461,8 +462,8 @@ def _completed_cycle(
                 "window_end_at,snapshot_start_id,snapshot_end_id,memory_status,"
                 "data_quality_label,window_status,memory_quality_label,outcome_label,"
                 "do_not_train,supporting_context_json) VALUES "
-                "(?,?,'WINDOW_4H',?,?,?,?,?,?,'DIRTY_MEMORY','DIRTY_DATA',"
-                "'WINDOW_CLOSED','DIRTY_MEMORY','CONSOLIDATION',1,'{}')",
+                "(?,?,'WINDOW_4H',?,?,?,?,?,?,'PARTIAL_MEMORY','CLEAN_DATA',"
+                "'WINDOW_CLOSED','PARTIAL_MEMORY','CONSOLIDATION',0,?)",
                 (
                     token_id,
                     pair_id,
@@ -472,16 +473,31 @@ def _completed_cycle(
                     str(steps[-1]["scheduled_for"]),
                     int(snapshot_steps[0]["snapshot_id"]),
                     int(snapshot_steps[-1]["snapshot_id"]),
+                    json.dumps({
+                        "e2q_audited": True,
+                        "e2q_audited_by": "four_token_cycle_accounting_fixture",
+                        "snapshot_id": int(snapshot_steps[-1]["snapshot_id"]),
+                        "shared_window_4h_context_evidence": {
+                            "clean_memory_context_ready": True,
+                        },
+                    }, sort_keys=True),
                 ),
             ).lastrowid
         )
+        promoted = promote_clean_object(connection, window_id=memory_id)
+        assert promoted.status == "CREATED"
         binding = factory._bind_owned_long_memory_window_at_close(
             connection,
             scheduler_job_id=int(close["scheduler_job_id"]),
             memory_window_row_id=memory_id,
-            result={"memory_pipeline": {"lane_k_status": "LANE_K_BLOCKED", "memory": None}},
+            result={
+                "memory_pipeline": {
+                    "lane_k_status": "LANE_K_COMPLETE",
+                    "memory": {"e2z_status": "E2Z_MEMORY_CREATED"},
+                }
+            },
         )
-        assert binding is not None and binding["window_state"] == "DIRTY"
+        assert binding is not None and binding["window_state"] == "CLEAN_PROMOTED"
 
     first_step = connection.execute(
         "SELECT step_key FROM printer_memory_factory_run_steps "

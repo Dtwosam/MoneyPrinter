@@ -135,3 +135,11 @@ def test_composition_and_coordinator_forward_cumulative_coverage():
     campaign_source = inspect.getsource(campaign)
     assert '"prior_source_request_coverage": list(' in campaign_source
     assert '"source_request_coverage": list(' in campaign_source
+
+
+def test_cycle2_temporal_refresh_uses_two_token_freeze_depth_contract():
+    from printer_v1.operator_cli import authoritative_live_operational_campaign as campaign
+
+    source = inspect.getsource(campaign.AuthoritativeLiveOperationalCampaignOwner.run_operational)
+    assert "required_capacity=4" not in source
+    assert "required_capacity=MINIMUM_FREEZE_DEPTH" in source

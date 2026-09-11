@@ -1362,7 +1362,10 @@ def next_protocol_confirmation_stage_sequence(
         rows = connection.execute(
             """SELECT request_key FROM printer_source_requests
                WHERE source_name='solana_rpc'
-                 AND request_kind='pumpswap_pool_account_batch'
+                 AND request_kind IN (
+                     'pumpswap_pool_account_batch',
+                     'generic_present_pool_account_batch'
+                 )
                  AND request_key LIKE ?
                ORDER BY id ASC""",
             (f"{prefix}-%",),

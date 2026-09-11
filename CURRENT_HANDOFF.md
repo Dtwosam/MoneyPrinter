@@ -4,94 +4,66 @@
 
 Branch: `assistant/v2-9-8b-later-cycle-mint-market-replay-repair`.
 
-The latest 2026-09-11 four-token Standard-4H operational attempt used authorization
-`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260911T114100Z_3fd609b4` on HEAD
-`729d5d5ae3d4d568e33a1f405228239833c99eec`. It reached Cycle-1 lifecycle work,
-then terminalized safely. Cleanup completed, the lease was released, active
-Scheduler/factory/campaign work is zero, and the authorization is consumed and
-permanently non-reusable.
+Current working repair is based on HEAD `3fea021169f87d25c773daeb5866863f2d840c44`.
+The latest operational four-token Standard-4H attempt used consumed authorization
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260911T125355Z_fd058235` and campaign
+`20260911T125702Z-7722e529dce2-campaign`. That authorization is permanently
+non-reusable. The attempt terminalized safely with zero active Scheduler/factory
+work and exposed a Cycle-2 six-unit stage collision after Cycle 1 completed its
+15-minute lifecycle work.
 
 ## Current capability
 
-Printer V1 remains Solana-only, memecoin-only, paper-only. Source Governor is
-the sole governed source-request owner and Central Scheduler the sole scheduler
-owner. `WINDOW_5M_MICRO_EVENT` remains support-only; `WINDOW_12H` and
-`WINDOW_24H` remain locked. Retrieval, decision, position, PnL, wallet, signing
-and live trading capabilities remain locked.
+Printer V1 remains Solana-only, memecoin-only, paper-only. Source Governor is the
+sole governed source-request owner and Central Scheduler the sole scheduler owner.
+`WINDOW_5M_MICRO_EVENT` remains support-only; `WINDOW_12H` and `WINDOW_24H`
+remain locked. Dirty, partial, conflicting, stale, or missing-critical evidence
+must not become training memory.
 
 ## Latest meaningful result
 
-The latest failed attempt proved a second-refresh stage-identity collision in addition
-to the previously repaired terminal-precedence and scheduler-reentry defects.
+A line-by-line audit of the Cycle-2 path found four concrete correctness issues.
 
-1. Terminal precedence: Cycle 1 could have canonical successful 15m accounting
-   while the shared factory had already persisted a campaign-wide non-completion
-   stop such as `LATER_CYCLE_ADMISSION_DEADLINE_EXHAUSTED`. Reconciliation now
-   honors that persisted campaign stop before strict four-token 4h completion
-   validation. Genuine completion still requires strict through-4h proof.
-2. Scheduler re-entry starvation: a RUNNING Cycle-2 attempt could cooperatively
-   re-enter even when its boundary explicitly returned `LIFECYCLE_WORK`, causing
-   due Cycle-1 Scheduler work to be skipped repeatedly until the Cycle-2 deadline.
-   `LIFECYCLE_WORK` now preempts Cycle-2 cooperative re-entry so the due lifecycle
-   job executes; Cycle 2 may re-enter afterward.
+1. Protocol-stage sequence allocation ignored `generic_present_pool_account_batch`
+   while sharing the same `protocol-qN-*` namespace with PumpSwap. The allocator
+   now reconstructs sequence ownership from both lawful protocol request kinds.
+2. Supply-exception terminalization reused the Scheduler-quantum start timestamp
+   after source work completed. Failure terminal/job timestamps now use completion
+   time so durable chronology is truthful.
+3. Four-token through-4h validation accepted truthful `DIRTY` / `NO_PROMOTION`
+   outcomes as proof completion. Ordinary Standard-4H still reports those outcomes,
+   but the four-token proof now requires clean-promoted/idempotently clean 4h memory.
+4. Cycle-2 temporal refresh still passed hard-coded `required_capacity=4`. It now
+   uses canonical `MINIMUM_FREEZE_DEPTH` (2), matching the two-token-per-cycle
+   contract without lowering evidence or safety gates.
 
-Operational evidence for the starvation defect was explicit: Cycle 2 completed
-four successful acquisition quanta with 25/30 discovery operations still unused
-and no refresh wait, while a Cycle-1 snapshot due at 08:54:37 UTC did not start
-until 09:03:26 UTC. The repaired control-flow regression prevents that loop.
+The downstream audit found no additional cross-cycle identity leak: materialization,
+Scheduler ownership, 15m execution, selective 1h handoff, 4h handoff, peer-cycle
+terminal isolation, and 12h/24h exclusion remain cycle-scoped.
 
-Focused verification on the repaired checkout:
+Focused verification:
+- mixed generic/PumpSwap sequence RED `[1,1,2,2]` is repaired to `[1,2,3,4]`;
+- terminal chronology RED is repaired;
+- non-clean 4h proof now fails closed;
+- Cycle-2 refresh uses `MINIMUM_FREEZE_DEPTH`;
+- positive proof fixtures create genuine clean 4h episode/fingerprint objects;
+- focused affected verification: 39 passed;
+- full disposable two-cycle Standard-4H factory audit passes with clean 4h objects.
 
-- `py_compile` passed for both production files and both changed regression files;
-- `git diff --check` passed;
-- 26 passed across terminal/wake/callback/checkpoint/full Standard-4H coverage;
-- 56 passed across the broader affected Cycle-2/disjointness/materialization/
-  acquisition/terminal/wake/checkpoint/full Standard-4H surface.
-
-The latest operational evidence showed 27/27 provider requests completed with
-`CLEAN_DATA`; the generic reconciliation mismatch was caused by duplicate six-unit
-stage identity `PROTOCOL_CONFIRMATION|3`. Refresh #1 owned protocol stage 2, the
-residual pass correctly advanced to stage 3, but non-cooperative refresh #2 used
-`refresh_ordinal + 1` and reused stage 3. The refresh protocol path now asks the
-authoritative stage-evidence owner for the next free `PROTOCOL_CONFIRMATION`
-sequence, retaining `refresh_ordinal + 1` only as a fallback when no owner exists.
-The duplicate-stage guard remains strict.
-
-Focused verification for this repair: 22 passed across residual closeout, failed
-refresh/stage identity, local-validation observation, initial refresh ownership,
-persistent multisource refresh, and Standard-4H refresh-reentry seams; `py_compile`
-and `git diff --check` passed. A detached untouched `ef515b94` worktree reproduced
-the broader stale fixture/source-scope failures, proving they are baseline debt and
-not regressions from this change.
-
-The latest attempt also exposed a later-cycle cooperative-resume contract defect.
-Cycle 2 lawfully persisted clean `solana_rpc/generic_present_pool_account_batch`
-evidence at `...:c0002-protocol-q2-1`, but the resume validator only admitted
-`pumpswap_pool_account_batch` for protocol-stage request keys. Re-entry therefore
-misclassified its own clean Q2 row as `CAMPAIGN_SOURCE_REQUEST_SCOPE_ALREADY_EXISTS`.
-The resume grammar now accepts both producer-owned protocol request kinds for the
-existing protocol/residual/refresh key forms while retaining exact root, source,
-stage grammar, registry, and single-terminal-artifact checks. The Cycle-1 token
-that received `PARTIAL/ACCEPTABLE_PARTIAL_DATA` still fails closed; that clean-data
-lock was intentionally not weakened.
-
-The previous Cycle-2 deadline-anchor, terminal-precedence, and scheduler-reentry
-repairs remain intact. The 600-second later-cycle deadline, 300-second minimum
-admission spacing, evidence, health, capacity, disjointness, tracking and
-Standard-4H requirements are unchanged.
+One unrelated callback fixture remains baseline debt: its nominal PAIR_READY carrier
+lacks the now-required frozen tracking-lane identity. An untouched detached
+`3fea0211` checkout reproduces the same failure, so it is not a regression here.
 
 ## Proven blocker
 
-The latest operational blocker is the repaired later-cycle cooperative-resume
-protocol contract mismatch described above. Cycle 1 also observed one lawful
-fail-closed partial snapshot, so literal provider-driven four-token 4/2/2 completion
-remains unproven until a fresh, separately authorized attempt on the repaired exact
-HEAD.
+The latest provider-driven run did not complete four clean 4h memories. Its direct
+Cycle-2 blocker was the now-repaired mixed protocol stage-sequence collision. No
+fresh provider-driven attempt has yet proven the repaired path end-to-end.
 
 ## Exact next permitted action
 
-Commit/push the cooperative-resume protocol-contract repair and verify CI on the
-exact pushed HEAD. Any later operational attempt requires a fresh one-shot
-authorization bound to that exact HEAD and the then-current authoritative DB after
-migration/integrity/FK/zero-active-work/non-reuse gates. Never reuse a consumed
-authorization.
+Commit/push this repair and verify CI on the exact pushed HEAD. Only after CI is
+green may a new operational attempt be considered. Any operational attempt requires
+a fresh one-shot authorization bound to that exact HEAD and the then-current
+authoritative DB after migration/integrity/FK/zero-active-work/non-reuse gates.
+Never reuse any consumed authorization.

@@ -2791,6 +2791,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                             )
                         except Exception as supply_exc:
                             failure_cause = _safe_supply_exception_identifier(supply_exc)
+                            failure_instant = datetime.now(timezone.utc)
                             connection = connect_operational(db_path)
                             current = load_pre_admission_attempt(
                                 connection, attempt_id=attempt.attempt_id
@@ -2823,13 +2824,13 @@ class AuthoritativeLiveOperationalCampaignOwner:
                                 attempt_id=attempt.attempt_id,
                                 state=PreAdmissionAttemptState.FAILED,
                                 cause=failure_cause,
-                                now=instant,
+                                now=failure_instant,
                             )
                             fail_job(
                                 connection,
                                 job_id=attempt.scheduler_job_id,
                                 error=failure_cause,
-                                now=instant,
+                                now=failure_instant,
                                 max_retries=0,
                             )
                             connection.commit()
@@ -4202,6 +4203,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     ):
                         from printer_v1.discovery.eligible_token_supply import (
                             DEFAULT_DISCOVERY_OPERATION_BUDGET,
+                            MINIMUM_FREEZE_DEPTH,
                         )
                         from printer_v1.discovery.pre_lifecycle_temporal_acquisition import (
                             REFRESH_COMPLETED,
@@ -4217,7 +4219,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                         )
                         outcome = later_cycle_refresh_owner.request_temporal_refresh(
                             reserve_depth=int(progress.get("reserve_depth") or 0),
-                            required_capacity=4,
+                            required_capacity=MINIMUM_FREEZE_DEPTH,
                             universe_state="ALL_REACHABLE_CANDIDATES_EVALUATED",
                             source_operations_remaining=max(
                                 0, operation_budget - prior_operations
