@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import json
 import sqlite3
 
 import pytest
@@ -18,6 +19,7 @@ from printer_v1.discovery.eligible_token_supply import (
 from printer_v1.discovery.permanent_discovery_availability import (
     CONTRACT_BLOCKED,
     CURRENT_POOL_CONFIRMED,
+    EXACT_POOL_NO_MATCH,
     ExactMarketObservation,
     MEMORY_OBSERVATION_ELIGIBLE,
     REASON_ABOVE_FLOOR_NOMINATION,
@@ -344,6 +346,131 @@ def test_market_quantum_yields_even_when_it_fills_the_reserve(
     assert result.terminal == ACQUISITION_QUANTUM_YIELDED
     assert result.diagnostics["eligible_reserve_count"] == 4
 
+
+def test_market_quantum_skips_negative_history_front_slice_and_reaches_due_inventory(
+    tmp_path,
+) -> None:
+    path = tmp_path / "market-negative-history-front-slice.sqlite3"
+    apply_migrations(path)
+    budget = StageBudget.permanent_discovery_default()
+    connection = sqlite3.connect(path)
+    connection.row_factory = sqlite3.Row
+    for index in range(33):
+        mint = f"Mint{index:02d}"
+        pool = f"Pool{index:02d}"
+        record_graduated_candidate(
+            connection,
+            mint=mint,
+            migration_signature=f"Signature{index:02d}",
+            pumpswap_pool=pool,
+            graduation_block_time=1_700_000_000 + index,
+            graduation_slot=index,
+            now=NOW,
+        )
+        if index in {*range(28), 30, 31}:
+            record_exact_market_transition(
+                connection,
+                ExactMarketObservation(
+                    network="solana-mainnet",
+                    mint=mint,
+                    pool=pool,
+                    token_program=SPL_TOKEN_PROGRAM_ID,
+                    pool_program=PUMPSWAP_AMM_PROGRAM_ID,
+                    base_mint=mint,
+                    quote_mint=WSOL,
+                    venue="pumpswap",
+                    state=EXACT_POOL_NO_MATCH,
+                    reason="LAWFUL_BATCH_EXACT_POOL_NO_MATCH",
+                    observed_at=NOW,
+                    next_lawful_action_at=(
+                        datetime.fromisoformat(NOW) + timedelta(minutes=30)
+                    ).isoformat(),
+                    source_provenance={"stage": "prior_market"},
+                    contract_version="TEST_V1",
+                ),
+                now=NOW,
+            )
+
+    scope = build_campaign_source_request_scope(
+        execution_id="exec-g-residual",
+        campaign_id="campaign-g-residual",
+        run_id="run-g-residual",
+        cycle_id="cycle-g-residual",
+    )
+    identity = build_transport_identity(
+        stage="MINT_MARKET_BATCH",
+        source_name="dexscreener_pair",
+        endpoint_owner="dexscreener",
+        governed_request_kind="candidate_market_batch",
+        method_or_endpoint="GET /tokens/v1/solana/{mints}",
+        within_request_ordinal=1,
+        target_category="due_mints",
+        target_identity="Mint28,Mint29",
+        response_bytes=800,
+        normalized_rows=2,
+        result="OK",
+    )
+    request_id = int(connection.execute(
+        "INSERT INTO printer_source_requests("
+        "source_name,request_kind,request_key,requested_at,source_status,data_quality_label) "
+        "VALUES ('dexscreener','candidate_market_batch',?,?, 'COMPLETE','CLEAN_DATA')",
+        (f"{scope.request_key_root}-mint-batch-r1", NOW),
+    ).lastrowid)
+    connection.execute(
+        "INSERT INTO printer_source_responses("
+        "source_request_id,source_name,received_at,source_status,data_quality_label,normalized_payload_json) "
+        "VALUES (?,'dexscreener',?,'COMPLETE','CLEAN_DATA',?)",
+        (request_id, NOW, json.dumps({
+            "pairs": [],
+            "transport_operation_identities": [identity.as_dict()],
+        }, sort_keys=True)),
+    )
+    connection.commit()
+    connection.close()
+
+    resolver_inputs: list[tuple[str, ...]] = []
+
+    def transport_factory(mints):
+        ordered = tuple(mints)
+        resolver_inputs.append(ordered)
+        pairs = [{
+            "chainId": "solana",
+            "pairAddress": "Pool32",
+            "dexId": "pumpswap",
+            "baseToken": {"address": "Mint32"},
+            "quoteToken": {"address": WSOL},
+            "liquidity": {"usd": 5_000.0},
+        }]
+        transport_identity = build_transport_identity(
+            stage="MINT_MARKET_BATCH",
+            source_name="dexscreener_pair",
+            endpoint_owner="dexscreener",
+            governed_request_kind="candidate_market_batch",
+            method_or_endpoint="GET /tokens/v1/solana/{mints}",
+            within_request_ordinal=1,
+            target_category="due_mints",
+            target_identity=",".join(ordered),
+            response_bytes=800,
+            normalized_rows=len(pairs),
+            result="OK",
+        )
+        return fixture_success_transport({
+            "pairs": pairs,
+            "transport_operations_used": 1,
+            "response_bytes": 800,
+            "normalized_rows": len(pairs),
+            "transport_operation_identities": (transport_identity.as_dict(),),
+        })
+
+    kwargs = _kwargs(path, budget, "MARKET_DISCOVERY")
+    kwargs["execution_id"] = "exec-g-residual"
+    kwargs["campaign_source_request_scope"] = scope
+    kwargs["dexscreener_batch_transport_factory"] = transport_factory
+    result = run_persistent_eligible_token_supply(path, **kwargs)
+
+    assert result.terminal == ACQUISITION_QUANTUM_YIELDED
+    assert resolver_inputs == [("Mint32",)]
+    assert result.diagnostics["discovery_operations_used"] == 1
 
 def test_protocol_quantum_yields_before_resume_market(monkeypatch, tmp_path) -> None:
     path = tmp_path / "protocol-preemption.sqlite3"

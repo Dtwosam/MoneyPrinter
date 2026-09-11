@@ -74,7 +74,9 @@ from printer_v1.discovery.pre_lifecycle_temporal_acquisition import (
 from printer_v1.discovery.permanent_discovery_availability import (
     MAX_DEXSCREENER_MARKET_BATCH_MINTS,
     MINIMUM_FREEZE_DEPTH,
+    NETWORK,
     StageBudget,
+    decide_exact_pool_poll,
     order_canonical_inventory_fairly,
     record_fresh_pool_nominations,
     run_dexscreener_batch_market_resolution,
@@ -2979,14 +2981,28 @@ def run_persistent_eligible_token_supply(
                         transport_identity_observer
                     )
             if permanent_availability:
-                # The exact-state owner itself applies due/no-match suppression.
-                # The traversal here remains the existing canonical graduated
-                # inventory; rows excluded by tracking are never sent to market.
-                permanent_rows = [
-                    row
-                    for row in inventory_rows
-                    if str(row["mint_identity"]) not in evaluated_mints
-                ][:30]
+                # Apply the exact-state owner's existing due/no-match law before
+                # the cooperative 30-mint cap. Otherwise a front slice made only
+                # of cooldown-suppressed rows can starve pollable rows behind it
+                # across Scheduler claims while consuming zero source budget.
+                permanent_rows: list[Mapping[str, Any]] = []
+                for row in inventory_rows:
+                    mint = str(row["mint_identity"])
+                    if mint in evaluated_mints:
+                        continue
+                    pool = str(row["pumpswap_pool"])
+                    prior = connection.execute(
+                        """SELECT * FROM printer_exact_market_states
+                           WHERE network=? AND mint_identity=? AND pool_address=?""",
+                        (NETWORK, mint, pool),
+                    ).fetchone()
+                    if prior is not None and not decide_exact_pool_poll(
+                        dict(prior), at=now
+                    ).should_poll:
+                        continue
+                    permanent_rows.append(row)
+                    if len(permanent_rows) >= MAX_DEXSCREENER_MARKET_BATCH_MINTS:
+                        break
                 if not permanent_rows:
                     if _request_temporal_refresh(
                         "ALL_REACHABLE_CANDIDATES_EVALUATED"
