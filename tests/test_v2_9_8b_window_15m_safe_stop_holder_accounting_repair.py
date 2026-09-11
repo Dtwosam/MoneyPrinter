@@ -17,7 +17,10 @@ from printer_v1.operator_cli.operational_database_target_binding import (
     validate_operational_database_target_binding,
 )
 from printer_v1.sources.goplus import build_goplus_token_safety_transport
-from printer_v1.sources.measured_transport import MeasuredTransportLedger
+from printer_v1.sources.measured_transport import (
+    MeasuredTransportLedger,
+    TransportOperationIdentity,
+)
 from printer_v1.sources.solana_rpc_holder import build_solana_rpc_holder_transport
 from printer_v1.operator_cli.holder_reliability_budget_control import (
     _measure_holder_transport_count,
@@ -35,6 +38,7 @@ from printer_v1.operator_cli.authoritative_live_operational_campaign import (
     AuthoritativeLiveOperationalCampaignOwner,
 )
 import printer_v1.operator_cli.holder_reliability_budget_control as holder_budget
+import printer_v1.operator_cli.operational_memory_factory_command as operational_command
 import test_v2_9_8b_holder_partial_accounting_repair as holder_fixtures
 
 
@@ -592,3 +596,63 @@ def test_holder_identities_fan_out_once_reach_payload_and_seal_one_stage(
     assert [item.as_dict() for item in sealed_ledgers[0][0].transports] == list(
         result.transport_identities
     )
+
+
+def test_zero_transport_holder_stage_is_not_global_pre_operation_no_work() -> None:
+    ledger = MeasuredTransportLedger(
+        campaign_id="campaign", run_id="run", cycle_id="cycle"
+    )
+    ingested: list[dict] = []
+
+    sealed = operational_command._seal_holder_accounting_stage(
+        campaign_id="campaign",
+        run_id="run",
+        cycle_id="cycle",
+        stage_sequence=22,
+        ledger=ledger,
+        status="COMPLETED",
+        cause=None,
+        evidence_sink=ingested.append,
+    )
+
+    assert sealed["stage_id"] is None
+    assert sealed["accounting_omitted_reason"] == "HOLDER_STAGE_NO_SIX_UNIT_WORK"
+    assert ingested == []
+
+
+def test_holder_stage_with_transport_still_seals_and_ingests_once() -> None:
+    ledger = MeasuredTransportLedger(
+        campaign_id="campaign", run_id="run", cycle_id="cycle"
+    )
+    ledger.record_transport(
+        TransportOperationIdentity(
+            stage="HOLDER_SAFETY",
+            source_name="solana_rpc",
+            endpoint_owner="solana",
+            governed_request_kind="holder_batch",
+            method_or_endpoint="getMultipleAccounts",
+            within_request_ordinal=1,
+            target_category="holders",
+            target_identity="mint-a",
+            response_bytes=64,
+            normalized_rows=1,
+            result="OK",
+        )
+    )
+    ingested: list[dict] = []
+
+    sealed = operational_command._seal_holder_accounting_stage(
+        campaign_id="campaign",
+        run_id="run",
+        cycle_id="cycle",
+        stage_sequence=22,
+        ledger=ledger,
+        status="COMPLETED",
+        cause=None,
+        evidence_sink=ingested.append,
+    )
+
+    assert sealed["stage_id"] == "campaign|run|cycle|HOLDER_SAFETY|22"
+    assert sealed["transport_operations"]
+    assert len(ingested) == 1
+    assert ingested[0]["stage_id"] == sealed["stage_id"]

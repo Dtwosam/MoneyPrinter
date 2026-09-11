@@ -3621,6 +3621,53 @@ def _holder_stage_evidence_sealer_required(
     )
 
 
+def _seal_holder_accounting_stage(
+    *,
+    campaign_id: str,
+    run_id: str,
+    cycle_id: str,
+    stage_sequence: int,
+    ledger: Any,
+    status: str,
+    cause: str | None,
+    evidence_sink: Callable[[Mapping[str, Any]], None],
+) -> Mapping[str, Any]:
+    """Seal holder accounting only when the holder stage measured six-unit work."""
+    if not any(int(value) for value in ledger.six_unit_totals().values()):
+        return {
+            "stage_id": None,
+            "stage_kind": "HOLDER_SAFETY",
+            "stage_terminal_status": status,
+            "stage_first_terminal_cause": cause,
+            "accounting_omitted_reason": "HOLDER_STAGE_NO_SIX_UNIT_WORK",
+        }
+    from printer_v1.sources.campaign_six_unit_accounting import (
+        build_campaign_stage_id,
+        seal_campaign_stage_evidence,
+    )
+
+    stage_id = build_campaign_stage_id(
+        campaign_id=campaign_id,
+        run_id=run_id,
+        cycle_id=cycle_id,
+        stage_kind="HOLDER_SAFETY",
+        stage_sequence=stage_sequence,
+    )
+    evidence = seal_campaign_stage_evidence(
+        stage_id=stage_id,
+        stage_kind="HOLDER_SAFETY",
+        stage_sequence=stage_sequence,
+        stage_terminal_status=status,
+        stage_first_terminal_cause=cause,
+        campaign_id=campaign_id,
+        run_id=run_id,
+        cycle_id=cycle_id,
+        ledger=ledger,
+    )
+    evidence_sink(evidence)
+    return evidence
+
+
 def _merge_disposable_graduated_supply_kwargs(
     fixture_overrides: Mapping[str, Any],
 ) -> dict[str, Any]:
@@ -3958,49 +4005,16 @@ def _run_operational_campaign(
         )
 
     def _seal_holder_stage(ledger, status: str, cause: str | None):
-        from printer_v1.sources.campaign_six_unit_accounting import (
-            build_campaign_stage_id,
-            seal_campaign_stage_evidence,
-        )
-        sequence = campaign_units.sealed_stage_count + 1
-        stage_id = build_campaign_stage_id(
+        return _seal_holder_accounting_stage(
             campaign_id=command.campaign_id,
             run_id=command.run_id,
             cycle_id=cycle_id,
-            stage_kind="HOLDER_SAFETY",
-            stage_sequence=sequence,
+            stage_sequence=campaign_units.sealed_stage_count + 1,
+            ledger=ledger,
+            status=status,
+            cause=cause,
+            evidence_sink=_campaign_stage_evidence_sink,
         )
-        zero_operation_evidence = None
-        ledger_for_seal = ledger
-        if not ledger.transports:
-            ledger_for_seal = None
-            zero_operation_evidence = {
-                "evidence_kind": "CAMPAIGN_SIX_UNIT_EVIDENCE_V1",
-                "phase": "PRE_OPERATION_NO_WORK",
-                "source_transport_attempted": False,
-                "source_governor_requests": 0,
-                "scheduler_work_exists": False,
-                "lifecycle_began": False,
-                "no_work_reason": cause or "HOLDER_STAGE_NO_ELIGIBLE_WORK",
-                "transport_operations": [],
-                "local_validations": 0,
-                "scheduler_work_items": 0,
-                "lifecycle_reservations": 0,
-            }
-        evidence = seal_campaign_stage_evidence(
-            stage_id=stage_id,
-            stage_kind="HOLDER_SAFETY",
-            stage_sequence=sequence,
-            stage_terminal_status=status,
-            stage_first_terminal_cause=cause,
-            campaign_id=command.campaign_id,
-            run_id=command.run_id,
-            cycle_id=cycle_id,
-            ledger=ledger_for_seal,
-            evidence=zero_operation_evidence,
-        )
-        _campaign_stage_evidence_sink(evidence)
-        return evidence
 
     def _observe_full_run_stage(record: Mapping[str, Any]) -> None:
         from printer_v1.sources.campaign_six_unit_accounting import (
