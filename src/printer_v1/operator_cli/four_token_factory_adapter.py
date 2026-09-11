@@ -1103,7 +1103,36 @@ def reconcile_four_token_cycle_terminal(
         else:
             outcome = str(canonical_result.get("execution_outcome") or "")
             primary = canonical_result.get("primary_fault")
-            if outcome == "TERMINAL_SUCCESS":
+            factory_row = (
+                connection.execute(
+                    "SELECT stop_reason FROM printer_memory_factory_runs "
+                    "WHERE run_id=?",
+                    (factory,),
+                ).fetchone()
+                if _table_exists(connection, "printer_memory_factory_runs")
+                else None
+            )
+            persisted_shared_cause = (
+                None if factory_row is None else factory_row[0]
+            )
+            shared_noncompletion_stop = bool(
+                str(persisted_shared_cause or "").strip()
+                and str(persisted_shared_cause)
+                != "COMPLETED_CLEAN_OR_DIRTY_RESULTS_REPORTED"
+            )
+            if outcome == "TERMINAL_SUCCESS" and shared_noncompletion_stop:
+                reason = _required(
+                    persisted_shared_cause, "persisted campaign stop cause"
+                )
+                resolved_run_status = "SAFE_STOPPED"
+                terminal_effect = {
+                    "cause": reason,
+                    "origin_scope": "CAMPAIGN",
+                    "effect_scope": "CAMPAIGN",
+                    "source_reference": f"factory_run:{factory}",
+                    "target_cycle_id": cycle,
+                }
+            elif outcome == "TERMINAL_SUCCESS":
                 through_4h_validation = four_token_cycle_through_4h_validation(
                     connection,
                     campaign_id=campaign,
@@ -1132,14 +1161,6 @@ def reconcile_four_token_cycle_terminal(
                 reason = _required(primary.get("cause"), "canonical stop cause")
                 resolved_run_status = "SAFE_STOPPED"
             else:
-                factory_row = connection.execute(
-                    "SELECT stop_reason FROM printer_memory_factory_runs "
-                    "WHERE run_id=?",
-                    (factory,),
-                ).fetchone()
-                persisted_shared_cause = (
-                    None if factory_row is None else factory_row[0]
-                )
                 if not str(persisted_shared_cause or "").strip():
                     raise FourTokenFactoryAdapterError(
                         "active/incomplete cycle has no canonical terminal effect"

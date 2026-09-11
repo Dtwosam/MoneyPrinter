@@ -490,6 +490,31 @@ class _CadenceReadyController:
         )
 
 
+def test_due_lifecycle_work_preempts_running_cycle2_reentry() -> None:
+    boundary = factory.FourTokenAdmissionBoundaryResult(
+        FourTokenAdmissionDisposition(
+            FourTokenAdmissionDispositionKind.LIFECYCLE_WORK,
+            "DUE_LIFECYCLE_WORK",
+            START,
+            False,
+        ),
+        False,
+        attempt_id="cycle2-attempt",
+        attempt_state="RUNNING",
+        attempt_acquisition_deadline_at=START + timedelta(seconds=600),
+    )
+
+    should_recheck, wake_at = factory._cooperative_later_cycle_recheck(
+        boundary,
+        next_due_work_at=START,
+        proof_deadline=START + timedelta(hours=5),
+        acquisition_deadline_at=START + timedelta(seconds=600),
+    )
+
+    assert should_recheck is False
+    assert wake_at is None
+
+
 def test_latest_lawful_cycle2_start_reaches_discovery_at_exact_reserve_boundary(
     tmp_path,
 ) -> None:

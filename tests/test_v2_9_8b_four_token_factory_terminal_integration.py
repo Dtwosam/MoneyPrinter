@@ -160,6 +160,81 @@ def _add_second_cycle(db) -> None:
     connection.close()
 
 
+def test_cycle1_success_so_far_obeys_persisted_later_cycle_campaign_stop(
+    tmp_path, monkeypatch
+) -> None:
+    from printer_v1.operator_cli.four_token_factory_adapter import (
+        reconcile_four_token_cycle_terminal,
+    )
+
+    db, _backup, _binding = _prepare(tmp_path)
+    connection = sqlite3.connect(db)
+    connection.row_factory = sqlite3.Row
+    connection.execute(
+        "INSERT INTO printer_memory_factory_runs("
+        "run_id,run_status,window_kind,db_mode,config_hash,config_json,started_at,"
+        "stop_reason) VALUES (?,?,?,?,?,?,?,?)",
+        (
+            FACTORY_RUN_ID,
+            "SAFE_STOPPED",
+            "WINDOW_15M",
+            "OPERATIONAL_PERSISTENT",
+            "a" * 64,
+            "{}",
+            START.isoformat(),
+            "LATER_CYCLE_ADMISSION_DEADLINE_EXHAUSTED",
+        ),
+    )
+    connection.execute(
+        "UPDATE printer_memory_factory_campaign_runs SET authoritative_run_id=? "
+        "WHERE campaign_id=? AND run_id=?",
+        (FACTORY_RUN_ID, CAMPAIGN_ID, CAMPAIGN_RUN_ID),
+    )
+    connection.commit()
+
+    monkeypatch.setattr(
+        "printer_v1.operator_cli.four_token_factory_adapter."
+        "derive_cycle_terminal_accounting_result",
+        lambda *_args, **_kwargs: {
+            "execution_outcome": "TERMINAL_SUCCESS",
+            "primary_fault": None,
+        },
+    )
+    strict_calls = 0
+
+    def forbidden_strict(*_args, **_kwargs):
+        nonlocal strict_calls
+        strict_calls += 1
+        raise AssertionError(
+            "campaign stop must preempt four-token completion validation"
+        )
+
+    monkeypatch.setattr(
+        "printer_v1.operator_cli.four_token_factory_adapter."
+        "four_token_cycle_through_4h_validation",
+        forbidden_strict,
+    )
+
+    result = reconcile_four_token_cycle_terminal(
+        connection,
+        campaign_id=CAMPAIGN_ID,
+        campaign_run_id=CAMPAIGN_RUN_ID,
+        factory_run_id=FACTORY_RUN_ID,
+        cycle_id=CYCLE_ID,
+        configuration_id=CONFIGURATION_ID,
+        now=START + timedelta(seconds=601),
+    )
+
+    assert strict_calls == 0
+    assert result["cycle_state"] == "TERMINAL_BLOCKED"
+    assert (
+        result["first_terminal_cause"]
+        == "LATER_CYCLE_ADMISSION_DEADLINE_EXHAUSTED"
+    )
+    assert result["terminal_effect"]["origin_scope"] == "CAMPAIGN"
+    connection.close()
+
+
 def test_four_token_report_terminal_uses_durable_shared_terminal_truth() -> None:
     connection = sqlite3.connect(":memory:")
     connection.row_factory = sqlite3.Row

@@ -334,6 +334,14 @@ def _cooperative_later_cycle_recheck(
     """
     if str(boundary.attempt_state or "") != "RUNNING":
         return (False, None)
+    from printer_v1.operator_cli.four_token_proof_integration import (
+        FourTokenAdmissionDispositionKind,
+    )
+    if (
+        boundary.disposition.kind
+        is FourTokenAdmissionDispositionKind.LIFECYCLE_WORK
+    ):
+        return (False, None)
     refresh_due = boundary.attempt_wake_at
     if refresh_due is None:
         return (True, None)
