@@ -261,3 +261,32 @@ def test_cooperative_resume_accepts_exact_lawful_source_stage_pair(tmp_path) -> 
     )
     assert result["request_ids"] == [request_id]
     connection.close()
+
+
+def test_cooperative_resume_accepts_generic_present_pool_protocol_quantum(tmp_path) -> None:
+    path = tmp_path / "resume-generic-protocol.sqlite3"
+    apply_migrations(path)
+    scope = build_campaign_source_request_scope(
+        execution_id="exec-final-g:c0002",
+        campaign_id="campaign-final-g",
+        run_id="run-final-g",
+        cycle_id="cycle-2-final-g",
+    )
+    connection = sqlite3.connect(path)
+    connection.row_factory = sqlite3.Row
+    request_id = _insert_terminal_request(
+        connection,
+        key=f"{scope.request_key_root}-protocol-q2-1",
+        source="solana_rpc",
+        kind="generic_present_pool_account_batch",
+    )
+    result = validate_cooperative_resume_source_request_scope(
+        connection,
+        scope=scope,
+        execution_id=scope.execution_id,
+        campaign_id=scope.campaign_id,
+        run_id=scope.run_id,
+        cycle_id=scope.cycle_id,
+    )
+    assert result["request_ids"] == [request_id]
+    connection.close()

@@ -5,11 +5,11 @@
 Branch: `assistant/v2-9-8b-later-cycle-mint-market-replay-repair`.
 
 The latest 2026-09-11 four-token Standard-4H operational attempt used authorization
-`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260911T101843Z_fa9547c5` on HEAD
-`ef515b942a10bb34dbdcecccef5060fdaa3df930`. It terminalized pre-lifecycle with
-`CAMPAIGN_SOURCE_REQUEST_RECONCILIATION_MISMATCH`. Cleanup completed, the lease
-was released, Scheduler locked/pending/running work is zero, and the authorization
-is consumed and permanently non-reusable.
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260911T114100Z_3fd609b4` on HEAD
+`729d5d5ae3d4d568e33a1f405228239833c99eec`. It reached Cycle-1 lifecycle work,
+then terminalized safely. Cleanup completed, the lease was released, active
+Scheduler/factory/campaign work is zero, and the authorization is consumed and
+permanently non-reusable.
 
 ## Current capability
 
@@ -64,6 +64,17 @@ and `git diff --check` passed. A detached untouched `ef515b94` worktree reproduc
 the broader stale fixture/source-scope failures, proving they are baseline debt and
 not regressions from this change.
 
+The latest attempt also exposed a later-cycle cooperative-resume contract defect.
+Cycle 2 lawfully persisted clean `solana_rpc/generic_present_pool_account_batch`
+evidence at `...:c0002-protocol-q2-1`, but the resume validator only admitted
+`pumpswap_pool_account_batch` for protocol-stage request keys. Re-entry therefore
+misclassified its own clean Q2 row as `CAMPAIGN_SOURCE_REQUEST_SCOPE_ALREADY_EXISTS`.
+The resume grammar now accepts both producer-owned protocol request kinds for the
+existing protocol/residual/refresh key forms while retaining exact root, source,
+stage grammar, registry, and single-terminal-artifact checks. The Cycle-1 token
+that received `PARTIAL/ACCEPTABLE_PARTIAL_DATA` still fails closed; that clean-data
+lock was intentionally not weakened.
+
 The previous Cycle-2 deadline-anchor, terminal-precedence, and scheduler-reentry
 repairs remain intact. The 600-second later-cycle deadline, 300-second minimum
 admission spacing, evidence, health, capacity, disjointness, tracking and
@@ -71,15 +82,16 @@ Standard-4H requirements are unchanged.
 
 ## Proven blocker
 
-The latest operational blocker was not provider failure or dirty evidence; all 27
-source requests completed cleanly. The blocker was a software stage-sequence
-collision on non-cooperative refresh #2 and is repaired at code/test level.
-Literal provider-driven four-token 4/2/2 completion remains unproven until a fresh,
-separately authorized operational attempt on the repaired exact HEAD.
+The latest operational blocker is the repaired later-cycle cooperative-resume
+protocol contract mismatch described above. Cycle 1 also observed one lawful
+fail-closed partial snapshot, so literal provider-driven four-token 4/2/2 completion
+remains unproven until a fresh, separately authorized attempt on the repaired exact
+HEAD.
 
 ## Exact next permitted action
 
-Push this stage-sequence repair and verify CI on the exact pushed HEAD. Any later
-operational attempt requires a fresh one-shot authorization bound to that exact
-HEAD and the then-current authoritative DB after migration/integrity/FK/
-zero-active-work/non-reuse gates. Never reuse a consumed authorization.
+Commit/push the cooperative-resume protocol-contract repair and verify CI on the
+exact pushed HEAD. Any later operational attempt requires a fresh one-shot
+authorization bound to that exact HEAD and the then-current authoritative DB after
+migration/integrity/FK/zero-active-work/non-reuse gates. Never reuse a consumed
+authorization.

@@ -4792,8 +4792,11 @@ def _lawful_cooperative_resume_stage_contract(
         (rf"-{mode}-migration-tx-[1-9][0-9]*", "solana_rpc", "restored_pump_migration_transaction"),
         (rf"-{mode}-verify-.+-a[1-9][0-9]*", "pumpswap", "pumpswap_signature_pool_resolution"),
         (r"-protocol(?:-residual)?-[1-9][0-9]*", "solana_rpc", "pumpswap_pool_account_batch"),
+        (r"-protocol(?:-residual)?-[1-9][0-9]*", "solana_rpc", "generic_present_pool_account_batch"),
         (r"-protocol-q[1-9][0-9]*-[1-9][0-9]*", "solana_rpc", "pumpswap_pool_account_batch"),
+        (r"-protocol-q[1-9][0-9]*-[1-9][0-9]*", "solana_rpc", "generic_present_pool_account_batch"),
         (r"-protocol-residual-q[1-9][0-9]*-[1-9][0-9]*", "solana_rpc", "pumpswap_pool_account_batch"),
+        (r"-protocol-residual-q[1-9][0-9]*-[1-9][0-9]*", "solana_rpc", "generic_present_pool_account_batch"),
         (r"-mint-batch-r[1-9][0-9]*", "dexscreener", "candidate_market_batch"),
         (r"-protocol-resume-mb[1-9][0-9]*", "dexscreener", "candidate_market_batch"),
         (r"-(?:mint-batch-r|protocol-resume-mb)[1-9][0-9]*-gt-[1-6]-.+", "geckoterminal", "candidate_market_batch"),
@@ -4803,7 +4806,9 @@ def _lawful_cooperative_resume_stage_contract(
         (rf"-refresh-[1-9][0-9]*-pump-{mode}-migration-tx-[1-9][0-9]*", "solana_rpc", "restored_pump_migration_transaction"),
         (rf"-refresh-[1-9][0-9]*-pump-{mode}-verify-.+-a[1-9][0-9]*", "pumpswap", "pumpswap_signature_pool_resolution"),
         (r"-refresh-[1-9][0-9]*-protocol-[1-9][0-9]*", "solana_rpc", "pumpswap_pool_account_batch"),
+        (r"-refresh-[1-9][0-9]*-protocol-[1-9][0-9]*", "solana_rpc", "generic_present_pool_account_batch"),
         (r"-refresh-[1-9][0-9]*-protocol-q[1-9][0-9]*-[1-9][0-9]*", "solana_rpc", "pumpswap_pool_account_batch"),
+        (r"-refresh-[1-9][0-9]*-protocol-q[1-9][0-9]*-[1-9][0-9]*", "solana_rpc", "generic_present_pool_account_batch"),
     )
     if any(
         re.fullmatch(pattern, suffix)
