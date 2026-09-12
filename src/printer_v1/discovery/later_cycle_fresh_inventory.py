@@ -138,6 +138,7 @@ def load_campaign_fresh_moe_candidates(
             "base_mint": base_mint,
             "quote_mint": quote_mint,
             "venue_label": venue,
+            "liquidity": dict(liquidity_map),
             "liquidity_usd": float(liquidity_usd),
             "liquidity_status": "LIQUIDITY_PROVEN",
             "liquidity_observed_at": str(observed_at),

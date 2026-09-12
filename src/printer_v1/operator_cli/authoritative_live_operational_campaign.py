@@ -4311,7 +4311,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                                     ),
                                     "waiting_for_refresh": True,
                                     "refresh_ordinal": int(
-                                        outcome.refresh_ordinal or 0
+                                        getattr(outcome, "refresh_ordinal", 0) or 0
                                     ),
                                     "next_governed_request_worst_case_seconds": (
                                         outcome.next_governed_request_worst_case_seconds
@@ -4365,7 +4365,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                                     ),
                                     "waiting_for_refresh": False,
                                     "refresh_ordinal": int(
-                                        outcome.refresh_ordinal or 0
+                                        getattr(outcome, "refresh_ordinal", 0) or 0
                                     ),
                                     "next_governed_request_worst_case_seconds": (
                                         outcome.next_governed_request_worst_case_seconds
@@ -4434,7 +4434,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
                                 ),
                                 "waiting_for_refresh": False,
                                 "refresh_ordinal": int(
-                                    outcome.refresh_ordinal or 0
+                                    getattr(outcome, "refresh_ordinal", 0) or 0
                                 ),
                                 "next_governed_request_worst_case_seconds": (
                                     outcome.next_governed_request_worst_case_seconds

@@ -59,10 +59,10 @@ from printer_v1.discovery.pre_lifecycle_temporal_acquisition import (
     CURRENT_UNIVERSE_EXHAUSTION_REASONS,
     NO_LAWFUL_REFRESH_WINDOW,
     PRE_LIFECYCLE_ACQUISITION_DURATION_EXHAUSTED,
-    PRE_LIFECYCLE_ACQUISITION_DURATION_SECONDS,
     REFRESH_COMPLETED,
     REFRESH_SOURCE_FAILURE,
     INTERNAL_INVARIANT,
+    parse_iso,
     INTERNAL_RUNTIME_ERROR,
     SOURCE_BUDGET_EXHAUSTED as TEMPORAL_SOURCE_BUDGET_EXHAUSTED,
     SUPERVISION_FAILED as TEMPORAL_SUPERVISION_FAILED,
@@ -147,6 +147,34 @@ def temporal_refresh_terminal_cause(status: str) -> str:
         ACQUISITION_DEADLINE_EXHAUSTED: PRE_LIFECYCLE_ACQUISITION_DURATION_EXHAUSTED,
         NO_LAWFUL_REFRESH_WINDOW: PRE_LIFECYCLE_ACQUISITION_DURATION_EXHAUSTED,
     }.get(value, value)
+
+
+def _build_temporal_acquisition_ledger(
+    *,
+    temporal_refresh_owner: Any,
+    deadline_at: str,
+    now: str,
+) -> AcquisitionLedger:
+    """Build honest acquisition timing evidence for the active temporal owner."""
+    deadline_text = str(deadline_at)
+    owner_started_at = getattr(temporal_refresh_owner, "acquisition_started_at", None)
+    started_at = (
+        str(owner_started_at)
+        if owner_started_at is not None and str(owner_started_at).strip()
+        else str(now)
+    )
+    effective_duration_seconds = max(
+        0,
+        int((parse_iso(deadline_text) - parse_iso(started_at)).total_seconds()),
+    )
+    return AcquisitionLedger(
+        started_at=started_at,
+        acquisition_deadline_at=deadline_text,
+        acquisition_duration_seconds=effective_duration_seconds,
+        refresh_interval_seconds=int(
+            getattr(temporal_refresh_owner, "refresh_interval_seconds", 600)
+        ),
+    )
 
 
 def decide_pre_lifecycle_supply_continuation(
@@ -2592,26 +2620,10 @@ def run_persistent_eligible_token_supply(
 
         acquisition_ledger: AcquisitionLedger | None = None
         if temporal_refresh_owner is not None:
-            acquisition_ledger = AcquisitionLedger(
-                # Preserve the original bounded attempt clock across cooperative
-                # quanta. The deadline is authoritative and the duration is fixed.
-                started_at=(
-                    (deadline_dt - timedelta(
-                        seconds=PRE_LIFECYCLE_ACQUISITION_DURATION_SECONDS
-                    )).isoformat()
-                    if deadline_dt is not None
-                    else now
-                ),
-                acquisition_deadline_at=str(
-                    deadline_at
-                    or _utc_now_iso()
-                ),
-                acquisition_duration_seconds=(
-                    PRE_LIFECYCLE_ACQUISITION_DURATION_SECONDS
-                ),
-                refresh_interval_seconds=int(
-                    getattr(temporal_refresh_owner, "refresh_interval_seconds", 600)
-                ),
+            acquisition_ledger = _build_temporal_acquisition_ledger(
+                temporal_refresh_owner=temporal_refresh_owner,
+                deadline_at=str(deadline_at or _utc_now_iso()),
+                now=now,
             )
 
         _refresh_freeze_ready_depth()

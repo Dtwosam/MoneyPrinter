@@ -44,14 +44,14 @@ def test_fresh_moe_rehydration_is_campaign_scoped_and_exact() -> None:
     )
     c.execute(
         "INSERT INTO printer_exact_market_states VALUES (?,?,?,?,?,?,?,?,?,?)",
-        ("solana-mainnet","SOLBULL","POOL","Tokenkeg","PumpSwapProgram","SOLBULL","So111","pumpswap","CURRENT_VISIBLE","2026-08-18T23:27:59+00:00"),
+        ("solana-mainnet","SOLBULL","POOL","TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA","GenericPoolProgram1111111111111111111111111","SOLBULL","So11111111111111111111111111111111111111112","generic","CURRENT_VISIBLE","2026-08-18T23:27:59+00:00"),
     )
     rows = load_campaign_fresh_moe_candidates(c, campaign_id="campaign-1", at="2026-08-18T23:40:00+00:00")
     assert len(rows) == 1
     assert rows[0]["mint"] == "SOLBULL"
     assert rows[0]["admission_authority"] == "MARKET_PRESENT_POOL"
     assert rows[0]["memory_observation_eligible"] is True
-    assert rows[0]["source_path"] == "campaign_fresh_protocol_confirmed_moe_rehydration"
+    assert rows[0]["source_path"] == "campaign_fresh_present_pool_moe_rehydration"
     assert load_campaign_fresh_moe_candidates(c, campaign_id="campaign-2", at="2026-08-18T23:40:00+00:00") == []
 
 
@@ -96,14 +96,15 @@ def test_cycle2_fresh_moe_is_wired_into_persistent_supply() -> None:
     assert "load_campaign_fresh_moe_candidates" in text
     assert "for candidate in load_campaign_fresh_moe_candidates(" in text
     assert 'endswith(":c0002")' in text
-    assert "assess_tracking_handoff_by_identity" in text
+    assert "assess_possible_tracking_claim_by_identity" in text
     assert "campaign_eligible[mint] = accepted" in text
 
 
-def test_cycle2_temporal_ledger_uses_full_attempt_horizon_and_yields_refresh() -> None:
+def test_cycle2_temporal_ledger_uses_owner_start_and_yields_refresh() -> None:
     text = (ROOT / "src/printer_v1/discovery/eligible_token_supply.py").read_text()
-    assert "deadline_dt - timedelta(" in text
-    assert "seconds=PRE_LIFECYCLE_ACQUISITION_DURATION_SECONDS" in text
+    assert "_build_temporal_acquisition_ledger" in text
+    assert 'getattr(temporal_refresh_owner, "acquisition_started_at", None)' in text
+    assert "effective_duration_seconds" in text
     assert "remaining_refresh_window" in text
     assert '_request_temporal_refresh(' in text
 
