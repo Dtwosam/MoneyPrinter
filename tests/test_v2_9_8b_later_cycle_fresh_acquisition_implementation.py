@@ -223,7 +223,7 @@ def test_live_owner_uses_exact_cycle_child_source_scope_for_rebind():
     assert "deadline_at=later_cycle_deadline" in source
     assert "temporal_refresh_owner=later_cycle_refresh_owner" in source
 
-def test_later_cycle_deadline_is_anchored_to_cycle1_admission_not_rebind_time(
+def test_later_cycle_deadline_uses_later_factory_start_as_shared_anchor(
     tmp_path,
 ):
     db_path = tmp_path / "anchored-deadline.sqlite3"
@@ -234,9 +234,27 @@ def test_later_cycle_deadline_is_anchored_to_cycle1_admission_not_rebind_time(
         "cycle_ordinal INTEGER NOT NULL,created_at TEXT NOT NULL)"
     )
     connection.execute(
+        "CREATE TABLE printer_memory_factory_campaign_runs("
+        "run_id TEXT PRIMARY KEY,campaign_id TEXT NOT NULL,"
+        "authoritative_run_id TEXT)"
+    )
+    connection.execute(
+        "CREATE TABLE printer_memory_factory_runs("
+        "run_id TEXT PRIMARY KEY,started_at TEXT NOT NULL)"
+    )
+    connection.execute(
         "INSERT INTO printer_memory_factory_campaign_cycles("
         "cycle_id,campaign_id,run_id,cycle_ordinal,created_at) "
         "VALUES ('cycle-1','campaign-a','run-a',1,'2026-08-17T00:00:00+00:00')"
+    )
+    connection.execute(
+        "INSERT INTO printer_memory_factory_campaign_runs("
+        "run_id,campaign_id,authoritative_run_id) "
+        "VALUES ('run-a','campaign-a','factory-a')"
+    )
+    connection.execute(
+        "INSERT INTO printer_memory_factory_runs(run_id,started_at) "
+        "VALUES ('factory-a','2026-08-17T00:08:00+00:00')"
     )
     connection.commit()
     connection.close()
@@ -280,11 +298,11 @@ def test_later_cycle_deadline_is_anchored_to_cycle1_admission_not_rebind_time(
 
     rebound = original.for_cycle(
         cycle_id="cycle-2",
-        cycle_cutoff="2026-08-17T00:07:00+00:00",
-        evaluated_at="2026-08-17T00:07:00+00:00",
+        cycle_cutoff="2026-08-17T00:09:00+00:00",
+        evaluated_at="2026-08-17T00:09:00+00:00",
         request_key_prefix="cycle-2-request-root",
         cooperative_yield=True,
     )
-    assert rebound.acquisition_deadline_at == "2026-08-17T00:10:00+00:00"
+    assert rebound.acquisition_deadline_at == "2026-08-17T00:18:00+00:00"
     assert rebound.acquisition_started_at is None
     assert rebound._cooperative_yield is True

@@ -223,14 +223,35 @@ class PreLifecycleTemporalRefreshOwner:
                        WHERE campaign_id=? AND run_id=? AND cycle_ordinal=1""",
                     (self.campaign_id,self.run_id),
                 ).fetchall()
+                if len(rows) != 1:
+                    raise PreLifecycleTemporalRefreshError(
+                        'CYCLE_ONE_ADMISSION_TIME_NOT_EXACT'
+                    )
+                deadline_anchor=parse_iso(str(rows[0][0]))
+                has_campaign_runs=c.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' "
+                    "AND name='printer_memory_factory_campaign_runs'"
+                ).fetchone() is not None
+                has_factory_runs=c.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' "
+                    "AND name='printer_memory_factory_runs'"
+                ).fetchone() is not None
+                if has_campaign_runs and has_factory_runs:
+                    factory_row=c.execute(
+                        """SELECT f.started_at
+                           FROM printer_memory_factory_campaign_runs AS r
+                           JOIN printer_memory_factory_runs AS f
+                             ON f.run_id=r.authoritative_run_id
+                           WHERE r.campaign_id=? AND r.run_id=?""",
+                        (self.campaign_id,self.run_id),
+                    ).fetchone()
+                    if factory_row is not None:
+                        deadline_anchor=max(
+                            deadline_anchor, parse_iso(str(factory_row[0]))
+                        )
             finally:
                 c.close()
-            if len(rows) != 1:
-                raise PreLifecycleTemporalRefreshError(
-                    'CYCLE_ONE_ADMISSION_TIME_NOT_EXACT'
-                )
-            first_cycle_admitted_at=parse_iso(str(rows[0][0]))
-            exact_deadline=first_cycle_admitted_at+timedelta(
+            exact_deadline=deadline_anchor+timedelta(
                 seconds=self._later_cycle_deadline_seconds_after_first_cycle
             )
             rebind_kwargs['acquisition_deadline_at_override']=iso(exact_deadline)
