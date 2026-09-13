@@ -40,6 +40,7 @@ AUTHORITATIVE = Path(CANONICAL_PERSISTENT_DB).resolve()
 MIGRATION_061 = "061_standard_4h_progression_fault_preservation.sql"
 MIGRATION_062 = "062_pre_admission_attempt_evidence.sql"
 MIGRATION_063 = "063_four_token_zero_attempt_terminal_provenance.sql"
+MIGRATION_064 = "064_four_token_started_lifecycle_zero_attempt_provenance.sql"
 MIGRATION_060 = "060_pre_admission_frozen_tracking_lane_provenance.sql"
 MIGRATION_059 = "059_pair_ready_parent_terminal_cancellation_transition.sql"
 ATTEMPTS = "printer_memory_factory_standard_4h_progression_attempts"
@@ -104,8 +105,8 @@ def _full(tmp_path: Path) -> Path:
 
 def test_helper_pin_literals_match_catalogue_and_are_constants() -> None:
     names = list(canonical_migration_names())
-    assert coherence.REQUIRED_MIGRATION_COUNT == 63
-    assert coherence.REQUIRED_MIGRATION_HEAD == MIGRATION_063
+    assert coherence.REQUIRED_MIGRATION_COUNT == 64
+    assert coherence.REQUIRED_MIGRATION_HEAD == MIGRATION_064
     assert coherence.REQUIRED_MIGRATION_COUNT == len(names)
     assert coherence.REQUIRED_MIGRATION_HEAD == names[-1]
     tree = ast.parse(
@@ -121,7 +122,7 @@ def test_helper_pin_literals_match_catalogue_and_are_constants() -> None:
             }:
                 found[target.id] = node.value
     assert isinstance(found["REQUIRED_MIGRATION_COUNT"], ast.Constant)
-    assert found["REQUIRED_MIGRATION_COUNT"].value == 63
+    assert found["REQUIRED_MIGRATION_COUNT"].value == 64
     assert isinstance(found["REQUIRED_MIGRATION_HEAD"], ast.Constant)
     source = Path(coherence.__file__).read_text(encoding="utf-8")
     assert "REQUIRED_MIGRATION_COUNT = canonical_migration_count()" not in source
@@ -147,7 +148,7 @@ def test_b_catalogue_ahead_of_pin_is_schema_expectation_mismatch(tmp_path) -> No
     catalog.mkdir()
     for name in canonical_migration_names():
         shutil.copy2(REPO_ROOT / "migrations" / name, catalog / name)
-    extra = catalog / "064_synthetic_coherence_probe.sql"
+    extra = catalog / "065_synthetic_coherence_probe.sql"
     extra.write_text("BEGIN IMMEDIATE;\nCOMMIT;\n", encoding="utf-8")
     db = tmp_path / "db61.sqlite3"
     apply_migrations(db)
@@ -155,7 +156,7 @@ def test_b_catalogue_ahead_of_pin_is_schema_expectation_mismatch(tmp_path) -> No
     assert result.admission_schema_ready is False
     assert result.pin_matches_catalogue is False
     assert coherence.SCHEMA_EXPECTATION_MISMATCH in result.blocker_codes
-    assert coherence.REQUIRED_MIGRATION_COUNT == 63
+    assert coherence.REQUIRED_MIGRATION_COUNT == 64
 
 
 def test_c_db60_blocks(tmp_path) -> None:
@@ -181,7 +182,7 @@ def test_d_ledger_61_missing_061_table_blocks(tmp_path) -> None:
         connection.close()
     result = _evaluate(db, expected_target=db)
     assert result.admission_schema_ready is False
-    assert result.applied_count == 63
+    assert result.applied_count == 64
     assert result.migration_061_objects_ready is False
     assert "required_schema_object_missing" in result.blocker_codes
 
@@ -199,7 +200,7 @@ def test_e_objects_present_ledger_wrong_blocks(tmp_path) -> None:
         connection.close()
     result = _evaluate(db, expected_target=db)
     assert result.admission_schema_ready is False
-    assert result.applied_head == MIGRATION_063
+    assert result.applied_head == MIGRATION_064
     assert result.migration_061_objects_ready is True
     assert "partial_migration_application" in result.blocker_codes
 
@@ -434,6 +435,7 @@ def test_m_cycle3_and_long_window_locks_unchanged() -> None:
         migration_061_objects_ready=True,
         migration_062_objects_ready=True,
         migration_063_objects_ready=True,
+        migration_064_objects_ready=True,
         partial_application=False,
         admission_schema_ready=True,
         blocker_codes=(),

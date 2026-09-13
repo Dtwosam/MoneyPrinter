@@ -33,13 +33,16 @@ from printer_v1.operator_cli.proof_db_schema_readiness import (
     MIGRATION_063_REQUIRED_INDEXES,
     MIGRATION_063_REQUIRED_TABLES,
     MIGRATION_063_REQUIRED_TRIGGERS,
+    MIGRATION_064_REQUIRED_INDEXES,
+    MIGRATION_064_REQUIRED_TABLES,
+    MIGRATION_064_REQUIRED_TRIGGERS,
     inspect_required_schema_objects,
 )
 
 
-REQUIRED_MIGRATION_COUNT = 63
+REQUIRED_MIGRATION_COUNT = 64
 REQUIRED_MIGRATION_HEAD = (
-    "063_four_token_zero_attempt_terminal_provenance.sql"
+    "064_four_token_started_lifecycle_zero_attempt_provenance.sql"
 )
 
 SCHEMA_EXPECTATION_MISMATCH = "schema_expectation_mismatch"
@@ -73,6 +76,7 @@ class SchemaAdmissionCoherenceResult:
     migration_061_objects_ready: bool
     migration_062_objects_ready: bool
     migration_063_objects_ready: bool
+    migration_064_objects_ready: bool
     partial_application: bool
     admission_schema_ready: bool
     blocker_codes: tuple[str, ...]
@@ -116,6 +120,7 @@ class SchemaAdmissionCoherenceResult:
             "migration_061_objects_ready": self.migration_061_objects_ready,
             "migration_062_objects_ready": self.migration_062_objects_ready,
             "migration_063_objects_ready": self.migration_063_objects_ready,
+            "migration_064_objects_ready": self.migration_064_objects_ready,
             "partial_application": self.partial_application,
             "admission_schema_ready": self.admission_schema_ready,
             "blocker_codes": list(self.blocker_codes),
@@ -244,6 +249,7 @@ def evaluate_schema_admission_coherence(
     migration_061_ready = False
     migration_062_ready = False
     migration_063_ready = False
+    migration_064_ready = False
     if db_readable:
         import sqlite3
 
@@ -292,18 +298,24 @@ def evaluate_schema_admission_coherence(
                 | set(MIGRATION_063_REQUIRED_INDEXES)
             )
             migration_063_ready = not _issues_name_hit(object_issues, names_063)
+            names_064 = (
+                set(MIGRATION_064_REQUIRED_TABLES)
+                | set(MIGRATION_064_REQUIRED_TRIGGERS)
+                | set(MIGRATION_064_REQUIRED_INDEXES)
+            )
+            migration_064_ready = not _issues_name_hit(object_issues, names_064)
             if object_issues:
                 blockers.append("required_schema_object_missing")
 
     mixed_objects = len(
         {
             migration_060_ready, migration_061_ready, migration_062_ready,
-            migration_063_ready,
+            migration_063_ready, migration_064_ready,
         }
     ) > 1
     objects_complete = (
         migration_060_ready and migration_061_ready
-        and migration_062_ready and migration_063_ready
+        and migration_062_ready and migration_063_ready and migration_064_ready
     )
     partial_application = bool(
         (ledger_is_prefix and not ledger_matches)
@@ -365,6 +377,7 @@ def evaluate_schema_admission_coherence(
         migration_061_objects_ready=migration_061_ready,
         migration_062_objects_ready=migration_062_ready,
         migration_063_objects_ready=migration_063_ready,
+        migration_064_objects_ready=migration_064_ready,
         partial_application=partial_application,
         admission_schema_ready=admission_schema_ready,
         blocker_codes=tuple(ordered_blockers),

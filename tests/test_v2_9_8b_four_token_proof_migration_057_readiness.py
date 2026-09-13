@@ -30,10 +30,10 @@ def test_four_token_current_migration_evidence_is_exactly_063() -> None:
 
 
 def test_four_token_zero_state_is_explicitly_pinned_to_the_current_head() -> None:
-    """The reviewed admission pin and Git evidence both resolve to 63/063."""
-    assert zero_state.REQUIRED_MIGRATION_COUNT == 63
+    """The gate advances to 064 while Git evidence remains immutable at 063."""
+    assert zero_state.REQUIRED_MIGRATION_COUNT == 64
     assert zero_state.REQUIRED_MIGRATION_HEAD == (
-        "063_four_token_zero_attempt_terminal_provenance.sql"
+        "064_four_token_started_lifecycle_zero_attempt_provenance.sql"
     )
     assert "active_pre_lifecycle_discovery_refresh_work" in (
         zero_state.REQUIRED_ZERO_STATE_DOMAINS

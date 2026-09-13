@@ -12509,20 +12509,33 @@ def run_one_command_15m_factory(
             from printer_v1.operator_cli.four_token_factory_adapter import (
                 finalize_four_token_shared_terminal,
                 record_planned_lifecycle_zero_attempt_terminal_provenance,
+                record_started_lifecycle_zero_attempt_terminal_provenance,
                 reconcile_four_token_cycle_terminal,
                 resolve_peer_stop_origin_cycle_id,
             )
 
             if stop_reason != STOP_COMPLETED:
-                record_planned_lifecycle_zero_attempt_terminal_provenance(
-                    conn,
-                    campaign_id=str(campaign_id),
-                    campaign_run_id=str(campaign_run_id),
-                    factory_run_id=run_id,
-                    cycle_id=str(cycle_id),
-                    cause=str(stop_reason),
-                    now=_now(),
+                planned_provenance_recorded = (
+                    record_planned_lifecycle_zero_attempt_terminal_provenance(
+                        conn,
+                        campaign_id=str(campaign_id),
+                        campaign_run_id=str(campaign_run_id),
+                        factory_run_id=run_id,
+                        cycle_id=str(cycle_id),
+                        cause=str(stop_reason),
+                        now=_now(),
+                    )
                 )
+                if not planned_provenance_recorded:
+                    record_started_lifecycle_zero_attempt_terminal_provenance(
+                        conn,
+                        campaign_id=str(campaign_id),
+                        campaign_run_id=str(campaign_run_id),
+                        factory_run_id=run_id,
+                        cycle_id=str(cycle_id),
+                        cause=str(stop_reason),
+                        now=_now(),
+                    )
 
             admitted_cycles = conn.execute(
                 "SELECT cycle_id,cycle_ordinal FROM printer_memory_factory_campaign_cycles "
