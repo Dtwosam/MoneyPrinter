@@ -11264,7 +11264,13 @@ def run_one_command_15m_factory(
                         FourTokenAdmissionDispositionKind.BLOCKED,
                         FourTokenAdmissionDispositionKind.DRAIN,
                     }:
-                        stop_reason = STOP_PREFLIGHT
+                        # Preserve the categorical admission-health disposition.
+                        # Generic STOP_PREFLIGHT erased the real pre-attempt cause
+                        # and made terminal provenance impossible to reconcile.
+                        stop_reason = (
+                            str(boundary.disposition.reason or "").strip()
+                            or STOP_PREFLIGHT
+                        )
                         break
                     if kind is FourTokenAdmissionDispositionKind.COMPLETE:
                         admission_attempt_finished = True
@@ -12502,9 +12508,21 @@ def run_one_command_15m_factory(
         if four_token_proof_controller is not None:
             from printer_v1.operator_cli.four_token_factory_adapter import (
                 finalize_four_token_shared_terminal,
+                record_planned_lifecycle_zero_attempt_terminal_provenance,
                 reconcile_four_token_cycle_terminal,
                 resolve_peer_stop_origin_cycle_id,
             )
+
+            if stop_reason != STOP_COMPLETED:
+                record_planned_lifecycle_zero_attempt_terminal_provenance(
+                    conn,
+                    campaign_id=str(campaign_id),
+                    campaign_run_id=str(campaign_run_id),
+                    factory_run_id=run_id,
+                    cycle_id=str(cycle_id),
+                    cause=str(stop_reason),
+                    now=_now(),
+                )
 
             admitted_cycles = conn.execute(
                 "SELECT cycle_id,cycle_ordinal FROM printer_memory_factory_campaign_cycles "

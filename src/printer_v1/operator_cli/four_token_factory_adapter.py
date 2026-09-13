@@ -214,6 +214,168 @@ def _table_exists(connection: sqlite3.Connection, table: str) -> bool:
     ).fetchone() is not None
 
 
+PLANNED_LIFECYCLE_ZERO_ATTEMPT_PHASE = (
+    "CYCLE1_LIFECYCLE_PLANNED_PRE_CYCLE2_ATTEMPT"
+)
+
+
+def record_planned_lifecycle_zero_attempt_terminal_provenance(
+    connection: sqlite3.Connection,
+    *,
+    campaign_id: str,
+    campaign_run_id: str,
+    factory_run_id: str,
+    cycle_id: str,
+    cause: str,
+    now: datetime,
+) -> bool:
+    """Record an exact pre-attempt stop after Cycle-1 opening ownership exists.
+
+    This is categorical provenance only. It creates no Scheduler work, source
+    request, Cycle-2 attempt, retry, restart, resume, or successor. Non-matching
+    terminal shapes remain owned by their existing terminal paths.
+    """
+    campaign = _required(campaign_id, "campaign_id")
+    run = _required(campaign_run_id, "campaign_run_id")
+    factory = _required(factory_run_id, "factory_run_id")
+    cycle = _required(cycle_id, "cycle_id")
+    reason = _required(cause, "cause")
+    instant = _utc(now, "now")
+    if reason == "COMPLETED_CLEAN_OR_DIRTY_RESULTS_REPORTED":
+        return False
+    table = "printer_four_token_zero_attempt_terminal_provenance"
+    if not _table_exists(connection, table):
+        raise FourTokenFactoryAdapterError(
+            "planned-lifecycle zero-attempt provenance table is missing"
+        )
+    if connection.in_transaction:
+        raise FourTokenFactoryAdapterError(
+            "planned-lifecycle zero-attempt provenance requires a fresh transaction"
+        )
+    timestamp = instant.isoformat()
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        existing = connection.execute(
+            "SELECT cycle_id,cycle_ordinal,proposed_cycle_ordinal,terminal_phase,"
+            "first_terminal_cause FROM " + table + " "
+            "WHERE campaign_id=? AND campaign_run_id=? "
+            "AND authoritative_factory_run_id=? AND proposed_cycle_ordinal=2",
+            (campaign, run, factory),
+        ).fetchone()
+        if existing is not None:
+            exact = (
+                str(existing[0]) == cycle
+                and int(existing[1]) == 1
+                and int(existing[2]) == 2
+                and str(existing[3]) == PLANNED_LIFECYCLE_ZERO_ATTEMPT_PHASE
+                and str(existing[4]) == reason
+            )
+            connection.rollback()
+            if not exact:
+                raise FourTokenFactoryAdapterError(
+                    "planned-lifecycle zero-attempt provenance replay conflict"
+                )
+            return True
+
+        cycles = connection.execute(
+            "SELECT cycle_id,cycle_ordinal,cycle_state FROM "
+            "printer_memory_factory_campaign_cycles "
+            "WHERE campaign_id=? AND run_id=? ORDER BY cycle_ordinal",
+            (campaign, run),
+        ).fetchall()
+        attempt_count = int(connection.execute(
+            "SELECT COUNT(*) FROM printer_pre_admission_discovery_attempts "
+            "WHERE campaign_id=? AND campaign_run_id=? "
+            "AND authoritative_factory_run_id=? AND proposed_cycle_ordinal=2",
+            (campaign, run, factory),
+        ).fetchone()[0])
+        pre_lifecycle_count = int(connection.execute(
+            "SELECT COUNT(*) FROM printer_four_token_pre_lifecycle_terminal_provenance "
+            "WHERE campaign_id=? AND campaign_run_id=? "
+            "AND authoritative_factory_run_id=? AND proposed_cycle_ordinal=2",
+            (campaign, run, factory),
+        ).fetchone()[0])
+        slots = connection.execute(
+            "SELECT slot_ordinal,token_state,tracking_queue_id FROM "
+            "printer_memory_factory_campaign_token_slots "
+            "WHERE campaign_id=? AND run_id=? AND cycle_id=? ORDER BY slot_ordinal",
+            (campaign, run, cycle),
+        ).fetchall()
+        windows = connection.execute(
+            "SELECT window_kind,window_state FROM "
+            "printer_memory_factory_campaign_windows "
+            "WHERE campaign_id=? AND run_id=? AND cycle_id=? ORDER BY window_id",
+            (campaign, run, cycle),
+        ).fetchall()
+        work_rows = connection.execute(
+            "SELECT w.work_state,w.ownership_contract_version,w.work_scope,w.stage_id,"
+            "s.step_kind,s.step_status,s.started_at,j.status,j.locked_at,j.lock_owner "
+            "FROM printer_memory_factory_campaign_scheduler_work AS w "
+            "JOIN printer_memory_factory_run_steps AS s "
+            "ON s.scheduler_job_id=w.scheduler_job_id AND s.run_id=? "
+            "JOIN printer_scheduler_jobs AS j ON j.id=w.scheduler_job_id "
+            "WHERE w.campaign_id=? AND w.run_id=? AND w.cycle_id=? "
+            "AND w.work_scope='WINDOW_LIFECYCLE' AND w.stage_id='WINDOW_15M' "
+            "ORDER BY w.scheduler_work_id",
+            (factory, campaign, run, cycle),
+        ).fetchall()
+        exact_shape = bool(
+            len(cycles) == 1
+            and str(cycles[0][0]) == cycle
+            and int(cycles[0][1]) == 1
+            and not str(cycles[0][2]).startswith("TERMINAL_")
+            and attempt_count == 0
+            and pre_lifecycle_count == 0
+            and len(slots) == 2
+            and tuple(int(row[0]) for row in slots) == (1, 2)
+            and all(str(row[1]) == "SELECTED" and row[2] is not None for row in slots)
+            and len(windows) == 2
+            and all(
+                str(row[0]) == "WINDOW_15M" and str(row[1]) == "PLANNED"
+                for row in windows
+            )
+            and len(work_rows) == 2
+            and all(
+                str(row[0]) == "PENDING"
+                and str(row[1]) == "V2_STAGE_SCOPED"
+                and str(row[2]) == "WINDOW_LIFECYCLE"
+                and str(row[3]) == "WINDOW_15M"
+                and str(row[4]) == "SNAPSHOT"
+                and str(row[5]) == "PENDING"
+                and row[6] is None
+                and str(row[7]) in {"PENDING", "COOLDOWN"}
+                and row[8] is None
+                and row[9] is None
+                for row in work_rows
+            )
+        )
+        if not exact_shape:
+            connection.rollback()
+            return False
+        connection.execute(
+            "INSERT INTO " + table + "("
+            "campaign_id,campaign_run_id,authoritative_factory_run_id,"
+            "cycle_id,cycle_ordinal,proposed_cycle_ordinal,terminal_phase,"
+            "first_terminal_cause,recorded_at) VALUES (?,?,?,?,1,2,?,?,?)",
+            (
+                campaign, run, factory, cycle,
+                PLANNED_LIFECYCLE_ZERO_ATTEMPT_PHASE, reason, timestamp,
+            ),
+        )
+        connection.commit()
+        return True
+    except FourTokenFactoryAdapterError:
+        if connection.in_transaction:
+            connection.rollback()
+        raise
+    except sqlite3.Error as exc:
+        if connection.in_transaction:
+            connection.rollback()
+        raise FourTokenFactoryAdapterError(
+            f"planned-lifecycle zero-attempt provenance persistence failed: {exc}"
+        ) from exc
+
+
 def _parse_time(value: object, label: str) -> datetime:
     if not isinstance(value, str) or not value.strip():
         raise FourTokenFactoryAdapterError(f"{label} is missing")
@@ -1932,7 +2094,7 @@ def finalize_four_token_shared_terminal(
             "AND authoritative_factory_run_id=? AND proposed_cycle_ordinal=2",
             (campaign, run, factory),
         ).fetchall()
-        provenance_rows = (
+        pre_lifecycle_provenance_rows = (
             connection.execute(
                 "SELECT cycle_id,cycle_ordinal,proposed_cycle_ordinal,terminal_phase,"
                 "first_terminal_cause "
@@ -1945,6 +2107,23 @@ def finalize_four_token_shared_terminal(
                 connection, "printer_four_token_pre_lifecycle_terminal_provenance"
             )
             else []
+        )
+        planned_zero_attempt_rows = (
+            connection.execute(
+                "SELECT cycle_id,cycle_ordinal,proposed_cycle_ordinal,terminal_phase,"
+                "first_terminal_cause "
+                "FROM printer_four_token_zero_attempt_terminal_provenance "
+                "WHERE campaign_id=? AND campaign_run_id=? "
+                "AND authoritative_factory_run_id=? AND proposed_cycle_ordinal=2",
+                (campaign, run, factory),
+            ).fetchall()
+            if _table_exists(
+                connection, "printer_four_token_zero_attempt_terminal_provenance"
+            )
+            else []
+        )
+        provenance_present = bool(
+            pre_lifecycle_provenance_rows or planned_zero_attempt_rows
         )
         parent_cause = str(rows[0][3] or "").strip()
         interrupted_open_attempt = (
@@ -1966,38 +2145,75 @@ def finalize_four_token_shared_terminal(
             and attempt_rows[0][2] is None
         )
         if interrupted_open_attempt:
-            if provenance_rows:
+            if provenance_present:
                 raise FourTokenFactoryAdapterError(
-                    "interrupted one-cycle terminal has contradictory pre-lifecycle provenance"
+                    "interrupted one-cycle terminal has contradictory zero-attempt provenance"
                 )
             admitted_shape = "ONE_CYCLE_CAMPAIGN_INTERRUPTED_OPEN_ATTEMPT"
         elif honest_no_admission:
-            if provenance_rows:
+            if provenance_present:
                 raise FourTokenFactoryAdapterError(
-                    "one-cycle terminal has contradictory attempt and pre-lifecycle provenance"
+                    "one-cycle terminal has contradictory attempt and zero-attempt provenance"
                 )
             admitted_shape = "ONE_CYCLE_HONEST_NO_ADMISSION"
         elif len(attempt_rows) == 0:
             cycle_cause = str(rows[0][3] or "").strip()
-            window_count = int(connection.execute(
-                "SELECT COUNT(*) FROM printer_memory_factory_campaign_windows "
-                "WHERE campaign_id=? AND run_id=? AND cycle_id=?",
+            window_rows = connection.execute(
+                "SELECT window_kind,window_state,first_terminal_cause FROM "
+                "printer_memory_factory_campaign_windows "
+                "WHERE campaign_id=? AND run_id=? AND cycle_id=? ORDER BY window_id",
                 (campaign, run, str(rows[0][0])),
-            ).fetchone()[0])
-            if (
-                len(provenance_rows) != 1
-                or str(provenance_rows[0][0]) != str(rows[0][0])
-                or int(provenance_rows[0][1]) != 1
-                or int(provenance_rows[0][2]) != 2
-                or str(provenance_rows[0][3]) != "CAMPAIGN_PRE_LIFECYCLE"
-                or not cycle_cause
-                or str(provenance_rows[0][4] or "").strip() != cycle_cause
-                or window_count != 0
-            ):
+            ).fetchall()
+            if pre_lifecycle_provenance_rows and planned_zero_attempt_rows:
+                raise FourTokenFactoryAdapterError(
+                    "one-cycle terminal has contradictory zero-attempt provenance owners"
+                )
+            if pre_lifecycle_provenance_rows:
+                provenance = pre_lifecycle_provenance_rows[0]
+                if (
+                    len(pre_lifecycle_provenance_rows) != 1
+                    or str(provenance[0]) != str(rows[0][0])
+                    or int(provenance[1]) != 1
+                    or int(provenance[2]) != 2
+                    or str(provenance[3]) != "CAMPAIGN_PRE_LIFECYCLE"
+                    or not cycle_cause
+                    or str(provenance[4] or "").strip() != cycle_cause
+                    or window_rows
+                ):
+                    raise FourTokenFactoryAdapterError(
+                        "one-cycle shared terminal requires exact pre-lifecycle zero-attempt provenance"
+                    )
+                admitted_shape = "ONE_CYCLE_PRE_LIFECYCLE_ZERO_ATTEMPT"
+            elif planned_zero_attempt_rows:
+                provenance = planned_zero_attempt_rows[0]
+                exact_cancelled_windows = bool(
+                    len(window_rows) == 2
+                    and all(
+                        str(item[0]) == "WINDOW_15M"
+                        and str(item[1]) == "CANCELLED"
+                        and str(item[2] or "").strip() == cycle_cause
+                        for item in window_rows
+                    )
+                )
+                if (
+                    len(planned_zero_attempt_rows) != 1
+                    or str(provenance[0]) != str(rows[0][0])
+                    or int(provenance[1]) != 1
+                    or int(provenance[2]) != 2
+                    or str(provenance[3])
+                    != PLANNED_LIFECYCLE_ZERO_ATTEMPT_PHASE
+                    or not cycle_cause
+                    or str(provenance[4] or "").strip() != cycle_cause
+                    or not exact_cancelled_windows
+                ):
+                    raise FourTokenFactoryAdapterError(
+                        "one-cycle shared terminal requires exact planned-lifecycle zero-attempt provenance"
+                    )
+                admitted_shape = "ONE_CYCLE_LIFECYCLE_PLANNED_ZERO_ATTEMPT"
+            else:
                 raise FourTokenFactoryAdapterError(
                     "one-cycle shared terminal requires exact pre-lifecycle zero-attempt provenance"
                 )
-            admitted_shape = "ONE_CYCLE_PRE_LIFECYCLE_ZERO_ATTEMPT"
         else:
             raise FourTokenFactoryAdapterError(
                 "one-cycle shared terminal requires exact terminal no-admission evidence"
