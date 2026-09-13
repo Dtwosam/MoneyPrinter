@@ -36,6 +36,10 @@ from printer_v1.sources.generic_present_pool_account_batch import (
 from printer_v1.sources.pumpswap import PUMPSWAP_AMM_PROGRAM_ID
 from printer_v1.sources.dexscreener import fixture_success_transport
 from printer_v1.sources.pumpswap_graduated_registry import record_graduated_candidate
+from printer_v1.operator_cli.graduated_supply_front_door import (
+    GraduatedSupplyError,
+    _source_specific_admission_for,
+)
 
 NOW = "2026-09-09T12:00:00+00:00"
 WSOL = "So11111111111111111111111111111111111111112"
@@ -315,6 +319,41 @@ def test_parentless_pumpswap_present_pool_persists_generic_market_truth_only(dat
         "SELECT COUNT(*) FROM printer_pumpswap_graduated_candidate_registry WHERE mint_identity=?",
         (mint,),
     ).fetchone()[0] == 0
+
+
+def test_market_resolution_preserves_governed_nomination_source_for_admission(database):
+    """A fresh exact-market source must survive the market-candidate handoff."""
+    _path, connection = database
+    mint = "ParentlessNominationMint"
+    pool = "ParentlessNominationPool"
+
+    result = run_dexscreener_batch_market_resolution(
+        connection,
+        inventory_rows=[_protocol_resume_inventory(mint=mint, pool=pool)],
+        transport=fixture_success_transport(
+            {"pairs": [_market_pair(mint=mint, pool=pool, liquidity_usd=4_000.0)]}
+        ),
+        request_key="parentless-nomination-source",
+        now=NOW,
+        campaign_id="campaign",
+    )
+    candidate = result["candidates"][0]
+
+    assert candidate["nomination_source"] == "dexscreener"
+    # The validator independently requires source-derived market observation
+    # time.  Supply the retained timestamp here so this regression isolates the
+    # nomination-source handoff rather than weakening that separate gate.
+    candidate = {
+        **candidate,
+        "liquidity": {**candidate["liquidity"], "liquidity_observed_at": NOW},
+    }
+    admission = _source_specific_admission_for(candidate)
+    assert admission.nomination_source == "dexscreener"
+
+    unsupported = {**candidate, "nomination_source": "unsupported-source"}
+    with pytest.raises(GraduatedSupplyError) as rejected:
+        _source_specific_admission_for(unsupported)
+    assert rejected.value.code == "MARKET_CANDIDATE_NOMINATION_SOURCE_UNSUPPORTED"
 
 
 def test_parentless_pumpswap_no_match_persists_generic_absence_only(database):

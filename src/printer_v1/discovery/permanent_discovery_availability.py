@@ -2285,6 +2285,11 @@ def run_dexscreener_batch_market_resolution(
                     or f"solana-mainnet:{venue}:{historical_pool}"
                 ),
                 "provenance": str(row.get("latest_channel") or "PERSISTED_GRADUATED"),
+                # Preserve the governed source that resolved this exact market
+                # observation.  ``provenance`` is legacy inventory context and
+                # cannot substitute for the canonical nomination source at the
+                # source-specific admission boundary.
+                "nomination_source": str(provenance.get("source") or ""),
                 "lifecycle_state": str(row.get("lifecycle_state") or GRADUATED_LIFECYCLE),
                 "graduation_block_time": row.get("graduation_block_time"),
                 "token_program": token_program,
