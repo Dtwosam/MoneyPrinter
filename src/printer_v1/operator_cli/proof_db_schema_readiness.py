@@ -80,6 +80,11 @@ REQUIRED_TABLE_COLUMNS = {
         "source_failure_id", "payload_json", "payload_hash", "observed_at",
         "created_at",
     },
+    "printer_four_token_zero_attempt_terminal_provenance": {
+        "campaign_id", "campaign_run_id", "authoritative_factory_run_id",
+        "cycle_id", "cycle_ordinal", "proposed_cycle_ordinal",
+        "terminal_phase", "first_terminal_cause", "recorded_at",
+    },
 }
 
 REQUIRED_NOT_NULL_COLUMNS = {
@@ -118,6 +123,11 @@ REQUIRED_NOT_NULL_COLUMNS = {
         "attempt_id", "event_key", "opportunity_ordinal", "claim_ordinal",
         "evidence_kind", "payload_json", "payload_hash", "observed_at",
         "created_at",
+    },
+    "printer_four_token_zero_attempt_terminal_provenance": {
+        "campaign_id", "campaign_run_id", "authoritative_factory_run_id",
+        "cycle_id", "cycle_ordinal", "proposed_cycle_ordinal",
+        "terminal_phase", "first_terminal_cause", "recorded_at",
     },
 }
 
@@ -183,6 +193,12 @@ REQUIRED_UNIQUE_KEYS = {
     "printer_pre_admission_attempt_evidence": {
         ("attempt_id", "event_key"),
     },
+    "printer_four_token_zero_attempt_terminal_provenance": {
+        (
+            "campaign_id", "campaign_run_id",
+            "authoritative_factory_run_id", "proposed_cycle_ordinal",
+        ),
+    },
 }
 
 REQUIRED_TRIGGERS = {
@@ -225,6 +241,21 @@ REQUIRED_TRIGGERS = {
     "printer_pre_admission_attempt_evidence_failure_match": (
         "printer_pre_admission_attempt_evidence"
     ),
+    "printer_four_token_zero_attempt_terminal_provenance_exact_shape": (
+        "printer_four_token_zero_attempt_terminal_provenance"
+    ),
+    "printer_four_token_zero_attempt_terminal_provenance_immutable_update": (
+        "printer_four_token_zero_attempt_terminal_provenance"
+    ),
+    "printer_four_token_zero_attempt_terminal_provenance_immutable_delete": (
+        "printer_four_token_zero_attempt_terminal_provenance"
+    ),
+    "printer_pre_admission_attempt_forbids_zero_attempt_terminal_provenance": (
+        "printer_pre_admission_discovery_attempts"
+    ),
+    "printer_pre_lifecycle_provenance_forbids_zero_attempt_terminal_provenance": (
+        "printer_four_token_pre_lifecycle_terminal_provenance"
+    ),
 }
 
 MIGRATION_060_REQUIRED_TABLES = frozenset({
@@ -265,6 +296,17 @@ MIGRATION_062_REQUIRED_TRIGGERS = frozenset({
 MIGRATION_062_REQUIRED_INDEXES = frozenset({
     "idx_pre_admission_attempt_evidence_reduce",
 })
+MIGRATION_063_REQUIRED_TABLES = frozenset({
+    "printer_four_token_zero_attempt_terminal_provenance",
+})
+MIGRATION_063_REQUIRED_TRIGGERS = frozenset({
+    "printer_four_token_zero_attempt_terminal_provenance_exact_shape",
+    "printer_four_token_zero_attempt_terminal_provenance_immutable_update",
+    "printer_four_token_zero_attempt_terminal_provenance_immutable_delete",
+    "printer_pre_admission_attempt_forbids_zero_attempt_terminal_provenance",
+    "printer_pre_lifecycle_provenance_forbids_zero_attempt_terminal_provenance",
+})
+MIGRATION_063_REQUIRED_INDEXES = frozenset()
 
 REQUIRED_STEP_FOREIGN_KEYS = {
     ("run_id", "printer_memory_factory_runs", "run_id"),
