@@ -812,13 +812,27 @@ def _legacy_pump_reserve_projection_allowed(
 ) -> bool:
     """Whether a candidate may enter the Pump-registry-bound legacy reserve.
 
-    An explicit non-Pump pool program is authoritative evidence that this
-    compatibility projection does not apply. Carriers that predate the generic
-    identity fields retain the historical behavior so Pump validation still
-    fails closed through the existing foreign key when its registry parent is
-    unexpectedly absent.
+    Explicit admission authority is authoritative. Market-present candidates
+    prove current pool existence only and must never be projected into the
+    Pump-graduation-backed reserve, even when that current pool is PumpSwap.
+
+    Legacy carriers without an authority field preserve their historical
+    compatibility behavior and remain protected by the existing foreign key.
     """
+    from printer_v1.discovery.memory_observation_activation import (
+        AdmissionAuthority,
+    )
     from printer_v1.sources.pumpswap import PUMPSWAP_AMM_PROGRAM_ID
+
+    admission_authority = str(
+        candidate.get("admission_authority") or ""
+    ).strip()
+    if (
+        admission_authority
+        and admission_authority
+        != AdmissionAuthority.DIRECT_PUMP_PUMPSWAP.value
+    ):
+        return False
 
     pool_program = str(
         candidate.get("pool_program")
