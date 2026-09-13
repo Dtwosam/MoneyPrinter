@@ -13,6 +13,8 @@ from printer_v1.discovery.eligible_token_supply import (
 )
 from printer_v1.discovery.permanent_discovery_availability import (
     CONTRACT_BLOCKED,
+    CURRENT_POOL_CONFIRMED,
+    EXACT_POOL_NO_MATCH,
     freeze_eligible_reserve,
     MEMORY_OBSERVATION_ELIGIBLE,
     MINIMUM_FREEZE_DEPTH,
@@ -20,6 +22,7 @@ from printer_v1.discovery.permanent_discovery_availability import (
     load_protocol_confirmation_due,
     process_protocol_confirmation_queue,
     record_fresh_pool_nominations,
+    run_dexscreener_batch_market_resolution,
 )
 from printer_v1.discovery.later_cycle_fresh_inventory import (
     load_campaign_fresh_moe_candidates,
@@ -31,6 +34,8 @@ from printer_v1.sources.generic_present_pool_account_batch import (
     fixture_generic_present_pool_account_batch_transport,
 )
 from printer_v1.sources.pumpswap import PUMPSWAP_AMM_PROGRAM_ID
+from printer_v1.sources.dexscreener import fixture_success_transport
+from printer_v1.sources.pumpswap_graduated_registry import record_graduated_candidate
 
 NOW = "2026-09-09T12:00:00+00:00"
 WSOL = "So11111111111111111111111111111111111111112"
@@ -247,3 +252,128 @@ def test_legacy_carrier_without_authority_preserves_pump_reserve_behavior():
     assert _legacy_pump_reserve_projection_allowed(
         {"pool_program": PUMPSWAP_AMM_PROGRAM_ID}
     )
+
+
+def _protocol_resume_inventory(*, mint: str, pool: str) -> dict[str, object]:
+    return {
+        "mint_identity": mint,
+        "pumpswap_pool": pool,
+        "market_identity": f"solana-mainnet:pumpswap:{pool}",
+        "lifecycle_state": "PUMPSWAP_GRADUATED_CONFIRMED",
+        "token_program": TOKEN_PROGRAM_ID,
+        "pool_program": PUMPSWAP_AMM_PROGRAM_ID,
+        "base_mint": mint,
+        "quote_mint": WSOL,
+        "venue": "pumpswap",
+        "protocol_confirmed": True,
+        "protocol_request_id": 77,
+    }
+
+
+def _market_pair(*, mint: str, pool: str, liquidity_usd: float) -> dict[str, object]:
+    return {
+        "chainId": "solana",
+        "pairAddress": pool,
+        "dexId": "pumpswap",
+        "baseToken": {"address": mint},
+        "quoteToken": {"address": WSOL},
+        "liquidity": {"usd": liquidity_usd},
+    }
+
+
+def test_parentless_pumpswap_present_pool_persists_generic_market_truth_only(database):
+    _path, connection = database
+    mint = "ParentlessPresentMint"
+    pool = "ParentlessPresentPool"
+
+    result = run_dexscreener_batch_market_resolution(
+        connection,
+        inventory_rows=[_protocol_resume_inventory(mint=mint, pool=pool)],
+        transport=fixture_success_transport(
+            {"pairs": [_market_pair(mint=mint, pool=pool, liquidity_usd=4_000.0)]}
+        ),
+        request_key="parentless-present",
+        now=NOW,
+        campaign_id="campaign",
+    )
+
+    assert result["candidates"][0]["admission_authority"] == "MARKET_PRESENT_POOL"
+    assert connection.execute(
+        "SELECT COUNT(*) FROM printer_graduated_market_floor_state WHERE mint_identity=?",
+        (mint,),
+    ).fetchone()[0] == 0
+    assert connection.execute(
+        "SELECT current_state FROM printer_exact_market_states WHERE mint_identity=? AND pool_address=?",
+        (mint, pool),
+    ).fetchone()[0] == CURRENT_POOL_CONFIRMED
+    assert connection.execute(
+        "SELECT COUNT(*) FROM printer_discovery_reserve_layers "
+        "WHERE mint_identity=? AND pool_address=? AND reserve_layer=? AND reserve_state='ACTIVE'",
+        (mint, pool, MEMORY_OBSERVATION_ELIGIBLE),
+    ).fetchone()[0] == 1
+    assert connection.execute(
+        "SELECT COUNT(*) FROM printer_pumpswap_graduated_candidate_registry WHERE mint_identity=?",
+        (mint,),
+    ).fetchone()[0] == 0
+
+
+def test_parentless_pumpswap_no_match_persists_generic_absence_only(database):
+    _path, connection = database
+    mint = "ParentlessNoMatchMint"
+    pool = "ParentlessNoMatchPool"
+
+    result = run_dexscreener_batch_market_resolution(
+        connection,
+        inventory_rows=[_protocol_resume_inventory(mint=mint, pool=pool)],
+        transport=fixture_success_transport({"pairs": []}),
+        request_key="parentless-no-match",
+        now=NOW,
+        campaign_id="campaign",
+    )
+
+    assert result["candidates"][0]["eligible"] is False
+    assert connection.execute(
+        "SELECT COUNT(*) FROM printer_graduated_market_floor_state WHERE mint_identity=?",
+        (mint,),
+    ).fetchone()[0] == 0
+    assert connection.execute(
+        "SELECT current_state FROM printer_exact_market_states WHERE mint_identity=? AND pool_address=?",
+        (mint, pool),
+    ).fetchone()[0] == EXACT_POOL_NO_MATCH
+    assert connection.execute(
+        "SELECT COUNT(*) FROM printer_pumpswap_graduated_candidate_registry WHERE mint_identity=?",
+        (mint,),
+    ).fetchone()[0] == 0
+
+
+def test_exact_pump_graduation_parent_retains_market_floor_persistence(database):
+    _path, connection = database
+    mint = "GraduatedPresentMint"
+    pool = "GraduatedPresentPool"
+    record_graduated_candidate(
+        connection,
+        mint=mint,
+        migration_signature="GraduatedPresentSignature",
+        pumpswap_pool=pool,
+        graduation_block_time=1_700_000_000,
+        graduation_slot=1,
+        now=NOW,
+    )
+
+    result = run_dexscreener_batch_market_resolution(
+        connection,
+        inventory_rows=[_protocol_resume_inventory(mint=mint, pool=pool)],
+        transport=fixture_success_transport(
+            {"pairs": [_market_pair(mint=mint, pool=pool, liquidity_usd=4_000.0)]}
+        ),
+        request_key="graduated-present",
+        now=NOW,
+        campaign_id="campaign",
+    )
+
+    assert result["candidates"][0]["eligible"] is True
+    assert connection.execute(
+        "SELECT liquidity_status FROM printer_graduated_market_floor_state "
+        "WHERE mint_identity=? AND pumpswap_pool=?",
+        (mint, pool),
+    ).fetchone()[0] == "LIQUIDITY_PROVEN"

@@ -1520,6 +1520,20 @@ def _bounded_geckoterminal_fallback_limit(*, unresolved_count: int, max_fallback
     return min(6, unresolved_count, 6 if max_fallbacks is None else max_fallbacks)
 
 
+def _exact_pump_graduation_parent_exists(
+    connection: sqlite3.Connection,
+    *,
+    mint: str,
+    pool: str,
+) -> bool:
+    """Return whether immutable Pump graduation evidence owns this exact pair."""
+    return connection.execute(
+        """SELECT 1 FROM printer_pumpswap_graduated_candidate_registry
+           WHERE mint_identity=? AND pumpswap_pool=?""",
+        (mint, pool),
+    ).fetchone() is not None
+
+
 def run_dexscreener_batch_market_resolution(
     connection: sqlite3.Connection,
     *,
@@ -1981,6 +1995,11 @@ def run_dexscreener_batch_market_resolution(
             )
             venue = str(row.get("venue") or PUMPSWAP_VENUE)
             pumpswap_identity = pool_program == PUMPSWAP_AMM_PROGRAM_ID
+            exact_pump_graduation_parent = _exact_pump_graduation_parent_exists(
+                connection,
+                mint=mint,
+                pool=historical_pool,
+            )
             gt_entry = fallback.get(mint)
             deferred_reconciliation = bool(
                 defer_geckoterminal_fallback
@@ -2126,13 +2145,14 @@ def run_dexscreener_batch_market_resolution(
                     # carries liquidity_usd=None, never 0. Prior measured
                     # evidence stays inspectable in its source and transition
                     # history; only the current projection is overwritten.
-                    record_market_floor_state(
-                        connection,
-                        mint=mint,
-                        pool=historical_pool,
-                        liquidity=evidence,
-                        now=now,
-                    )
+                    if exact_pump_graduation_parent:
+                        record_market_floor_state(
+                            connection,
+                            mint=mint,
+                            pool=historical_pool,
+                            liquidity=evidence,
+                            now=now,
+                        )
                     if deferred_reconciliation:
                         report["state_transition_ids"].append(
                             upsert_state(
@@ -2236,7 +2256,7 @@ def run_dexscreener_batch_market_resolution(
                         report["state_transition_ids"].append(
                             upsert_state(historical_pool, state, evidence.reason)
                         )
-                        if pumpswap_identity:
+                        if exact_pump_graduation_parent:
                             # This durable cooldown table is a child of the
                             # immutable PumpSwap-graduated registry. Generic
                             # present-pool identities have no lawful parent row;
