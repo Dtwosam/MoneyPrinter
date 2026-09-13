@@ -8,6 +8,9 @@ import tempfile
 import pytest
 
 from printer_v1.db import apply_migrations
+from printer_v1.discovery.eligible_token_supply import (
+    _legacy_pump_reserve_projection_allowed,
+)
 from printer_v1.discovery.permanent_discovery_availability import (
     CONTRACT_BLOCKED,
     freeze_eligible_reserve,
@@ -27,6 +30,7 @@ from printer_v1.sources.generic_present_pool_account_batch import (
     TOKEN_PROGRAM_ID,
     fixture_generic_present_pool_account_batch_transport,
 )
+from printer_v1.sources.pumpswap import PUMPSWAP_AMM_PROGRAM_ID
 
 NOW = "2026-09-09T12:00:00+00:00"
 WSOL = "So11111111111111111111111111111111111111112"
@@ -219,3 +223,27 @@ def test_two_generic_present_pools_reach_exact_two_freeze_floor(database):
     assert len(frozen.selected) == 2
     assert len(frozen.alternates) == 0
     assert all(item["admission_authority"] == "MARKET_PRESENT_POOL" for item in carriers)
+
+
+def test_market_present_pumpswap_pool_does_not_enter_pump_registry_bound_reserve():
+    assert not _legacy_pump_reserve_projection_allowed(
+        {
+            "admission_authority": "MARKET_PRESENT_POOL",
+            "pool_program": PUMPSWAP_AMM_PROGRAM_ID,
+        }
+    )
+
+
+def test_direct_pump_pumpswap_authority_may_enter_legacy_reserve():
+    assert _legacy_pump_reserve_projection_allowed(
+        {
+            "admission_authority": "DIRECT_PUMP_PUMPSWAP",
+            "pool_program": PUMPSWAP_AMM_PROGRAM_ID,
+        }
+    )
+
+
+def test_legacy_carrier_without_authority_preserves_pump_reserve_behavior():
+    assert _legacy_pump_reserve_projection_allowed(
+        {"pool_program": PUMPSWAP_AMM_PROGRAM_ID}
+    )
