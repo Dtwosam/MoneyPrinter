@@ -1,4 +1,4 @@
-"""Bounded proof for the migration-062 authorization-provenance cutover.
+"""Bounded proof for the migration-063 authorization-provenance cutover.
 
 The real migration packages and authoritative database are read-only inputs.
 Every mutation test uses a disposable copy. No authorization package or
@@ -28,6 +28,16 @@ MIGRATION_062_KIND = "MIGRATION_062_EVIDENCE"
 MIGRATION_062_FILE_COUNT = 4
 MIGRATION_062_INVENTORY_SHA256 = (
     "fa617f77f288705e7e8a4d3676f78feee041f098292a59d431a60e66624bcd02"
+)
+MIGRATION_063_ROOT = "operator-runs/v2-9-8b-migration-063-authorization-preparation"
+MIGRATION_063_EXECUTION_ID = "V2_9_8B_MIGRATION_063_AUTH_20260913T203954Z_5f3a8c1d"
+MIGRATION_063_KIND = "MIGRATION_063_EVIDENCE"
+MIGRATION_063_FILE_COUNT = 2
+MIGRATION_063_INVENTORY_SHA256 = (
+    "2a5779ab49cc2e27425888a472014f70689f51fe39c10cd6b2126fc55e051d5b"
+)
+MIGRATION_062_HISTORICAL_INVENTORY_SHA256 = (
+    "3df8d8e996c2d8c34d38b8f6544c5f942d60df0b197e5b26718bc771e438bfc6"
 )
 MIGRATION_061_HISTORICAL_INVENTORY_SHA256 = (
     "ff8aefa1c0ee3fe4ec2063400a97cd81b8311bc4aa23dd402614bb609659a459"
@@ -69,31 +79,32 @@ def _prove_no_authority_or_database_mutation():
     assert _authorization_inventory() == before_authorizations
 
 
-def test_both_four_token_profiles_bind_exact_current_migration_062() -> None:
+def test_both_four_token_profiles_bind_exact_current_migration_063() -> None:
     expected = (
-        MIGRATION_062_ROOT,
-        MIGRATION_062_KIND,
-        MIGRATION_062_EXECUTION_ID,
-        MIGRATION_062_FILE_COUNT,
-        MIGRATION_062_INVENTORY_SHA256,
+        MIGRATION_063_ROOT,
+        MIGRATION_063_KIND,
+        MIGRATION_063_EXECUTION_ID,
+        MIGRATION_063_FILE_COUNT,
+        MIGRATION_063_INVENTORY_SHA256,
     )
-    assert git_auth.MIGRATION_062_PACKAGE_ROOT == MIGRATION_062_ROOT
-    assert git_auth.MIGRATION_062_PACKAGE_KIND == MIGRATION_062_KIND
+    assert git_auth.MIGRATION_063_PACKAGE_ROOT == MIGRATION_063_ROOT
+    assert git_auth.MIGRATION_063_PACKAGE_KIND == MIGRATION_063_KIND
     assert (
-        git_auth.FOUR_TOKEN_CURRENT_MIGRATION_062_EXECUTION_ID
-        == MIGRATION_062_EXECUTION_ID
-    )
-    assert (
-        git_auth.FOUR_TOKEN_CURRENT_MIGRATION_062_EXPECTED_FILE_COUNT
-        == MIGRATION_062_FILE_COUNT
+        git_auth.FOUR_TOKEN_CURRENT_MIGRATION_063_EXECUTION_ID
+        == MIGRATION_063_EXECUTION_ID
     )
     assert (
-        git_auth.FOUR_TOKEN_CURRENT_MIGRATION_062_EXPECTED_INVENTORY_SHA256
-        == MIGRATION_062_INVENTORY_SHA256
+        git_auth.FOUR_TOKEN_CURRENT_MIGRATION_063_EXPECTED_FILE_COUNT
+        == MIGRATION_063_FILE_COUNT
+    )
+    assert (
+        git_auth.FOUR_TOKEN_CURRENT_MIGRATION_063_EXPECTED_INVENTORY_SHA256
+        == MIGRATION_063_INVENTORY_SHA256
     )
     for profile in (
         git_auth.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE,
         git_auth.FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE,
+        git_auth.FOUR_TOKEN_ADMISSION_CHECKPOINT_AUTHORIZATION_PROFILE,
     ):
         assert (
             profile.migration_package_root,
@@ -104,41 +115,42 @@ def test_both_four_token_profiles_bind_exact_current_migration_062() -> None:
         ) == expected
 
 
-def test_migration_061_is_seventh_immutable_historical_package() -> None:
+def test_migration_062_is_eighth_immutable_historical_package() -> None:
     packages = git_auth.FOUR_TOKEN_HISTORICAL_MIGRATION_PACKAGES
-    assert len(packages) == 7
-    historical_061 = packages[-1]
-    assert historical_061 == git_auth.HistoricalMigrationPackage(
-        package_root=MIGRATION_061_ROOT,
-        execution_id="MIGRATION_061_20260823T200709Z",
-        evidence_class="HISTORICAL_MIGRATION_061_EVIDENCE",
-        expected_file_count=5,
-        expected_inventory_sha256=MIGRATION_061_HISTORICAL_INVENTORY_SHA256,
+    assert len(packages) == 8
+    historical_062 = packages[-1]
+    assert historical_062 == git_auth.HistoricalMigrationPackage(
+        package_root=MIGRATION_062_ROOT,
+        execution_id=MIGRATION_062_EXECUTION_ID,
+        evidence_class="HISTORICAL_MIGRATION_062_EVIDENCE",
+        expected_file_count=MIGRATION_062_FILE_COUNT,
+        expected_inventory_sha256=MIGRATION_062_HISTORICAL_INVENTORY_SHA256,
     )
     for profile in (
         git_auth.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE,
         git_auth.FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE,
+        git_auth.FOUR_TOKEN_ADMISSION_CHECKPOINT_AUTHORIZATION_PROFILE,
     ):
         assert profile.historical_migration_packages == packages
-        assert MIGRATION_061_ROOT != profile.migration_package_root
+        assert MIGRATION_062_ROOT != profile.migration_package_root
 
 
-def test_real_migration_062_package_matches_committed_complete_inventory() -> None:
+def test_real_migration_063_package_matches_committed_complete_inventory() -> None:
     files = git_auth._inventory_bound_package_files(
         root=REPOSITORY_ROOT,
         package_dir=(
-            REPOSITORY_ROOT / MIGRATION_062_ROOT / MIGRATION_062_EXECUTION_ID
+            REPOSITORY_ROOT / MIGRATION_063_ROOT / MIGRATION_063_EXECUTION_ID
         ),
-        package_prefix=f"{MIGRATION_062_ROOT}/{MIGRATION_062_EXECUTION_ID}",
-        label="migration-062 current evidence",
+        package_prefix=f"{MIGRATION_063_ROOT}/{MIGRATION_063_EXECUTION_ID}",
+        label="migration-063 current evidence",
     )
-    assert len(files) == MIGRATION_062_FILE_COUNT
+    assert len(files) == MIGRATION_063_FILE_COUNT
     assert git_auth.compute_historical_migration_inventory_sha256(
-        package_root=MIGRATION_062_ROOT,
-        execution_id=MIGRATION_062_EXECUTION_ID,
-        evidence_class=MIGRATION_062_KIND,
+        package_root=MIGRATION_063_ROOT,
+        execution_id=MIGRATION_063_EXECUTION_ID,
+        evidence_class=MIGRATION_063_KIND,
         files=files,
-    ) == MIGRATION_062_INVENTORY_SHA256
+    ) == MIGRATION_063_INVENTORY_SHA256
 
 
 def test_consumed_8e43eae7_is_diagnostic_history_only() -> None:

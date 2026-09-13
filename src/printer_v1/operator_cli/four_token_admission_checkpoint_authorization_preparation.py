@@ -1,7 +1,7 @@
 """Canonical non-consuming preparation for four-token admission checkpoint authority.
 
 Creates one immutable checkpoint authorization package after exact Git, DB,
-Migration-062 and historical non-reuse checks. It never creates an application
+Migration-063 and historical non-reuse checks. It never creates an application
 marker and never launches Printer.
 """
 

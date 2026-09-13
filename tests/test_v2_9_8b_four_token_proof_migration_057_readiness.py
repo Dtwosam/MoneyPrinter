@@ -1,4 +1,4 @@
-"""Focused migration-062 Git-evidence contract for the four-token proof.
+"""Focused migration-063 Git-evidence contract for the four-token proof.
 
 Offline only. This file creates no authorization, consumes no authorization,
 starts no Printer runtime, performs no source request, and mutates no
@@ -9,46 +9,46 @@ from printer_v1.operator_cli import git_provenance_authorization_manifest as git
 from printer_v1.operator_cli import four_token_proof_zero_state_gate as zero_state
 
 
-def test_four_token_current_migration_evidence_is_exactly_062() -> None:
-    """062 is the singular current four-token schema-transition evidence."""
+def test_four_token_current_migration_evidence_is_exactly_063() -> None:
+    """063 is the singular current four-token schema-transition evidence."""
     profile = git_auth.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE
-    assert profile.migration_package_root == git_auth.MIGRATION_062_PACKAGE_ROOT
-    assert profile.migration_package_kind == git_auth.MIGRATION_062_PACKAGE_KIND
+    assert profile.migration_package_root == git_auth.MIGRATION_063_PACKAGE_ROOT
+    assert profile.migration_package_kind == git_auth.MIGRATION_063_PACKAGE_KIND
     assert profile.migration_package_root == (
-        "operator-runs/v2-9-8b-migration-062-application"
+        "operator-runs/v2-9-8b-migration-063-authorization-preparation"
     )
-    assert profile.migration_package_kind == "MIGRATION_062_EVIDENCE"
+    assert profile.migration_package_kind == "MIGRATION_063_EVIDENCE"
     assert profile.current_migration_execution_id == (
-        "MIGRATION_062_20260828T182504Z"
+        "V2_9_8B_MIGRATION_063_AUTH_20260913T203954Z_5f3a8c1d"
     )
-    assert profile.current_migration_expected_file_count == 4
+    assert profile.current_migration_expected_file_count == 2
     assert profile.current_migration_expected_inventory_sha256 == (
-        "fa617f77f288705e7e8a4d3676f78feee041f098292a59d431a60e66624bcd02"
+        "2a5779ab49cc2e27425888a472014f70689f51fe39c10cd6b2126fc55e051d5b"
     )
     assert profile.migration_package_root != git_auth.MIGRATION_058_PACKAGE_ROOT
     assert profile.migration_package_kind != git_auth.MIGRATION_058_PACKAGE_KIND
 
 
 def test_four_token_zero_state_is_explicitly_pinned_to_the_current_head() -> None:
-    """The reviewed admission pin and Git evidence both resolve to 62/062."""
-    assert zero_state.REQUIRED_MIGRATION_COUNT == 62
+    """The reviewed admission pin and Git evidence both resolve to 63/063."""
+    assert zero_state.REQUIRED_MIGRATION_COUNT == 63
     assert zero_state.REQUIRED_MIGRATION_HEAD == (
-        "062_pre_admission_attempt_evidence.sql"
+        "063_four_token_zero_attempt_terminal_provenance.sql"
     )
     assert "active_pre_lifecycle_discovery_refresh_work" in (
         zero_state.REQUIRED_ZERO_STATE_DOMAINS
     )
 
 
-def test_migrations_050_through_061_are_required_historical_migrations() -> None:
-    """050, 055, 056, 057, 058, 059 and 061 are historical packages.
+def test_migrations_050_through_062_are_required_historical_migrations() -> None:
+    """050, 055, 056, 057, 058, 059, 061 and 062 are historical packages.
 
     The earlier "050, 055, 056" contract is superseded: 057 was demoted when 058
     took over current schema-transition authority, exactly as 055 and 056 were
-    demoted before it. 062 is now the sole current transition.
+    demoted before it. 063 is now the sole current transition.
     """
     profile = git_auth.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE
-    assert len(profile.historical_migration_packages) == 7
+    assert len(profile.historical_migration_packages) == 8
     by_root = {item.package_root: item for item in profile.historical_migration_packages}
     assert set(by_root) == {
         git_auth.MIGRATION_PACKAGE_ROOT,
@@ -58,6 +58,7 @@ def test_migrations_050_through_061_are_required_historical_migrations() -> None
         git_auth.MIGRATION_058_PACKAGE_ROOT,
         git_auth.MIGRATION_059_PACKAGE_ROOT,
         git_auth.MIGRATION_061_PACKAGE_ROOT,
+        git_auth.MIGRATION_062_PACKAGE_ROOT,
     }
 
     mig050 = by_root[git_auth.MIGRATION_PACKAGE_ROOT]
@@ -107,6 +108,13 @@ def test_migrations_050_through_061_are_required_historical_migrations() -> None
     assert mig061.evidence_class == git_auth.HISTORICAL_MIGRATION_061_EVIDENCE_CLASS
     assert mig061.expected_file_count == 5
 
+    mig062 = by_root[git_auth.MIGRATION_062_PACKAGE_ROOT]
+    assert mig062.execution_id == (
+        git_auth.FOUR_TOKEN_HISTORICAL_MIGRATION_062_EXECUTION_ID
+    )
+    assert mig062.evidence_class == git_auth.HISTORICAL_MIGRATION_062_EVIDENCE_CLASS
+    assert mig062.expected_file_count == 4
+
     # No historical package may be the current schema transition.
-    assert git_auth.MIGRATION_062_PACKAGE_ROOT not in by_root
-    assert profile.migration_package_root == git_auth.MIGRATION_062_PACKAGE_ROOT
+    assert git_auth.MIGRATION_063_PACKAGE_ROOT not in by_root
+    assert profile.migration_package_root == git_auth.MIGRATION_063_PACKAGE_ROOT

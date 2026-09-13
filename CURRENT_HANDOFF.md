@@ -1,26 +1,36 @@
 # Printer V1 Handoff
 
 ## Current capability
-Active branch: `assistant/v2-9-8b-later-cycle-mint-market-replay-repair`. Printer V1 remains Solana-only, memecoin-only, paper-only. Source Governor remains the sole source-request owner and Central Scheduler the sole scheduler owner. Strict evidence/provenance/freshness gates remain fail-closed.
+
+Active branch: `assistant/v2-9-8b-later-cycle-mint-market-replay-repair` at
+source basis `ada964900f6b60930edd8dc503999cb826bf09af`. Printer remains
+Solana-only, memecoin-only, and paper-only. Source Governor remains the sole
+source-request owner and Central Scheduler the sole scheduler owner; all
+evidence, provenance, freshness, clean-memory, and capability gates fail
+closed.
+
+The authoritative DB at `data/printer_v1.sqlite3` is now at migration `63 /
+063_four_token_zero_attempt_terminal_provenance.sql`.
 
 ## Latest meaningful result
-Standard-4H campaign `20260913T151547Z-599b54616a7e-campaign` failed in `CAMPAIGN_PRE_LIFECYCLE` with `MARKET_CANDIDATE_NOMINATION_SOURCE_UNSUPPORTED` for mint `2sQ7wuUtRWNir3CEu9HWfLDSut4AszDrcZXLobzJpump` after 13 source calls, 0 scheduler runtime calls, and 6 DB writes. Cleanup completed and the lease was released. Authorization `V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260913T151024Z_a54bd06d` was consumed and is permanently non-reusable.
 
-## Proven blocker and repair
-Generic/current-market discovery may lawfully produce `MARKET_PRESENT_POOL` candidates whose current pool program is PumpSwap while origin remains unknown. `_legacy_pump_reserve_projection_allowed()` previously treated the PumpSwap program alone as sufficient for the legacy `printer_eligible_token_reserve`, whose `mint_identity` FK requires a `printer_pumpswap_graduated_candidate_registry` parent. That false Pump-graduation projection caused the first pre-lifecycle FK failure.
+Migration 063 was applied exactly once through the canonical path. The
+authoritative DB passes integrity, FK, required-object, and schema-coherence
+checks; its migration authorization
+`V2_9_8B_MIGRATION_063_AUTH_20260913T203954Z_5f3a8c1d` is permanently
+consumed. The migration-evidence/provenance contract now uses exact current
+63/063 evidence and preserves 62 as immutable historical evidence; focused
+disposable-state verification passed.
 
-The projector now honors explicit admission authority: any explicit authority other than `DIRECT_PUMP_PUMPSWAP` is excluded from the Pump-registry-bound legacy reserve. Authority-absent legacy carriers preserve historical fail-closed compatibility, and the PumpSwap program check remains unchanged. No FK, provenance, source, scheduler, or admission gate was weakened.
+## Proven blocker
 
-The second FK projection was proven in `run_dexscreener_batch_market_resolution()`: both its exact-pool-present and exact-pool-no-match paths attempted to persist `printer_graduated_market_floor_state`, a child of the immutable graduated registry, based on current PumpSwap program identity alone. The market-floor projection now requires an exact immutable graduation parent matching both mint and pool. Generic current-market truth remains in exact-market state and reserve-layer persistence; no parent is fabricated and the FK remains enforced. Focused disposable-state regression coverage proves parentless present/no-match cases and exact graduated-parent preservation.
-
-The latest failure was a nomination-provenance handoff defect, not a validator defect. The target's governed exact-market observation was DexScreener request `6194` / response `5718` at pool `4vqphqf4v7MSou7o57pTfzFcM7pJxtkmK3XRKBJP1jBK`; durable reserve and exact-market provenance retain `source: dexscreener`. `run_dexscreener_batch_market_resolution()` carried legacy inventory `provenance` but omitted `nomination_source` when it materialized the market-present candidate, causing the downstream validator to see unsupported `PERSISTED_GRADUATED` instead of the canonical governed source. The repair preserves `provenance["source"]` as `nomination_source`; it adds no allowlist entry and retains rejection of missing or unsupported sources.
-
-A later one-cycle terminal defect is now source-proven: Cycle-1 opening planning can durably create two unstarted `WINDOW_15M` owners before the Cycle-2 admission boundary, while a terminal health disposition can still occur before any Cycle-2 attempt exists. The old shared terminal accepted zero attempts only for the stricter zero-window `CAMPAIGN_PRE_LIFECYCLE` shape, so Phase B masked the real admission cause with `one-cycle shared terminal requires exact pre-lifecycle zero-attempt provenance`. Migration 063 adds an immutable, Scheduler-free planned-lifecycle zero-attempt provenance owner; the factory records it only for the exact two-window/two-unstarted-opening-step shape, preserves the categorical BLOCKED/DRAIN reason, and Phase B consumes that evidence without fabricating a Cycle-2 attempt.
-
-A post-repair schema-coherence defect was then proven before any authoritative DB mutation: migration 063 was canonical, but the reviewed schema-admission pin and required-object registry still stopped at 62/062. A fully migrated disposable 63/63 DB therefore failed closed with `schema_expectation_mismatch`. The repair advances only the reviewed schema contract to 63/063 and adds migration-063 table/trigger readiness; migration evidence/provenance remains pinned to 062 until a separately authorized authoritative 063 application is actually completed and evidenced.
-
-## Verification
-TDD RED was proven for the parentless present-pool and no-match paths: both failed at `record_market_floor_state()` with `sqlite3.IntegrityError: FOREIGN KEY constraint failed`. A source-handoff RED also reproduced `MARKET_CANDIDATE_NOMINATION_SOURCE_UNSUPPORTED` from the actual market-resolution candidate before the source-preservation repair. The planned-lifecycle zero-attempt RED was reproduced through the real factory loop on disposable migrated state: Cycle 1 planned two windows, `lease_healthy=False` blocked before Cycle-2 discovery or Scheduler claim, and Phase B failed with the exact pre-lifecycle provenance exception. Focused repair-family verification passed for the planned-lifecycle repair. The migration-063 schema-coherence RED then proved the stale 62/062 pin on disposable 63/63 state; focused GREEN must prove the explicit 63/063 pin, required migration-063 objects, the zero-state gate, and proof-DB schema readiness before promotion.
+No migration-063 schema or evidence blocker remains. No new Printer or
+Standard-4H execution has occurred, so the one-cycle runtime repair has not
+been operationally re-proven.
 
 ## Exact next permitted action
-Development-only verification and a fresh read-only preflight may continue. Do not rerun or reuse any consumed/stale authorization. Any later operational action remains separate and requires then-current authority, exact GitHub HEAD/DB binding, migration/integrity/FK/zero-active-work proof, and new explicit operator approval.
+
+Development-only inspection may continue. Any operational Standard-4H attempt
+requires a fresh read-only preflight against then-current Git/DB identity, a
+new one-shot authorization, and explicit operator approval. Never reuse the
+consumed migration authorization or any consumed Standard-4H authorization.

@@ -1,4 +1,4 @@
-"""Focused contract for four-token provenance alignment to current 062.
+"""Focused contract for four-token provenance alignment to current 063.
 
 Offline only. This file reads committed profile declarations and disposable
 fixtures. It creates no authorization, calls no source, starts no process, and
@@ -23,32 +23,35 @@ FOUR_TOKEN_PROFILES = ()
 
 
 class CurrentMigrationEvidenceTests(unittest.TestCase):
-    """Migration 062 is current evidence for both four-token profiles."""
+    """Migration 063 is current evidence for both four-token profiles."""
 
     def setUp(self) -> None:
         self.proof = git_auth.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE
         self.operational = (
             git_auth.FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE
         )
+        self.checkpoint = (
+            git_auth.FOUR_TOKEN_ADMISSION_CHECKPOINT_AUTHORIZATION_PROFILE
+        )
 
-    def test_migration_062_current_identity_constants(self) -> None:
+    def test_migration_063_current_identity_constants(self) -> None:
         self.assertEqual(
-            git_auth.MIGRATION_062_PACKAGE_ROOT,
-            "operator-runs/v2-9-8b-migration-062-application",
+            git_auth.MIGRATION_063_PACKAGE_ROOT,
+            "operator-runs/v2-9-8b-migration-063-authorization-preparation",
         )
         self.assertEqual(
-            git_auth.MIGRATION_062_PACKAGE_KIND, "MIGRATION_062_EVIDENCE"
+            git_auth.MIGRATION_063_PACKAGE_KIND, "MIGRATION_063_EVIDENCE"
         )
         self.assertEqual(
-            git_auth.FOUR_TOKEN_CURRENT_MIGRATION_062_EXECUTION_ID,
-            "MIGRATION_062_20260828T182504Z",
+            git_auth.FOUR_TOKEN_CURRENT_MIGRATION_063_EXECUTION_ID,
+            "V2_9_8B_MIGRATION_063_AUTH_20260913T203954Z_5f3a8c1d",
         )
         self.assertEqual(
-            git_auth.FOUR_TOKEN_CURRENT_MIGRATION_062_EXPECTED_FILE_COUNT, 4
+            git_auth.FOUR_TOKEN_CURRENT_MIGRATION_063_EXPECTED_FILE_COUNT, 2
         )
         self.assertEqual(
-            git_auth.FOUR_TOKEN_CURRENT_MIGRATION_062_EXPECTED_INVENTORY_SHA256,
-            "fa617f77f288705e7e8a4d3676f78feee041f098292a59d431a60e66624bcd02",
+            git_auth.FOUR_TOKEN_CURRENT_MIGRATION_063_EXPECTED_INVENTORY_SHA256,
+            "2a5779ab49cc2e27425888a472014f70689f51fe39c10cd6b2126fc55e051d5b",
         )
         for other in (
             git_auth.MIGRATION_PACKAGE_ROOT,
@@ -59,7 +62,7 @@ class CurrentMigrationEvidenceTests(unittest.TestCase):
             git_auth.MIGRATION_059_PACKAGE_ROOT,
             git_auth.MIGRATION_061_PACKAGE_ROOT,
         ):
-            self.assertNotEqual(git_auth.MIGRATION_062_PACKAGE_ROOT, other)
+            self.assertNotEqual(git_auth.MIGRATION_063_PACKAGE_ROOT, other)
         for other in (
             git_auth.MIGRATION_PACKAGE_KIND,
             git_auth.MIGRATION_055_PACKAGE_KIND,
@@ -69,30 +72,30 @@ class CurrentMigrationEvidenceTests(unittest.TestCase):
             git_auth.MIGRATION_059_PACKAGE_KIND,
             git_auth.MIGRATION_061_PACKAGE_KIND,
         ):
-            self.assertNotEqual(git_auth.MIGRATION_062_PACKAGE_KIND, other)
+            self.assertNotEqual(git_auth.MIGRATION_063_PACKAGE_KIND, other)
 
-    def test_both_four_token_profiles_are_current_at_exact_062(self) -> None:
-        for profile in (self.proof, self.operational):
+    def test_both_four_token_profiles_are_current_at_exact_063(self) -> None:
+        for profile in (self.proof, self.operational, self.checkpoint):
             with self.subTest(mode=profile.command_mode):
                 self.assertEqual(
                     profile.migration_package_root,
-                    git_auth.MIGRATION_062_PACKAGE_ROOT,
+                    git_auth.MIGRATION_063_PACKAGE_ROOT,
                 )
                 self.assertEqual(
                     profile.migration_package_kind,
-                    git_auth.MIGRATION_062_PACKAGE_KIND,
+                    git_auth.MIGRATION_063_PACKAGE_KIND,
                 )
                 self.assertEqual(
                     profile.current_migration_execution_id,
-                    git_auth.FOUR_TOKEN_CURRENT_MIGRATION_062_EXECUTION_ID,
+                    git_auth.FOUR_TOKEN_CURRENT_MIGRATION_063_EXECUTION_ID,
                 )
                 self.assertEqual(
                     profile.current_migration_expected_file_count,
-                    git_auth.FOUR_TOKEN_CURRENT_MIGRATION_062_EXPECTED_FILE_COUNT,
+                    git_auth.FOUR_TOKEN_CURRENT_MIGRATION_063_EXPECTED_FILE_COUNT,
                 )
                 self.assertEqual(
                     profile.current_migration_expected_inventory_sha256,
-                    git_auth.FOUR_TOKEN_CURRENT_MIGRATION_062_EXPECTED_INVENTORY_SHA256,
+                    git_auth.FOUR_TOKEN_CURRENT_MIGRATION_063_EXPECTED_INVENTORY_SHA256,
                 )
 
     def test_057_is_no_longer_current_four_token_evidence(self) -> None:
@@ -128,7 +131,7 @@ class CurrentMigrationEvidenceTests(unittest.TestCase):
 
 
 class HistoricalMigrationChainTests(unittest.TestCase):
-    """050, 055, 056, 057, 058, 059 and 061 are historical."""
+    """050, 055, 056, 057, 058, 059, 061 and 062 are historical."""
 
     def setUp(self) -> None:
         self.profiles = (
@@ -136,7 +139,7 @@ class HistoricalMigrationChainTests(unittest.TestCase):
             git_auth.FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE,
         )
 
-    def test_exact_seven_historical_packages(self) -> None:
+    def test_exact_eight_historical_packages(self) -> None:
         expected_roots = (
             git_auth.MIGRATION_PACKAGE_ROOT,
             git_auth.MIGRATION_055_PACKAGE_ROOT,
@@ -145,34 +148,35 @@ class HistoricalMigrationChainTests(unittest.TestCase):
             git_auth.MIGRATION_058_PACKAGE_ROOT,
             git_auth.MIGRATION_059_PACKAGE_ROOT,
             git_auth.MIGRATION_061_PACKAGE_ROOT,
+            git_auth.MIGRATION_062_PACKAGE_ROOT,
         )
         for profile in self.profiles:
             with self.subTest(mode=profile.command_mode):
                 packages = profile.historical_migration_packages
-                self.assertEqual(len(packages), 7)
+                self.assertEqual(len(packages), 8)
                 self.assertEqual(
                     tuple(item.package_root for item in packages), expected_roots
                 )
                 classes = tuple(item.evidence_class for item in packages)
-                self.assertEqual(len(set(classes)), 7)
+                self.assertEqual(len(set(classes)), 8)
                 ids = tuple(item.execution_id for item in packages)
-                self.assertEqual(len(set(ids)), 7)
+                self.assertEqual(len(set(ids)), 8)
 
-    def test_061_historical_identity_is_exact_preserved_evidence(self) -> None:
+    def test_062_historical_identity_is_exact_preserved_evidence(self) -> None:
         package = self.profiles[0].historical_migration_packages[-1]
-        self.assertEqual(package.package_root, git_auth.MIGRATION_061_PACKAGE_ROOT)
+        self.assertEqual(package.package_root, git_auth.MIGRATION_062_PACKAGE_ROOT)
         self.assertEqual(
             package.execution_id,
-            git_auth.FOUR_TOKEN_HISTORICAL_MIGRATION_061_EXECUTION_ID,
+            git_auth.FOUR_TOKEN_HISTORICAL_MIGRATION_062_EXECUTION_ID,
         )
         self.assertEqual(
             package.evidence_class,
-            git_auth.HISTORICAL_MIGRATION_061_EVIDENCE_CLASS,
+            git_auth.HISTORICAL_MIGRATION_062_EVIDENCE_CLASS,
         )
-        self.assertEqual(package.expected_file_count, 5)
+        self.assertEqual(package.expected_file_count, 4)
         self.assertEqual(
             package.expected_inventory_sha256,
-            "ff8aefa1c0ee3fe4ec2063400a97cd81b8311bc4aa23dd402614bb609659a459",
+            "3df8d8e996c2d8c34d38b8f6544c5f942d60df0b197e5b26718bc771e438bfc6",
         )
 
     def test_059_historical_identity_is_exact_preserved_evidence(self) -> None:
@@ -309,22 +313,22 @@ class HistoricalMigrationChainTests(unittest.TestCase):
 
 
 class AuthorizationProfileSeparationTests(unittest.TestCase):
-    """The new operational profile is a fourth distinct authority."""
+    """The supported profiles remain distinct authorization authorities."""
 
-    def test_four_distinct_supported_profiles(self) -> None:
+    def test_five_distinct_supported_profiles(self) -> None:
         profiles = git_auth.supported_profiles()
-        self.assertEqual(len(profiles), 4)
+        self.assertEqual(len(profiles), 5)
         self.assertIn(
             git_auth.FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE, profiles
         )
         modes = {item.command_mode for item in profiles}
-        self.assertEqual(len(modes), 4)
+        self.assertEqual(len(modes), 5)
         roots = {item.authorization_package_root for item in profiles}
-        self.assertEqual(len(roots), 4)
+        self.assertEqual(len(roots), 5)
         kinds = {item.authorization_package_kind for item in profiles}
-        self.assertEqual(len(kinds), 4)
+        self.assertEqual(len(kinds), 5)
         schemas = {item.manifest_schema_version for item in profiles}
-        self.assertEqual(len(schemas), 4)
+        self.assertEqual(len(schemas), 5)
 
     def test_operational_profile_identity(self) -> None:
         profile = git_auth.FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE
@@ -368,23 +372,23 @@ class AuthorizationProfileSeparationTests(unittest.TestCase):
 class ZeroStateGateTests(unittest.TestCase):
     """The operational gate reuses, never duplicates, the four-token gate."""
 
-    def test_migration_pin_is_62_and_062(self) -> None:
-        self.assertEqual(gate.REQUIRED_MIGRATION_COUNT, 62)
+    def test_migration_pin_is_63_and_063(self) -> None:
+        self.assertEqual(gate.REQUIRED_MIGRATION_COUNT, 63)
         self.assertEqual(
             gate.REQUIRED_MIGRATION_HEAD,
-            "062_pre_admission_attempt_evidence.sql",
+            "063_four_token_zero_attempt_terminal_provenance.sql",
         )
 
-    def test_catalogue_head_is_062_and_059_file_still_exists(self) -> None:
+    def test_catalogue_head_is_063_and_059_file_still_exists(self) -> None:
         migrations = sorted(
             item.name
             for item in Path("migrations").iterdir()
             if item.suffix == ".sql"
         )
-        self.assertEqual(len(migrations), 62)
+        self.assertEqual(len(migrations), 63)
         self.assertEqual(
             migrations[-1],
-            "062_pre_admission_attempt_evidence.sql",
+            "063_four_token_zero_attempt_terminal_provenance.sql",
         )
         self.assertEqual(
             [item for item in migrations if item.startswith("059")],

@@ -42,6 +42,15 @@ MIGRATION_062_FILE_COUNT = 4
 MIGRATION_062_INVENTORY_SHA256 = (
     "fa617f77f288705e7e8a4d3676f78feee041f098292a59d431a60e66624bcd02"
 )
+MIGRATION_063_ROOT = "operator-runs/v2-9-8b-migration-063-authorization-preparation"
+MIGRATION_063_EXECUTION_ID = (
+    "V2_9_8B_MIGRATION_063_AUTH_20260913T203954Z_5f3a8c1d"
+)
+MIGRATION_063_KIND = "MIGRATION_063_EVIDENCE"
+MIGRATION_063_FILE_COUNT = 2
+MIGRATION_063_INVENTORY_SHA256 = (
+    "2a5779ab49cc2e27425888a472014f70689f51fe39c10cd6b2126fc55e051d5b"
+)
 MIGRATION_059_ROOT = "operator-runs/v2-9-8b-migration-059-application"
 MIGRATION_059_EXECUTION_ID = "MIGRATION_059_20260821T095456Z"
 HISTORICAL_MIGRATION_059_KIND = "HISTORICAL_MIGRATION_059_EVIDENCE"
@@ -386,9 +395,10 @@ def test_wrong_current_062_package_identity_fails_closed(
         fixture.validate(manifest_path, manifest_sha256, profile=profile)
 
 
-def test_live_four_token_profiles_are_atomically_bound_to_current_062() -> None:
+def test_live_four_token_profiles_are_atomically_bound_to_current_063() -> None:
     proof = git_auth.FOUR_TOKEN_PROOF_AUTHORIZATION_PROFILE
     operational = git_auth.FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE
+    checkpoint = git_auth.FOUR_TOKEN_ADMISSION_CHECKPOINT_AUTHORIZATION_PROFILE
     assert (
         proof.migration_package_kind,
         proof.migration_package_root,
@@ -404,13 +414,28 @@ def test_live_four_token_profiles_are_atomically_bound_to_current_062() -> None:
         operational.current_migration_expected_inventory_sha256,
         operational.historical_migration_packages,
     )
-    assert proof.migration_package_kind == MIGRATION_062_KIND
-    assert proof.migration_package_root == MIGRATION_062_ROOT
-    assert proof.current_migration_execution_id == MIGRATION_062_EXECUTION_ID
-    assert proof.current_migration_expected_file_count == MIGRATION_062_FILE_COUNT
+    assert (
+        proof.migration_package_kind,
+        proof.migration_package_root,
+        proof.current_migration_execution_id,
+        proof.current_migration_expected_file_count,
+        proof.current_migration_expected_inventory_sha256,
+        proof.historical_migration_packages,
+    ) == (
+        checkpoint.migration_package_kind,
+        checkpoint.migration_package_root,
+        checkpoint.current_migration_execution_id,
+        checkpoint.current_migration_expected_file_count,
+        checkpoint.current_migration_expected_inventory_sha256,
+        checkpoint.historical_migration_packages,
+    )
+    assert proof.migration_package_kind == MIGRATION_063_KIND
+    assert proof.migration_package_root == MIGRATION_063_ROOT
+    assert proof.current_migration_execution_id == MIGRATION_063_EXECUTION_ID
+    assert proof.current_migration_expected_file_count == MIGRATION_063_FILE_COUNT
     assert (
         proof.current_migration_expected_inventory_sha256
-        == MIGRATION_062_INVENTORY_SHA256
+        == MIGRATION_063_INVENTORY_SHA256
     )
 
 
@@ -455,7 +480,11 @@ def test_real_historical_059_declaration_and_enumeration_pass() -> None:
 
 
 def test_real_migration_061_is_historical_and_complete() -> None:
-    package = git_auth.FOUR_TOKEN_HISTORICAL_MIGRATION_PACKAGES[-1]
+    package = next(
+        package
+        for package in git_auth.FOUR_TOKEN_HISTORICAL_MIGRATION_PACKAGES
+        if package.package_root == MIGRATION_061_ROOT
+    )
     files = _inventory(
         REPOSITORY_ROOT,
         package_root=MIGRATION_061_ROOT,
@@ -509,11 +538,11 @@ def test_current_and_historical_roots_are_exclusive() -> None:
     historical_roots = tuple(
         package.package_root for package in profile.historical_migration_packages
     )
-    assert profile.migration_package_root == MIGRATION_062_ROOT
-    assert MIGRATION_062_ROOT not in historical_roots
-    assert historical_roots[-1] == MIGRATION_061_ROOT
+    assert profile.migration_package_root == MIGRATION_063_ROOT
+    assert MIGRATION_063_ROOT not in historical_roots
+    assert historical_roots[-1] == MIGRATION_062_ROOT
     assert MIGRATION_061_ROOT != profile.migration_package_root
-    assert len(historical_roots) == len(set(historical_roots)) == 7
+    assert len(historical_roots) == len(set(historical_roots)) == 8
 
 
 def test_consumed_512f2436_authorization_remains_unusable() -> None:
@@ -538,4 +567,4 @@ def test_consumed_512f2436_authorization_remains_unusable() -> None:
     }
     profile = git_auth.FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE
     assert document["migration_execution_id"] != profile.current_migration_execution_id
-    assert profile.migration_package_root == MIGRATION_062_ROOT
+    assert profile.migration_package_root == MIGRATION_063_ROOT
