@@ -101,7 +101,19 @@ The initial unchanged source-test reproduction attempted the default Solana RPC
 transport once and recorded generic_present_pool_account_batch_url_error with
 zero response bytes. This violated the offline execution boundary; it is not
 reported as zero attempted provider calls. The fixture now injects an offline
-protocol transport; subsequent verification also blocks socket connections.
+protocol transport. Central test infrastructure now installs a CPython audit
+guard before pytest collection and when importing the tests package. DNS and
+non-Unix socket creation/connect/send are blocked locally; swallowed faults also
+fail pytest teardown. There is no live opt-out. Production code is unchanged.
+See `docs/development-test-network-boundary.md` for scope and offline helpers.
+All 16 safety regressions, six cooperative checks and 21 owner-proof tests pass.
+The transport/Source Governor selection has 138 passes and two tests caught
+before DNS (each also fails teardown): TestProductionQueueComposition's
+test_production_queue_calls_governed_transport and
+test_unsupported_venues_zero_transport. Both nominate Meteora but omit generic
+protocol transport and expect the retired UNSUPPORTED_VENUE behavior. These
+fixture/contract failures remain for a separate reconciliation lane; the guard
+is not weakened to permit them. No external provider attempt escaped the guard.
 The older StandardFourHourCloseMemoryTerminalTests fixture separately fails
 because it expects the retired unsplit LONG_CONTINUATION_CLOSE step; untouched.
 Verification: all 21 owner-proof tests, 50 related admission/cadence/deadline/
@@ -122,7 +134,7 @@ identity remain unchanged, preserving the audited healthy state.
 
 ## Exact next permitted action
 
-This disposable-state reentry lane is complete; no successor operational action
+This development test-safety lane is complete; no successor operational action
 is authorized. Any cleanup
 of failed execution `20260914T123749Z-f4617e1d5431` still requires separate
 exact-identity preflight and explicit operator approval. Do not reuse consumed
