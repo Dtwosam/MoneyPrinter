@@ -2,6 +2,7 @@
 
 from printer_v1.db.migrate import (
     MIGRATIONS_DIR,
+    apply_exact_migration,
     apply_migrations,
     canonical_migration_count,
     canonical_migration_names,
@@ -19,6 +20,7 @@ from printer_v1.db.sqlite_write_contracts import (
 __all__ = [
     "DEFAULT_OPERATIONAL_BUSY_TIMEOUT_MS",
     "MIGRATIONS_DIR",
+    "apply_exact_migration",
     "apply_migrations",
     "canonical_migration_count",
     "canonical_migration_names",

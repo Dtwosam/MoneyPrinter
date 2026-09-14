@@ -273,12 +273,75 @@ def apply_migrations(db_path: str | Path) -> None:
         connection.close()
 
 
+def apply_exact_migration(
+    db_path: str | Path,
+    migration_name: str,
+    *,
+    expected_sha256: str | None = None,
+) -> dict[str, object]:
+    """Apply exactly one immediate canonical successor migration.
+
+    This deliberately does not alter :func:`apply_migrations`.  Callers must
+    name a member of the canonical catalogue; arbitrary SQL paths, skipped
+    predecessors, already-applied targets, and any ledger drift fail closed.
+    """
+    names = list(canonical_migration_names())
+    target = str(migration_name)
+    if target not in names:
+        raise RuntimeError("target migration is not canonical")
+    target_index = names.index(target)
+    if target_index == 0:
+        raise RuntimeError("foundation migration cannot be exact-applied")
+    migration_file = MIGRATIONS_DIR / target
+    digest = hashlib.sha256(migration_file.read_bytes()).hexdigest()
+    if expected_sha256 is not None and digest != str(expected_sha256):
+        raise RuntimeError("target migration SHA-256 mismatch")
+
+    connection = sqlite3.connect(Path(db_path))
+    try:
+        connection.execute("PRAGMA foreign_keys = ON")
+        exists = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='printer_schema_migrations'"
+        ).fetchone()
+        if exists is None:
+            raise RuntimeError("migration ledger is unavailable")
+        applied = [
+            str(row[0])
+            for row in connection.execute(
+                "SELECT version FROM printer_schema_migrations ORDER BY rowid"
+            ).fetchall()
+        ]
+        expected_predecessor = names[:target_index]
+        if applied != expected_predecessor:
+            raise RuntimeError(
+                "target migration is not the immediate canonical successor"
+            )
+        connection.executescript(migration_file.read_text(encoding="utf-8"))
+        connection.execute(
+            "INSERT INTO printer_schema_migrations(version) VALUES (?)", (target,)
+        )
+        connection.commit()
+        observed = [
+            str(row[0])
+            for row in connection.execute(
+                "SELECT version FROM printer_schema_migrations ORDER BY rowid"
+            ).fetchall()
+        ]
+        if observed != names[: target_index + 1]:
+            raise RuntimeError("exact migration post-ledger mismatch")
+        return {"applied_migrations": [target], "migration_count": len(observed)}
+    finally:
+        connection.close()
+
+
 __all__ = [
     "MIGRATIONS_DIR",
     "MIGRATION_DIGEST_DOMAIN",
     "MIGRATION_FILENAME_PATTERN",
     "PROJECT_ROOT",
     "apply_migrations",
+    "apply_exact_migration",
     "canonical_migration_count",
     "canonical_migration_digest",
     "canonical_migration_names",

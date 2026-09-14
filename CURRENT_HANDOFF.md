@@ -2,8 +2,7 @@
 
 ## Current capability
 
-Active branch: `assistant/v2-9-8b-later-cycle-mint-market-replay-repair` at
-telemetry-change basis `f6412fe4276409c2e69b627fefda470f76ec1200`. Printer remains
+Active branch: `assistant/v2-9-8b-later-cycle-mint-market-replay-repair`. Printer remains
 Solana-only, memecoin-only, and paper-only. Source Governor remains the sole
 source-request owner and Central Scheduler the sole scheduler owner; all
 evidence, provenance, freshness, clean-memory, and capability gates fail
@@ -26,15 +25,18 @@ is permanently non-reusable.
 
 Migration 064 development repair exists for the separate immutable
 `CYCLE1_LIFECYCLE_STARTED_PRE_CYCLE2_ATTEMPT` provenance shape; the
-authoritative DB remains at migration 063. The consumed authorization remains
-permanently non-reusable. The primary operational blocker remains an
-unidentified SQLite writer: attribution telemetry now records bounded,
-per-invocation application connection/transaction evidence outside SQLite, but
-has not yet observed another operational contention event.
+authoritative DB remains at migration 63/063. Dedicated migration-only,
+exact-one-migration authorization infrastructure now supports separate
+prepare/review/marker-first consume/apply evidence without granting runtime
+authority. The primary operational blocker remains an unidentified SQLite
+writer: attribution telemetry exists but has not yet observed another
+operational contention event. Consumed authorizations remain permanently
+non-reusable.
 
 ## Exact next permitted action
 
-No new operational run has occurred. The next permitted action is a separate
-review of the telemetry change, then the existing read-only migration-064
-application preflight and authorization process against then-current Git/DB
-identity. Do not run Standard-4H or reuse the consumed authorization.
+No new operational run has occurred. The next permitted action is a fresh
+read-only migration-064 preflight followed by migration-064 authorization
+preparation/review through the dedicated mechanism against then-current Git/DB
+identity. Application requires separate explicit operator approval. Do not run
+Standard-4H or reuse the consumed authorization.
