@@ -293,7 +293,12 @@ def apply_exact_migration(
     if target_index == 0:
         raise RuntimeError("foundation migration cannot be exact-applied")
     migration_file = MIGRATIONS_DIR / target
-    digest = hashlib.sha256(migration_file.read_bytes()).hexdigest()
+    try:
+        sql_bytes = migration_file.read_bytes()
+        sql = sql_bytes.decode("utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise RuntimeError("target migration SQL is unreadable") from exc
+    digest = hashlib.sha256(sql_bytes).hexdigest()
     if expected_sha256 is not None and digest != str(expected_sha256):
         raise RuntimeError("target migration SHA-256 mismatch")
 
@@ -317,7 +322,7 @@ def apply_exact_migration(
             raise RuntimeError(
                 "target migration is not the immediate canonical successor"
             )
-        connection.executescript(migration_file.read_text(encoding="utf-8"))
+        connection.executescript(sql)
         connection.execute(
             "INSERT INTO printer_schema_migrations(version) VALUES (?)", (target,)
         )

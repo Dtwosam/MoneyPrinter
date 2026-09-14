@@ -28,15 +28,16 @@ Migration 064 development repair exists for the separate immutable
 authoritative DB remains at migration 63/063. Dedicated migration-only,
 exact-one-migration authorization infrastructure now supports separate
 prepare/review/marker-first consume/apply evidence without granting runtime
-authority. The primary operational blocker remains an unidentified SQLite
-writer: attribution telemetry exists but has not yet observed another
+authority. It is hardened against marker-namespace switching and migration
+SQL-byte TOCTOU. The primary operational blocker remains an unidentified
+SQLite writer: attribution telemetry exists but has not yet observed another
 operational contention event. Consumed authorizations remain permanently
 non-reusable.
 
 ## Exact next permitted action
 
 No new operational run has occurred. The next permitted action is a fresh
-read-only migration-064 preflight followed by migration-064 authorization
-preparation/review through the dedicated mechanism against then-current Git/DB
-identity. Application requires separate explicit operator approval. Do not run
-Standard-4H or reuse the consumed authorization.
+read-only migration-064 preflight, then real migration-064 authorization
+preparation/review through the hardened mechanism. Application requires
+separate explicit operator approval. Do not run Standard-4H or reuse the
+consumed authorization.

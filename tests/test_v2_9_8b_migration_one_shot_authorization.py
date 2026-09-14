@@ -5,6 +5,8 @@ import sqlite3
 from pathlib import Path
 import json
 import os
+import inspect
+import subprocess
 
 import pytest
 
@@ -39,14 +41,18 @@ def _through_063(path) -> None:
 def _prepared(tmp_path, monkeypatch):
     from printer_v1.operator_cli import migration_one_shot_authorization as auth
     db = tmp_path / "through-063.sqlite3"; _through_063(db)
-    git = {"branch": "fixture-branch", "head": "a" * 40, "remote_head": "a" * 40, "tracked_clean": True}
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    git = {"branch": "fixture-branch", "head": head, "remote_head": head, "tracked_clean": True}
     monkeypatch.setattr(auth, "_live_git_facts", lambda root: dict(git))
     monkeypatch.setattr(auth, "active_printer_runtime_processes", lambda path: ())
+    monkeypatch.setattr(auth, "DEFAULT_PACKAGE_ROOT", tmp_path / "packages")
+    monkeypatch.setattr(auth, "DEFAULT_MARKER_ROOT", tmp_path / "markers")
+    monkeypatch.setattr(auth, "DEFAULT_TERMINAL_ROOT", tmp_path / "terminal")
     now = datetime.now(timezone.utc); repository = Path(__file__).resolve().parents[1]
     prepared = prepare_migration_authorization(
         repository_root=repository, database_path=db,
         target_migration="064_four_token_started_lifecycle_zero_attempt_provenance.sql",
-        package_root=tmp_path / "packages", authorization_id="FIXTURE_MIGRATION_064_AUTH",
+        authorization_id="FIXTURE_MIGRATION_064_AUTH",
         authorized_at=now.isoformat(), validity_seconds=60,
         prior_authorizations_non_reusable=("V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260913T220119Z_eb53caac", "V2_9_8B_MIGRATION_063_AUTH_20260913T203954Z_5f3a8c1d"), now=now,
     )
@@ -77,7 +83,6 @@ def test_disposable_064_prepare_review_consume_applies_once(tmp_path, monkeypatc
         repository_root=repository, database_path=db,
         authorization_file=prepared["authorization_file"],
         authorization_sha256=prepared["authorization_sha256"],
-        marker_root=tmp_path / "markers", terminal_root=tmp_path / "terminal",
         operator_approved=True, now=now,
     )
     assert result["applied_migrations"] == ["064_four_token_started_lifecycle_zero_attempt_provenance.sql"]
@@ -96,7 +101,6 @@ def test_disposable_064_prepare_review_consume_applies_once(tmp_path, monkeypatc
             repository_root=repository, database_path=db,
             authorization_file=prepared["authorization_file"],
             authorization_sha256=prepared["authorization_sha256"],
-            marker_root=tmp_path / "markers", terminal_root=tmp_path / "terminal",
             operator_approved=True, now=now,
         )
 
@@ -108,15 +112,15 @@ def test_prepare_blocks_dirty_git_and_sidecar_and_live_runtime(tmp_path, monkeyp
     monkeypatch.setattr(auth, "_live_git_facts", lambda root: dict(clean))
     monkeypatch.setattr(auth, "active_printer_runtime_processes", lambda path: ())
     with pytest.raises(MigrationAuthorizationError):
-        prepare_migration_authorization(repository_root=repository, database_path=db, target_migration="064_four_token_started_lifecycle_zero_attempt_provenance.sql", package_root=tmp_path / "p", authorization_id="DIRTY", authorized_at=datetime.now(timezone.utc).isoformat(), validity_seconds=60, prior_authorizations_non_reusable=())
+        prepare_migration_authorization(repository_root=repository, database_path=db, target_migration="064_four_token_started_lifecycle_zero_attempt_provenance.sql", authorization_id="DIRTY", authorized_at=datetime.now(timezone.utc).isoformat(), validity_seconds=60, prior_authorizations_non_reusable=())
     clean["tracked_clean"] = True
     (Path(f"{db}-wal")).write_text("not a real sidecar")
     with pytest.raises(MigrationAuthorizationError):
-        prepare_migration_authorization(repository_root=repository, database_path=db, target_migration="064_four_token_started_lifecycle_zero_attempt_provenance.sql", package_root=tmp_path / "p", authorization_id="SIDECAR", authorized_at=datetime.now(timezone.utc).isoformat(), validity_seconds=60, prior_authorizations_non_reusable=())
+        prepare_migration_authorization(repository_root=repository, database_path=db, target_migration="064_four_token_started_lifecycle_zero_attempt_provenance.sql", authorization_id="SIDECAR", authorized_at=datetime.now(timezone.utc).isoformat(), validity_seconds=60, prior_authorizations_non_reusable=())
     Path(f"{db}-wal").unlink()
     monkeypatch.setattr(auth, "active_printer_runtime_processes", lambda path: (123,))
     with pytest.raises(MigrationAuthorizationError):
-        prepare_migration_authorization(repository_root=repository, database_path=db, target_migration="064_four_token_started_lifecycle_zero_attempt_provenance.sql", package_root=tmp_path / "p", authorization_id="PID", authorized_at=datetime.now(timezone.utc).isoformat(), validity_seconds=60, prior_authorizations_non_reusable=())
+        prepare_migration_authorization(repository_root=repository, database_path=db, target_migration="064_four_token_started_lifecycle_zero_attempt_provenance.sql", authorization_id="PID", authorized_at=datetime.now(timezone.utc).isoformat(), validity_seconds=60, prior_authorizations_non_reusable=())
 
 
 def test_review_blocks_binding_target_expiry_and_runtime_cross_authority(tmp_path, monkeypatch) -> None:
@@ -154,7 +158,7 @@ def test_marker_remains_consumed_when_application_or_terminal_evidence_fails(tmp
     auth, db, repository, now, prepared, _git = _prepared(tmp_path, monkeypatch)
     monkeypatch.setattr(auth, "apply_exact_migration", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("forced SQL failure")))
     with pytest.raises(MigrationAuthorizationError):
-        consume_and_apply_migration_authorization(repository_root=repository, database_path=db, authorization_file=prepared["authorization_file"], authorization_sha256=prepared["authorization_sha256"], marker_root=tmp_path / "markers", terminal_root=tmp_path / "terminal", operator_approved=True, now=now)
+        consume_and_apply_migration_authorization(repository_root=repository, database_path=db, authorization_file=prepared["authorization_file"], authorization_sha256=prepared["authorization_sha256"], operator_approved=True, now=now)
 
 
 def test_terminal_evidence_failure_never_reopens_consumed_marker(tmp_path, monkeypatch) -> None:
@@ -162,21 +166,90 @@ def test_terminal_evidence_failure_never_reopens_consumed_marker(tmp_path, monke
     monkeypatch.setattr(auth, "apply_exact_migration", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("forced SQL failure")))
     monkeypatch.setattr(auth, "_write_terminal", lambda **kwargs: (_ for _ in ()).throw(OSError("forced terminal failure")))
     with pytest.raises(OSError):
-        consume_and_apply_migration_authorization(repository_root=repository, database_path=db, authorization_file=prepared["authorization_file"], authorization_sha256=prepared["authorization_sha256"], marker_root=tmp_path / "markers", terminal_root=tmp_path / "terminal", operator_approved=True, now=now)
+        consume_and_apply_migration_authorization(repository_root=repository, database_path=db, authorization_file=prepared["authorization_file"], authorization_sha256=prepared["authorization_sha256"], operator_approved=True, now=now)
     assert (tmp_path / "markers" / "FIXTURE_MIGRATION_064_AUTH" / "migration_application_marker.json").is_file()
     marker = tmp_path / "markers" / "FIXTURE_MIGRATION_064_AUTH" / "migration_application_marker.json"
     assert marker.is_file()
     with pytest.raises(MigrationAuthorizationError):
-        consume_and_apply_migration_authorization(repository_root=repository, database_path=db, authorization_file=prepared["authorization_file"], authorization_sha256=prepared["authorization_sha256"], marker_root=tmp_path / "markers", terminal_root=tmp_path / "terminal", operator_approved=True, now=now)
+        consume_and_apply_migration_authorization(repository_root=repository, database_path=db, authorization_file=prepared["authorization_file"], authorization_sha256=prepared["authorization_sha256"], operator_approved=True, now=now)
 
 
 def test_failed_publication_leaves_no_unfinalized_authorization_package(tmp_path, monkeypatch) -> None:
     from printer_v1.operator_cli import migration_one_shot_authorization as auth
     db = tmp_path / "through-063.sqlite3"; _through_063(db)
-    git = {"branch": "fixture", "head": "a" * 40, "remote_head": "a" * 40, "tracked_clean": True}
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    git = {"branch": "fixture", "head": head, "remote_head": head, "tracked_clean": True}
     monkeypatch.setattr(auth, "_live_git_facts", lambda root: dict(git))
     monkeypatch.setattr(auth, "active_printer_runtime_processes", lambda path: ())
+    monkeypatch.setattr(auth, "DEFAULT_PACKAGE_ROOT", tmp_path / "packages")
     monkeypatch.setattr(auth, "_write_exclusive", lambda *args: (_ for _ in ()).throw(OSError("forced publication failure")))
     with pytest.raises(OSError):
-        prepare_migration_authorization(repository_root=Path(__file__).resolve().parents[1], database_path=db, target_migration="064_four_token_started_lifecycle_zero_attempt_provenance.sql", package_root=tmp_path / "packages", authorization_id="UNPUBLISHED", authorized_at=datetime.now(timezone.utc).isoformat(), validity_seconds=60, prior_authorizations_non_reusable=())
+        prepare_migration_authorization(repository_root=Path(__file__).resolve().parents[1], database_path=db, target_migration="064_four_token_started_lifecycle_zero_attempt_provenance.sql", authorization_id="UNPUBLISHED", authorized_at=datetime.now(timezone.utc).isoformat(), validity_seconds=60, prior_authorizations_non_reusable=())
     assert not (tmp_path / "packages" / "UNPUBLISHED").exists()
+
+
+def test_production_consumption_cannot_select_an_alternate_marker_namespace() -> None:
+    assert "marker_root" not in inspect.signature(
+        consume_and_apply_migration_authorization
+    ).parameters
+
+
+def test_failed_consumption_cannot_be_redirected_to_an_alternate_root(tmp_path, monkeypatch) -> None:
+    auth, db, repository, now, prepared, _git = _prepared(tmp_path, monkeypatch)
+    monkeypatch.setattr(auth, "apply_exact_migration", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("forced SQL failure")))
+    with pytest.raises(MigrationAuthorizationError):
+        consume_and_apply_migration_authorization(repository_root=repository, database_path=db, authorization_file=prepared["authorization_file"], authorization_sha256=prepared["authorization_sha256"], operator_approved=True, now=now)
+    with pytest.raises(TypeError):
+        consume_and_apply_migration_authorization(repository_root=repository, database_path=db, authorization_file=prepared["authorization_file"], authorization_sha256=prepared["authorization_sha256"], marker_root=tmp_path / "alternate", operator_approved=True, now=now)
+
+
+def test_marker_publication_failure_tombstones_namespace_before_sql(tmp_path, monkeypatch) -> None:
+    auth, db, repository, now, prepared, _git = _prepared(tmp_path, monkeypatch)
+    monkeypatch.setattr(auth, "_write_exclusive", lambda *args: (_ for _ in ()).throw(OSError("forced marker write failure")))
+    with pytest.raises(MigrationAuthorizationError, match="tombstoned"):
+        consume_and_apply_migration_authorization(repository_root=repository, database_path=db, authorization_file=prepared["authorization_file"], authorization_sha256=prepared["authorization_sha256"], operator_approved=True, now=now)
+    assert (tmp_path / "markers" / "FIXTURE_MIGRATION_064_AUTH").is_dir()
+    with pytest.raises(MigrationAuthorizationError, match="consumed"):
+        review_migration_authorization(repository_root=repository, database_path=db, authorization_file=prepared["authorization_file"], authorization_sha256=prepared["authorization_sha256"], now=now)
+
+
+def test_exact_migration_executes_the_single_verified_sql_read(tmp_path, monkeypatch) -> None:
+    """A legacy second migration-file read must be impossible after hashing."""
+    from printer_v1.db import migrate
+
+    migrations = tmp_path / "migrations"; migrations.mkdir()
+    first = migrations / "001_foundation.sql"; first.write_text("CREATE TABLE x (id INTEGER);\n")
+    target = migrations / "002_target.sql"; target.write_text("CREATE TABLE verified (id INTEGER);\n")
+    db = tmp_path / "db.sqlite3"; connection = sqlite3.connect(db)
+    try:
+        connection.execute("CREATE TABLE printer_schema_migrations (version TEXT PRIMARY KEY)")
+        connection.executescript(first.read_text())
+        connection.execute("INSERT INTO printer_schema_migrations VALUES ('001_foundation.sql')")
+        connection.commit()
+    finally:
+        connection.close()
+    monkeypatch.setattr(migrate, "MIGRATIONS_DIR", migrations)
+    original = Path.read_text
+    def forbid_second_read(path, *args, **kwargs):
+        if path == target:
+            raise AssertionError("migration SQL was read a second time")
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(Path, "read_text", forbid_second_read)
+    digest = __import__("hashlib").sha256(target.read_bytes()).hexdigest()
+    migrate.apply_exact_migration(db, "002_target.sql", expected_sha256=digest)
+    connection = sqlite3.connect(db)
+    try:
+        assert connection.execute("SELECT 1 FROM sqlite_master WHERE name='verified'").fetchone()
+    finally:
+        connection.close()
+
+
+def test_target_facts_reject_untracked_migration_catalogue_entries(tmp_path, monkeypatch) -> None:
+    from printer_v1.operator_cli import migration_one_shot_authorization as auth
+
+    monkeypatch.setattr(auth, "_migration_catalogue_is_clean", lambda root: False)
+    with pytest.raises(MigrationAuthorizationError):
+        auth._target_facts(
+            "064_four_token_started_lifecycle_zero_attempt_provenance.sql",
+            repository_root=Path(__file__).resolve().parents[1], head="a" * 40,
+        )

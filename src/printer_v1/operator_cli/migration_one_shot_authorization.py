@@ -103,6 +103,19 @@ def _live_git_facts(root: Path) -> dict[str, Any]:
     return {"branch": branch, "head": head, "remote_head": remote_head, "tracked_clean": tracked_clean}
 
 
+def _migration_catalogue_is_clean(root: Path) -> bool:
+    """Require migrations/ to exactly match the working tree's Git view."""
+    commands = (
+        ["git", "status", "--porcelain", "--untracked-files=all", "--", "migrations"],
+        ["git", "ls-files", "--others", "--ignored", "--exclude-standard", "--", "migrations"],
+    )
+    for command in commands:
+        result = subprocess.run(command, cwd=root, text=True, capture_output=True, timeout=5, check=False)
+        if result.returncode or result.stdout.strip():
+            return False
+    return True
+
+
 def _immutable_connection(path: Path):
     import sqlite3
     return sqlite3.connect(f"file:{path.as_posix()}?mode=ro&immutable=1", uri=True, timeout=0.0)
@@ -137,13 +150,22 @@ def _database_binding(path: Path) -> dict[str, Any]:
     return {key: result[key] for key in _DATABASE_KEYS}
 
 
-def _target_facts(name: str, *, repository_root: Path) -> dict[str, Any]:
+def _target_facts(name: str, *, repository_root: Path, head: str) -> dict[str, Any]:
+    _require(_HEAD.fullmatch(head) is not None, "authorized Git HEAD is malformed")
+    _require(_migration_catalogue_is_clean(repository_root), "migration catalogue has tracked, untracked, or ignored drift")
     catalogue = list(canonical_migration_names())
     _require(name in catalogue and catalogue.index(name) > 0, "target migration is not a non-foundation canonical migration")
     file = MIGRATIONS_DIR / name
     _require(file.is_file() and not file.is_symlink(), "target migration file is unavailable")
     blob = subprocess.run(["git", "hash-object", str(file)], cwd=repository_root, text=True, capture_output=True, check=False).stdout.strip()
     _require(_HEAD.fullmatch(blob) is not None, "target migration Git blob is unavailable")
+    relative = f"migrations/{name}"
+    tree = subprocess.run(["git", "ls-tree", "-r", head, "--", relative], cwd=repository_root, text=True, capture_output=True, timeout=5, check=False)
+    _require(tree.returncode == 0 and tree.stdout.count("\n") == 1, "target migration is not tracked at authorized HEAD")
+    fields = tree.stdout.rstrip("\n").split("\t", 1)
+    _require(len(fields) == 2 and fields[1] == relative, "target migration HEAD path mismatch")
+    tree_fields = fields[0].split()
+    _require(len(tree_fields) == 3 and tree_fields[1] == "blob" and tree_fields[2] == blob, "target migration working blob differs from authorized HEAD")
     contract = _object_contract(name)
     return {"ordinal": parse_migration_ordinal(name), "filename": name, "sha256": _sha256_file(file), "size": file.stat().st_size, "git_blob_sha": blob, "canonical_count": len(catalogue), "canonical_head": catalogue[-1], "required_schema_objects": contract}
 
@@ -200,12 +222,12 @@ def _safe_file(path: Path) -> None:
         _require(not part.is_symlink(), "authorization artifact path contains a symlink")
 
 
-def prepare_migration_authorization(*, repository_root: str | Path, database_path: str | Path, target_migration: str, package_root: str | Path, authorization_id: str, authorized_at: str, validity_seconds: int, prior_authorizations_non_reusable: Sequence[str], repository_identity: str = "Dtwosam/MoneyPrinter", now: datetime | None = None) -> dict[str, Any]:
+def prepare_migration_authorization(*, repository_root: str | Path, database_path: str | Path, target_migration: str, authorization_id: str, authorized_at: str, validity_seconds: int, prior_authorizations_non_reusable: Sequence[str], repository_identity: str = "Dtwosam/MoneyPrinter", now: datetime | None = None) -> dict[str, Any]:
     """Prepare one immutable migration-only package without consuming it."""
-    root, db, package = Path(repository_root).resolve(), Path(database_path).resolve(), Path(package_root).resolve()
+    root, db, package = Path(repository_root).resolve(), Path(database_path).resolve(), DEFAULT_PACKAGE_ROOT
     facts = _live_git_facts(root)
     _require(facts["tracked_clean"] is True and facts["head"] == facts["remote_head"], "repository is not clean and remote-parity bound")
-    target = _target_facts(target_migration, repository_root=root)
+    target = _target_facts(target_migration, repository_root=root, head=facts["head"])
     binding, zero = _assert_preconditions(db, target)
     issued = datetime.fromisoformat(authorized_at.replace("Z", "+00:00"))
     _require(issued.tzinfo is not None and validity_seconds > 0, "authorization time inputs are malformed")
@@ -240,18 +262,24 @@ def prepare_migration_authorization(*, repository_root: str | Path, database_pat
     return {"authorization_id": authorization_id, "authorization_file": str(authorization_file), "authorization_sha256": hashlib.sha256(payload).hexdigest(), "database": binding, "zero_state": zero, "marker_created": False, "consumed": False}
 
 
-def review_migration_authorization(*, repository_root: str | Path, database_path: str | Path, authorization_file: str | Path, authorization_sha256: str, marker_root: str | Path | None = None, now: datetime | None = None) -> dict[str, Any]:
+def review_migration_authorization(*, repository_root: str | Path, database_path: str | Path, authorization_file: str | Path, authorization_sha256: str, now: datetime | None = None) -> dict[str, Any]:
     """Independently re-derive all pre-marker migration-only bindings."""
     root, db, path = Path(repository_root).resolve(), Path(database_path).resolve(), Path(authorization_file).resolve()
     _safe_file(path)
     _require(_SHA256.fullmatch(authorization_sha256) is not None and _sha256_file(path) == authorization_sha256, "authorization SHA-256 mismatch")
     document = _validate_document(json.loads(path.read_text(encoding="utf-8")), now=now)
-    if marker_root is not None:
-        marker = Path(marker_root).resolve() / document["authorization_id"] / MARKER_FILENAME
-        _require(not marker.exists(), "authorization is already consumed by an application marker")
+    expected_authorization_path = (
+        DEFAULT_PACKAGE_ROOT / document["authorization_id"] / AUTHORIZATION_FILENAME
+    )
+    _require(
+        path == expected_authorization_path.resolve(),
+        "authorization file is outside the canonical migration package namespace",
+    )
+    marker = DEFAULT_MARKER_ROOT / document["authorization_id"]
+    _require(not marker.exists(), "authorization is already consumed by an application marker")
     facts = _live_git_facts(root); repo = document["repository"]
     _require(facts == {key: repo[key] for key in facts}, "repository binding changed")
-    target = _target_facts(document["target_migration"]["filename"], repository_root=root)
+    target = _target_facts(document["target_migration"]["filename"], repository_root=root, head=repo["head"])
     _require(target == document["target_migration"], "target migration binding changed")
     binding, zero = _assert_preconditions(db, target)
     _require(binding == document["authoritative_database"], "authoritative database binding changed")
@@ -262,9 +290,19 @@ def _write_marker(*, root: Path, document: Mapping[str, Any], authorization_sha2
     target = document["target_migration"]; marker_dir = root / document["authorization_id"]
     _require(not marker_dir.exists(), "application marker namespace already exists")
     marker_dir.mkdir(parents=True, mode=0o700)
+    _fsync_directory(marker_dir.parent)
     marker = marker_dir / MARKER_FILENAME
     payload = _canonical_json_bytes({"schema_version": MIGRATION_APPLICATION_MARKER_SCHEMA_VERSION, "authorization_id": document["authorization_id"], "authorization_sha256": authorization_sha256, "repository_head": document["repository"]["head"], "pre_database": document["authoritative_database"], "target_migration": {"filename": target["filename"], "sha256": target["sha256"]}, "consumed_at": now, "application_count": 1})
-    _write_exclusive(marker, payload); _make_read_only(marker); marker_dir.chmod(0o555); _fsync_directory(marker_dir); _fsync_directory(marker_dir.parent)
+    try:
+        _write_exclusive(marker, payload); _make_read_only(marker); marker_dir.chmod(0o555); _fsync_directory(marker_dir); _fsync_directory(marker_dir.parent)
+    except Exception as exc:
+        # The durable, sealed namespace is a consumption tombstone: SQL never
+        # starts, but the authorization can never be redirected or retried.
+        try:
+            marker_dir.chmod(0o555); _fsync_directory(marker_dir); _fsync_directory(marker_dir.parent)
+        except OSError as seal:
+            raise MigrationAuthorizationError(f"marker publication and tombstone sealing failed: {seal}") from exc
+        raise MigrationAuthorizationError("marker publication failed; authorization tombstoned") from exc
     return marker, hashlib.sha256(payload).hexdigest()
 
 
@@ -277,12 +315,12 @@ def _write_terminal(*, root: Path, document: Mapping[str, Any], marker: Path, ma
     return path
 
 
-def consume_and_apply_migration_authorization(*, repository_root: str | Path, database_path: str | Path, authorization_file: str | Path, authorization_sha256: str, marker_root: str | Path, terminal_root: str | Path, operator_approved: bool, now: datetime | None = None) -> dict[str, Any]:
+def consume_and_apply_migration_authorization(*, repository_root: str | Path, database_path: str | Path, authorization_file: str | Path, authorization_sha256: str, operator_approved: bool, now: datetime | None = None) -> dict[str, Any]:
     """Consume a valid migration-only authorization before one SQL attempt."""
     _require(operator_approved is True, "explicit operator approval is required")
-    review = review_migration_authorization(repository_root=repository_root, database_path=database_path, authorization_file=authorization_file, authorization_sha256=authorization_sha256, marker_root=marker_root, now=now)
+    review = review_migration_authorization(repository_root=repository_root, database_path=database_path, authorization_file=authorization_file, authorization_sha256=authorization_sha256, now=now)
     document, started = review["document"], _utc_now()
-    marker, marker_sha256 = _write_marker(root=Path(marker_root).resolve(), document=document, authorization_sha256=authorization_sha256, now=started)
+    marker, marker_sha256 = _write_marker(root=DEFAULT_MARKER_ROOT, document=document, authorization_sha256=authorization_sha256, now=started)
     applied: Sequence[str] = (); failure: str | None = None; success = False
     try:
         result = apply_exact_migration(database_path, document["target_migration"]["filename"], expected_sha256=document["target_migration"]["sha256"])
@@ -295,7 +333,7 @@ def consume_and_apply_migration_authorization(*, repository_root: str | Path, da
         success = True
     except Exception as exc:
         failure = str(exc)
-    terminal = _write_terminal(root=Path(terminal_root).resolve(), document=document, marker=marker, marker_sha256=marker_sha256, started_at=started, success=success, error=failure, pre=document["authoritative_database"], applied=applied)
+    terminal = _write_terminal(root=DEFAULT_TERMINAL_ROOT, document=document, marker=marker, marker_sha256=marker_sha256, started_at=started, success=success, error=failure, pre=document["authoritative_database"], applied=applied)
     if not success:
         raise MigrationAuthorizationError(f"migration application failed after consumption: {failure}")
     return {"success": True, "marker": str(marker), "terminal_evidence": str(terminal), "applied_migrations": list(applied), "consumed": True}
