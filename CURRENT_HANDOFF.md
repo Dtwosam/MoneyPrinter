@@ -71,8 +71,28 @@ unchanged. All four targets and the full cadence file pass.
 
 Unchanged baseline failures remain in migration-discovery's missing helper,
 exact-recovery active-work preflight and the older migration-catalogue fixture.
-Three adjacent PAIR_READY behavioral fixtures also reproduce completion-reserve
-rejection on `14468f31`; they remain outside the four-target reconciliation.
+
+PAIR_READY reentry reconciliation also changes tests only. The temporary
+post-discovery defer test lacked a persisted attempt/pair and relied on synthetic
+callback/admission results. The spent-discovery reentry and future-quantum
+conflict tests mocked only the PAIR_READY lookup, contradicting the real empty
+attempt lookup. All three were incomplete disposable fixtures, not production
+defects; each previously failed with INSUFFICIENT_LATER_CYCLE_COMPLETION_RESERVE.
+They now share a migrated, owned, committed frozen-pair fixture with successful
+Scheduler acquisition and source evidence, and use real callback, admission and
+materialization owners. Defer preserves the pair without writes; lawful reentry
+consumes the same attempt exactly once without another source request,
+acquisition job, attempt or duplicate selection.
+
+The 17,100-second reserve guards new acquisition when no durable attempt exists;
+it is not reapplied to durable PAIR_READY. Prospective discovery capacity and
+future acquisition-quantum conflicts do not require reacquiring a frozen pair.
+Lifecycle priority, admission health, ownership and deadlines remain enforced.
+The three targets plus atomic consumption pass (4 tests); related full-file
+verification has 41 passes and 5 failures also reproduced at `da995f54`:
+through-4h terminal evidence, two other synthetic PAIR_READY fixtures, deadline
+then snapshot progress, and cooperative-resume source-request count. These
+additional baseline failures are untouched. Reserve/deadline checks pass (4).
 
 Authoritative failed-run cleanup/lease/Scheduler residue remains untouched.
 No new Standard-4H authorization is permitted while that residue remains.
@@ -88,10 +108,8 @@ identity remain unchanged, preserving the audited healthy state.
 
 ## Exact next permitted action
 
-The next permitted development lane is to reconcile the three adjacent
-PAIR_READY fixtures (temporary defer, reentry before spent discovery gates,
-and skipping future acquisition conflict) with durable attempt state and the
-current completion-reserve contract, using disposable state only. Any cleanup
+This disposable-state reentry lane is complete; no successor operational action
+is authorized. Any cleanup
 of failed execution `20260914T123749Z-f4617e1d5431` still requires separate
 exact-identity preflight and explicit operator approval. Do not reuse consumed
 authority or prepare a Standard-4H rerun while authoritative residue remains.
