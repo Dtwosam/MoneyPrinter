@@ -16,30 +16,31 @@ separate from runtime authority.
 
 ## Latest meaningful result
 
-Migration authorization
-`V2_9_8B_MIGRATION_064_AUTH_20260914T115201Z_1506c3c7` was consumed exactly
-once and applied migration 064 successfully. Post-application verification
-proved migration `64/064`, the required provenance table plus all six required
-triggers, `PRAGMA integrity_check = ok`, and zero foreign-key violations. The
-authorization is permanently non-reusable.
+Migration authorization `V2_9_8B_MIGRATION_064_AUTH_20260914T115201Z_1506c3c7`
+remains consumed exactly once and migration `64/064` remains healthy.
 
-The earlier consumed Standard-4H authorization
-`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260913T220119Z_eb53caac` also remains
-permanently non-reusable; no new Standard-4H run has occurred.
+Standard-4H authorization
+`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260914T123005Z_565f8c31` was consumed exactly
+once. Its run failed before lifecycle start with
+`planned-lifecycle zero-attempt provenance requires a fresh transaction`.
+The repair rolls back an incomplete transaction when `_ExternalStop` crosses
+the factory boundary, preserving the provenance recorder's independently-owned
+fresh `BEGIN IMMEDIATE`; focused disposable integration coverage passes.
+
+The post-failed-run authoritative DB is
+`98232a9cb09072c854a679c1cfba8ea5461a0ada6cb2bea3c41a34d9e999b0d0`.
+The failed campaign remains active with cleanup/lease/Scheduler residue; no
+future Standard-4H authorization may be prepared before zero state is restored.
 
 ## Proven blocker
 
-The migration-064 terminalization repair is now installed on the authoritative
-DB. The primary operational blocker remains an unidentified SQLite writer:
-attribution telemetry records bounded per-invocation application
-connection/transaction evidence outside SQLite, but has not yet observed
-another operational contention event. The SQLite writer root cause is therefore
-still unproven.
+The primary operational blocker remains an unidentified SQLite writer.
+Attribution telemetry recorded failed `BEGIN` attempts but no qualifying
+contention attribution, so the SQLite writer root cause is still unproven.
 
 ## Exact next permitted action
 
-The next permitted action is a fresh read-only Standard-4H preflight against the
-then-current exact Git HEAD and authoritative DB identity. If that passes, a
-fresh Standard-4H one-shot authorization may be prepared and independently
-reviewed. Actual Standard-4H execution still requires separate explicit operator
-approval. Do not reuse any consumed authorization.
+The next permitted action is a separate read-only reconciliation preflight/design
+for failed execution `20260914T123749Z-f4617e1d5431`, followed by explicit
+operator approval before any cleanup mutation. Do not reuse a consumed
+authorization or describe a Standard-4H rerun as permitted.

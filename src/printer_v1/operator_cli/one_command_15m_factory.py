@@ -12411,6 +12411,14 @@ def run_one_command_15m_factory(
                     cancellation_probe=_progression_cancellation_reason,
                 )
     except _ExternalStop as external_stop:
+        # A cooperative stop may interrupt an owned lifecycle write after it
+        # has opened SQLite's implicit transaction but before that unit reaches
+        # its commit point. Terminal provenance owns a separate, fresh
+        # transaction; discard the incomplete predecessor unit here rather than
+        # leaking its transaction into the terminalizer or committing it merely
+        # to make the terminalizer's guard pass.
+        if conn.in_transaction:
+            conn.rollback()
         stop_reason = external_stop.reason
     except KeyboardInterrupt:
         stop_reason = STOP_INTERRUPTED

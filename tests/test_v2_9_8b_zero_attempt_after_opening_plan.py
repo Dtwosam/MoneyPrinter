@@ -196,6 +196,80 @@ def test_cycle1_opening_planned_pre_attempt_health_block_terminalizes_truthfully
     assert report["four_token_terminal"]["shared_cleanup_count"] == 1
 
 
+def test_external_stop_during_opening_transaction_releases_it_before_planned_provenance(
+    tmp_path, monkeypatch
+) -> None:
+    """An interrupted opening write cannot leak into planned terminal provenance."""
+    db, backup, disposable_binding = _prepare(tmp_path)
+
+    def interrupted_health(connection, _now):
+        # Cycle-1 opening ownership has already committed. The admission
+        # boundary then owns this update when the cooperative stop arrives.
+        connection.execute(
+            "UPDATE printer_memory_factory_runs SET updated_at=updated_at WHERE run_id=?",
+            (FACTORY_RUN_ID,),
+        )
+        assert connection.in_transaction
+        raise factory._ExternalStop("LEASE_RENEWAL_SQLITE_LOCKED")
+
+    def shared_terminalizer(*, terminal_cause, run_status):
+        reconciled = reconcile_campaign_terminal(
+            db,
+            campaign_id=CAMPAIGN_ID,
+            run_id=CAMPAIGN_RUN_ID,
+            cycle_id=CYCLE_ID,
+            terminal_cause=str(terminal_cause),
+            run_status=run_status,
+            factory_run_id=FACTORY_RUN_ID,
+            lifecycle_started=False,
+            now=START.isoformat(),
+        )
+        return {**reconciled, "clean_terminal": True, "lease_released": True}
+
+    report = factory.run_one_command_15m_factory(
+        db, backup, operator_approved=True, proof_mode=False,
+        operational_persistent_mode=True,
+        disposable_public_composition_proof_binding=disposable_binding,
+        discovery_runner=_discovery(db),
+        launch_provenance={
+            "git_head": "c" * 40, "git_tracked_tree_clean": True,
+            "git_staged_changes_present": False, "git_unstaged_changes_present": False,
+            "git_untracked_present": True, "git_provenance_captured_at": START.isoformat(),
+        },
+        standard_four_hour_campaign=True, selective_1h_continuation=True,
+        continuous_first_hour=True, continuous_four_hour=True,
+        total_duration_seconds=20_000, _window_seconds=900, _continuation_seconds=3_600,
+        max_selected_tokens=2, campaign_id=CAMPAIGN_ID,
+        campaign_run_id=CAMPAIGN_RUN_ID, cycle_id=CYCLE_ID,
+        configuration_id=CONFIGURATION_ID, factory_run_id=FACTORY_RUN_ID,
+        four_token_proof_controller=_ReadyController(),
+        later_cycle_discovery_callback=lambda **_kwargs: None,
+        four_token_health_projector=interrupted_health,
+        four_token_shared_terminalizer=shared_terminalizer,
+        source_governor_owner=GOVERNOR, central_scheduler_owner=SCHEDULER,
+        _sleep=lambda _seconds: None, _monotonic=lambda: 0.0,
+    )
+
+    connection = sqlite3.connect(db)
+    try:
+        assert connection.execute(
+            "SELECT terminal_phase,first_terminal_cause FROM "
+            "printer_four_token_zero_attempt_terminal_provenance "
+            "WHERE campaign_id=? AND campaign_run_id=? "
+            "AND authoritative_factory_run_id=? AND proposed_cycle_ordinal=2",
+            (CAMPAIGN_ID, CAMPAIGN_RUN_ID, FACTORY_RUN_ID),
+        ).fetchone() == (
+            PLANNED_ZERO_ATTEMPT_PHASE, "LEASE_RENEWAL_SQLITE_LOCKED"
+        )
+        assert connection.execute(
+            "SELECT COUNT(*) FROM printer_four_token_started_lifecycle_zero_attempt_terminal_provenance"
+        ).fetchone()[0] == 0
+    finally:
+        connection.close()
+
+    assert report["stop_reason"] == "LEASE_RENEWAL_SQLITE_LOCKED"
+
+
 def test_started_cycle1_lifecycle_block_has_its_own_zero_attempt_terminal_truth(
     tmp_path,
 ) -> None:
