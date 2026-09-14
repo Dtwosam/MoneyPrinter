@@ -36,6 +36,8 @@ import sqlite3
 import sys
 from typing import Any, Iterable, Mapping
 
+from printer_v1.db.sqlite_write_contracts import connect_attributed
+
 from printer_v1.discovery.scheduler_parity import reconcile_discovery_work_jobs
 from printer_v1.operator_cli.campaign_active_work import (
     campaign_active_work_report,
@@ -352,7 +354,7 @@ def reconcile_campaign_terminal(
         "factory_run": "not_found",
         "pre_lifecycle_dispositions": [],
     }
-    connection = sqlite3.connect(str(db_path))
+    connection = connect_attributed(db_path, connection_role="UNIFIED_TERMINAL_RECONCILIATION")
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
     try:
@@ -789,7 +791,7 @@ def reconcile_admitted_campaign_terminal(
     if not primary:
         raise TerminalClosureError("SHARED_TERMINAL_PRIMARY_CYCLE_REQUIRED")
 
-    connection = sqlite3.connect(str(db_path))
+    connection = connect_attributed(db_path, connection_role="UNIFIED_TERMINAL_RECONCILIATION")
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
     try:
@@ -873,7 +875,7 @@ def reconcile_admitted_campaign_terminal(
             if isinstance(item, Mapping)
         )
 
-    verification = sqlite3.connect(str(db_path))
+    verification = connect_attributed(db_path, connection_role="UNIFIED_TERMINAL_RECONCILIATION")
     verification.row_factory = sqlite3.Row
     verification.execute("PRAGMA foreign_keys = ON")
     try:
@@ -955,8 +957,9 @@ def load_campaign_operation_totals(
     ``printer_source_requests``.
     """
     path = Path(db_path).resolve()
-    connection = sqlite3.connect(
-        f"file:{path.as_posix()}?mode=ro", uri=True, timeout=0.0
+    connection = connect_attributed(
+        f"{path.as_uri()}?mode=ro", uri=True, timeout=0.0,
+        connection_role="UNIFIED_TERMINAL_READER"
     )
     connection.row_factory = sqlite3.Row
     try:
@@ -1912,8 +1915,9 @@ def replay_campaign_terminal_report(
 ) -> dict[str, Any]:
     """Deterministic zero-source report-only replay; creates no duplicate row."""
     path = Path(db_path).resolve()
-    connection = sqlite3.connect(
-        f"file:{path.as_posix()}?mode=ro", uri=True, timeout=0.0
+    connection = connect_attributed(
+        f"{path.as_uri()}?mode=ro", uri=True, timeout=0.0,
+        connection_role="UNIFIED_TERMINAL_READER"
     )
     connection.row_factory = sqlite3.Row
     try:

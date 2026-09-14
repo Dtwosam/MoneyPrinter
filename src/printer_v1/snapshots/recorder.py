@@ -8,6 +8,8 @@ import json
 import sqlite3
 from typing import Any, Mapping
 
+from printer_v1.db.sqlite_write_contracts import connect_attributed
+
 from printer_v1.contracts.enums import DataQualityLabel, SourceStatus
 from printer_v1.lifecycle.contracts import TokenLifecycleState
 from printer_v1.scheduler.contracts import JobKind, LockResult
@@ -83,7 +85,7 @@ def connect(db_or_connection: str | Path | sqlite3.Connection) -> Iterator[sqlit
         db_or_connection.row_factory = sqlite3.Row
         yield db_or_connection
         return
-    connection = sqlite3.connect(Path(db_or_connection))
+    connection = connect_attributed(Path(db_or_connection), connection_role="SNAPSHOT_PERSISTENCE")
     connection.row_factory = sqlite3.Row
     try:
         yield connection

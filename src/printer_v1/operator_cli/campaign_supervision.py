@@ -17,6 +17,7 @@ from printer_v1.db.sqlite_write_contracts import (
     connect_attributed,
     set_writer_attribution_context,
     writer_attribution_connection_id,
+    writer_attribution_last_contention,
 )
 from printer_v1.operator_cli.campaign_persistence import (
     campaign_evidence_sha256,
@@ -288,8 +289,9 @@ def _connect(
     if timeout < 0:
         raise CampaignSupervisionError("busy timeout must be non-negative")
     if read_only:
-        connection = sqlite3.connect(
-            f"file:{path.as_posix()}?mode=ro", uri=True, timeout=timeout
+        connection = connect_attributed(
+            f"{path.as_uri()}?mode=ro", uri=True, timeout=timeout,
+            connection_role=f"{connection_role}_READER", context=context
         )
         connection.execute("PRAGMA query_only=ON")
     else:
@@ -666,6 +668,7 @@ def renew_campaign_lease(
     lock: Path | None = None
     lease_replace_attempts = 0
     heartbeat_connection_id: str | None = None
+    contention_observations: list[dict[str, Any]] = []
     heartbeat_context = {
         "campaign_id": campaign_id,
         "campaign_run_id": run_id,
@@ -777,10 +780,14 @@ def renew_campaign_lease(
         if evidence.get("sqlite_locked"):
             timeline = active_writer_attribution(db_path)
             if timeline is not None:
-                attribution = timeline.contention_attribution(
-                    heartbeat_connection_id=heartbeat_connection_id,
-                    attempt_started_monotonic=t0,
+                attribution = (
+                    dict(contention_observations[-1]) if contention_observations else
+                    timeline.contention_attribution(
+                        heartbeat_connection_id=heartbeat_connection_id,
+                        attempt_started_monotonic=t0,
+                    )
                 )
+                attribution["failure_observations"] = list(contention_observations)
                 evidence["writer_attribution"] = attribution
         durable_location: str | None = None
         # After a contention-bound failure the writer may still hold SQLite.
@@ -894,6 +901,8 @@ def renew_campaign_lease(
                 context=heartbeat_context,
             )
             heartbeat_connection_id = writer_attribution_connection_id(connection)
+            failure_phase = "BEGIN"
+            phase_started = time.monotonic()
             try:
                 _begin_immediate(
                     connection,
@@ -903,6 +912,8 @@ def renew_campaign_lease(
                     transaction_owner="renew_campaign_lease",
                     transaction_operation="CAMPAIGN_HEARTBEAT_RENEWAL",
                 )
+                failure_phase = "UPDATE"
+                phase_started = time.monotonic()
                 cursor = connection.execute(
                     """UPDATE printer_memory_factory_campaign_supervision
                        SET heartbeat_at=?,lease_expires_at=?,updated_at=?
@@ -919,10 +930,23 @@ def renew_campaign_lease(
                     raise CampaignSupervisionError(
                         "lease ledger renewal was unconfirmed"
                     )
+                failure_phase = "COMMIT"
+                phase_started = time.monotonic()
                 connection.commit()
                 db_ledger_advanced = True
                 break
             except sqlite3.OperationalError as exc:
+                timeline = active_writer_attribution(db_path)
+                if _is_sqlite_locked(exc) and timeline is not None:
+                    observation = writer_attribution_last_contention(connection)
+                    if observation is None:
+                        observation = timeline.contention_attribution(
+                            heartbeat_connection_id=heartbeat_connection_id,
+                            attempt_started_monotonic=phase_started,
+                        )
+                        observation["failure_phase"] = failure_phase
+                    observation["heartbeat_in_transaction"] = connection.in_transaction
+                    contention_observations.append(observation)
                 connection.rollback()
                 if not _is_sqlite_locked(exc):
                     raise

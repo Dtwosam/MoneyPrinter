@@ -17,21 +17,25 @@ renewal rules.
 from __future__ import annotations
 
 from contextlib import contextmanager
+from copy import deepcopy
 from datetime import datetime, timezone
 import json
 import os
+import re
 from pathlib import Path
 import sqlite3
 import threading
 import time
 from typing import Any, Iterator, Mapping
 import uuid
+import weakref
+from urllib.parse import unquote, urlsplit
 
 
 # Align with campaign_supervision bounded busy budget for operational writers
 # that must coexist with the heartbeat renewer.
 DEFAULT_OPERATIONAL_BUSY_TIMEOUT_MS = 2000
-WRITER_ATTRIBUTION_SCHEMA_VERSION = "PRINTER_V1_SQLITE_WRITER_ATTRIBUTION_V1"
+WRITER_ATTRIBUTION_SCHEMA_VERSION = "PRINTER_V1_SQLITE_WRITER_ATTRIBUTION_V2"
 DEFAULT_WRITER_ATTRIBUTION_MAX_RECORDS = 256
 
 
@@ -68,6 +72,7 @@ class SQLiteWriterAttributionTimeline:
         self._records: list[dict[str, Any]] = []
         self._connections: dict[str, dict[str, Any]] = {}
         self._transactions: dict[str, dict[str, Any]] = {}
+        self._result_cursors: dict[str, dict[str, Any]] = {}
         self._lock = threading.RLock()
 
     def _record(self, event: str, **payload: object) -> dict[str, Any]:
@@ -93,7 +98,8 @@ class SQLiteWriterAttributionTimeline:
             "max_records": self.max_records,
             "records": list(self._records),
             "active_connections": list(self._connections.values()),
-            "active_transactions": list(self._transactions.values()),
+            "active_transactions": deepcopy(list(self._transactions.values())),
+            "open_result_cursors": deepcopy(list(self._result_cursors.values())),
         }
 
     def _persist_best_effort(self) -> None:
@@ -132,7 +138,7 @@ class SQLiteWriterAttributionTimeline:
                 "pid": os.getpid(),
                 "thread_name": threading.current_thread().name,
                 "thread_id": threading.get_ident(),
-                "context": dict(context or {}),
+                "context": deepcopy(dict(context or {})),
                 "opened_at": _utc_now(),
                 "opened_monotonic": time.monotonic(),
             }
@@ -159,18 +165,19 @@ class SQLiteWriterAttributionTimeline:
             if context:
                 connection["context"] = {**connection["context"], **dict(context)}
 
-    def begin_requested(self, connection_id: str) -> dict[str, Any] | None:
+    def begin_requested(self, connection_id: str, kind: str = "UNKNOWN") -> dict[str, Any] | None:
         with self._lock:
             connection = self._connections.get(connection_id)
             if connection is None:
                 return None
             transaction = {
                 "transaction_id": f"sqlite-tx-{uuid.uuid4().hex}",
+                "transaction_kind": kind,
                 "connection_id": connection_id,
                 "connection_role": connection["connection_role"],
                 "transaction_owner": connection.get("transaction_owner"),
                 "transaction_operation": connection.get("transaction_operation"),
-                "context": dict(connection["context"]),
+                "context": deepcopy(connection["context"]),
                 "begin_requested_at": _utc_now(),
                 "begin_requested_monotonic": time.monotonic(),
             }
@@ -210,56 +217,105 @@ class SQLiteWriterAttributionTimeline:
 
     def close_connection(self, connection_id: str) -> None:
         with self._lock:
-            self.terminal(connection_id, "TRANSACTION_ROLLBACK")
+            self.terminal(connection_id, "TRANSACTION_CLOSE_ROLLBACK_SUCCEEDED")
+            for cursor_id, cursor in list(self._result_cursors.items()):
+                if cursor["connection_id"] == connection_id:
+                    self.end_cursor(cursor_id)
             connection = self._connections.pop(connection_id, None)
             if connection is not None:
                 self._record("CONNECTION_CLOSE", **connection)
 
+    def open_cursor(self, connection_id: str, kind: str) -> str:
+        with self._lock:
+            cursor_id = f"sqlite-cursor-{uuid.uuid4().hex}"
+            connection = self._connections[connection_id]
+            self._result_cursors[cursor_id] = {
+                **deepcopy(connection), "cursor_id": cursor_id,
+                "transaction_kind": kind, "activity_scope": "OPEN_RESULT_CURSOR",
+                "lock_held_proven": False,
+            }
+            self._record("RESULT_CURSOR_OPEN", **self._result_cursors[cursor_id])
+            return cursor_id
+
+    def end_cursor(self, cursor_id: str) -> None:
+        with self._lock:
+            cursor = self._result_cursors.pop(cursor_id, None)
+            if cursor:
+                self._record("RESULT_CURSOR_RELEASED", **cursor)
+
+    def activity(self, connection_id: str, event: str, **details: object) -> None:
+        with self._lock:
+            self._record(event, **deepcopy(self._transactions.get(connection_id, {
+                "connection_id": connection_id,
+            })), **details)
+
+    def classify(self, connection_id: str, kind: str) -> None:
+        with self._lock:
+            transaction = self._transactions.get(connection_id)
+            if transaction is not None and kind != "UNKNOWN":
+                if kind == "READ" and transaction.get("unclassified_activity"):
+                    return
+                if transaction["transaction_kind"] != "WRITE":
+                    transaction["transaction_kind"] = kind
+                    self.activity(connection_id, "TRANSACTION_KIND_OBSERVED")
+
+    def mark_unknown(self, connection_id: str) -> None:
+        with self._lock:
+            transaction = self._transactions.get(connection_id)
+            if transaction is not None and transaction["transaction_kind"] != "WRITE":
+                transaction["transaction_kind"] = "UNKNOWN"
+                transaction["unclassified_activity"] = True
+                self.activity(connection_id, "TRANSACTION_KIND_UNCERTAIN")
+
     def contention_attribution(
         self, *, heartbeat_connection_id: str | None, attempt_started_monotonic: float
     ) -> dict[str, Any]:
-        """Report only a sole writer that stayed open through the attempt."""
+        """Prove current overlap, never causation or absence of external locks.
+
+        Include transactions acquired during the attempt too. A candidate must
+        still be active at observation; a request alone is not an acquisition.
+        """
         with self._lock:
-            now = time.monotonic()
-            candidates = [
+            candidates = deepcopy([
                 transaction for connection_id, transaction in self._transactions.items()
                 if connection_id != heartbeat_connection_id
                 and transaction.get("begin_acquired_monotonic") is not None
-                and float(transaction["begin_acquired_monotonic"])
-                <= attempt_started_monotonic
-            ]
-            base = {
+            ])
+            transaction_connections = {item["connection_id"] for item in candidates}
+            candidates.extend(deepcopy([
+                cursor for cursor in self._result_cursors.values()
+                if cursor["connection_id"] != heartbeat_connection_id
+                and cursor["connection_id"] not in transaction_connections
+            ]))
+            kinds = {item["transaction_kind"] for item in candidates}
+            if not candidates:
+                disposition = "NO_KNOWN_APPLICATION_OWNED_WRITER"
+            elif kinds == {"WRITE"}:
+                disposition = ("PROVEN_APPLICATION_OWNED_OVERLAPPING_WRITER" if len(candidates) == 1
+                               else "AMBIGUOUS_APPLICATION_OWNED_WRITERS")
+            elif kinds == {"READ"}:
+                disposition = ("PROVEN_APPLICATION_OWNED_OVERLAPPING_READER" if len(candidates) == 1
+                               else "AMBIGUOUS_APPLICATION_OWNED_READERS")
+            elif kinds == {"READ", "WRITE"}:
+                disposition = "MIXED_APPLICATION_OWNED_READERS_AND_WRITERS"
+            else:
+                disposition = "UNKNOWN_APPLICATION_OWNED_TRANSACTIONS"
+            result = {
                 "artifact_path": str(self.artifact_path),
                 "heartbeat_connection_id": heartbeat_connection_id,
                 "attempt_started_monotonic": attempt_started_monotonic,
-                "observed_at_monotonic": now,
+                "observed_at_monotonic": time.monotonic(),
+                "disposition": disposition,
+                "causal_blocker_proven": False,
+                "external_or_uninstrumented_blocker_possible": True,
+                "external_or_uninstrumented_writer_possible": True,
+                "candidates": candidates,
+                "candidate_connection_ids": sorted(item["connection_id"] for item in candidates),
             }
             if len(candidates) == 1:
-                candidate = candidates[0]
-                return {
-                    **base,
-                    "disposition": "PROVEN_APPLICATION_OWNED_OVERLAPPING_WRITER",
-                    "connection_id": candidate["connection_id"],
-                    "transaction_id": candidate["transaction_id"],
-                    "connection_role": candidate["connection_role"],
-                    "transaction_owner": candidate.get("transaction_owner"),
-                    "transaction_operation": candidate.get("transaction_operation"),
-                    "transaction_begin_acquired_at": candidate.get("begin_acquired_at"),
-                    "context": dict(candidate["context"]),
-                }
-            if len(candidates) > 1:
-                return {
-                    **base,
-                    "disposition": "AMBIGUOUS_APPLICATION_OWNED_WRITERS",
-                    "candidate_connection_ids": sorted(
-                        str(item["connection_id"]) for item in candidates
-                    ),
-                }
-            return {
-                **base,
-                "disposition": "NO_KNOWN_APPLICATION_OWNED_WRITER",
-                "external_or_uninstrumented_writer_possible": True,
-            }
+                result.update(candidates[0])
+                result["transaction_begin_acquired_at"] = candidates[0].get("begin_acquired_at")
+            return result
 
 
 _ACTIVE_TIMELINES: dict[str, SQLiteWriterAttributionTimeline] = {}
@@ -299,57 +355,242 @@ def _identity_for(connection: sqlite3.Connection) -> tuple[SQLiteWriterAttributi
         return _CONNECTION_IDENTITIES.get(id(connection))
 
 
-class _AttributedSQLiteConnection(sqlite3.Connection):
-    """Connection subclass that observes canonical SQLite transaction calls."""
+# Tokenize comments, quoted values/identifiers and parentheses before looking
+# for a top-level CTE operation. Never inspect bound parameter values.
+_SQL_TOKENS = re.compile(
+    r"--[^\n]*(?:\n|$)|/\*.*?\*/|'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"|"
+    r"`(?:``|[^`])*`|\[[^\]]*\]|[A-Za-z_][A-Za-z_0-9]*|[()]|[^\s]",
+    re.DOTALL,
+)
 
-    def execute(self, sql: str, parameters: object = (), /):  # type: ignore[override]
-        identity = _identity_for(self)
-        statement = str(sql).lstrip().upper()
-        is_begin = statement.startswith("BEGIN")
-        is_write = statement.startswith((
-            "INSERT", "UPDATE", "DELETE", "REPLACE", "CREATE", "DROP", "ALTER",
-        ))
-        before = self.in_transaction
-        if identity is not None and is_begin:
-            identity[0].begin_requested(identity[1])
-        try:
-            result = super().execute(sql, parameters)
-        except sqlite3.Error as exc:
-            if identity is not None and is_begin:
-                identity[0].begin_failed(identity[1], exc)
-            raise
-        if identity is not None and self.in_transaction and (is_begin or (is_write and not before)):
-            timeline, connection_id = identity
-            if connection_id not in timeline._transactions:
-                timeline.begin_requested(connection_id)
-            timeline.begin_acquired(connection_id)
+
+def _statement_kind(sql: str) -> tuple[str, str]:
+    tokens = [m.group().upper() for m in _SQL_TOKENS.finditer(sql)
+              if not m.group().startswith(("--", "/*"))]
+    if not tokens:
+        return "OTHER", "UNKNOWN"
+    first = tokens[0]
+    if first == "WITH":
+        depth = 0
+        for token in tokens[1:]:
+            if token == "(":
+                depth += 1
+            elif token == ")":
+                depth -= 1
+            elif depth == 0 and token in {"SELECT", "INSERT", "UPDATE", "DELETE", "REPLACE"}:
+                first = token
+                break
+    if first == "BEGIN":
+        return "BEGIN", "WRITE" if any(t in {"IMMEDIATE", "EXCLUSIVE"} for t in tokens[1:]) else "UNKNOWN"
+    if first in {"COMMIT", "END"}:
+        return "COMMIT", "UNKNOWN"
+    if first == "ROLLBACK":
+        return ("ROLLBACK_TO" if "TO" in tokens[1:3] else "ROLLBACK"), "UNKNOWN"
+    if first in {"SAVEPOINT", "RELEASE"}:
+        return first, "UNKNOWN"
+    if first in {"INSERT", "UPDATE", "DELETE", "REPLACE", "CREATE", "DROP", "ALTER", "REINDEX", "ANALYZE"}:
+        return "STATEMENT", "WRITE"
+    if first == "SELECT":
+        return "STATEMENT", "READ"
+    return "OTHER", "UNKNOWN"
+
+
+class _AttributedSQLiteCursor(sqlite3.Cursor):
+    _result_finalizer = None
+
+    def _release_result(self):
+        if self._result_finalizer is not None:
+            self._result_finalizer()
+            self._result_finalizer = None
+
+    def execute(self, sql, parameters=(), /):
+        self._release_result()
+        result = self.connection._observe_call(super().execute, sql, parameters)
+        identity = _identity_for(self.connection)
+        if self.description is not None and identity is not None:
+            timeline, cid = identity
+            cursor_id = timeline.open_cursor(cid, _statement_kind(sql)[1])
+            self._result_finalizer = weakref.finalize(self, timeline.end_cursor, cursor_id)
         return result
 
-    def commit(self) -> None:  # type: ignore[override]
-        identity = _identity_for(self)
-        try:
-            super().commit()
-        finally:
-            if identity is not None:
-                identity[0].terminal(identity[1], "TRANSACTION_COMMIT")
+    def executemany(self, sql, parameters, /):
+        self._release_result()
+        return self.connection._observe_call(super().executemany, sql, parameters)
 
-    def rollback(self) -> None:  # type: ignore[override]
-        identity = _identity_for(self)
-        try:
-            super().rollback()
-        finally:
-            if identity is not None:
-                identity[0].terminal(identity[1], "TRANSACTION_ROLLBACK")
+    def executescript(self, sql, /):
+        return self.connection._observe_call(super().executescript, sql)
 
-    def close(self) -> None:  # type: ignore[override]
-        identity = _identity_for(self)
+    def fetchone(self):
+        row = super().fetchone()
+        if row is None:
+            self._release_result()
+        return row
+
+    def fetchmany(self, size=None):
+        rows = super().fetchmany() if size is None else super().fetchmany(size)
+        if not rows:
+            self._release_result()
+        return rows
+
+    def fetchall(self):
+        rows = super().fetchall()
+        self._release_result()
+        return rows
+
+    def __next__(self):
         try:
-            super().close()
-        finally:
-            if identity is not None:
-                identity[0].close_connection(identity[1])
-                with _REGISTRY_LOCK:
-                    _CONNECTION_IDENTITIES.pop(id(self), None)
+            return super().__next__()
+        except StopIteration:
+            self._release_result()
+            raise
+
+    def close(self):
+        super().close()
+        self._release_result()
+
+
+class _AttributedSQLiteConnection(sqlite3.Connection):
+    """Observe native SQLite execution without rewriting SQL or transactions.
+
+    The local trace hook sees implicit BEGIN, each executescript statement and
+    context-manager terminals. API return/error and in_transaction
+    reconcile the last traced statement. SQL text/values are never persisted.
+    """
+
+    _pending = None
+    _pending_sql = None
+    _user_trace = None
+    _last_contention = None
+
+    def _trace(self, sql):
+        # SQLite repeats the outer SQL for trigger entry/body trace events.
+        # Such a trace is not evidence that the preceding statement finished.
+        if self._pending is not None and sql == self._pending_sql:
+            if self._user_trace is not None:
+                self._user_trace(sql)
+            return
+        self._finish_statement()
+        self._pending_sql = sql
+        identity = _identity_for(self)
+        if identity is None:
+            return
+        timeline, cid = identity
+        operation, kind = _statement_kind(sql)
+        before = self.in_transaction
+        self._pending = (operation, kind, before)
+        if operation in {"BEGIN", "SAVEPOINT"} and not before:
+            timeline.begin_requested(cid)
+        if operation in {"COMMIT", "ROLLBACK"}:
+            timeline.activity(cid, f"TRANSACTION_{operation}_REQUESTED")
+        elif operation in {"SAVEPOINT", "RELEASE", "ROLLBACK_TO"}:
+            timeline.activity(cid, f"SAVEPOINT_{operation}_REQUESTED")
+        if self._user_trace is not None:
+            self._user_trace(sql)
+
+    def _finish_statement(self, error=None):
+        pending, self._pending = self._pending, None
+        identity = _identity_for(self)
+        if pending is None or identity is None:
+            return
+        operation, kind, before = pending
+        timeline, cid = identity
+        after = self.in_transaction
+        suffix = "FAILED" if error is not None else "SUCCEEDED"
+        details = {"error": _safe_sqlite_error(error)} if error is not None else {}
+        if operation in {"BEGIN", "SAVEPOINT"} and not before:
+            if after:
+                timeline.begin_acquired(cid)
+            else:
+                timeline.begin_failed(cid, error or RuntimeError("SQLite did not enter transaction"))
+        if after and cid not in timeline._transactions:
+            timeline.begin_requested(cid)
+            timeline.begin_acquired(cid)
+        if operation == "OTHER" or (kind == "WRITE" and error is not None):
+            timeline.mark_unknown(cid)
+        elif error is None:
+            timeline.classify(cid, kind)
+        if operation in {"COMMIT", "ROLLBACK"}:
+            # A terminal request with a still-open SQLite transaction has
+            # failed; it must never remove the active transaction.
+            if after:
+                timeline.activity(cid, f"TRANSACTION_{operation}_FAILED", **details)
+            elif error is None:
+                timeline.terminal(cid, f"TRANSACTION_{operation}_SUCCEEDED")
+            else:
+                # A script can finish COMMIT and then fail preparing its next
+                # statement (which has no trace). Do not invent its outcome.
+                timeline.activity(cid, f"TRANSACTION_{operation}_OUTCOME_UNKNOWN", **details)
+        if operation in {"SAVEPOINT", "RELEASE", "ROLLBACK_TO"}:
+            timeline.activity(cid, f"SAVEPOINT_{operation}_{suffix}", **details)
+        if not after and cid in timeline._transactions:
+            timeline.terminal(cid, "TRANSACTION_RELEASE_SUCCEEDED" if operation == "RELEASE" and error is None
+                              else "TRANSACTION_SQLITE_ENDED")
+        if not before and not after and operation == "STATEMENT":
+            timeline.activity(cid, f"STATEMENT_EXECUTION_{suffix}", statement_kind=kind, **details)
+
+    def _observe_call(self, call, *args):
+        started = time.monotonic()
+        try:
+            result = call(*args)
+        except BaseException as exc:
+            identity = _identity_for(self)
+            code = getattr(exc, "sqlite_errorcode", 0) or 0
+            if identity is not None and code & 0xFF in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}:
+                timeline, cid = identity
+                observation = timeline.contention_attribution(
+                    heartbeat_connection_id=cid, attempt_started_monotonic=started,
+                )
+                observation["failure_phase"] = self._pending[0] if self._pending else "UNKNOWN"
+                observation["heartbeat_in_transaction"] = self.in_transaction
+                self._last_contention = observation
+                timeline.activity(cid, "SQLITE_CONTENTION_OBSERVED", attribution=observation)
+            self._finish_statement(exc)
+            raise
+        self._finish_statement()
+        return result
+
+    def set_trace_callback(self, callback):
+        self._user_trace = callback
+        super().set_trace_callback(self._trace)
+
+    def cursor(self, factory=None):
+        # Custom cursor factories are intentionally not replaced. Trace still
+        # sees their SQL; last-statement reconciliation requires our cursor.
+        return super().cursor(factory or _AttributedSQLiteCursor)
+
+    def execute(self, sql, parameters=(), /):
+        return self.cursor().execute(sql, parameters)
+
+    def executemany(self, sql, parameters, /):
+        return self.cursor().executemany(sql, parameters)
+
+    def executescript(self, sql, /):
+        return self.cursor().executescript(sql)
+
+    def commit(self):
+        return self._observe_call(super().commit)
+
+    def rollback(self):
+        return self._observe_call(super().rollback)
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        if exc_type is None:
+            try:
+                self.commit()
+            except BaseException:
+                self.rollback()
+                raise
+        else:
+            self.rollback()
+        return False
+
+    def close(self):
+        identity = _identity_for(self)
+        self._observe_call(super().close)
+        if identity is not None:
+            identity[0].close_connection(identity[1])
+            with _REGISTRY_LOCK:
+                _CONNECTION_IDENTITIES.pop(id(self), None)
 
 
 def connect_attributed(
@@ -363,18 +604,21 @@ def connect_attributed(
     **connect_kwargs: object,
 ) -> sqlite3.Connection:
     """Open an operational connection and register a UUID identity when active."""
-    path = Path(db_path).resolve()
+    # Preserve URI mode/query flags while resolving the registry's DB identity.
+    target = str(db_path) if uri else Path(db_path).resolve()
+    path = Path(unquote(urlsplit(str(db_path)).path)).resolve() if uri else target
     active = timeline or active_writer_attribution(path)
     if active is None:
-        return sqlite3.connect(path, timeout=timeout, uri=uri, **connect_kwargs)
+        return sqlite3.connect(target, timeout=timeout, uri=uri, **connect_kwargs)
     connection = sqlite3.connect(
-        path, timeout=timeout, uri=uri, factory=_AttributedSQLiteConnection, **connect_kwargs
+        target, timeout=timeout, uri=uri, factory=_AttributedSQLiteConnection, **connect_kwargs
     )
     identity = active.open_connection(
         connection, db_path=path, connection_role=connection_role, context=context
     )
     with _REGISTRY_LOCK:
         _CONNECTION_IDENTITIES[id(connection)] = (active, str(identity["connection_id"]))
+    connection.set_trace_callback(None)
     return connection
 
 
@@ -388,6 +632,11 @@ def set_writer_attribution_context(
     identity = _identity_for(connection)
     if identity is not None:
         identity[0].set_context(identity[1], owner=owner, operation=operation, context=context)
+
+
+def writer_attribution_last_contention(connection: sqlite3.Connection) -> dict[str, Any] | None:
+    """Snapshot captured at the SQLite exception, before retry or rollback."""
+    return deepcopy(getattr(connection, "_last_contention", None))
 
 
 def writer_attribution_connection_id(connection: sqlite3.Connection) -> str | None:

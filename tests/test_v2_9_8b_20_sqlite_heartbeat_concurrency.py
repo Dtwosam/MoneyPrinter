@@ -164,10 +164,10 @@ class TestProductionLockPatternAndRepair(unittest.TestCase):
             second_id = writer_attribution_connection_id(second)
             assert first_id is not None and second_id is not None
             timeline.set_context(first_id, owner="a", operation="WRITE_A")
-            timeline.begin_requested(first_id)
+            timeline.begin_requested(first_id, kind="WRITE")
             timeline.begin_acquired(first_id)
             timeline.set_context(second_id, owner="b", operation="WRITE_B")
-            timeline.begin_requested(second_id)
+            timeline.begin_requested(second_id, kind="WRITE")
             timeline.begin_acquired(second_id)
             attribution = timeline.contention_attribution(
                 heartbeat_connection_id=None,

@@ -10,6 +10,8 @@ from pathlib import Path
 import sqlite3
 from typing import Any
 
+from printer_v1.db.sqlite_write_contracts import connect_attributed
+
 from printer_v1.contracts.enums import DataQualityLabel, SourceStatus
 from printer_v1.sources.contracts import (
     NormalizedSourceResult,
@@ -29,7 +31,7 @@ def writable_connection(db_path_or_conn: str | Path | sqlite3.Connection) -> Ite
         yield db_path_or_conn
         return
 
-    connection = sqlite3.connect(Path(db_path_or_conn))
+    connection = connect_attributed(Path(db_path_or_conn), connection_role="SOURCE_GOVERNOR_PERSISTENCE")
     connection.row_factory = sqlite3.Row
     try:
         yield connection

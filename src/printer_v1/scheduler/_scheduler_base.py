@@ -7,6 +7,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sqlite3
 
+from printer_v1.db.sqlite_write_contracts import connect_attributed
+
 from printer_v1.scheduler.contracts import ACTIVE_JOB_STATUSES, JobKind, JobStatus, LockResult
 from printer_v1.scheduler.resource_governor import (
     effective_priority_value,
@@ -59,7 +61,7 @@ def connect(db_or_connection: str | Path | sqlite3.Connection) -> Iterator[sqlit
         yield db_or_connection
         return
 
-    connection = sqlite3.connect(Path(db_or_connection))
+    connection = connect_attributed(Path(db_or_connection), connection_role="SCHEDULER_PERSISTENCE")
     connection.row_factory = sqlite3.Row
     try:
         yield connection

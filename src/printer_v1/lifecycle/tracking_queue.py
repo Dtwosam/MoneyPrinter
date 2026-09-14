@@ -8,6 +8,8 @@ from pathlib import Path
 import json
 import sqlite3
 
+from printer_v1.db.sqlite_write_contracts import connect_attributed
+
 from printer_v1.contracts.enums import DataQualityLabel, SourceStatus
 from printer_v1.lifecycle.contracts import (
     TRACKING_LANE_DUE_ORDER,
@@ -92,7 +94,7 @@ def connect(db_or_connection: str | Path | sqlite3.Connection) -> Iterator[sqlit
         yield db_or_connection
         return
 
-    connection = sqlite3.connect(Path(db_or_connection))
+    connection = connect_attributed(Path(db_or_connection), connection_role="LIFECYCLE_PERSISTENCE")
     connection.row_factory = sqlite3.Row
     try:
         yield connection

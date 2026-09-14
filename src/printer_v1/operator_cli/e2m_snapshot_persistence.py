@@ -356,6 +356,14 @@ def persist_snapshot_from_source_response(
 
     Returns an audit dict. Does NOT commit — caller is responsible.
     """
+    from printer_v1.db.sqlite_write_contracts import set_writer_attribution_context
+
+    set_writer_attribution_context(
+        connection,
+        owner="persist_snapshot_from_source_response",
+        operation="SNAPSHOT",
+        context={"source_response_id": source_response_id, "token_mint": approved_mint},
+    )
     blocked_reasons: list[str] = []
 
     resp_row = _load_source_response_row(connection, source_response_id)

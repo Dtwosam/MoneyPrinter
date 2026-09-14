@@ -9,6 +9,8 @@ from pathlib import Path
 import sqlite3
 from typing import Any, Mapping
 
+from printer_v1.db.sqlite_write_contracts import connect_attributed
+
 from printer_v1.db.migrate import canonical_migration_names
 from printer_v1.operator_cli.git_provenance import (
     GitProvenanceError,
@@ -128,7 +130,7 @@ def build_authorization_marker_payload(
 
 
 def _connect(db_path: str | Path) -> sqlite3.Connection:
-    connection = sqlite3.connect(Path(db_path))
+    connection = connect_attributed(Path(db_path), connection_role="CAMPAIGN_PERSISTENCE")
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
     return connection
