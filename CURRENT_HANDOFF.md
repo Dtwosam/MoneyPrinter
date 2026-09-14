@@ -107,13 +107,27 @@ non-Unix socket creation/connect/send are blocked locally; swallowed faults also
 fail pytest teardown. There is no live opt-out. Production code is unchanged.
 See `docs/development-test-network-boundary.md` for scope and offline helpers.
 All 16 safety regressions, six cooperative checks and 21 owner-proof tests pass.
-The transport/Source Governor selection has 138 passes and two tests caught
-before DNS (each also fails teardown): TestProductionQueueComposition's
-test_production_queue_calls_governed_transport and
-test_unsupported_venues_zero_transport. Both nominate Meteora but omit generic
-protocol transport and expect the retired UNSUPPORTED_VENUE behavior. These
-fixture/contract failures remain for a separate reconciliation lane; the guard
-is not weakened to permit them. No external provider attempt escaped the guard.
+The two TestProductionQueueComposition failures are now reconciled with test-only
+changes. Both are A (stale Meteora/UNSUPPORTED_VENUE expectation) plus B (missing
+offline generic transport), not established production defects. The governed
+mixed queue uses existing offline PumpSwap and generic-present-pool fixtures:
+two requests/responses, three measured transports and three local validations;
+transport contexts prove Source Governor approval and execution ownership.
+
+Current nomination/queue routing uses case-insensitive pumpswap, pumpfun,
+pump-fun and pump-amm labels for PumpSwap account confirmation. Other labels,
+including literal PUMP, METEORA, meteora-damm-v2 and unrecognized-offline-venue,
+use generic mint/pool/executable-owner verification. No unsupported-venue-name
+zero-transport branch exists here; the obsolete test was replaced by nine
+routing cases rather than inventing an unsupported label. Routing does not
+itself establish identity or admission eligibility; some alias fixtures retain
+later identity conflicts, which this routing-only lane does not change.
+The network guard is unchanged and final verification records no unexpected
+violations or external attempts. The historical RPC attempt remains one past
+attempt. No production routing, source budget or retry policy changed.
+All 65 focused tests pass, including the full 12-case queue class, generic
+conversion, Source Governor and 16 network-safety regressions. Compile/import
+and diff checks pass; authoritative DB hash and physical identity are unchanged.
 The older StandardFourHourCloseMemoryTerminalTests fixture separately fails
 because it expects the retired unsplit LONG_CONTINUATION_CLOSE step; untouched.
 Verification: all 21 owner-proof tests, 50 related admission/cadence/deadline/
@@ -134,7 +148,7 @@ identity remain unchanged, preserving the audited healthy state.
 
 ## Exact next permitted action
 
-This development test-safety lane is complete; no successor operational action
+This disposable queue-fixture lane is complete; no successor operational action
 is authorized. Any cleanup
 of failed execution `20260914T123749Z-f4617e1d5431` still requires separate
 exact-identity preflight and explicit operator approval. Do not reuse consumed

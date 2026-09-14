@@ -35,7 +35,8 @@ from printer_v1.sources.pumpswap_pool_account_batch import (
     protocol_outcome_from_confirm,
 )
 from printer_v1.sources.pumpswap import confirm_pumpswap_pool_from_account
-from printer_v1.sources.contracts import build_governed_source_request
+from printer_v1.sources.contracts import build_governed_source_request, GOVERNOR_ONLY_EXECUTION_PATH
+from tests.test_v2_9_8b_generic_present_pool_conversion import _generic_transport
 from printer_v1.sources.governed_execution import execute_source_request_with_governor
 
 NOW = "2026-08-04T16:00:00+00:00"
@@ -278,6 +279,21 @@ class TestProductionQueueComposition:
                 _POOL_B: _pool_account(mint=_MINT_B),
             }
         )
+        calls = []
+        generic = _generic_transport([{
+            "mint": "MintMeteora" + "z" * 20,
+            "pool": "PoolMeteora" + "z" * 20,
+        }])
+
+        def governed(kind, fixture):
+            def invoke(context):
+                assert context.governor_approved is True
+                assert context.execution_path == GOVERNOR_ONLY_EXECUTION_PATH
+                assert context.request.request_kind == kind
+                calls.append(kind)
+                return fixture(context)
+            return invoke
+
         budget = StageBudget.permanent_discovery_default()
         budget.consume("intake", 3)
         budget.seal("intake")
@@ -286,20 +302,26 @@ class TestProductionQueueComposition:
             stage_budget=budget,
             now=NOW,
             campaign_id="camp-batch",
-            account_batch_transport=transport,
+            account_batch_transport=governed(REQUEST_KIND, transport),
+            generic_account_batch_transport=governed("generic_present_pool_account_batch", generic),
         )
-        assert report["batch_count"] == 1
-        assert report["source_requests"] == 1
-        assert report["transport_operations"] >= 1
-        assert report["local_validation_steps"] >= 2
-        assert len(report["source_request_ids"]) == 1
-        # Meteora: candidate-local unsupported at nomination; never protocol-transported
+        assert report["batch_count"] == 2
+        assert report["source_requests"] == 2
+        assert report["transport_operations"] == 3
+        assert report["local_validation_steps"] == 3
+        assert len(report["source_request_ids"]) == 2
+        assert calls == [REQUEST_KIND, "generic_present_pool_account_batch"]
+        assert budget.used_by_stage["protocol_confirmation"] == 2
+        assert len(report["source_response_ids"]) == 2
+        assert report["source_failure_ids"] == []
+        # Meteora uses exact generic mint/pool/program verification, not its label.
         meteora_state = connection.execute(
             """SELECT current_state FROM printer_exact_market_states
                WHERE mint_identity=?""",
             ("MintMeteora" + "z" * 20,),
         ).fetchone()
-        assert meteora_state["current_state"] == "UNSUPPORTED_VENUE"
+        assert meteora_state["current_state"] in {CURRENT_POOL_CONFIRMED, "CURRENT_VISIBLE"}
+        assert report["outcome_counts"]["GENERIC_POOL_CONFIRMED"] == 1
         # Valid PumpSwap confirms
         assert any(o["outcome"] == "CURRENT_POOL_CONFIRMED" for o in report["outcomes"])
         assert len(report["confirmed_for_market"]) >= 1
@@ -321,41 +343,54 @@ class TestProductionQueueComposition:
         ).fetchone()
         assert kind["source_name"] == SOURCE_NAME
         assert kind["request_kind"] == REQUEST_KIND
+        assert [tuple(row) for row in connection.execute(
+            "SELECT source_name,request_kind FROM printer_source_requests ORDER BY id"
+        )] == [(SOURCE_NAME, REQUEST_KIND), (SOURCE_NAME, "generic_present_pool_account_batch")]
+        assert connection.execute("SELECT COUNT(*) FROM printer_source_responses").fetchone()[0] == 2
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
 
-    def test_unsupported_venues_zero_transport(self, database):
+    @pytest.mark.parametrize("venue,kind", [
+        ("pumpswap", REQUEST_KIND),
+        ("pumpfun", REQUEST_KIND),
+        ("pump-fun", REQUEST_KIND),
+        ("pump-amm", REQUEST_KIND),
+        ("PUMPSWAP", REQUEST_KIND),
+        ("PUMP", "generic_present_pool_account_batch"),
+        ("METEORA", "generic_present_pool_account_batch"),
+        ("meteora-damm-v2", "generic_present_pool_account_batch"),
+        ("unrecognized-offline-venue", "generic_present_pool_account_batch"),
+    ])
+    def test_provider_venue_labels_route_to_governed_confirmation(self, database, venue, kind):
         _, connection = database
-        self._seed_due(
-            connection,
-            [
-                {
-                    "mint": "MintM1" + "a" * 30,
-                    "pool": "PoolM1" + "a" * 30,
-                    "base_mint": "MintM1" + "a" * 30,
-                    "quote_mint": WSOL,
-                    "venue": "meteora-damm-v2",
-                    "liquidity_usd": 5000.0,
-                }
-            ],
-        )
-        calls = {"n": 0}
+        observation = {"mint": _MINT_A, "pool": _POOL_A, "base_mint": _MINT_A,
+                       "quote_mint": WSOL, "venue": venue, "liquidity_usd": 5000.0}
+        self._seed_due(connection, [observation])
+        calls = []
+        pump = fixture_account_batch_transport({_POOL_A: _pool_account(mint=_MINT_A)})
+        generic = _generic_transport([observation])
 
         def transport(context):
-            calls["n"] += 1
-            raise AssertionError("must not transport unsupported venues")
+            assert context.governor_approved is True
+            assert context.execution_path == GOVERNOR_ONLY_EXECUTION_PATH
+            assert context.request.request_kind == kind
+            calls.append(kind)
+            return (pump if kind == REQUEST_KIND else generic)(context)
 
-        budget = StageBudget.permanent_discovery_default()
+        # Even unknown venue names require account verification. There is no
+        # venue-name exclusion branch in the current queue owner.
         report = process_protocol_confirmation_queue(
-            connection,
-            stage_budget=budget,
-            now=NOW,
-            account_batch_transport=transport,
+            connection, stage_budget=StageBudget.permanent_discovery_default(),
+            now=NOW, account_batch_transport=transport,
+            generic_account_batch_transport=transport,
         )
-        assert calls["n"] == 0
-        assert report["source_requests"] == 0
-        state = connection.execute(
-            "SELECT current_state FROM printer_exact_market_states"
-        ).fetchone()
-        assert state["current_state"] == "UNSUPPORTED_VENUE"
+        assert calls == [kind]
+        assert report["source_requests"] == 1
+        assert report["source_failure_ids"] == []
+        assert connection.execute("SELECT request_kind FROM printer_source_requests").fetchone()[0] == kind
+        assert connection.execute("SELECT COUNT(*) FROM printer_source_responses").fetchone()[0] == 1
+        assert report["transport_operations"] == (1 if kind == REQUEST_KIND else 2)
+        # Routing is distinct from downstream identity/provenance eligibility.
+        # The transport choice alone must never assert final admission authority.
 
     def test_shared_failure_marks_all_members_source_unavailable(self, database):
         _, connection = database
