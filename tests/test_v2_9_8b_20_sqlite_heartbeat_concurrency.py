@@ -7,6 +7,7 @@ authoritative DB mutation, retrieval, or financial capability.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import json
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -17,7 +18,14 @@ from typing import Any, Mapping
 from unittest.mock import patch
 
 from printer_v1.db import apply_migrations, release_write_transaction
-from printer_v1.db.sqlite_write_contracts import connect_operational
+from printer_v1.db.sqlite_write_contracts import (
+    activate_writer_attribution,
+    connect_attributed,
+    connect_operational,
+    begin_attributed_write,
+    commit_attributed_write,
+    writer_attribution_connection_id,
+)
 from printer_v1.operator_cli.campaign_ownership import create_campaign_run
 from printer_v1.operator_cli.campaign_persistence import (
     DB_MODE_PROOF_ISOLATED,
@@ -144,6 +152,221 @@ class SlowAdapter:
 
 
 class TestProductionLockPatternAndRepair(unittest.TestCase):
+    def test_attribution_reports_ambiguous_when_two_writer_candidates_overlap(self) -> None:
+        db = _temp_db()
+        timeline = activate_writer_attribution(
+            db, artifact_path=db.parent / "writers.json", scope={}, max_records=64
+        )
+        first = connect_attributed(db, timeline=timeline, connection_role="WRITER_A")
+        second = connect_attributed(db, timeline=timeline, connection_role="WRITER_B")
+        try:
+            first_id = writer_attribution_connection_id(first)
+            second_id = writer_attribution_connection_id(second)
+            assert first_id is not None and second_id is not None
+            timeline.set_context(first_id, owner="a", operation="WRITE_A")
+            timeline.begin_requested(first_id)
+            timeline.begin_acquired(first_id)
+            timeline.set_context(second_id, owner="b", operation="WRITE_B")
+            timeline.begin_requested(second_id)
+            timeline.begin_acquired(second_id)
+            attribution = timeline.contention_attribution(
+                heartbeat_connection_id=None,
+                attempt_started_monotonic=time.monotonic(),
+            )
+            self.assertEqual(
+                attribution["disposition"], "AMBIGUOUS_APPLICATION_OWNED_WRITERS"
+            )
+        finally:
+            first.close()
+            second.close()
+
+    def test_attribution_does_not_fabricate_an_uninstrumented_writer(self) -> None:
+        db = _temp_db()
+        identities = _seed_supervision(db)
+        activate_writer_attribution(
+            db, artifact_path=db.parent / "writers.json", scope={}, max_records=64
+        )
+        holder = sqlite3.connect(db)
+        try:
+            holder.execute(
+                "INSERT INTO printer_source_requests("
+                "source_name,request_kind,requested_at,source_status,data_quality_label) "
+                "VALUES ('dexscreener','pair_market_snapshot',?,'COMPLETE','CLEAN_DATA')",
+                (NOW.isoformat(),),
+            )
+            with patch(
+                "printer_v1.operator_cli.campaign_supervision."
+                "LEASE_CONTENTION_WALL_CLOCK_SECONDS", 0.15,
+            ):
+                result = renew_campaign_lease(
+                    db, lease_seconds=DEFAULT_LEASE_SECONDS,
+                    now=NOW + timedelta(seconds=30), **identities,
+                )
+            self.assertTrue(result["sqlite_locked"])
+            self.assertEqual(
+                result["writer_attribution"]["disposition"],
+                "NO_KNOWN_APPLICATION_OWNED_WRITER",
+            )
+        finally:
+            holder.rollback()
+            holder.close()
+
+    def test_closed_writer_is_not_an_attribution_candidate(self) -> None:
+        db = _temp_db()
+        timeline = activate_writer_attribution(
+            db, artifact_path=db.parent / "writers.json", scope={}, max_records=64
+        )
+        connection = connect_attributed(db, timeline=timeline, connection_role="WRITER")
+        try:
+            begin_attributed_write(connection, owner="writer", operation="WRITE")
+            commit_attributed_write(connection)
+            begin_attributed_write(connection, owner="writer", operation="WRITE")
+            connection.rollback()
+            attribution = timeline.contention_attribution(
+                heartbeat_connection_id=None,
+                attempt_started_monotonic=time.monotonic(),
+            )
+            self.assertEqual(attribution["disposition"], "NO_KNOWN_APPLICATION_OWNED_WRITER")
+        finally:
+            connection.close()
+
+    def test_sidecar_persistence_failure_keeps_lease_contention_fail_closed(self) -> None:
+        db = _temp_db()
+        identities = _seed_supervision(db)
+        timeline = activate_writer_attribution(
+            db, artifact_path=Path("/dev/null") / "writers.json", scope={}, max_records=64
+        )
+        holder = connect_attributed(db, timeline=timeline, connection_role="WRITER")
+        try:
+            begin_attributed_write(holder, owner="writer", operation="WRITE")
+            holder.execute(
+                "INSERT INTO printer_source_requests("
+                "source_name,request_kind,requested_at,source_status,data_quality_label) "
+                "VALUES ('dexscreener','pair_market_snapshot',?,'COMPLETE','CLEAN_DATA')",
+                (NOW.isoformat(),),
+            )
+            with patch(
+                "printer_v1.operator_cli.campaign_supervision."
+                "LEASE_CONTENTION_WALL_CLOCK_SECONDS", 0.15,
+            ):
+                result = renew_campaign_lease(
+                    db, lease_seconds=DEFAULT_LEASE_SECONDS,
+                    now=NOW + timedelta(seconds=30), **identities,
+                )
+            self.assertFalse(result["renewal_confirmed"])
+            self.assertTrue(result["sqlite_locked"])
+        finally:
+            holder.rollback()
+            holder.close()
+
+    def test_connection_and_transaction_ids_are_unique_and_timeline_is_bounded(self) -> None:
+        db = _temp_db()
+        timeline_path = db.parent / "writers.json"
+        timeline = activate_writer_attribution(
+            db, artifact_path=timeline_path, scope={}, max_records=16
+        )
+        first = connect_attributed(db, timeline=timeline, connection_role="WRITER")
+        first_tx = begin_attributed_write(first, owner="writer", operation="WRITE")
+        commit_attributed_write(first)
+        first.close()
+        second = connect_attributed(db, timeline=timeline, connection_role="WRITER")
+        try:
+            second_tx = begin_attributed_write(second, owner="writer", operation="WRITE")
+            self.assertNotEqual(first_tx["connection_id"], second_tx["connection_id"])
+            self.assertNotEqual(first_tx["transaction_id"], second_tx["transaction_id"])
+            for index in range(32):
+                timeline.set_context(second_tx["connection_id"], operation=f"WRITE_{index}")
+            payload = json.loads(timeline_path.read_text(encoding="utf-8"))
+            self.assertLessEqual(len(payload["records"]), 16)
+        finally:
+            if second.in_transaction:
+                commit_attributed_write(second)
+            second.close()
+
+    def test_lifecycle_wait_does_not_hold_an_attributed_write_transaction(self) -> None:
+        from printer_v1.operator_cli.one_command_15m_factory import (
+            _sleep_with_cancellation,
+        )
+
+        db = _temp_db()
+        timeline = activate_writer_attribution(
+            db, artifact_path=db.parent / "writers.json", scope={}, max_records=64
+        )
+        connection = connect_attributed(
+            db, timeline=timeline, connection_role="FACTORY_MAIN"
+        )
+        try:
+            _sleep_with_cancellation(0.01, sleep=lambda _: None, probe=lambda: None)
+            self.assertFalse(connection.in_transaction)
+            attribution = timeline.contention_attribution(
+                heartbeat_connection_id=None,
+                attempt_started_monotonic=time.monotonic(),
+            )
+            self.assertEqual(attribution["disposition"], "NO_KNOWN_APPLICATION_OWNED_WRITER")
+        finally:
+            connection.close()
+
+    def test_heartbeat_contention_attributes_one_open_application_writer(self) -> None:
+        """A disposable blocked renewal names its sole instrumented writer."""
+        db = _temp_db()
+        identities = _seed_supervision(db)
+        timeline_path = db.parent / "writer-attribution.json"
+        timeline = activate_writer_attribution(
+            db,
+            artifact_path=timeline_path,
+            scope={
+                "campaign_id": identities["campaign_id"],
+                "campaign_run_id": identities["run_id"],
+                "cycle_id": "cycle-1",
+            },
+            max_records=64,
+        )
+        holder = connect_attributed(
+            db,
+            timeline=timeline,
+            connection_role="FACTORY_MAIN",
+            context={
+                "factory_run_id": "factory-1",
+                "lifecycle_step_key": "t1_snapshot_04",
+            },
+        )
+        try:
+            transaction = begin_attributed_write(
+                holder,
+                owner="test_writer",
+                operation="FACTORY_STEP_CLAIM",
+            )
+            holder.execute(
+                "INSERT INTO printer_source_requests("
+                "source_name,request_kind,requested_at,source_status,data_quality_label) "
+                "VALUES ('dexscreener','pair_market_snapshot',?,'COMPLETE','CLEAN_DATA')",
+                (NOW.isoformat(),),
+            )
+            with patch(
+                "printer_v1.operator_cli.campaign_supervision."
+                "LEASE_CONTENTION_WALL_CLOCK_SECONDS",
+                0.15,
+            ):
+                result = renew_campaign_lease(
+                    db,
+                    lease_seconds=DEFAULT_LEASE_SECONDS,
+                    now=NOW + timedelta(seconds=30),
+                    **identities,
+                )
+            self.assertFalse(result["renewal_confirmed"])
+            self.assertTrue(result["sqlite_locked"])
+            attribution = result["writer_attribution"]
+            self.assertEqual(
+                attribution["disposition"],
+                "PROVEN_APPLICATION_OWNED_OVERLAPPING_WRITER",
+            )
+            self.assertEqual(attribution["transaction_id"], transaction["transaction_id"])
+            self.assertEqual(attribution["connection_id"], transaction["connection_id"])
+            self.assertTrue(timeline_path.is_file())
+        finally:
+            if holder.in_transaction:
+                commit_attributed_write(holder)
+            holder.close()
     def test_legacy_open_write_across_io_blocks_heartbeat_renewal(self) -> None:
         """Reproduce the exact production pattern: deferred write open during I/O."""
         db = _temp_db()

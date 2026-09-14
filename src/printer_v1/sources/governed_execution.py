@@ -27,7 +27,10 @@ from printer_v1.sources.contracts import (
     build_source_adapter_contract,
     validate_source_adapter_contract,
 )
-from printer_v1.db.sqlite_write_contracts import release_write_transaction
+from printer_v1.db.sqlite_write_contracts import (
+    release_write_transaction,
+    set_writer_attribution_context,
+)
 from printer_v1.sources.recording import (
     record_source_failure,
     record_source_request,
@@ -339,6 +342,16 @@ def execute_source_request_with_governor(
         recent_request_count=recent_request_count,
         now=now,
     )
+    if isinstance(db_path_or_conn, sqlite3.Connection):
+        set_writer_attribution_context(
+            db_path_or_conn,
+            owner="execute_source_request_with_governor",
+            operation="SOURCE_REQUEST_RECORD",
+            context={
+                "source_name": source_request.source_name,
+                "source_request_kind": source_request.request_kind,
+            },
+        )
     request_record = record_source_request(db_path_or_conn, source_request, decision)
     # Release any deferred write held by a shared connection before adapter I/O.
     release_write_transaction(db_path_or_conn)
@@ -378,6 +391,13 @@ def execute_source_request_with_governor(
     # Adapter transport / fixture work runs with no open write transaction.
     result = adapter.execute(context)
     if result.source_status in {SourceStatus.COMPLETE, SourceStatus.PARTIAL, SourceStatus.STALE} and not result.failure_type:
+        if isinstance(db_path_or_conn, sqlite3.Connection):
+            set_writer_attribution_context(
+                db_path_or_conn,
+                owner="execute_source_request_with_governor",
+                operation="SOURCE_RESPONSE_RECORD",
+                context={"source_request_id": int(request_record.id)},
+            )
         response_record = record_source_response(db_path_or_conn, request_record, result)
         release_write_transaction(db_path_or_conn)
         execution = GovernedSourceExecutionResult(
@@ -388,6 +408,13 @@ def execute_source_request_with_governor(
         _observe_attempt(execution)
         return execution
 
+    if isinstance(db_path_or_conn, sqlite3.Connection):
+        set_writer_attribution_context(
+            db_path_or_conn,
+            owner="execute_source_request_with_governor",
+            operation="SOURCE_FAILURE_RECORD",
+            context={"source_request_id": int(request_record.id)},
+        )
     failure_record = record_source_failure(
         db_path_or_conn,
         request_record,

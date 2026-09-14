@@ -11,6 +11,13 @@ import time
 from typing import Any, Callable, Mapping
 import uuid
 
+from printer_v1.db.sqlite_write_contracts import (
+    activate_writer_attribution,
+    active_writer_attribution,
+    connect_attributed,
+    set_writer_attribution_context,
+    writer_attribution_connection_id,
+)
 from printer_v1.operator_cli.campaign_persistence import (
     campaign_evidence_sha256,
     canonical_campaign_evidence_json,
@@ -267,6 +274,8 @@ def _connect(
     *,
     read_only: bool = False,
     busy_timeout_seconds: float | None = None,
+    connection_role: str = "CAMPAIGN_SUPERVISION",
+    context: Mapping[str, object] | None = None,
 ) -> sqlite3.Connection:
     path = Path(db_path).resolve()
     if not path.is_file():
@@ -284,7 +293,12 @@ def _connect(
         )
         connection.execute("PRAGMA query_only=ON")
     else:
-        connection = sqlite3.connect(path, timeout=timeout)
+        connection = connect_attributed(
+            path,
+            connection_role=connection_role,
+            context=context,
+            timeout=timeout,
+        )
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute(f"PRAGMA busy_timeout={int(timeout * 1000)}")
     connection.row_factory = sqlite3.Row
@@ -306,6 +320,8 @@ def _begin_immediate(
     deadline_monotonic: float | None = None,
     busy_timeout_ceiling: float | None = None,
     before_block: Callable[[float], None] | None = None,
+    transaction_owner: str = "campaign_supervision",
+    transaction_operation: str = "CAMPAIGN_STATE_MUTATION",
 ) -> None:
     """Begin IMMEDIATE with bounded retries for transient SQLite lock contention.
 
@@ -334,6 +350,11 @@ def _begin_immediate(
         if deadline_monotonic is not None:
             _configure_busy_timeout(connection, busy_timeout_seconds=planned)
         try:
+            set_writer_attribution_context(
+                connection,
+                owner=transaction_owner,
+                operation=transaction_operation,
+            )
             connection.execute("BEGIN IMMEDIATE")
             return
         except sqlite3.OperationalError as exc:
@@ -478,6 +499,11 @@ def acquire_campaign_supervision(
         "updated_at": heartbeat,
     }
     _write_new_lock(lock, payload)
+    activate_writer_attribution(
+        db_path,
+        artifact_path=lock.with_name("sqlite-writer-attribution.json"),
+        scope={**identities, "lease_lock_path": str(lock)},
+    )
     connection: sqlite3.Connection | None = None
     try:
         connection = _connect(db_path)
@@ -639,6 +665,12 @@ def renew_campaign_lease(
     previous_expiry_iso: str | None = None
     lock: Path | None = None
     lease_replace_attempts = 0
+    heartbeat_connection_id: str | None = None
+    heartbeat_context = {
+        "campaign_id": campaign_id,
+        "campaign_run_id": run_id,
+        "supervision_id": supervision_id,
+    }
 
     def _renewal_now() -> datetime:
         if now is None:
@@ -741,6 +773,15 @@ def renew_campaign_lease(
                 prior_heartbeat_at=previous_heartbeat_iso,
                 prior_lease_expires_at=previous_expiry_iso,
             )
+        attribution: dict[str, Any] | None = None
+        if evidence.get("sqlite_locked"):
+            timeline = active_writer_attribution(db_path)
+            if timeline is not None:
+                attribution = timeline.contention_attribution(
+                    heartbeat_connection_id=heartbeat_connection_id,
+                    attempt_started_monotonic=t0,
+                )
+                evidence["writer_attribution"] = attribution
         durable_location: str | None = None
         # After a contention-bound failure the writer may still hold SQLite.
         # Prefer lease-file evidence immediately for lock contention so failure
@@ -770,6 +811,7 @@ def renew_campaign_lease(
             "prior_heartbeat_at": evidence["prior_heartbeat_at"],
             "prior_lease_expires_at": evidence["prior_lease_expires_at"],
             "failure_evidence": evidence,
+            "writer_attribution": attribution,
             "durable_evidence_location": durable_location,
             "terminal_cleanup_performed": False,
             "safe_stop": None,
@@ -845,13 +887,21 @@ def renew_campaign_lease(
             finally:
                 connection.close()
 
-            connection = _connect(db_path, busy_timeout_seconds=planned_block)
+            connection = _connect(
+                db_path,
+                busy_timeout_seconds=planned_block,
+                connection_role="CAMPAIGN_HEARTBEAT_RENEWAL",
+                context=heartbeat_context,
+            )
+            heartbeat_connection_id = writer_attribution_connection_id(connection)
             try:
                 _begin_immediate(
                     connection,
                     deadline_monotonic=renewal_deadline,
                     busy_timeout_ceiling=planned_block,
                     before_block=_renewal_block_preflight,
+                    transaction_owner="renew_campaign_lease",
+                    transaction_operation="CAMPAIGN_HEARTBEAT_RENEWAL",
                 )
                 cursor = connection.execute(
                     """UPDATE printer_memory_factory_campaign_supervision

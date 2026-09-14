@@ -3,7 +3,7 @@
 ## Current capability
 
 Active branch: `assistant/v2-9-8b-later-cycle-mint-market-replay-repair` at
-source basis `3208721c3a5f57c54cae74a5875ee8115eff060a`. Printer remains
+telemetry-change basis `f6412fe4276409c2e69b627fefda470f76ec1200`. Printer remains
 Solana-only, memecoin-only, and paper-only. Source Governor remains the sole
 source-request owner and Central Scheduler the sole scheduler owner; all
 evidence, provenance, freshness, clean-memory, and capability gates fail
@@ -24,15 +24,17 @@ is permanently non-reusable.
 
 ## Proven blocker
 
-Cycle-1 lifecycle had started before a lease-renewal BLOCKED stop, with no
-Cycle-2 attempt. Migration 063 correctly rejected it because it owns only the
-planned-but-unstarted shape. Development repair adds the separate immutable
-`CYCLE1_LIFECYCLE_STARTED_PRE_CYCLE2_ATTEMPT` provenance contract; migration
-064 must be separately reviewed, authorized, and applied before any future
-operational preflight can pass.
+Migration 064 development repair exists for the separate immutable
+`CYCLE1_LIFECYCLE_STARTED_PRE_CYCLE2_ATTEMPT` provenance shape; the
+authoritative DB remains at migration 063. The consumed authorization remains
+permanently non-reusable. The primary operational blocker remains an
+unidentified SQLite writer: attribution telemetry now records bounded,
+per-invocation application connection/transaction evidence outside SQLite, but
+has not yet observed another operational contention event.
 
 ## Exact next permitted action
 
-The next permitted operational lane is a separate read-only migration-064
+No new operational run has occurred. The next permitted action is a separate
+review of the telemetry change, then the existing read-only migration-064
 application preflight and authorization process against then-current Git/DB
-identity. Do not run Standard-4H and never reuse the consumed authorization.
+identity. Do not run Standard-4H or reuse the consumed authorization.

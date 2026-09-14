@@ -10844,8 +10844,23 @@ def run_one_command_15m_factory(
         raise ValueError("factory_run_id must be non-empty")
     started_dt = _now()
     started_at = _iso(started_dt)
-    conn = sqlite3.connect(str(path))
+    from printer_v1.db.sqlite_write_contracts import (
+        connect_attributed,
+        set_writer_attribution_context,
+    )
+
+    conn = connect_attributed(
+        path,
+        connection_role="FACTORY_MAIN",
+        context={"factory_run_id": run_id},
+    )
     conn.row_factory = sqlite3.Row
+    set_writer_attribution_context(
+        conn,
+        owner="run_one_command_15m_factory",
+        operation="FACTORY_RUN_INITIALIZATION",
+        context={"factory_run_id": run_id},
+    )
     # V2-9.8B.10: factory-run insert sits outside the later lifecycle try/finally.
     # Close the connection on any pre-lifecycle fault so terminal cleanup cannot
     # contend with a leaked write handle (secondary cause of database is locked).
@@ -11375,6 +11390,18 @@ def run_one_command_15m_factory(
                 )
                 continue
             job_id = int(pending["scheduler_job_id"])
+            set_writer_attribution_context(
+                conn,
+                owner="run_one_command_15m_factory",
+                operation="FACTORY_STEP_CLAIM",
+                context={
+                    "factory_run_id": run_id,
+                    "scheduler_job_id": job_id,
+                    "lifecycle_step_id": int(pending["id"]),
+                    "lifecycle_step_key": str(pending["step_key"]),
+                    "lifecycle_step_kind": str(pending["step_kind"]),
+                },
+            )
             claimed = claim_due_job(conn, job_id=job_id, lock_owner=f"v2_4:{run_id}")
             if claimed != LockResult.ACQUIRED:
                 stop_reason = STOP_AMBIGUOUS
@@ -11464,6 +11491,18 @@ def run_one_command_15m_factory(
                 )
             token_id = int(pending["token_id"])
             try:
+                set_writer_attribution_context(
+                    conn,
+                    owner="run_one_command_15m_factory",
+                    operation="FACTORY_STEP_EXECUTION",
+                    context={
+                        "factory_run_id": run_id,
+                        "scheduler_job_id": job_id,
+                        "lifecycle_step_id": int(pending["id"]),
+                        "lifecycle_step_key": str(pending["step_key"]),
+                        "lifecycle_step_kind": str(pending["step_kind"]),
+                    },
+                )
                 _emit_supervision_event(
                     bool(supervision_execution_id),
                     "CLOSE_START" if "CLOSE" in str(pending["step_kind"]) else "STEP_START",
