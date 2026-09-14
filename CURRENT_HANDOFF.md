@@ -137,19 +137,22 @@ terminal-adapter tests, six cooperative-resume checks and the standalone real
 Authoritative failed-run cleanup/lease/Scheduler residue remains untouched.
 No new Standard-4H authorization is permitted while that residue remains.
 
-## Proven blocker
+## Latest failed-run closure repair
 
-The historical heartbeat blocker remains unproven. The latest heartbeat
-acquired `BEGIN IMMEDIATE`; reader-held commit contention reproduced its symptom
-on disposable state. Later cleanup BEGIN failures are a separate event sequence.
-The attribution repair establishes forward observation semantics; it does not
-establish the historical blocker. The authoritative DB hash and physical file
-identity remain unchanged, preserving the audited healthy state.
+The read-only/disposable cleanup preflight for execution
+`20260914T123749Z-f4617e1d5431` was blocked: canonical reconciliation left
+31 active factory steps after stopping the factory and cancelling Scheduler work.
+This repair closes exact factory PENDING/RUNNING steps as CANCELLED in unified
+terminal reconciliation, preserving existing reasons, finish times and completed
+evidence. Disposable regressions cover unrelated-run isolation and replay.
+The authoritative DB remains untouched and healthy at the identity above.
+
+The historical first cause remains `LEASE_RENEWAL_SQLITE_LOCKED`; the fresh-
+transaction exception was secondary terminalization failure. The exact historical
+SQLite lock holder remains unproven.
 
 ## Exact next permitted action
 
-This disposable queue-fixture lane is complete; no successor operational action
-is authorized. Any cleanup
-of failed execution `20260914T123749Z-f4617e1d5431` still requires separate
-exact-identity preflight and explicit operator approval. Do not reuse consumed
-authority or prepare a Standard-4H rerun while authoritative residue remains.
+After successful repair verification, rerun the read-only/disposable failed-run
+cleanup preflight. No authoritative cleanup, cleanup authorization, or new
+Standard-4H authority is yet permitted. Consumed authorities remain non-reusable.

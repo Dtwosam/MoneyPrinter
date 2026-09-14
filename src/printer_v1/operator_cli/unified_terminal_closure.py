@@ -333,10 +333,10 @@ def reconcile_campaign_terminal(
 ) -> dict[str, Any]:
     """Terminally reconcile the whole campaign ownership graph, once.
 
-    Covers campaign, campaign run, cycle, factory run, every started campaign
-    memory window, campaign-scoped work and Scheduler jobs. Idempotent: a second
-    call over an already-terminal graph changes nothing and preserves the first
-    terminal cause.
+    Covers campaign, campaign run, cycle, factory run and its active steps,
+    every started campaign memory window, campaign-scoped work and Scheduler jobs.
+    Idempotent: a second call over an already-terminal graph changes nothing and
+    preserves the first terminal cause.
     """
     cause = str(terminal_cause or "").strip() or "GOVERNED_TERMINAL"
     new_state = resolve_terminal_state(run_status=run_status, terminal_cause=cause)
@@ -517,6 +517,28 @@ def reconcile_campaign_terminal(
                 )
             report["cancelled_jobs"] = cancelled
             report["pre_admission_attempts"] = pre_admission_outcomes
+
+        # Close exact factory-step ownership after Scheduler cancellation, even
+        # when the factory row was already terminal. Completed evidence is immutable.
+        if (
+            factory_run_id
+            and _table_exists(connection, "printer_memory_factory_runs")
+            and _table_exists(connection, "printer_memory_factory_run_steps")
+        ):
+            connection.execute(
+                """
+                UPDATE printer_memory_factory_run_steps
+                SET step_status='CANCELLED',
+                    error_or_skip_reason=COALESCE(error_or_skip_reason, ?),
+                    finished_at=COALESCE(finished_at, ?),
+                    updated_at=?
+                WHERE run_id=? AND step_status IN ('PENDING','RUNNING')
+                  AND EXISTS (
+                      SELECT 1 FROM printer_memory_factory_runs WHERE run_id=?
+                  )
+                """,
+                (cause, instant, instant, factory_run_id, factory_run_id),
+            )
 
         # 3. Every started campaign memory window reaches a terminal state.
         if _table_exists(connection, "printer_memory_factory_campaign_windows"):
