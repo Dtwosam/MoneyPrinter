@@ -291,6 +291,8 @@ def build_action_local_terminal_truth(
         "cleanup_complete": None,
         "lease_released": None,
         "active_locked_work": {},
+        "factory_run_id": None,
+        "lifecycle_started": None,
         "source_calls": 0,
         "database_mutation_known": False,
         "database_mutation_status": "UNKNOWN_NOT_ATTRIBUTABLE",
@@ -377,6 +379,21 @@ def build_action_local_terminal_truth(
             truth["campaign_run_cycle_states"] = states
             truth["cleanup_complete"] = None
             truth["lease_released"] = None
+
+        try:
+            lifecycle = _read_durable_lifecycle_start_truth(
+                connection,
+                campaign_id=campaign_id,
+                run_id=run_id,
+            )
+            truth["factory_run_id"] = lifecycle["factory_run_id"]
+            truth["lifecycle_started"] = lifecycle["lifecycle_started"]
+        except Exception:
+            # Lifecycle reconstruction is secondary terminal evidence. Preserve
+            # unknown rather than replacing the primary exception or inferring
+            # a start from a generated factory UUID.
+            truth["factory_run_id"] = None
+            truth["lifecycle_started"] = None
 
         try:
             active: dict[str, int] = {}
@@ -847,6 +864,74 @@ def _read_campaign_run_cycle_supervision_states(
     return states
 
 
+def _read_durable_lifecycle_start_truth(
+    connection: sqlite3.Connection,
+    *,
+    campaign_id: str | None,
+    run_id: str | None,
+) -> dict[str, object]:
+    """Project tri-state lifecycle truth from exact persisted ownership.
+
+    A campaign-run row with no authoritative factory link positively proves the
+    exception occurred before lifecycle entry. A linked factory UUID alone is
+    insufficient: the factory's own ledger must contain an actually started
+    step. This keeps pending pre-generated identities categorically unknown.
+    """
+    result: dict[str, object] = {
+        "factory_run_id": None,
+        "lifecycle_started": None,
+    }
+    if not campaign_id or not run_id:
+        return result
+    run_table = "printer_memory_factory_campaign_runs"
+    if not _table_exists(connection, run_table):
+        return result
+    run_columns = _table_columns(connection, run_table)
+    if not {"campaign_id", "run_id", "authoritative_run_id"}.issubset(
+        run_columns
+    ):
+        return result
+    campaign_run = connection.execute(
+        """SELECT authoritative_run_id FROM printer_memory_factory_campaign_runs
+           WHERE campaign_id=? AND run_id=? LIMIT 1""",
+        (campaign_id, run_id),
+    ).fetchone()
+    if campaign_run is None:
+        return result
+    factory_run_id = str(campaign_run["authoritative_run_id"] or "").strip()
+    if not factory_run_id:
+        result["lifecycle_started"] = False
+        return result
+
+    factory_table = "printer_memory_factory_runs"
+    step_table = "printer_memory_factory_run_steps"
+    if not (_table_exists(connection, factory_table) and _table_exists(connection, step_table)):
+        return result
+    factory_columns = _table_columns(connection, factory_table)
+    step_columns = _table_columns(connection, step_table)
+    if not {"run_id", "started_at"}.issubset(factory_columns) or not {
+        "run_id",
+        "started_at",
+    }.issubset(step_columns):
+        return result
+    factory_row = connection.execute(
+        "SELECT started_at FROM printer_memory_factory_runs WHERE run_id=? LIMIT 1",
+        (factory_run_id,),
+    ).fetchone()
+    if factory_row is None or factory_row["started_at"] is None:
+        return result
+    started_step = connection.execute(
+        """SELECT 1 FROM printer_memory_factory_run_steps
+           WHERE run_id=? AND started_at IS NOT NULL LIMIT 1""",
+        (factory_run_id,),
+    ).fetchone()
+    if started_step is None:
+        return result
+    result["factory_run_id"] = factory_run_id
+    result["lifecycle_started"] = True
+    return result
+
+
 def merge_action_local_into_exception_envelope(
     envelope: Mapping[str, Any],
     truth: Mapping[str, Any],
@@ -891,6 +976,8 @@ def merge_action_local_into_exception_envelope(
     out["cleanup_complete"] = truth.get("cleanup_complete")
     out["lease_released"] = truth.get("lease_released")
     out["active_locked_work"] = truth.get("active_locked_work")
+    out["factory_run_id"] = truth.get("factory_run_id")
+    out["lifecycle_started"] = truth.get("lifecycle_started")
     out["action_local_terminal_truth"] = dict(truth)
     return out
 
