@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import sys
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -10854,17 +10855,15 @@ def run_one_command_15m_factory(
         connection_role="FACTORY_MAIN",
         context={"factory_run_id": run_id},
     )
-    conn.row_factory = sqlite3.Row
-    set_writer_attribution_context(
-        conn,
-        owner="run_one_command_15m_factory",
-        operation="FACTORY_RUN_INITIALIZATION",
-        context={"factory_run_id": run_id},
-    )
-    # V2-9.8B.10: factory-run insert sits outside the later lifecycle try/finally.
-    # Close the connection on any pre-lifecycle fault so terminal cleanup cannot
-    # contend with a leaked write handle (secondary cause of database is locked).
+    # Own the connection through initialization, workload, and terminalization.
     try:
+        conn.row_factory = sqlite3.Row
+        set_writer_attribution_context(
+            conn,
+            owner="run_one_command_15m_factory",
+            operation="FACTORY_RUN_INITIALIZATION",
+            context={"factory_run_id": run_id},
+        )
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA busy_timeout=5000")
         _require_schema(conn)
@@ -10883,419 +10882,460 @@ def run_one_command_15m_factory(
             ),
         )
         conn.commit()
-    except BaseException:
-        try:
-            conn.close()
-        except Exception:
-            pass
-        raise
-    if supervision_execution_id:
-        from printer_v1.operator_cli.proof_supervision import attach_run
-        attach_run(
-            path, supervision_execution_id, run_id, process_id=os.getpid(),
-        )
-    discovery: dict[str, Any] = {}
-    stop_reason = STOP_COMPLETED
-    start_mono = _monotonic()
-    first_snapshot_checkpointed = False
-    first_window_checkpointed = False
-    post_activation_checkpointed = False
-    proof_fault: BaseException | None = None
-    progression_secondary_stop_fact: str | None = None
-    progression_primary_write_failed_cycles: set[str] = set()
-    governed_observer_token = None
-    four_token_attempt_terminal_cause: str | None = None
-    four_token_cycle_one_opening_completed = False
-    # May be read by the outer exception owner before any Scheduler job is claimed.
-    owned_proof_cycle_id: str | None = None
-    if lifecycle_operation_observer is not None:
-        from printer_v1.sources.governed_execution import (
-            set_governed_attempt_observer,
-        )
-
-        def _observe_governed_attempt(record: Mapping[str, Any]) -> None:
-            request_key = str(record.get("request_key") or "")
-            prefix = f"{run_id}:"
-            if not request_key.startswith(prefix):
-                return
-            step_key = request_key[len(prefix):].split(":", 1)[0]
-            step_row = conn.execute(
-                """SELECT step_key,step_kind,scheduler_job_id,token_id,pair_id
-                   FROM printer_memory_factory_run_steps
-                   WHERE run_id=? AND step_key=?""",
-                (run_id, step_key),
-            ).fetchone()
-            if step_row is None:
-                raise ValueError(
-                    f"GOVERNED_ATTEMPT_WITHOUT_FACTORY_STEP:{request_key}"
-                )
-            attempt_count = int(
-                conn.execute(
-                    """SELECT COUNT(*) FROM printer_source_requests
-                       WHERE request_key LIKE ? AND id<=?""",
-                    (
-                        f"{run_id}:{step_key}%",
-                        int(record["source_request_id"]),
-                    ),
-                ).fetchone()[0]
+        if supervision_execution_id:
+            from printer_v1.operator_cli.proof_supervision import attach_run
+            attach_run(
+                path, supervision_execution_id, run_id, process_id=os.getpid(),
             )
-            lifecycle_operation_observer(
-                {
-                    **dict(record),
-                    **_lifecycle_operation_cycle_identity(
-                        conn, int(step_row["scheduler_job_id"])
-                    ),
-                    "run_id": run_id,
-                    "step_key": str(step_row["step_key"]),
-                    "step_kind": str(step_row["step_kind"]),
-                    "scheduler_job_id": int(step_row["scheduler_job_id"]),
-                    "token_id": int(step_row["token_id"]),
-                    "pair_id": int(step_row["pair_id"]),
-                    "attempt_ordinal": attempt_count,
-                    "reserved_from": (
-                        f"{run_id}:{step_key}:reservation:{attempt_count}"
-                    ),
-                }
+        discovery: dict[str, Any] = {}
+        stop_reason = STOP_COMPLETED
+        start_mono = _monotonic()
+        first_snapshot_checkpointed = False
+        first_window_checkpointed = False
+        post_activation_checkpointed = False
+        proof_fault: BaseException | None = None
+        progression_secondary_stop_fact: str | None = None
+        progression_primary_write_failed_cycles: set[str] = set()
+        governed_observer_token = None
+        four_token_attempt_terminal_cause: str | None = None
+        four_token_cycle_one_opening_completed = False
+        # May be read by the outer exception owner before any Scheduler job is claimed.
+        owned_proof_cycle_id: str | None = None
+        if lifecycle_operation_observer is not None:
+            from printer_v1.sources.governed_execution import (
+                set_governed_attempt_observer,
             )
 
-        governed_observer_token = set_governed_attempt_observer(
-            _observe_governed_attempt
-        )
-    try:
-        if factory_run_initialized is not None:
-            factory_run_initialized(run_id)
-        # V2-9.8B full-run ownership context: the factory may read the immutable
-        # ownership context but must not replace any identity. If a non-empty
-        # bound factory run id disagrees with this factory's run id, fail closed
-        # before any lifecycle work (identity drift).
-        if lifecycle_ownership_context is not None:
-            required_context = {
-                "campaign_id": campaign_id,
-                "campaign_run_id": campaign_run_id,
-                "cycle_id": cycle_id,
-                "configuration_id": configuration_id,
-                "factory_run_id": run_id,
-                "expected_window_kind": window_kind,
-                "expected_token_capacity": max_selected_tokens,
-            }
-            missing = [
-                key
-                for key, expected in required_context.items()
-                if expected is None
-                or str(lifecycle_ownership_context.get(key) or "").strip()
-                == ""
-            ]
-            if missing:
-                raise ValueError(
-                    "INCOMPLETE_LIFECYCLE_OWNERSHIP_CONTEXT:"
-                    + ",".join(sorted(missing))
-                )
-            drift = [
-                key
-                for key, expected in required_context.items()
-                if str(lifecycle_ownership_context.get(key)) != str(expected)
-            ]
-            if drift:
-                raise ValueError(
-                    "LIFECYCLE_OWNERSHIP_CONTEXT_DRIFT:"
-                    + ",".join(sorted(drift))
-                )
-        # One-shot campaign → factory authoritative linkage when campaign
-        # ownership identities are present (V2-9.8B selective 1h readiness).
-        if campaign_run_id:
-            from printer_v1.operator_cli.operational_selective_1h import (
-                ensure_authoritative_factory_link,
-            )
-            ensure_authoritative_factory_link(
-                conn,
-                campaign_run_id=str(campaign_run_id),
-                factory_run_id=run_id,
-            )
-            conn.commit()
-        _emit_supervision_event(
-            bool(supervision_execution_id), "RUN_START", run_id=run_id
-        )
-        _check_cancellation(cancellation_probe)
-        args = _build_discovery_args(
-            path, max_selected_tokens=max_selected_tokens,
-            max_source_requests=max_source_requests, timeout_seconds=timeout_seconds,
-            selection_seed=selection_seed,
-        )
-        if discovery_runner is None:
-            discovery = discovery_callable(args, transport=discovery_transport)
-        else:
-            discovery = discovery_callable(args)
-        handoff = discovery.get("selection_handoff_report", {})
-        batch_id = handoff.get("batch_id")
-        targets = _selected_targets(conn, str(batch_id or ""))
-        if compressed_two_token_proof_plan is not None:
-            compressed_two_token_proof_plan.validate_targets(targets)
-            origin_projection_count = int(conn.execute(
-                """SELECT COUNT(*) FROM printer_selection_batch_items
-                   WHERE batch_id=? AND item_status='SELECTED'
-                     AND selection_reason='origin_confirmed_atomic_activation'
-                     AND source_name='solana_rpc'""",
-                (str(batch_id or ""),),
-            ).fetchone()[0])
-            if origin_projection_count != 2:
-                raise ValueError(
-                    "two-token proof targets must be exact origin-activated projections"
-                )
-        conn.execute(
-            "UPDATE printer_memory_factory_runs SET selection_seed=?,selection_batch_id=?,eligible_pool_size=?,selected_token_count=?,updated_at=? WHERE run_id=?",
-            (handoff.get("selection_seed"), batch_id, handoff.get("eligible_pool_size", 0), len(targets), _iso(), run_id),
-        )
-        _cancel_discovery_handoffs(conn, discovery)
-        if not targets:
-            stop_reason = STOP_EMPTY
-        else:
-            def _first_opening_commit(
-                checkpoint_conn: sqlite3.Connection, checkpoint_run_id: str
-            ) -> None:
-                if _post_handoff_scope_recorder is not None:
-                    _post_handoff_scope_recorder.checkpoint(
-                        checkpoint_conn,
-                        checkpoint_run_id,
-                        "AFTER_FIRST_RUN_STEP_AND_SCHEDULER_COMMIT",
-                    )
-
-            planning_targets = targets
-            if four_token_proof_controller is not None:
-                if campaign_id is None or campaign_run_id is None or cycle_id is None:
+            def _observe_governed_attempt(record: Mapping[str, Any]) -> None:
+                request_key = str(record.get("request_key") or "")
+                prefix = f"{run_id}:"
+                if not request_key.startswith(prefix):
+                    return
+                step_key = request_key[len(prefix):].split(":", 1)[0]
+                step_row = conn.execute(
+                    """SELECT step_key,step_kind,scheduler_job_id,token_id,pair_id
+                       FROM printer_memory_factory_run_steps
+                       WHERE run_id=? AND step_key=?""",
+                    (run_id, step_key),
+                ).fetchone()
+                if step_row is None:
                     raise ValueError(
-                        "four-token Cycle-1 planning requires campaign/run/cycle identity"
+                        f"GOVERNED_ATTEMPT_WITHOUT_FACTORY_STEP:{request_key}"
                     )
-                from printer_v1.operator_cli.cadence_authority import (
-                    require_cycle_slot_tracking_authorities,
+                attempt_count = int(
+                    conn.execute(
+                        """SELECT COUNT(*) FROM printer_source_requests
+                           WHERE request_key LIKE ? AND id<=?""",
+                        (
+                            f"{run_id}:{step_key}%",
+                            int(record["source_request_id"]),
+                        ),
+                    ).fetchone()[0]
+                )
+                lifecycle_operation_observer(
+                    {
+                        **dict(record),
+                        **_lifecycle_operation_cycle_identity(
+                            conn, int(step_row["scheduler_job_id"])
+                        ),
+                        "run_id": run_id,
+                        "step_key": str(step_row["step_key"]),
+                        "step_kind": str(step_row["step_kind"]),
+                        "scheduler_job_id": int(step_row["scheduler_job_id"]),
+                        "token_id": int(step_row["token_id"]),
+                        "pair_id": int(step_row["pair_id"]),
+                        "attempt_ordinal": attempt_count,
+                        "reserved_from": (
+                            f"{run_id}:{step_key}:reservation:{attempt_count}"
+                        ),
+                    }
                 )
 
-                # Same Cycle-N authority gate as Cycle 2 / later: exact
-                # slot→queue→lane must already be insert-bound before opening.
-                require_cycle_slot_tracking_authorities(
-                    conn,
-                    campaign_id=str(campaign_id),
-                    run_id=str(campaign_run_id),
-                    cycle_id=str(cycle_id),
-                    now=_now(),
-                )
-                planning_targets = _cycle_targets_for_factory(
-                    conn,
-                    campaign_id=str(campaign_id),
-                    campaign_run_id=str(campaign_run_id),
-                    cycle_id=str(cycle_id),
-                )
-            _plan_opening_jobs(
-                conn,
-                run_id,
-                planning_targets,
-                _now(),
-                operation_observer=lifecycle_operation_observer,
-                first_commit_callback=(
-                    _first_opening_commit
-                    if _post_handoff_scope_recorder is not None
-                    else None
-                ),
-                cycle_ordinal=1,
-                four_token_proof=bool(four_token_proof_controller is not None),
+            governed_observer_token = set_governed_attempt_observer(
+                _observe_governed_attempt
             )
-            if four_token_proof_controller is not None:
-                four_token_cycle_one_opening_completed = True
-        conn.commit()
-
-        admission_attempt_finished = False
-        proof_deadline = min(
-            started_dt
-            + timedelta(seconds=float(four_token_proof_controller.policy.intake_duration_seconds)),
-            started_dt + timedelta(seconds=float(total_duration_seconds)),
-        ) if four_token_proof_controller is not None else None
-
-        while stop_reason == STOP_COMPLETED:
+        try:
+            if factory_run_initialized is not None:
+                factory_run_initialized(run_id)
+            # V2-9.8B full-run ownership context: the factory may read the immutable
+            # ownership context but must not replace any identity. If a non-empty
+            # bound factory run id disagrees with this factory's run id, fail closed
+            # before any lifecycle work (identity drift).
+            if lifecycle_ownership_context is not None:
+                required_context = {
+                    "campaign_id": campaign_id,
+                    "campaign_run_id": campaign_run_id,
+                    "cycle_id": cycle_id,
+                    "configuration_id": configuration_id,
+                    "factory_run_id": run_id,
+                    "expected_window_kind": window_kind,
+                    "expected_token_capacity": max_selected_tokens,
+                }
+                missing = [
+                    key
+                    for key, expected in required_context.items()
+                    if expected is None
+                    or str(lifecycle_ownership_context.get(key) or "").strip()
+                    == ""
+                ]
+                if missing:
+                    raise ValueError(
+                        "INCOMPLETE_LIFECYCLE_OWNERSHIP_CONTEXT:"
+                        + ",".join(sorted(missing))
+                    )
+                drift = [
+                    key
+                    for key, expected in required_context.items()
+                    if str(lifecycle_ownership_context.get(key)) != str(expected)
+                ]
+                if drift:
+                    raise ValueError(
+                        "LIFECYCLE_OWNERSHIP_CONTEXT_DRIFT:"
+                        + ",".join(sorted(drift))
+                    )
+            # One-shot campaign → factory authoritative linkage when campaign
+            # ownership identities are present (V2-9.8B selective 1h readiness).
+            if campaign_run_id:
+                from printer_v1.operator_cli.operational_selective_1h import (
+                    ensure_authoritative_factory_link,
+                )
+                ensure_authoritative_factory_link(
+                    conn,
+                    campaign_run_id=str(campaign_run_id),
+                    factory_run_id=run_id,
+                )
+                conn.commit()
+            _emit_supervision_event(
+                bool(supervision_execution_id), "RUN_START", run_id=run_id
+            )
             _check_cancellation(cancellation_probe)
-            pending = _select_next_pending_step(
-                conn, run_id=run_id, now=_now()
+            args = _build_discovery_args(
+                path, max_selected_tokens=max_selected_tokens,
+                max_source_requests=max_source_requests, timeout_seconds=timeout_seconds,
+                selection_seed=selection_seed,
             )
-            elapsed = _monotonic() - start_mono
-            if (
-                four_token_admission_checkpoint
-                and elapsed >= float(
-                    four_token_admission_checkpoint_runtime_seconds or 0.0
-                )
-            ):
-                from printer_v1.operator_cli.four_token_admission_checkpoint import (
-                    TIMEOUT_CAUSE,
-                )
-                stop_reason = TIMEOUT_CAUSE
-                break
-            if elapsed >= total_duration_seconds:
-                stop_reason = STOP_DURATION
-                break
-            if (
-                four_token_proof_controller is not None
-                and not admission_attempt_finished
-            ):
-                from printer_v1.discovery.pre_admission_materialization import (
-                    materialize_consumed_pre_admission_pair,
-                )
-                from printer_v1.operator_cli.four_token_proof_integration import (
-                    FourTokenAdmissionDispositionKind,
-                    decide_four_token_admission_disposition,
-                )
-                from printer_v1.operator_cli.multi_cycle_campaign_coordinator import (
-                    MultiCycleCampaignBinding,
-                    admit_two_token_cycle_from_attempt,
-                )
-
-                binding = MultiCycleCampaignBinding(
-                    campaign_id=str(campaign_id),
-                    campaign_run_id=str(campaign_run_id),
-                    configuration_id=str(configuration_id),
-                    authoritative_factory_run_id=run_id,
-                )
-                cycle_count = int(conn.execute(
-                    "SELECT COUNT(*) FROM printer_memory_factory_campaign_cycles "
-                    "WHERE campaign_id=? AND run_id=?",
-                    (str(campaign_id), str(campaign_run_id)),
+            if discovery_runner is None:
+                discovery = discovery_callable(args, transport=discovery_transport)
+            else:
+                discovery = discovery_callable(args)
+            handoff = discovery.get("selection_handoff_report", {})
+            batch_id = handoff.get("batch_id")
+            targets = _selected_targets(conn, str(batch_id or ""))
+            if compressed_two_token_proof_plan is not None:
+                compressed_two_token_proof_plan.validate_targets(targets)
+                origin_projection_count = int(conn.execute(
+                    """SELECT COUNT(*) FROM printer_selection_batch_items
+                       WHERE batch_id=? AND item_status='SELECTED'
+                         AND selection_reason='origin_confirmed_atomic_activation'
+                         AND source_name='solana_rpc'""",
+                    (str(batch_id or ""),),
                 ).fetchone()[0])
-                if cycle_count >= 2:
-                    admission_attempt_finished = True
-                else:
-                    def _next_due() -> datetime | None:
-                        row = _select_next_pending_step(
-                            conn, run_id=run_id, now=_now()
-                        )
-                        return (
-                            None
-                            if row is None
-                            else datetime.fromisoformat(str(row["scheduled_for"]))
-                        )
-
-                    def _project_health() -> Any:
-                        if four_token_health_projector is None:
-                            raise ValueError(
-                                "authoritative four-token health projector missing"
-                            )
-                        return four_token_health_projector(conn, _now())
-
-                    def _evaluate(projection: Any) -> Any:
-                        instant = _now()
-                        due_at = _next_due()
-                        readiness = four_token_proof_controller.evaluate_factory_wake(
-                            conn,
-                            binding=binding,
-                            now=instant,
-                            next_due_work_at=due_at,
-                            proof_deadline=proof_deadline,
-                            admission_health=projection.health,
-                        )
-                        return decide_four_token_admission_disposition(
-                            readiness=readiness,
-                            health_projection=projection,
-                            policy=four_token_proof_controller.policy,
-                            now=instant,
-                            next_due_work_at=due_at,
-                            proof_deadline=proof_deadline,
-                            relevant_pending_lifecycle_work=due_at is not None,
-                        )
-
-                    def _plan_second_cycle(
-                        *, cycle_id: str, cycle_ordinal: int, now: datetime
-                    ) -> None:
-                        cycle_targets = _cycle_targets_for_factory(
-                            conn,
-                            campaign_id=str(campaign_id),
-                            campaign_run_id=str(campaign_run_id),
-                            cycle_id=cycle_id,
-                        )
-                        if len(cycle_targets) != 2:
-                            raise ValueError(
-                                "Cycle-2 admission requires exact two-slot target"
-                            )
-                        if not four_token_admission_checkpoint:
-                            _plan_opening_jobs(
-                                conn,
-                                run_id,
-                                cycle_targets,
-                                now,
-                                operation_observer=lifecycle_operation_observer,
-                                cycle_ordinal=cycle_ordinal,
-                                four_token_proof=True,
-                            )
-                        conn.commit()
-
-                    boundary = _run_four_token_admission_boundary(
-                        connection=conn,
-                        controller=four_token_proof_controller,
-                        binding=binding,
-                        first_cycle_id=str(cycle_id),
-                        now=_now(),
-                        next_due_work_at=_next_due(),
-                        proof_deadline=proof_deadline,
-                        project_health=_project_health,
-                        evaluate=_evaluate,
-                        later_cycle_callback=later_cycle_discovery_callback,
-                        admit=admit_two_token_cycle_from_attempt,
-                        materialize=materialize_consumed_pre_admission_pair,
-                        plan_opening=_plan_second_cycle,
-                        source_governor=source_governor_owner,
-                        central_scheduler=central_scheduler_owner,
-                        clock=_now,
-                        acquisition_quantum_worst_case_seconds=(
-                            later_cycle_acquisition_quantum_seconds
-                        ),
-                        admission_deadline_seconds_after_first_cycle=(
-                            later_cycle_admission_deadline_seconds_after_first_cycle
-                        ),
+                if origin_projection_count != 2:
+                    raise ValueError(
+                        "two-token proof targets must be exact origin-activated projections"
                     )
-                    kind = boundary.disposition.kind
-                    if boundary.admitted:
-                        admission_attempt_finished = True
-                        if four_token_admission_checkpoint:
-                            from printer_v1.operator_cli.four_token_admission_checkpoint import (
-                                TERMINAL_CAUSE as ADMISSION_CHECKPOINT_TERMINAL_CAUSE,
-                            )
-                            stop_reason = ADMISSION_CHECKPOINT_TERMINAL_CAUSE
-                            break
-                        continue
-                    if _later_cycle_attempt_is_terminal(boundary.attempt_state):
-                        # Only a true terminal outcome ends the one durable
-                        # Cycle-2 opportunity. RUNNING and PAIR_READY are
-                        # re-enterable states of that same attempt, never a
-                        # retry, successor, resume campaign, or replacement.
-                        admission_attempt_finished = True
-                        if boundary.attempt_terminal_cause is not None:
-                            four_token_attempt_terminal_cause = (
-                                boundary.attempt_terminal_cause
-                            )
-                        if four_token_admission_checkpoint:
-                            stop_reason = (
-                                boundary.attempt_terminal_cause
-                                or "FOUR_TOKEN_ADMISSION_CHECKPOINT_CYCLE2_TERMINAL"
-                            )
-                            break
-                    if kind is FourTokenAdmissionDispositionKind.PROOF_DEADLINE:
-                        stop_reason = STOP_DURATION
-                        break
-                    if kind in {
-                        FourTokenAdmissionDispositionKind.BLOCKED,
-                        FourTokenAdmissionDispositionKind.DRAIN,
-                    }:
-                        # Preserve the categorical admission-health disposition.
-                        # Generic STOP_PREFLIGHT erased the real pre-attempt cause
-                        # and made terminal provenance impossible to reconcile.
-                        stop_reason = (
-                            str(boundary.disposition.reason or "").strip()
-                            or STOP_PREFLIGHT
+            conn.execute(
+                "UPDATE printer_memory_factory_runs SET selection_seed=?,selection_batch_id=?,eligible_pool_size=?,selected_token_count=?,updated_at=? WHERE run_id=?",
+                (handoff.get("selection_seed"), batch_id, handoff.get("eligible_pool_size", 0), len(targets), _iso(), run_id),
+            )
+            _cancel_discovery_handoffs(conn, discovery)
+            if not targets:
+                stop_reason = STOP_EMPTY
+            else:
+                def _first_opening_commit(
+                    checkpoint_conn: sqlite3.Connection, checkpoint_run_id: str
+                ) -> None:
+                    if _post_handoff_scope_recorder is not None:
+                        _post_handoff_scope_recorder.checkpoint(
+                            checkpoint_conn,
+                            checkpoint_run_id,
+                            "AFTER_FIRST_RUN_STEP_AND_SCHEDULER_COMMIT",
                         )
-                        break
-                    if kind is FourTokenAdmissionDispositionKind.COMPLETE:
+
+                planning_targets = targets
+                if four_token_proof_controller is not None:
+                    if campaign_id is None or campaign_run_id is None or cycle_id is None:
+                        raise ValueError(
+                            "four-token Cycle-1 planning requires campaign/run/cycle identity"
+                        )
+                    from printer_v1.operator_cli.cadence_authority import (
+                        require_cycle_slot_tracking_authorities,
+                    )
+
+                    # Same Cycle-N authority gate as Cycle 2 / later: exact
+                    # slot→queue→lane must already be insert-bound before opening.
+                    require_cycle_slot_tracking_authorities(
+                        conn,
+                        campaign_id=str(campaign_id),
+                        run_id=str(campaign_run_id),
+                        cycle_id=str(cycle_id),
+                        now=_now(),
+                    )
+                    planning_targets = _cycle_targets_for_factory(
+                        conn,
+                        campaign_id=str(campaign_id),
+                        campaign_run_id=str(campaign_run_id),
+                        cycle_id=str(cycle_id),
+                    )
+                _plan_opening_jobs(
+                    conn,
+                    run_id,
+                    planning_targets,
+                    _now(),
+                    operation_observer=lifecycle_operation_observer,
+                    first_commit_callback=(
+                        _first_opening_commit
+                        if _post_handoff_scope_recorder is not None
+                        else None
+                    ),
+                    cycle_ordinal=1,
+                    four_token_proof=bool(four_token_proof_controller is not None),
+                )
+                if four_token_proof_controller is not None:
+                    four_token_cycle_one_opening_completed = True
+            conn.commit()
+
+            admission_attempt_finished = False
+            proof_deadline = min(
+                started_dt
+                + timedelta(seconds=float(four_token_proof_controller.policy.intake_duration_seconds)),
+                started_dt + timedelta(seconds=float(total_duration_seconds)),
+            ) if four_token_proof_controller is not None else None
+
+            while stop_reason == STOP_COMPLETED:
+                _check_cancellation(cancellation_probe)
+                pending = _select_next_pending_step(
+                    conn, run_id=run_id, now=_now()
+                )
+                elapsed = _monotonic() - start_mono
+                if (
+                    four_token_admission_checkpoint
+                    and elapsed >= float(
+                        four_token_admission_checkpoint_runtime_seconds or 0.0
+                    )
+                ):
+                    from printer_v1.operator_cli.four_token_admission_checkpoint import (
+                        TIMEOUT_CAUSE,
+                    )
+                    stop_reason = TIMEOUT_CAUSE
+                    break
+                if elapsed >= total_duration_seconds:
+                    stop_reason = STOP_DURATION
+                    break
+                if (
+                    four_token_proof_controller is not None
+                    and not admission_attempt_finished
+                ):
+                    from printer_v1.discovery.pre_admission_materialization import (
+                        materialize_consumed_pre_admission_pair,
+                    )
+                    from printer_v1.operator_cli.four_token_proof_integration import (
+                        FourTokenAdmissionDispositionKind,
+                        decide_four_token_admission_disposition,
+                    )
+                    from printer_v1.operator_cli.multi_cycle_campaign_coordinator import (
+                        MultiCycleCampaignBinding,
+                        admit_two_token_cycle_from_attempt,
+                    )
+
+                    binding = MultiCycleCampaignBinding(
+                        campaign_id=str(campaign_id),
+                        campaign_run_id=str(campaign_run_id),
+                        configuration_id=str(configuration_id),
+                        authoritative_factory_run_id=run_id,
+                    )
+                    cycle_count = int(conn.execute(
+                        "SELECT COUNT(*) FROM printer_memory_factory_campaign_cycles "
+                        "WHERE campaign_id=? AND run_id=?",
+                        (str(campaign_id), str(campaign_run_id)),
+                    ).fetchone()[0])
+                    if cycle_count >= 2:
                         admission_attempt_finished = True
-                    if (
-                        kind is FourTokenAdmissionDispositionKind.REARM
-                        and str(boundary.attempt_state or "") == "RUNNING"
-                    ):
-                        # Discovery is allowed to progress during the persisted
-                        # 300s admission-spacing hold. Admission remains locked;
-                        # only the existing cooperative attempt may re-enter.
+                    else:
+                        def _next_due() -> datetime | None:
+                            row = _select_next_pending_step(
+                                conn, run_id=run_id, now=_now()
+                            )
+                            return (
+                                None
+                                if row is None
+                                else datetime.fromisoformat(str(row["scheduled_for"]))
+                            )
+
+                        def _project_health() -> Any:
+                            if four_token_health_projector is None:
+                                raise ValueError(
+                                    "authoritative four-token health projector missing"
+                                )
+                            return four_token_health_projector(conn, _now())
+
+                        def _evaluate(projection: Any) -> Any:
+                            instant = _now()
+                            due_at = _next_due()
+                            readiness = four_token_proof_controller.evaluate_factory_wake(
+                                conn,
+                                binding=binding,
+                                now=instant,
+                                next_due_work_at=due_at,
+                                proof_deadline=proof_deadline,
+                                admission_health=projection.health,
+                            )
+                            return decide_four_token_admission_disposition(
+                                readiness=readiness,
+                                health_projection=projection,
+                                policy=four_token_proof_controller.policy,
+                                now=instant,
+                                next_due_work_at=due_at,
+                                proof_deadline=proof_deadline,
+                                relevant_pending_lifecycle_work=due_at is not None,
+                            )
+
+                        def _plan_second_cycle(
+                            *, cycle_id: str, cycle_ordinal: int, now: datetime
+                        ) -> None:
+                            cycle_targets = _cycle_targets_for_factory(
+                                conn,
+                                campaign_id=str(campaign_id),
+                                campaign_run_id=str(campaign_run_id),
+                                cycle_id=cycle_id,
+                            )
+                            if len(cycle_targets) != 2:
+                                raise ValueError(
+                                    "Cycle-2 admission requires exact two-slot target"
+                                )
+                            if not four_token_admission_checkpoint:
+                                _plan_opening_jobs(
+                                    conn,
+                                    run_id,
+                                    cycle_targets,
+                                    now,
+                                    operation_observer=lifecycle_operation_observer,
+                                    cycle_ordinal=cycle_ordinal,
+                                    four_token_proof=True,
+                                )
+                            conn.commit()
+
+                        boundary = _run_four_token_admission_boundary(
+                            connection=conn,
+                            controller=four_token_proof_controller,
+                            binding=binding,
+                            first_cycle_id=str(cycle_id),
+                            now=_now(),
+                            next_due_work_at=_next_due(),
+                            proof_deadline=proof_deadline,
+                            project_health=_project_health,
+                            evaluate=_evaluate,
+                            later_cycle_callback=later_cycle_discovery_callback,
+                            admit=admit_two_token_cycle_from_attempt,
+                            materialize=materialize_consumed_pre_admission_pair,
+                            plan_opening=_plan_second_cycle,
+                            source_governor=source_governor_owner,
+                            central_scheduler=central_scheduler_owner,
+                            clock=_now,
+                            acquisition_quantum_worst_case_seconds=(
+                                later_cycle_acquisition_quantum_seconds
+                            ),
+                            admission_deadline_seconds_after_first_cycle=(
+                                later_cycle_admission_deadline_seconds_after_first_cycle
+                            ),
+                        )
+                        kind = boundary.disposition.kind
+                        if boundary.admitted:
+                            admission_attempt_finished = True
+                            if four_token_admission_checkpoint:
+                                from printer_v1.operator_cli.four_token_admission_checkpoint import (
+                                    TERMINAL_CAUSE as ADMISSION_CHECKPOINT_TERMINAL_CAUSE,
+                                )
+                                stop_reason = ADMISSION_CHECKPOINT_TERMINAL_CAUSE
+                                break
+                            continue
+                        if _later_cycle_attempt_is_terminal(boundary.attempt_state):
+                            # Only a true terminal outcome ends the one durable
+                            # Cycle-2 opportunity. RUNNING and PAIR_READY are
+                            # re-enterable states of that same attempt, never a
+                            # retry, successor, resume campaign, or replacement.
+                            admission_attempt_finished = True
+                            if boundary.attempt_terminal_cause is not None:
+                                four_token_attempt_terminal_cause = (
+                                    boundary.attempt_terminal_cause
+                                )
+                            if four_token_admission_checkpoint:
+                                stop_reason = (
+                                    boundary.attempt_terminal_cause
+                                    or "FOUR_TOKEN_ADMISSION_CHECKPOINT_CYCLE2_TERMINAL"
+                                )
+                                break
+                        if kind is FourTokenAdmissionDispositionKind.PROOF_DEADLINE:
+                            stop_reason = STOP_DURATION
+                            break
+                        if kind in {
+                            FourTokenAdmissionDispositionKind.BLOCKED,
+                            FourTokenAdmissionDispositionKind.DRAIN,
+                        }:
+                            # Preserve the categorical admission-health disposition.
+                            # Generic STOP_PREFLIGHT erased the real pre-attempt cause
+                            # and made terminal provenance impossible to reconcile.
+                            stop_reason = (
+                                str(boundary.disposition.reason or "").strip()
+                                or STOP_PREFLIGHT
+                            )
+                            break
+                        if kind is FourTokenAdmissionDispositionKind.COMPLETE:
+                            admission_attempt_finished = True
+                        if (
+                            kind is FourTokenAdmissionDispositionKind.REARM
+                            and str(boundary.attempt_state or "") == "RUNNING"
+                        ):
+                            # Discovery is allowed to progress during the persisted
+                            # 300s admission-spacing hold. Admission remains locked;
+                            # only the existing cooperative attempt may re-enter.
+                            should_recheck, cooperative_wake_at = (
+                                _cooperative_later_cycle_recheck(
+                                    boundary,
+                                    next_due_work_at=_next_due(),
+                                    proof_deadline=proof_deadline,
+                                    acquisition_deadline_at=(
+                                        boundary.attempt_acquisition_deadline_at
+                                    ),
+                                )
+                            )
+                            if should_recheck:
+                                if cooperative_wake_at is not None:
+                                    wait = max(
+                                        0.0,
+                                        (cooperative_wake_at - _now()).total_seconds(),
+                                    )
+                                    if wait:
+                                        _sleep_with_cancellation(
+                                            min(
+                                                wait,
+                                                max(
+                                                    0.0,
+                                                    total_duration_seconds - elapsed,
+                                                ),
+                                            ),
+                                            sleep=_sleep,
+                                            probe=cancellation_probe,
+                                        )
+                                continue
+                        if kind is FourTokenAdmissionDispositionKind.REARM:
+                            at = boundary.disposition.at
+                            if at is None:
+                                stop_reason = STOP_PREFLIGHT
+                                break
+                            wait = max(0.0, (at - _now()).total_seconds())
+                            if wait:
+                                _sleep_with_cancellation(
+                                    min(
+                                        wait,
+                                        max(0.0, total_duration_seconds - elapsed),
+                                    ),
+                                    sleep=_sleep,
+                                    probe=cancellation_probe,
+                                )
+                            continue
+                        # D4/D5: after a cooperative later-cycle quantum, re-evaluate
+                        # before any stale pending-None terminal path or lifecycle sleep.
                         should_recheck, cooperative_wake_at = (
                             _cooperative_later_cycle_recheck(
                                 boundary,
@@ -11325,176 +11365,28 @@ def run_one_command_15m_factory(
                                         probe=cancellation_probe,
                                     )
                             continue
-                    if kind is FourTokenAdmissionDispositionKind.REARM:
-                        at = boundary.disposition.at
-                        if at is None:
-                            stop_reason = STOP_PREFLIGHT
-                            break
-                        wait = max(0.0, (at - _now()).total_seconds())
-                        if wait:
-                            _sleep_with_cancellation(
-                                min(
-                                    wait,
-                                    max(0.0, total_duration_seconds - elapsed),
-                                ),
-                                sleep=_sleep,
-                                probe=cancellation_probe,
-                            )
-                        continue
-                    # D4/D5: after a cooperative later-cycle quantum, re-evaluate
-                    # before any stale pending-None terminal path or lifecycle sleep.
-                    should_recheck, cooperative_wake_at = (
-                        _cooperative_later_cycle_recheck(
-                            boundary,
-                            next_due_work_at=_next_due(),
-                            proof_deadline=proof_deadline,
-                            acquisition_deadline_at=(
-                                boundary.attempt_acquisition_deadline_at
-                            ),
-                        )
-                    )
-                    if should_recheck:
-                        if cooperative_wake_at is not None:
-                            wait = max(
-                                0.0,
-                                (cooperative_wake_at - _now()).total_seconds(),
-                            )
-                            if wait:
-                                _sleep_with_cancellation(
-                                    min(
-                                        wait,
-                                        max(
-                                            0.0,
-                                            total_duration_seconds - elapsed,
-                                        ),
-                                    ),
-                                    sleep=_sleep,
-                                    probe=cancellation_probe,
-                                )
-                        continue
-            if pending is None:
-                if four_token_attempt_terminal_cause is not None:
-                    # The sole pre-admission attempt terminalized honestly.
-                    # Preserve its exact cause only after all existing cycle-1
-                    # lifecycle work has drained; it must never terminate that
-                    # work early.
-                    stop_reason = four_token_attempt_terminal_cause
-                break
-            due = datetime.fromisoformat(str(pending["scheduled_for"]))
-            wait = max(0.0, (due - _now()).total_seconds())
-            if wait:
-                _sleep_with_cancellation(
-                    min(wait, max(0.0, total_duration_seconds - elapsed)),
-                    sleep=_sleep,
-                    probe=cancellation_probe,
-                )
-                continue
-            job_id = int(pending["scheduler_job_id"])
-            set_writer_attribution_context(
-                conn,
-                owner="run_one_command_15m_factory",
-                operation="FACTORY_STEP_CLAIM",
-                context={
-                    "factory_run_id": run_id,
-                    "scheduler_job_id": job_id,
-                    "lifecycle_step_id": int(pending["id"]),
-                    "lifecycle_step_key": str(pending["step_key"]),
-                    "lifecycle_step_kind": str(pending["step_kind"]),
-                },
-            )
-            claimed = claim_due_job(conn, job_id=job_id, lock_owner=f"v2_4:{run_id}")
-            if claimed != LockResult.ACQUIRED:
-                stop_reason = STOP_AMBIGUOUS
-                break
-            active_preclose_unit: str | None = None
-            if str(pending["step_kind"]) in PRE_CLOSE_STEP_KINDS:
-                active_preclose_unit = _bind_preclose_source_unit_for_claim(
-                    conn, step_id=int(pending["id"])
-                )
-                pending = conn.execute(
-                    "SELECT * FROM printer_memory_factory_run_steps WHERE id=?",
-                    (int(pending["id"]),),
-                ).fetchone()
                 if pending is None:
-                    raise ValueError("PRE_CLOSE_CLAIM_STEP_MISSING")
-            effective_lifecycle_ownership_context = lifecycle_ownership_context
-            owned_proof_cycle_id = None
-            if four_token_proof_controller is not None:
-                from printer_v1.operator_cli.four_token_proof_integration import (
-                    resolve_owned_cycle_for_scheduler_job,
-                )
-
-                owned = resolve_owned_cycle_for_scheduler_job(
-                    conn,
-                    scheduler_job_id=job_id,
-                    campaign_id=str(campaign_id),
-                    campaign_run_id=str(campaign_run_id),
-                    factory_run_id=run_id,
-                )
-                owned_proof_cycle_id = owned.cycle_id
-                effective_lifecycle_ownership_context = {
-                    "campaign_id": owned.campaign_id,
-                    "campaign_run_id": owned.campaign_run_id,
-                    "cycle_id": owned.cycle_id,
-                    "configuration_id": str(configuration_id),
-                    "factory_run_id": owned.factory_run_id,
-                    "expected_window_kind": WINDOW_KIND,
-                    "expected_token_capacity": 2,
-                    "proof_cycle_owned": True,
-                }
-            conn.execute(
-                "UPDATE printer_memory_factory_run_steps SET step_status='RUNNING',started_at=?,updated_at=? WHERE id=?",
-                (_iso(), _iso(), int(pending["id"])),
-            )
-            _sync_owned_campaign_scheduler_job(
-                conn, scheduler_job_id=job_id
-            )
-            _advance_owned_proof_15m_window(
-                conn,
-                scheduler_job_id=job_id,
-                step_kind=str(pending["step_kind"]),
-            )
-            _mark_owned_continuation_window_collecting(
-                conn,
-                scheduler_job_id=job_id,
-                step_kind=str(pending["step_kind"]),
-            )
-            _mark_owned_continuation_window_close_pending(
-                conn,
-                scheduler_job_id=job_id,
-                step_kind=str(pending["step_kind"]),
-            )
-            _mark_owned_long_window_collecting(
-                conn,
-                scheduler_job_id=job_id,
-                step_kind=str(pending["step_kind"]),
-            )
-            _mark_owned_long_window_close_pending(
-                conn,
-                scheduler_job_id=job_id,
-                step_kind=str(pending["step_kind"]),
-            )
-            conn.commit()
-            if lifecycle_operation_observer is not None:
-                lifecycle_operation_observer(
-                    {
-                        **_lifecycle_operation_cycle_identity(conn, job_id),
-                        "boundary": "SCHEDULER_CLAIM",
-                        "run_id": run_id,
-                        "scheduler_job_id": job_id,
-                        "step_key": str(pending["step_key"]),
-                        "step_kind": str(pending["step_kind"]),
-                        "token_id": int(pending["token_id"]),
-                        "pair_id": int(pending["pair_id"]),
-                        "source_unit_identity": active_preclose_unit,
-                    }
-                )
-            token_id = int(pending["token_id"])
-            try:
+                    if four_token_attempt_terminal_cause is not None:
+                        # The sole pre-admission attempt terminalized honestly.
+                        # Preserve its exact cause only after all existing cycle-1
+                        # lifecycle work has drained; it must never terminate that
+                        # work early.
+                        stop_reason = four_token_attempt_terminal_cause
+                    break
+                due = datetime.fromisoformat(str(pending["scheduled_for"]))
+                wait = max(0.0, (due - _now()).total_seconds())
+                if wait:
+                    _sleep_with_cancellation(
+                        min(wait, max(0.0, total_duration_seconds - elapsed)),
+                        sleep=_sleep,
+                        probe=cancellation_probe,
+                    )
+                    continue
+                job_id = int(pending["scheduler_job_id"])
                 set_writer_attribution_context(
                     conn,
                     owner="run_one_command_15m_factory",
-                    operation="FACTORY_STEP_EXECUTION",
+                    operation="FACTORY_STEP_CLAIM",
                     context={
                         "factory_run_id": run_id,
                         "scheduler_job_id": job_id,
@@ -11503,572 +11395,853 @@ def run_one_command_15m_factory(
                         "lifecycle_step_kind": str(pending["step_kind"]),
                     },
                 )
-                _emit_supervision_event(
-                    bool(supervision_execution_id),
-                    "CLOSE_START" if "CLOSE" in str(pending["step_kind"]) else "STEP_START",
-                    run_id=run_id,
-                    step_key=str(pending["step_key"]),
+                claimed = claim_due_job(conn, job_id=job_id, lock_owner=f"v2_4:{run_id}")
+                if claimed != LockResult.ACQUIRED:
+                    stop_reason = STOP_AMBIGUOUS
+                    break
+                active_preclose_unit: str | None = None
+                if str(pending["step_kind"]) in PRE_CLOSE_STEP_KINDS:
+                    active_preclose_unit = _bind_preclose_source_unit_for_claim(
+                        conn, step_id=int(pending["id"])
+                    )
+                    pending = conn.execute(
+                        "SELECT * FROM printer_memory_factory_run_steps WHERE id=?",
+                        (int(pending["id"]),),
+                    ).fetchone()
+                    if pending is None:
+                        raise ValueError("PRE_CLOSE_CLAIM_STEP_MISSING")
+                effective_lifecycle_ownership_context = lifecycle_ownership_context
+                owned_proof_cycle_id = None
+                if four_token_proof_controller is not None:
+                    from printer_v1.operator_cli.four_token_proof_integration import (
+                        resolve_owned_cycle_for_scheduler_job,
+                    )
+
+                    owned = resolve_owned_cycle_for_scheduler_job(
+                        conn,
+                        scheduler_job_id=job_id,
+                        campaign_id=str(campaign_id),
+                        campaign_run_id=str(campaign_run_id),
+                        factory_run_id=run_id,
+                    )
+                    owned_proof_cycle_id = owned.cycle_id
+                    effective_lifecycle_ownership_context = {
+                        "campaign_id": owned.campaign_id,
+                        "campaign_run_id": owned.campaign_run_id,
+                        "cycle_id": owned.cycle_id,
+                        "configuration_id": str(configuration_id),
+                        "factory_run_id": owned.factory_run_id,
+                        "expected_window_kind": WINDOW_KIND,
+                        "expected_token_capacity": 2,
+                        "proof_cycle_owned": True,
+                    }
+                conn.execute(
+                    "UPDATE printer_memory_factory_run_steps SET step_status='RUNNING',started_at=?,updated_at=? WHERE id=?",
+                    (_iso(), _iso(), int(pending["id"])),
+                )
+                _sync_owned_campaign_scheduler_job(
+                    conn, scheduler_job_id=job_id
+                )
+                _advance_owned_proof_15m_window(
+                    conn,
+                    scheduler_job_id=job_id,
                     step_kind=str(pending["step_kind"]),
                 )
-                _check_cancellation(cancellation_probe)
-                # Hard ceilings are integrity limits; a projected breach is a
-                # global safe stop (raises _GlobalStop), never an exceeded call.
-                projected_requests = _projected_requests_for_step(conn, pending)
-                _enforce_budgets_before_step(
+                _mark_owned_continuation_window_collecting(
                     conn,
-                    run_id,
-                    pending,
-                    projected_requests=projected_requests,
+                    scheduler_job_id=job_id,
+                    step_kind=str(pending["step_kind"]),
                 )
-                reservation_records = _lifecycle_reservation_records_for_step(
-                    run_id=run_id,
-                    pending=pending,
-                    projected_requests=projected_requests,
+                _mark_owned_continuation_window_close_pending(
+                    conn,
+                    scheduler_job_id=job_id,
+                    step_kind=str(pending["step_kind"]),
                 )
-                operation_cycle_identity = _lifecycle_operation_cycle_identity(
-                    conn, job_id
+                _mark_owned_long_window_collecting(
+                    conn,
+                    scheduler_job_id=job_id,
+                    step_kind=str(pending["step_kind"]),
                 )
-                reservation_records = [
-                    {**operation_cycle_identity, **record}
-                    for record in reservation_records
-                ]
-                prior_reservation_records: list[Mapping[str, Any]] = []
-                if str(pending["step_kind"]) in PRE_CLOSE_STEP_KINDS:
-                    prior_reservation_records = list(
-                        _preclose_result_base(pending).get(
-                            "lifecycle_reservations"
-                        )
-                        or ()
-                    )
-                merged_reservations = _merge_lifecycle_reservation_records(
-                    prior_reservation_records,
-                    reservation_records,
+                _mark_owned_long_window_close_pending(
+                    conn,
+                    scheduler_job_id=job_id,
+                    step_kind=str(pending["step_kind"]),
                 )
-                if str(pending["step_kind"]) in PRE_CLOSE_STEP_KINDS:
-                    _persist_preclose_reservation_manifest_before_provider(
-                        conn,
-                        pending=pending,
-                        reservation_records=merged_reservations["records"],
-                    )
+                conn.commit()
                 if lifecycle_operation_observer is not None:
-                    for reservation_record in merged_reservations["new_records"]:
-                        lifecycle_operation_observer(reservation_record)
-                if str(pending["step_kind"]) in PRE_CLOSE_STEP_KINDS:
-                    result = _execute_preclose_critical_phase(
+                    lifecycle_operation_observer(
+                        {
+                            **_lifecycle_operation_cycle_identity(conn, job_id),
+                            "boundary": "SCHEDULER_CLAIM",
+                            "run_id": run_id,
+                            "scheduler_job_id": job_id,
+                            "step_key": str(pending["step_key"]),
+                            "step_kind": str(pending["step_kind"]),
+                            "token_id": int(pending["token_id"]),
+                            "pair_id": int(pending["pair_id"]),
+                            "source_unit_identity": active_preclose_unit,
+                        }
+                    )
+                token_id = int(pending["token_id"])
+                try:
+                    set_writer_attribution_context(
                         conn,
-                        pending,
-                        timeout_seconds=timeout_seconds,
-                        context_adapter_factories=context_adapter_factories,
-                        cancellation_probe=cancellation_probe,
+                        owner="run_one_command_15m_factory",
+                        operation="FACTORY_STEP_EXECUTION",
+                        context={
+                            "factory_run_id": run_id,
+                            "scheduler_job_id": job_id,
+                            "lifecycle_step_id": int(pending["id"]),
+                            "lifecycle_step_key": str(pending["step_key"]),
+                            "lifecycle_step_kind": str(pending["step_kind"]),
+                        },
                     )
-                elif str(pending["step_kind"]) in EVIDENCE_STEP_KINDS:
-                    result = _execute_close_evidence_phase(
-                        conn,
-                        pending,
-                        adapter_factory=adapter_factory,
-                        timeout_seconds=timeout_seconds,
-                        fallback_adapter_factory=fallback_factory,
-                    )
-                elif str(pending["step_kind"]) in CONTEXT_STEP_KINDS:
-                    result = _execute_close_context_phase(
-                        conn,
-                        pending,
-                        timeout_seconds=timeout_seconds,
-                        context_adapter_factories=context_adapter_factories,
-                        cancellation_probe=cancellation_probe,
-                    )
-                elif str(pending["step_kind"]) in AUDIT_STEP_KINDS:
-                    result = _execute_close_audit_phase(
-                        conn,
-                        pending,
-                        minimum_evidence_seconds=_window_seconds,
-                        execution_authority=(
-                            "STANDARD_CAMPAIGN"
-                            if standard_four_hour_campaign
-                            else "PROOF"
-                            if four_hour_proof_mode
-                            else "DISABLED"
-                        ),
-                        cancellation_probe=cancellation_probe,
-                    )
-                elif pending["step_kind"] == "WINDOW_CLOSE":
-                    result = _execute_close(
-                        conn, pending, adapter_factory=adapter_factory,
-                        timeout_seconds=timeout_seconds,
-                        minimum_evidence_seconds=_window_seconds,
-                        context_adapter_factories=context_adapter_factories,
-                        fallback_adapter_factory=fallback_factory,
-                        cancellation_probe=cancellation_probe,
-                    )
-                elif pending["step_kind"] == "CONTINUATION_CLOSE":
-                    result = _execute_continuation_close(
-                        conn,
-                        pending,
-                        adapter_factory=adapter_factory,
-                        timeout_seconds=timeout_seconds,
-                        context_adapter_factories=context_adapter_factories,
-                        fallback_adapter_factory=fallback_factory,
-                        cancellation_probe=cancellation_probe,
-                    )
-                elif str(pending["step_kind"]).startswith("LONG_CONTINUATION_"):
-                    result = _execute_long_4h_step(
-                        conn,
-                        pending,
-                        execution_authority=(
-                            "STANDARD_CAMPAIGN"
-                            if standard_four_hour_campaign
-                            else "PROOF"
-                            if four_hour_proof_mode
-                            else "DISABLED"
-                        ),
-                        adapter_factory=adapter_factory,
-                        timeout_seconds=timeout_seconds,
-                        context_adapter_factories=context_adapter_factories,
-                        fallback_adapter_factory=fallback_factory,
-                        cancellation_probe=cancellation_probe,
-                    )
-                else:
-                    _check_cancellation(cancellation_probe)
-                    result = _execute_snapshot(
-                        conn, pending, adapter_factory=adapter_factory,
-                        timeout_seconds=timeout_seconds,
-                        fallback_adapter_factory=fallback_factory,
-                    )
-                result["lifecycle_reservations"] = merged_reservations["records"]
-                validation_kinds = [
-                    "IMMUTABLE_IDENTITY_VALIDATED",
-                    "CADENCE_DUE_VALIDATED",
-                    "BUDGET_CAPACITY_VALIDATED",
-                ]
-                if result.get("source_response_id") is not None:
-                    validation_kinds.append("EXACT_PAIR_VERIFICATION")
-                if str(pending["step_kind"]) in {
-                    "WINDOW_CLOSE", "WINDOW_CLOSE_AUDIT"
-                } and result.get("ok"):
-                    validation_kinds.extend(
-                        [
-                            "WINDOW_CLOSE_VALIDATED",
-                            "SNAPSHOT_COVERAGE_VALIDATED",
-                            "WINDOW_QUALITY_VALIDATED",
-                        ]
-                    )
-                validation_records = [
-                    {
-                        **operation_cycle_identity,
-                        "boundary": "LOCAL_VALIDATION",
-                        "run_id": run_id,
-                        "scheduler_job_id": int(pending["scheduler_job_id"]),
-                        "step_key": str(pending["step_key"]),
-                        "step_kind": str(pending["step_kind"]),
-                        "token_id": int(pending["token_id"]),
-                        "pair_id": int(pending["pair_id"]),
-                        "subject_identity": str(pending["step_key"]),
-                        "validation_kind": validation_kind,
-                        "validation_ordinal": (
-                            int(pending["scheduler_job_id"]) * 1000 + index
-                        ),
-                    }
-                    for index, validation_kind in enumerate(
-                        validation_kinds, start=1
-                    )
-                ]
-                result["local_validations"] = validation_records
-                if lifecycle_operation_observer is not None:
-                    for validation_record in validation_records:
-                        lifecycle_operation_observer(validation_record)
-                if (
-                    str(pending["step_kind"]) in PRE_CLOSE_STEP_KINDS
-                    and result.get("yield_required") is True
-                ):
-                    _checkpoint_and_yield_preclose_claim(
-                        conn,
-                        step=pending,
-                        result=result,
-                        now=_now(),
-                    )
-                    if lifecycle_operation_observer is not None:
-                        lifecycle_operation_observer(
-                            {
-                                "boundary": "SCHEDULER_YIELD",
-                                "run_id": run_id,
-                                "scheduler_job_id": job_id,
-                                "step_key": str(pending["step_key"]),
-                                "step_kind": str(pending["step_kind"]),
-                                "token_id": int(pending["token_id"]),
-                                "pair_id": int(pending["pair_id"]),
-                                "source_unit_identity": result.get(
-                                    "last_claim_source_unit_identity"
-                                ),
-                            }
-                        )
-                    continue
-                if (
-                    str(pending["step_kind"]) in PRE_CLOSE_STEP_KINDS
-                    and result.get("terminal_job_status") == "SKIPPED"
-                ):
-                    reason = str(
-                        result.get("blocked_reason")
-                        or "TIMELY_ACQUISITION_NOT_PRODUCIBLE"
-                    )
-                    _update_step(
-                        conn,
-                        int(pending["id"]),
-                        "SKIPPED",
-                        result,
-                        error=reason,
-                    )
-                    skip_job(conn, job_id=job_id, reason=reason)
-                    _sync_owned_campaign_scheduler_job(
-                        conn, scheduler_job_id=job_id
-                    )
-                    _observe_scheduler_terminal(
-                        conn,
-                        observer=lifecycle_operation_observer,
+                    _emit_supervision_event(
+                        bool(supervision_execution_id),
+                        "CLOSE_START" if "CLOSE" in str(pending["step_kind"]) else "STEP_START",
                         run_id=run_id,
-                        step=pending,
+                        step_key=str(pending["step_key"]),
+                        step_kind=str(pending["step_kind"]),
                     )
-                    conn.commit()
-                    continue
-                if (
-                    _post_handoff_scope_recorder is not None
-                    and result.get("snapshot_id") is not None
-                    and not first_snapshot_checkpointed
-                ):
-                    conn.commit()
-                    _post_handoff_scope_recorder.record_token_snapshot(
-                        int(result["snapshot_id"])
-                    )
-                    _post_handoff_scope_recorder.checkpoint(
+                    _check_cancellation(cancellation_probe)
+                    # Hard ceilings are integrity limits; a projected breach is a
+                    # global safe stop (raises _GlobalStop), never an exceeded call.
+                    projected_requests = _projected_requests_for_step(conn, pending)
+                    _enforce_budgets_before_step(
                         conn,
                         run_id,
-                        "AFTER_FIRST_TOKEN_SNAPSHOT_COMMIT",
+                        pending,
+                        projected_requests=projected_requests,
                     )
-                    first_snapshot_checkpointed = True
-                if (
-                    _post_handoff_scope_recorder is not None
-                    and str(pending["step_kind"]) in {
-                        "WINDOW_CLOSE", "WINDOW_CLOSE_AUDIT"
-                    }
-                    and result.get("memory_window_id") is not None
-                    and not first_window_checkpointed
-                ):
-                    conn.commit()
-                    _post_handoff_scope_recorder.checkpoint(
-                        conn,
-                        run_id,
-                        "AFTER_FIRST_LIFECYCLE_WINDOW_COMMIT",
+                    reservation_records = _lifecycle_reservation_records_for_step(
+                        run_id=run_id,
+                        pending=pending,
+                        projected_requests=projected_requests,
                     )
-                    first_window_checkpointed = True
-                _check_cancellation(cancellation_probe)
-                if result.get("ok"):
-                    if pending["step_kind"] == "SNAPSHOT" and _operational_natural(config):
-                        result["support_5m_event_time"] = (
-                            _evaluate_event_time_5m_support_for_snapshot(
-                                conn, run_id=run_id, step=pending, result=result
+                    operation_cycle_identity = _lifecycle_operation_cycle_identity(
+                        conn, job_id
+                    )
+                    reservation_records = [
+                        {**operation_cycle_identity, **record}
+                        for record in reservation_records
+                    ]
+                    prior_reservation_records: list[Mapping[str, Any]] = []
+                    if str(pending["step_kind"]) in PRE_CLOSE_STEP_KINDS:
+                        prior_reservation_records = list(
+                            _preclose_result_base(pending).get(
+                                "lifecycle_reservations"
                             )
+                            or ()
                         )
-                    if pending["step_kind"] == "SNAPSHOT" and str(pending["step_key"]).endswith("_snapshot_00"):
-                        captured = conn.execute(
-                            "SELECT captured_at FROM printer_token_snapshots WHERE id=?",
-                            (int(result["snapshot_id"]),),
-                        ).fetchone()
-                        if captured is None:
-                            raise ValueError("opening snapshot was not persisted")
-                        _plan_anchored_jobs(
+                    merged_reservations = _merge_lifecycle_reservation_records(
+                        prior_reservation_records,
+                        reservation_records,
+                    )
+                    if str(pending["step_kind"]) in PRE_CLOSE_STEP_KINDS:
+                        _persist_preclose_reservation_manifest_before_provider(
                             conn,
-                            run_id=run_id,
-                            opening_step=pending,
-                            first_snapshot_captured_at=str(captured[0]),
-                            window_seconds=_window_seconds,
-                            operation_observer=lifecycle_operation_observer,
+                            pending=pending,
+                            reservation_records=merged_reservations["records"],
                         )
-                    elif str(pending["step_kind"]) in {
-                        "WINDOW_CLOSE", "WINDOW_CLOSE_AUDIT"
-                    } and effective_continuous_1h:
-                        window_id = result.get("memory_window_id")
-                        if window_id is None:
-                            raise ValueError("current-run 15m close did not attach a memory window")
-                        # Make the exact current close discoverable while it is still
-                        # RUNNING. It is promoted to SUCCEEDED only after support and
-                        # continuation planning complete.
-                        conn.execute(
-                            """UPDATE printer_memory_factory_run_steps
-                               SET snapshot_id=?, memory_window_id=?, result_json=?, updated_at=?
-                               WHERE id=? AND step_status='RUNNING'""",
-                            (
-                                result.get("snapshot_id"), int(window_id), _json(result),
-                                _iso(), int(pending["id"]),
+                    if lifecycle_operation_observer is not None:
+                        for reservation_record in merged_reservations["new_records"]:
+                            lifecycle_operation_observer(reservation_record)
+                    if str(pending["step_kind"]) in PRE_CLOSE_STEP_KINDS:
+                        result = _execute_preclose_critical_phase(
+                            conn,
+                            pending,
+                            timeout_seconds=timeout_seconds,
+                            context_adapter_factories=context_adapter_factories,
+                            cancellation_probe=cancellation_probe,
+                        )
+                    elif str(pending["step_kind"]) in EVIDENCE_STEP_KINDS:
+                        result = _execute_close_evidence_phase(
+                            conn,
+                            pending,
+                            adapter_factory=adapter_factory,
+                            timeout_seconds=timeout_seconds,
+                            fallback_adapter_factory=fallback_factory,
+                        )
+                    elif str(pending["step_kind"]) in CONTEXT_STEP_KINDS:
+                        result = _execute_close_context_phase(
+                            conn,
+                            pending,
+                            timeout_seconds=timeout_seconds,
+                            context_adapter_factories=context_adapter_factories,
+                            cancellation_probe=cancellation_probe,
+                        )
+                    elif str(pending["step_kind"]) in AUDIT_STEP_KINDS:
+                        result = _execute_close_audit_phase(
+                            conn,
+                            pending,
+                            minimum_evidence_seconds=_window_seconds,
+                            execution_authority=(
+                                "STANDARD_CAMPAIGN"
+                                if standard_four_hour_campaign
+                                else "PROOF"
+                                if four_hour_proof_mode
+                                else "DISABLED"
                             ),
+                            cancellation_probe=cancellation_probe,
+                        )
+                    elif pending["step_kind"] == "WINDOW_CLOSE":
+                        result = _execute_close(
+                            conn, pending, adapter_factory=adapter_factory,
+                            timeout_seconds=timeout_seconds,
+                            minimum_evidence_seconds=_window_seconds,
+                            context_adapter_factories=context_adapter_factories,
+                            fallback_adapter_factory=fallback_factory,
+                            cancellation_probe=cancellation_probe,
+                        )
+                    elif pending["step_kind"] == "CONTINUATION_CLOSE":
+                        result = _execute_continuation_close(
+                            conn,
+                            pending,
+                            adapter_factory=adapter_factory,
+                            timeout_seconds=timeout_seconds,
+                            context_adapter_factories=context_adapter_factories,
+                            fallback_adapter_factory=fallback_factory,
+                            cancellation_probe=cancellation_probe,
+                        )
+                    elif str(pending["step_kind"]).startswith("LONG_CONTINUATION_"):
+                        result = _execute_long_4h_step(
+                            conn,
+                            pending,
+                            execution_authority=(
+                                "STANDARD_CAMPAIGN"
+                                if standard_four_hour_campaign
+                                else "PROOF"
+                                if four_hour_proof_mode
+                                else "DISABLED"
+                            ),
+                            adapter_factory=adapter_factory,
+                            timeout_seconds=timeout_seconds,
+                            context_adapter_factories=context_adapter_factories,
+                            fallback_adapter_factory=fallback_factory,
+                            cancellation_probe=cancellation_probe,
+                        )
+                    else:
+                        _check_cancellation(cancellation_probe)
+                        result = _execute_snapshot(
+                            conn, pending, adapter_factory=adapter_factory,
+                            timeout_seconds=timeout_seconds,
+                            fallback_adapter_factory=fallback_factory,
+                        )
+                    result["lifecycle_reservations"] = merged_reservations["records"]
+                    validation_kinds = [
+                        "IMMUTABLE_IDENTITY_VALIDATED",
+                        "CADENCE_DUE_VALIDATED",
+                        "BUDGET_CAPACITY_VALIDATED",
+                    ]
+                    if result.get("source_response_id") is not None:
+                        validation_kinds.append("EXACT_PAIR_VERIFICATION")
+                    if str(pending["step_kind"]) in {
+                        "WINDOW_CLOSE", "WINDOW_CLOSE_AUDIT"
+                    } and result.get("ok"):
+                        validation_kinds.extend(
+                            [
+                                "WINDOW_CLOSE_VALIDATED",
+                                "SNAPSHOT_COVERAGE_VALIDATED",
+                                "WINDOW_QUALITY_VALIDATED",
+                            ]
+                        )
+                    validation_records = [
+                        {
+                            **operation_cycle_identity,
+                            "boundary": "LOCAL_VALIDATION",
+                            "run_id": run_id,
+                            "scheduler_job_id": int(pending["scheduler_job_id"]),
+                            "step_key": str(pending["step_key"]),
+                            "step_kind": str(pending["step_kind"]),
+                            "token_id": int(pending["token_id"]),
+                            "pair_id": int(pending["pair_id"]),
+                            "subject_identity": str(pending["step_key"]),
+                            "validation_kind": validation_kind,
+                            "validation_ordinal": (
+                                int(pending["scheduler_job_id"]) * 1000 + index
+                            ),
+                        }
+                        for index, validation_kind in enumerate(
+                            validation_kinds, start=1
+                        )
+                    ]
+                    result["local_validations"] = validation_records
+                    if lifecycle_operation_observer is not None:
+                        for validation_record in validation_records:
+                            lifecycle_operation_observer(validation_record)
+                    if (
+                        str(pending["step_kind"]) in PRE_CLOSE_STEP_KINDS
+                        and result.get("yield_required") is True
+                    ):
+                        _checkpoint_and_yield_preclose_claim(
+                            conn,
+                            step=pending,
+                            result=result,
+                            now=_now(),
+                        )
+                        if lifecycle_operation_observer is not None:
+                            lifecycle_operation_observer(
+                                {
+                                    "boundary": "SCHEDULER_YIELD",
+                                    "run_id": run_id,
+                                    "scheduler_job_id": job_id,
+                                    "step_key": str(pending["step_key"]),
+                                    "step_kind": str(pending["step_kind"]),
+                                    "token_id": int(pending["token_id"]),
+                                    "pair_id": int(pending["pair_id"]),
+                                    "source_unit_identity": result.get(
+                                        "last_claim_source_unit_identity"
+                                    ),
+                                }
+                            )
+                        continue
+                    if (
+                        str(pending["step_kind"]) in PRE_CLOSE_STEP_KINDS
+                        and result.get("terminal_job_status") == "SKIPPED"
+                    ):
+                        reason = str(
+                            result.get("blocked_reason")
+                            or "TIMELY_ACQUISITION_NOT_PRODUCIBLE"
+                        )
+                        _update_step(
+                            conn,
+                            int(pending["id"]),
+                            "SKIPPED",
+                            result,
+                            error=reason,
+                        )
+                        skip_job(conn, job_id=job_id, reason=reason)
+                        _sync_owned_campaign_scheduler_job(
+                            conn, scheduler_job_id=job_id
+                        )
+                        _observe_scheduler_terminal(
+                            conn,
+                            observer=lifecycle_operation_observer,
+                            run_id=run_id,
+                            step=pending,
                         )
                         conn.commit()
-                        proof_plan = _compressed_two_token_plan(config)
-                        natural_mode = _operational_natural(config)
-                        selective_mode = bool(config.get("selective_1h_continuation"))
-                        if selective_mode:
-                            # Selective campaign evaluation is owned only by the
-                            # post-SUCCEEDED barrier below. A RUNNING close can
-                            # attach lineage here but cannot become evaluation
-                            # evidence or schedule continuation.
-                            deferred_reason = "AWAITING_AUTHORITATIVE_CAMPAIGN_EVALUATION"
-                            result["support_5m"] = {
-                                "captured": False,
-                                "verdict": "DEFERRED_PENDING_AUTHORITATIVE_CLOSES",
-                                "reason": deferred_reason,
-                                "window_5m_id": None,
-                            }
-                            result["continuation_plan"] = {
-                                "enqueue_ok": False,
-                                "planned_jobs": 0,
-                                "verdict": "DEFERRED_PENDING_AUTHORITATIVE_CLOSES",
-                                "reason": deferred_reason,
-                            }
-                        elif natural_mode:
-                            # V2-9.7E.11 two-terminal-15m-close barrier: the first
-                            # terminal 15m close must not independently schedule
-                            # continuation or support-only 5m capture. Only once
-                            # every activated token has terminal 15m close evidence
-                            # is each token evaluated from its own governed 15m
-                            # window and the permitted continuation enqueued. The
-                            # decisions are token-local, so they are identical
-                            # regardless of close-arrival order.
-                            expected = _operational_activated_token_count(
-                                conn, run_id, cycle_id=owned_proof_cycle_id
+                        continue
+                    if (
+                        _post_handoff_scope_recorder is not None
+                        and result.get("snapshot_id") is not None
+                        and not first_snapshot_checkpointed
+                    ):
+                        conn.commit()
+                        _post_handoff_scope_recorder.record_token_snapshot(
+                            int(result["snapshot_id"])
+                        )
+                        _post_handoff_scope_recorder.checkpoint(
+                            conn,
+                            run_id,
+                            "AFTER_FIRST_TOKEN_SNAPSHOT_COMMIT",
+                        )
+                        first_snapshot_checkpointed = True
+                    if (
+                        _post_handoff_scope_recorder is not None
+                        and str(pending["step_kind"]) in {
+                            "WINDOW_CLOSE", "WINDOW_CLOSE_AUDIT"
+                        }
+                        and result.get("memory_window_id") is not None
+                        and not first_window_checkpointed
+                    ):
+                        conn.commit()
+                        _post_handoff_scope_recorder.checkpoint(
+                            conn,
+                            run_id,
+                            "AFTER_FIRST_LIFECYCLE_WINDOW_COMMIT",
+                        )
+                        first_window_checkpointed = True
+                    _check_cancellation(cancellation_probe)
+                    if result.get("ok"):
+                        if pending["step_kind"] == "SNAPSHOT" and _operational_natural(config):
+                            result["support_5m_event_time"] = (
+                                _evaluate_event_time_5m_support_for_snapshot(
+                                    conn, run_id=run_id, step=pending, result=result
+                                )
                             )
-                            closes = _operational_terminal_15m_closes(
+                        if pending["step_kind"] == "SNAPSHOT" and str(pending["step_key"]).endswith("_snapshot_00"):
+                            captured = conn.execute(
+                                "SELECT captured_at FROM printer_token_snapshots WHERE id=?",
+                                (int(result["snapshot_id"]),),
+                            ).fetchone()
+                            if captured is None:
+                                raise ValueError("opening snapshot was not persisted")
+                            _plan_anchored_jobs(
                                 conn,
-                                run_id,
-                                current_step_id=int(pending["id"]),
-                                cycle_id=owned_proof_cycle_id,
+                                run_id=run_id,
+                                opening_step=pending,
+                                first_snapshot_captured_at=str(captured[0]),
+                                window_seconds=_window_seconds,
+                                operation_observer=lifecycle_operation_observer,
                             )
-                            if len(closes) < expected:
-                                # First terminal close: defer, schedule nothing.
-                                deferred_reason = "AWAITING_PEER_TERMINAL_15M_CLOSE"
+                        elif str(pending["step_kind"]) in {
+                            "WINDOW_CLOSE", "WINDOW_CLOSE_AUDIT"
+                        } and effective_continuous_1h:
+                            window_id = result.get("memory_window_id")
+                            if window_id is None:
+                                raise ValueError("current-run 15m close did not attach a memory window")
+                            # Make the exact current close discoverable while it is still
+                            # RUNNING. It is promoted to SUCCEEDED only after support and
+                            # continuation planning complete.
+                            conn.execute(
+                                """UPDATE printer_memory_factory_run_steps
+                                   SET snapshot_id=?, memory_window_id=?, result_json=?, updated_at=?
+                                   WHERE id=? AND step_status='RUNNING'""",
+                                (
+                                    result.get("snapshot_id"), int(window_id), _json(result),
+                                    _iso(), int(pending["id"]),
+                                ),
+                            )
+                            conn.commit()
+                            proof_plan = _compressed_two_token_plan(config)
+                            natural_mode = _operational_natural(config)
+                            selective_mode = bool(config.get("selective_1h_continuation"))
+                            if selective_mode:
+                                # Selective campaign evaluation is owned only by the
+                                # post-SUCCEEDED barrier below. A RUNNING close can
+                                # attach lineage here but cannot become evaluation
+                                # evidence or schedule continuation.
+                                deferred_reason = "AWAITING_AUTHORITATIVE_CAMPAIGN_EVALUATION"
                                 result["support_5m"] = {
                                     "captured": False,
-                                    "verdict": "DEFERRED_PENDING_PEER_15M_CLOSE",
+                                    "verdict": "DEFERRED_PENDING_AUTHORITATIVE_CLOSES",
                                     "reason": deferred_reason,
                                     "window_5m_id": None,
                                 }
                                 result["continuation_plan"] = {
                                     "enqueue_ok": False,
                                     "planned_jobs": 0,
-                                    "verdict": "DEFERRED_PENDING_PEER_15M_CLOSE",
+                                    "verdict": "DEFERRED_PENDING_AUTHORITATIVE_CLOSES",
                                     "reason": deferred_reason,
                                 }
-                            else:
-                                # Barrier released: evaluate and schedule for every
-                                # activated token from its own governed evidence.
-                                for close_row in closes:
-                                    row_window_id = int(
-                                        close_row["memory_window_id"]
-                                    )
-                                    support = _materialize_frozen_5m_support(
-                                        conn,
-                                        run_id=run_id,
-                                        close_step=close_row,
-                                        parent_window_id=row_window_id,
-                                    )
-                                    _, continuation_plan = (
-                                        _natural_disposition_schedule(
+                            elif natural_mode:
+                                # V2-9.7E.11 two-terminal-15m-close barrier: the first
+                                # terminal 15m close must not independently schedule
+                                # continuation or support-only 5m capture. Only once
+                                # every activated token has terminal 15m close evidence
+                                # is each token evaluated from its own governed 15m
+                                # window and the permitted continuation enqueued. The
+                                # decisions are token-local, so they are identical
+                                # regardless of close-arrival order.
+                                expected = _operational_activated_token_count(
+                                    conn, run_id, cycle_id=owned_proof_cycle_id
+                                )
+                                closes = _operational_terminal_15m_closes(
+                                    conn,
+                                    run_id,
+                                    current_step_id=int(pending["id"]),
+                                    cycle_id=owned_proof_cycle_id,
+                                )
+                                if len(closes) < expected:
+                                    # First terminal close: defer, schedule nothing.
+                                    deferred_reason = "AWAITING_PEER_TERMINAL_15M_CLOSE"
+                                    result["support_5m"] = {
+                                        "captured": False,
+                                        "verdict": "DEFERRED_PENDING_PEER_15M_CLOSE",
+                                        "reason": deferred_reason,
+                                        "window_5m_id": None,
+                                    }
+                                    result["continuation_plan"] = {
+                                        "enqueue_ok": False,
+                                        "planned_jobs": 0,
+                                        "verdict": "DEFERRED_PENDING_PEER_15M_CLOSE",
+                                        "reason": deferred_reason,
+                                    }
+                                else:
+                                    # Barrier released: evaluate and schedule for every
+                                    # activated token from its own governed evidence.
+                                    for close_row in closes:
+                                        row_window_id = int(
+                                            close_row["memory_window_id"]
+                                        )
+                                        support = _materialize_frozen_5m_support(
                                             conn,
                                             run_id=run_id,
                                             close_step=close_row,
-                                            window_id=row_window_id,
-                                            continuation_seconds=_continuation_seconds,
+                                            parent_window_id=row_window_id,
                                         )
-                                    )
-                                    if int(close_row["id"]) == int(pending["id"]):
-                                        result["support_5m"] = support
-                                        result["continuation_plan"] = (
-                                            continuation_plan
+                                        _, continuation_plan = (
+                                            _natural_disposition_schedule(
+                                                conn,
+                                                run_id=run_id,
+                                                close_step=close_row,
+                                                window_id=row_window_id,
+                                                continuation_seconds=_continuation_seconds,
+                                            )
                                         )
-                                    else:
-                                        # Rewrite the earlier deferred close's
-                                        # persisted result now that the barrier
-                                        # has released.
-                                        peer_result = json.loads(
-                                            str(close_row["result_json"] or "{}")
-                                        )
-                                        peer_result["support_5m"] = support
-                                        peer_result["continuation_plan"] = (
-                                            continuation_plan
-                                        )
-                                        conn.execute(
-                                            "UPDATE printer_memory_factory_run_steps "
-                                            "SET result_json=?, updated_at=? "
-                                            "WHERE id=?",
-                                            (
-                                                _json(peer_result),
-                                                _iso(),
-                                                int(close_row["id"]),
-                                            ),
-                                        )
-                                conn.commit()
-                        else:
-                            should_continue = (
-                                proof_plan is None
-                                or str(pending["token_mint"])
-                                == proof_plan["continuation_token_mint"]
-                            )
-                            if should_continue:
-                                support = _capture_same_stream_5m_support(
-                                    conn,
-                                    run_id=run_id,
-                                    close_step=pending,
-                                    parent_window_id=int(window_id),
-                                )
-                                if support.get("window_5m_id") is None:
-                                    raise ValueError(
-                                        "same-stream 5m support capture blocked: "
-                                        + "; ".join(support.get("blocked_reasons", []))
-                                    )
-                                if proof_plan is not None:
-                                    support["trigger_family"] = proof_plan[
-                                        "support_5m_trigger_family"
-                                    ]
-                                    support["proof_evidence"] = proof_plan[
-                                        "continuation_evidence"
-                                    ]
-                                source = _resolve_current_run_15m_source(
-                                    conn,
-                                    run_id=run_id,
-                                    token_id=int(pending["token_id"]),
-                                    pair_id=int(pending["pair_id"]),
-                                    tracking_lane=str(pending["tracking_lane"]),
-                                    current_close_step_id=int(pending["id"]),
-                                )
-                                if not source.get("resolved"):
-                                    raise ValueError(
-                                        "current-run 15m continuation source blocked: "
-                                        + "; ".join(source.get("reasons", []))
-                                    )
-                                continuation_plan = _plan_continuation_jobs(
-                                    conn,
-                                    run_id=run_id,
-                                    close_step=pending,
-                                    fifteen_m=source["window"],
-                                    continuation_seconds=_continuation_seconds,
-                                )
-                                if not continuation_plan.get("enqueue_ok"):
-                                    raise ValueError(
-                                        "continuation planning blocked: "
-                                        + "; ".join(continuation_plan.get("reasons", []))
-                                    )
+                                        if int(close_row["id"]) == int(pending["id"]):
+                                            result["support_5m"] = support
+                                            result["continuation_plan"] = (
+                                                continuation_plan
+                                            )
+                                        else:
+                                            # Rewrite the earlier deferred close's
+                                            # persisted result now that the barrier
+                                            # has released.
+                                            peer_result = json.loads(
+                                                str(close_row["result_json"] or "{}")
+                                            )
+                                            peer_result["support_5m"] = support
+                                            peer_result["continuation_plan"] = (
+                                                continuation_plan
+                                            )
+                                            conn.execute(
+                                                "UPDATE printer_memory_factory_run_steps "
+                                                "SET result_json=?, updated_at=? "
+                                                "WHERE id=?",
+                                                (
+                                                    _json(peer_result),
+                                                    _iso(),
+                                                    int(close_row["id"]),
+                                                ),
+                                            )
+                                    conn.commit()
                             else:
-                                if proof_plan is not None:
-                                    no_continuation_reason = proof_plan[
-                                        "non_continuation_evidence"
-                                    ]
+                                should_continue = (
+                                    proof_plan is None
+                                    or str(pending["token_mint"])
+                                    == proof_plan["continuation_token_mint"]
+                                )
+                                if should_continue:
+                                    support = _capture_same_stream_5m_support(
+                                        conn,
+                                        run_id=run_id,
+                                        close_step=pending,
+                                        parent_window_id=int(window_id),
+                                    )
+                                    if support.get("window_5m_id") is None:
+                                        raise ValueError(
+                                            "same-stream 5m support capture blocked: "
+                                            + "; ".join(support.get("blocked_reasons", []))
+                                        )
+                                    if proof_plan is not None:
+                                        support["trigger_family"] = proof_plan[
+                                            "support_5m_trigger_family"
+                                        ]
+                                        support["proof_evidence"] = proof_plan[
+                                            "continuation_evidence"
+                                        ]
+                                    source = _resolve_current_run_15m_source(
+                                        conn,
+                                        run_id=run_id,
+                                        token_id=int(pending["token_id"]),
+                                        pair_id=int(pending["pair_id"]),
+                                        tracking_lane=str(pending["tracking_lane"]),
+                                        current_close_step_id=int(pending["id"]),
+                                    )
+                                    if not source.get("resolved"):
+                                        raise ValueError(
+                                            "current-run 15m continuation source blocked: "
+                                            + "; ".join(source.get("reasons", []))
+                                        )
+                                    continuation_plan = _plan_continuation_jobs(
+                                        conn,
+                                        run_id=run_id,
+                                        close_step=pending,
+                                        fifteen_m=source["window"],
+                                        continuation_seconds=_continuation_seconds,
+                                    )
+                                    if not continuation_plan.get("enqueue_ok"):
+                                        raise ValueError(
+                                            "continuation planning blocked: "
+                                            + "; ".join(continuation_plan.get("reasons", []))
+                                        )
                                 else:
-                                    no_continuation_reason = "NO_UNRESOLVED_LEARNING_NEED"
-                                support = {
-                                    "captured": False,
-                                    "verdict": "VALID_NO_CAPTURE",
-                                    "reason": no_continuation_reason,
-                                    "window_5m_id": None,
-                                }
-                                continuation_plan = {
-                                    "enqueue_ok": False,
-                                    "planned_jobs": 0,
-                                    "verdict": "STOP_AFTER_15M",
-                                    "reason": no_continuation_reason,
-                                }
-                            result["support_5m"] = support
-                            result["continuation_plan"] = continuation_plan
-                    elif (
-                        str(pending["step_kind"]) in {
+                                    if proof_plan is not None:
+                                        no_continuation_reason = proof_plan[
+                                            "non_continuation_evidence"
+                                        ]
+                                    else:
+                                        no_continuation_reason = "NO_UNRESOLVED_LEARNING_NEED"
+                                    support = {
+                                        "captured": False,
+                                        "verdict": "VALID_NO_CAPTURE",
+                                        "reason": no_continuation_reason,
+                                        "window_5m_id": None,
+                                    }
+                                    continuation_plan = {
+                                        "enqueue_ok": False,
+                                        "planned_jobs": 0,
+                                        "verdict": "STOP_AFTER_15M",
+                                        "reason": no_continuation_reason,
+                                    }
+                                result["support_5m"] = support
+                                result["continuation_plan"] = continuation_plan
+                        elif (
+                            str(pending["step_kind"]) in {
+                                "CONTINUATION_CLOSE", "CONTINUATION_CLOSE_AUDIT"
+                            }
+                            and continuous_four_hour
+                            and not standard_four_hour_campaign
+                        ):
+                            from printer_v1.operator_cli.one_token_4h_runtime import plan_current_run_4h
+                            window_id = result.get("memory_window_id")
+                            if window_id is None:
+                                raise ValueError("current-run 1h close did not attach a memory window")
+                            conn.execute(
+                                "UPDATE printer_memory_factory_run_steps SET snapshot_id=?,memory_window_id=?,result_json=?,updated_at=? WHERE id=? AND step_status='RUNNING'",
+                                (result.get("snapshot_id"), int(window_id), _json(result), _iso(), int(pending["id"])),
+                            )
+                            conn.commit()
+                            plan = plan_current_run_4h(
+                                conn,
+                                run_id=run_id,
+                                token_id=int(pending["token_id"]),
+                                pair_id=int(pending["pair_id"]),
+                                token_mint=str(pending["token_mint"]),
+                                pair_address=str(pending["pair_address"]),
+                                tracking_lane=str(pending["tracking_lane"]),
+                                current_close_step_id=int(pending["id"]),
+                                explicit_proof_mode=four_hour_proof_mode,
+                                compressed_two_token_proof=_two_token_lifecycle(config),
+                                cumulative_scheduler_ceiling=int(
+                                    _cumulative_lifecycle_budget_for_run(
+                                        conn, run_id, str(pending["tracking_lane"]),
+                                        continuing_token_mint=str(pending["token_mint"]),
+                                    )["scheduler_ceiling"]
+                                ),
+                            )
+                            if not plan.get("planned"):
+                                raise ValueError("4h planning blocked: " + "; ".join(plan.get("blocked_reasons", [])))
+                            result["four_hour_plan"] = plan
+                        _update_step(conn, int(pending["id"]), "SUCCEEDED", result)
+                        result["campaign_window_registration"] = (
+                            _register_repaired_campaign_window_before_terminalization(
+                                conn,
+                                step=pending,
+                                result=result,
+                                ownership_context=effective_lifecycle_ownership_context,
+                            )
+                        )
+                        # Re-persist enriched close-step result_json (includes
+                        # campaign_window_registration) before Scheduler terminalization.
+                        # Registration remains inside the same open transaction; a
+                        # registration fault still rolls back the SUCCEEDED update.
+                        if result.get("campaign_window_registration") is not None:
+                            _update_step(conn, int(pending["id"]), "SUCCEEDED", result)
+                        if str(pending["step_kind"]) in {
                             "CONTINUATION_CLOSE", "CONTINUATION_CLOSE_AUDIT"
-                        }
-                        and continuous_four_hour
-                        and not standard_four_hour_campaign
-                    ):
-                        from printer_v1.operator_cli.one_token_4h_runtime import plan_current_run_4h
-                        window_id = result.get("memory_window_id")
-                        if window_id is None:
-                            raise ValueError("current-run 1h close did not attach a memory window")
-                        conn.execute(
-                            "UPDATE printer_memory_factory_run_steps SET snapshot_id=?,memory_window_id=?,result_json=?,updated_at=? WHERE id=? AND step_status='RUNNING'",
-                            (result.get("snapshot_id"), int(window_id), _json(result), _iso(), int(pending["id"])),
+                        }:
+                            memory_window_id = result.get("memory_window_id")
+                            if memory_window_id is None:
+                                raise ValueError(
+                                    "CONTINUATION_CLOSE_SUCCEEDED_WITHOUT_MEMORY_WINDOW"
+                                )
+                            result["campaign_window_1h_binding"] = (
+                                _bind_owned_continuation_memory_window_at_close(
+                                    conn,
+                                    scheduler_job_id=job_id,
+                                    memory_window_row_id=int(memory_window_id),
+                                )
+                            )
+                            _update_step(conn, int(pending["id"]), "SUCCEEDED", result)
+                        elif str(pending["step_kind"]) in {
+                            "LONG_CONTINUATION_CLOSE", "LONG_CONTINUATION_CLOSE_AUDIT"
+                        }:
+                            memory_window_id = result.get("memory_window_id")
+                            if memory_window_id is None:
+                                raise ValueError(
+                                    "LONG_CONTINUATION_CLOSE_SUCCEEDED_WITHOUT_MEMORY_WINDOW"
+                                )
+                            result["campaign_window_4h_binding"] = (
+                                _bind_owned_long_memory_window_at_close(
+                                    conn,
+                                    scheduler_job_id=job_id,
+                                    memory_window_row_id=int(memory_window_id),
+                                    result=result,
+                                )
+                            )
+                            _update_step(conn, int(pending["id"]), "SUCCEEDED", result)
+                        complete_job(conn, job_id=job_id)
+                        _sync_owned_campaign_scheduler_job(
+                            conn, scheduler_job_id=job_id
+                        )
+                        _observe_scheduler_terminal(
+                            conn,
+                            observer=lifecycle_operation_observer,
+                            run_id=run_id,
+                            step=pending,
                         )
                         conn.commit()
-                        plan = plan_current_run_4h(
-                            conn,
-                            run_id=run_id,
-                            token_id=int(pending["token_id"]),
-                            pair_id=int(pending["pair_id"]),
-                            token_mint=str(pending["token_mint"]),
-                            pair_address=str(pending["pair_address"]),
-                            tracking_lane=str(pending["tracking_lane"]),
-                            current_close_step_id=int(pending["id"]),
-                            explicit_proof_mode=four_hour_proof_mode,
-                            compressed_two_token_proof=_two_token_lifecycle(config),
-                            cumulative_scheduler_ceiling=int(
-                                _cumulative_lifecycle_budget_for_run(
-                                    conn, run_id, str(pending["tracking_lane"]),
-                                    continuing_token_mint=str(pending["token_mint"]),
-                                )["scheduler_ceiling"]
-                            ),
+                        if (
+                            _post_handoff_scope_recorder is not None
+                            and str(pending["step_kind"]) in {
+                                "WINDOW_CLOSE", "WINDOW_CLOSE_AUDIT"
+                            }
+                            and not post_activation_checkpointed
+                        ):
+                            _post_handoff_scope_recorder.checkpoint(
+                                conn,
+                                run_id,
+                                "AFTER_POST_ACTIVATION_15M_STATE_COMMIT",
+                            )
+                            post_activation_checkpointed = True
+                        if (
+                            str(pending["step_kind"]) in {
+                                "WINDOW_CLOSE", "WINDOW_CLOSE_AUDIT"
+                            }
+                            and bool(config.get("selective_1h_continuation"))
+                        ):
+                            def _first_hour_cancellation_reason() -> str | None:
+                                external = (
+                                    None
+                                    if cancellation_probe is None
+                                    else cancellation_probe()
+                                )
+                                if external:
+                                    return str(external)
+                                return (
+                                    None
+                                    if stop_reason == STOP_COMPLETED
+                                    else str(stop_reason)
+                                )
+
+                            _run_first_hour_boundary_and_immediate_standard_handoff(
+                                conn,
+                                db_path=str(path),
+                                run_id=run_id,
+                                config=config,
+                                continuation_seconds=_continuation_seconds,
+                                cycle_id=owned_proof_cycle_id,
+                                standard_four_hour_campaign=standard_four_hour_campaign,
+                                operational_db_binding=(
+                                    operational_database_target_binding
+                                ),
+                                canonical_authoritative_db_path=str(canonical),
+                                cancellation_probe=_first_hour_cancellation_reason,
+                            )
+                    else:
+                        # V2-5 token-local terminal failure: isolate this token,
+                        # cancel only its remaining pending jobs, continue others.
+                        error = str(result.get("blocked_reason") or "governed step blocked")
+                        _update_step(conn, int(pending["id"]), "FAILED", result, error=error)
+                        fail_job(conn, job_id=job_id, error=error, max_retries=0)
+                        _sync_owned_campaign_scheduler_job(
+                            conn, scheduler_job_id=job_id
                         )
-                        if not plan.get("planned"):
-                            raise ValueError("4h planning blocked: " + "; ".join(plan.get("blocked_reasons", [])))
-                        result["four_hour_plan"] = plan
-                    _update_step(conn, int(pending["id"]), "SUCCEEDED", result)
-                    result["campaign_window_registration"] = (
-                        _register_repaired_campaign_window_before_terminalization(
-                            conn,
-                            step=pending,
-                            result=result,
-                            ownership_context=effective_lifecycle_ownership_context,
+                        _observe_scheduler_terminal(
+                            conn, observer=lifecycle_operation_observer,
+                            run_id=run_id, step=pending,
                         )
+                        _cancel_pending_for_token(conn, run_id, token_id, TOKEN_LOCAL_CANCELLED)
+                        if str(pending["step_kind"]) in {
+                            "CONTINUATION_SNAPSHOT", "CONTINUATION_CLOSE",
+                            "CONTINUATION_CLOSE_EVIDENCE",
+                            "CONTINUATION_CLOSE_CONTEXT",
+                            "CONTINUATION_CLOSE_AUDIT",
+                        }:
+                            _terminalize_owned_continuation_window(
+                                conn,
+                                scheduler_job_id=job_id,
+                                terminal_state="BLOCKED",
+                                terminal_cause=error,
+                            )
+                        elif str(pending["step_kind"]).startswith("LONG_CONTINUATION_"):
+                            _terminalize_owned_long_window(
+                                conn,
+                                scheduler_job_id=job_id,
+                                terminal_state="BLOCKED",
+                                terminal_cause=error,
+                            )
+                        elif four_token_proof_controller is not None:
+                            _mark_campaign_slot_token_local_failed(
+                                conn,
+                                campaign_id=str(campaign_id) if campaign_id else None,
+                                campaign_run_id=(
+                                    str(campaign_run_id) if campaign_run_id else None
+                                ),
+                                cycle_id=owned_proof_cycle_id,
+                                token_id=int(token_id),
+                            )
+                            _terminalize_pre_15m_campaign_window_for_failed_slot(
+                                conn,
+                                campaign_id=str(campaign_id) if campaign_id else None,
+                                campaign_run_id=(
+                                    str(campaign_run_id) if campaign_run_id else None
+                                ),
+                                cycle_id=owned_proof_cycle_id,
+                                token_id=int(token_id),
+                            )
+                        conn.commit()
+                        if (
+                            bool(config.get("selective_1h_continuation"))
+                            and str(pending["step_kind"])
+                            not in {
+                                "CONTINUATION_SNAPSHOT", "CONTINUATION_CLOSE",
+                                "CONTINUATION_CLOSE_EVIDENCE",
+                                "CONTINUATION_CLOSE_CONTEXT",
+                                "CONTINUATION_CLOSE_AUDIT",
+                            }
+                            and not str(pending["step_kind"]).startswith(
+                                "LONG_CONTINUATION_"
+                            )
+                        ):
+                            def _failed_predecessor_cancellation_reason() -> str | None:
+                                external = (
+                                    None
+                                    if cancellation_probe is None
+                                    else cancellation_probe()
+                                )
+                                if external:
+                                    return str(external)
+                                return (
+                                    None
+                                    if stop_reason == STOP_COMPLETED
+                                    else str(stop_reason)
+                                )
+
+                            _run_first_hour_boundary_and_immediate_standard_handoff(
+                                conn,
+                                db_path=str(path),
+                                run_id=run_id,
+                                config=config,
+                                continuation_seconds=_continuation_seconds,
+                                cycle_id=owned_proof_cycle_id,
+                                standard_four_hour_campaign=standard_four_hour_campaign,
+                                operational_db_binding=(
+                                    operational_database_target_binding
+                                ),
+                                canonical_authoritative_db_path=str(canonical),
+                                cancellation_probe=(
+                                    _failed_predecessor_cancellation_reason
+                                ),
+                            )
+                        if (
+                            _post_handoff_scope_recorder is not None
+                            and str(pending["step_kind"]) in {
+                                "WINDOW_CLOSE", "WINDOW_CLOSE_AUDIT"
+                            }
+                            and not post_activation_checkpointed
+                        ):
+                            _post_handoff_scope_recorder.checkpoint(
+                                conn,
+                                run_id,
+                                "AFTER_POST_ACTIVATION_15M_STATE_COMMIT",
+                            )
+                            post_activation_checkpointed = True
+                except _ExternalStop:
+                    raise
+                except _GlobalStop as gstop:
+                    # Global integrity/budget breach cancels the entire run.
+                    stop_reason = gstop.reason
+                    _update_step(
+                        conn, int(pending["id"]), "FAILED",
+                        {
+                            "ok": False,
+                            "global_stop": gstop.reason,
+                            "budget_scope": gstop.scope,
+                            "budget_detail": gstop.detail,
+                        },
+                        error=gstop.reason,
                     )
-                    # Re-persist enriched close-step result_json (includes
-                    # campaign_window_registration) before Scheduler terminalization.
-                    # Registration remains inside the same open transaction; a
-                    # registration fault still rolls back the SUCCEEDED update.
-                    if result.get("campaign_window_registration") is not None:
-                        _update_step(conn, int(pending["id"]), "SUCCEEDED", result)
-                    if str(pending["step_kind"]) in {
-                        "CONTINUATION_CLOSE", "CONTINUATION_CLOSE_AUDIT"
-                    }:
-                        memory_window_id = result.get("memory_window_id")
-                        if memory_window_id is None:
-                            raise ValueError(
-                                "CONTINUATION_CLOSE_SUCCEEDED_WITHOUT_MEMORY_WINDOW"
-                            )
-                        result["campaign_window_1h_binding"] = (
-                            _bind_owned_continuation_memory_window_at_close(
-                                conn,
-                                scheduler_job_id=job_id,
-                                memory_window_row_id=int(memory_window_id),
-                            )
-                        )
-                        _update_step(conn, int(pending["id"]), "SUCCEEDED", result)
-                    elif str(pending["step_kind"]) in {
-                        "LONG_CONTINUATION_CLOSE", "LONG_CONTINUATION_CLOSE_AUDIT"
-                    }:
-                        memory_window_id = result.get("memory_window_id")
-                        if memory_window_id is None:
-                            raise ValueError(
-                                "LONG_CONTINUATION_CLOSE_SUCCEEDED_WITHOUT_MEMORY_WINDOW"
-                            )
-                        result["campaign_window_4h_binding"] = (
-                            _bind_owned_long_memory_window_at_close(
-                                conn,
-                                scheduler_job_id=job_id,
-                                memory_window_row_id=int(memory_window_id),
-                                result=result,
-                            )
-                        )
-                        _update_step(conn, int(pending["id"]), "SUCCEEDED", result)
-                    complete_job(conn, job_id=job_id)
+                    fail_job(conn, job_id=job_id, error=gstop.reason, max_retries=0)
                     _sync_owned_campaign_scheduler_job(
                         conn, scheduler_job_id=job_id
                     )
                     _observe_scheduler_terminal(
-                        conn,
-                        observer=lifecycle_operation_observer,
-                        run_id=run_id,
-                        step=pending,
+                        conn, observer=lifecycle_operation_observer,
+                        run_id=run_id, step=pending,
                     )
                     conn.commit()
                     if (
@@ -12084,46 +12257,13 @@ def run_one_command_15m_factory(
                             "AFTER_POST_ACTIVATION_15M_STATE_COMMIT",
                         )
                         post_activation_checkpointed = True
-                    if (
-                        str(pending["step_kind"]) in {
-                            "WINDOW_CLOSE", "WINDOW_CLOSE_AUDIT"
-                        }
-                        and bool(config.get("selective_1h_continuation"))
-                    ):
-                        def _first_hour_cancellation_reason() -> str | None:
-                            external = (
-                                None
-                                if cancellation_probe is None
-                                else cancellation_probe()
-                            )
-                            if external:
-                                return str(external)
-                            return (
-                                None
-                                if stop_reason == STOP_COMPLETED
-                                else str(stop_reason)
-                            )
-
-                        _run_first_hour_boundary_and_immediate_standard_handoff(
-                            conn,
-                            db_path=str(path),
-                            run_id=run_id,
-                            config=config,
-                            continuation_seconds=_continuation_seconds,
-                            cycle_id=owned_proof_cycle_id,
-                            standard_four_hour_campaign=standard_four_hour_campaign,
-                            operational_db_binding=(
-                                operational_database_target_binding
-                            ),
-                            canonical_authoritative_db_path=str(canonical),
-                            cancellation_probe=_first_hour_cancellation_reason,
-                        )
-                else:
-                    # V2-5 token-local terminal failure: isolate this token,
-                    # cancel only its remaining pending jobs, continue others.
-                    error = str(result.get("blocked_reason") or "governed step blocked")
-                    _update_step(conn, int(pending["id"]), "FAILED", result, error=error)
-                    fail_job(conn, job_id=job_id, error=error, max_retries=0)
+                except Exception as exc:
+                    if getattr(exc, "post_handoff_proof_fault", False):
+                        raise
+                    # Unexpected token-local failure: isolate this token, continue.
+                    result = {"ok": False, "exception": f"{type(exc).__name__}: {exc}"}
+                    _update_step(conn, int(pending["id"]), "FAILED", result, error=result["exception"])
+                    fail_job(conn, job_id=job_id, error=result["exception"], max_retries=0)
                     _sync_owned_campaign_scheduler_job(
                         conn, scheduler_job_id=job_id
                     )
@@ -12133,7 +12273,8 @@ def run_one_command_15m_factory(
                     )
                     _cancel_pending_for_token(conn, run_id, token_id, TOKEN_LOCAL_CANCELLED)
                     if str(pending["step_kind"]) in {
-                        "CONTINUATION_SNAPSHOT", "CONTINUATION_CLOSE",
+                        "CONTINUATION_SNAPSHOT",
+                        "CONTINUATION_CLOSE",
                         "CONTINUATION_CLOSE_EVIDENCE",
                         "CONTINUATION_CLOSE_CONTEXT",
                         "CONTINUATION_CLOSE_AUDIT",
@@ -12142,14 +12283,14 @@ def run_one_command_15m_factory(
                             conn,
                             scheduler_job_id=job_id,
                             terminal_state="BLOCKED",
-                            terminal_cause=error,
+                            terminal_cause=result["exception"],
                         )
                     elif str(pending["step_kind"]).startswith("LONG_CONTINUATION_"):
                         _terminalize_owned_long_window(
                             conn,
                             scheduler_job_id=job_id,
                             terminal_state="BLOCKED",
-                            terminal_cause=error,
+                            terminal_cause=result["exception"],
                         )
                     elif four_token_proof_controller is not None:
                         _mark_campaign_slot_token_local_failed(
@@ -12184,7 +12325,7 @@ def run_one_command_15m_factory(
                             "LONG_CONTINUATION_"
                         )
                     ):
-                        def _failed_predecessor_cancellation_reason() -> str | None:
+                        def _exception_predecessor_cancellation_reason() -> str | None:
                             external = (
                                 None
                                 if cancellation_probe is None
@@ -12206,12 +12347,10 @@ def run_one_command_15m_factory(
                             continuation_seconds=_continuation_seconds,
                             cycle_id=owned_proof_cycle_id,
                             standard_four_hour_campaign=standard_four_hour_campaign,
-                            operational_db_binding=(
-                                operational_database_target_binding
-                            ),
+                            operational_db_binding=operational_database_target_binding,
                             canonical_authoritative_db_path=str(canonical),
                             cancellation_probe=(
-                                _failed_predecessor_cancellation_reason
+                                _exception_predecessor_cancellation_reason
                             ),
                         )
                     if (
@@ -12227,607 +12366,480 @@ def run_one_command_15m_factory(
                             "AFTER_POST_ACTIVATION_15M_STATE_COMMIT",
                         )
                         post_activation_checkpointed = True
-            except _ExternalStop:
-                raise
-            except _GlobalStop as gstop:
-                # Global integrity/budget breach cancels the entire run.
-                stop_reason = gstop.reason
-                _update_step(
-                    conn, int(pending["id"]), "FAILED",
-                    {
-                        "ok": False,
-                        "global_stop": gstop.reason,
-                        "budget_scope": gstop.scope,
-                        "budget_detail": gstop.detail,
-                    },
-                    error=gstop.reason,
-                )
-                fail_job(conn, job_id=job_id, error=gstop.reason, max_retries=0)
-                _sync_owned_campaign_scheduler_job(
-                    conn, scheduler_job_id=job_id
-                )
-                _observe_scheduler_terminal(
-                    conn, observer=lifecycle_operation_observer,
-                    run_id=run_id, step=pending,
-                )
-                conn.commit()
+                # Post-1h progression deliberately executes outside the predecessor
+                # step/job/work exception owner. Once those terminal surfaces commit,
+                # a later progression fault can only belong to the durable progression
+                # aggregate and cannot rewrite the predecessor.
                 if (
-                    _post_handoff_scope_recorder is not None
-                    and str(pending["step_kind"]) in {
-                        "WINDOW_CLOSE", "WINDOW_CLOSE_AUDIT"
-                    }
-                    and not post_activation_checkpointed
+                    str(pending["step_kind"])
+                    in {"CONTINUATION_CLOSE", "CONTINUATION_CLOSE_AUDIT"}
+                    and standard_four_hour_campaign
                 ):
-                    _post_handoff_scope_recorder.checkpoint(
-                        conn,
-                        run_id,
-                        "AFTER_POST_ACTIVATION_15M_STATE_COMMIT",
+                    from printer_v1.operator_cli.operational_standard_4h import (
+                        run_standard_four_hour_campaign_barrier,
                     )
-                    post_activation_checkpointed = True
-            except Exception as exc:
-                if getattr(exc, "post_handoff_proof_fault", False):
-                    raise
-                # Unexpected token-local failure: isolate this token, continue.
-                result = {"ok": False, "exception": f"{type(exc).__name__}: {exc}"}
-                _update_step(conn, int(pending["id"]), "FAILED", result, error=result["exception"])
-                fail_job(conn, job_id=job_id, error=result["exception"], max_retries=0)
-                _sync_owned_campaign_scheduler_job(
-                    conn, scheduler_job_id=job_id
-                )
-                _observe_scheduler_terminal(
-                    conn, observer=lifecycle_operation_observer,
-                    run_id=run_id, step=pending,
-                )
-                _cancel_pending_for_token(conn, run_id, token_id, TOKEN_LOCAL_CANCELLED)
-                if str(pending["step_kind"]) in {
-                    "CONTINUATION_SNAPSHOT",
-                    "CONTINUATION_CLOSE",
-                    "CONTINUATION_CLOSE_EVIDENCE",
-                    "CONTINUATION_CLOSE_CONTEXT",
-                    "CONTINUATION_CLOSE_AUDIT",
-                }:
-                    _terminalize_owned_continuation_window(
-                        conn,
-                        scheduler_job_id=job_id,
-                        terminal_state="BLOCKED",
-                        terminal_cause=result["exception"],
-                    )
-                elif str(pending["step_kind"]).startswith("LONG_CONTINUATION_"):
-                    _terminalize_owned_long_window(
-                        conn,
-                        scheduler_job_id=job_id,
-                        terminal_state="BLOCKED",
-                        terminal_cause=result["exception"],
-                    )
-                elif four_token_proof_controller is not None:
-                    _mark_campaign_slot_token_local_failed(
-                        conn,
-                        campaign_id=str(campaign_id) if campaign_id else None,
-                        campaign_run_id=(
-                            str(campaign_run_id) if campaign_run_id else None
-                        ),
-                        cycle_id=owned_proof_cycle_id,
-                        token_id=int(token_id),
-                    )
-                    _terminalize_pre_15m_campaign_window_for_failed_slot(
-                        conn,
-                        campaign_id=str(campaign_id) if campaign_id else None,
-                        campaign_run_id=(
-                            str(campaign_run_id) if campaign_run_id else None
-                        ),
-                        cycle_id=owned_proof_cycle_id,
-                        token_id=int(token_id),
-                    )
-                conn.commit()
-                if (
-                    bool(config.get("selective_1h_continuation"))
-                    and str(pending["step_kind"])
-                    not in {
-                        "CONTINUATION_SNAPSHOT", "CONTINUATION_CLOSE",
-                        "CONTINUATION_CLOSE_EVIDENCE",
-                        "CONTINUATION_CLOSE_CONTEXT",
-                        "CONTINUATION_CLOSE_AUDIT",
-                    }
-                    and not str(pending["step_kind"]).startswith(
-                        "LONG_CONTINUATION_"
-                    )
-                ):
-                    def _exception_predecessor_cancellation_reason() -> str | None:
+
+                    def _progression_cancellation_reason() -> str | None:
                         external = (
-                            None
-                            if cancellation_probe is None
-                            else cancellation_probe()
+                            None if cancellation_probe is None else cancellation_probe()
                         )
                         if external:
                             return str(external)
-                        return (
-                            None
-                            if stop_reason == STOP_COMPLETED
-                            else str(stop_reason)
-                        )
+                        return None if stop_reason == STOP_COMPLETED else str(stop_reason)
 
-                    _run_first_hour_boundary_and_immediate_standard_handoff(
+                    run_standard_four_hour_campaign_barrier(
                         conn,
                         db_path=str(path),
-                        run_id=run_id,
-                        config=config,
-                        continuation_seconds=_continuation_seconds,
-                        cycle_id=owned_proof_cycle_id,
-                        standard_four_hour_campaign=standard_four_hour_campaign,
+                        campaign_id=str(campaign_id),
+                        configuration_id=str(configuration_id),
+                        run_id=str(campaign_run_id),
+                        cycle_id=str(
+                            owned_proof_cycle_id
+                            if four_token_proof_controller is not None
+                            else cycle_id
+                        ),
+                        factory_run_id=str(run_id),
                         operational_db_binding=operational_database_target_binding,
                         canonical_authoritative_db_path=str(canonical),
-                        cancellation_probe=(
-                            _exception_predecessor_cancellation_reason
-                        ),
+                        cancellation_probe=_progression_cancellation_reason,
                     )
-                if (
-                    _post_handoff_scope_recorder is not None
-                    and str(pending["step_kind"]) in {
-                        "WINDOW_CLOSE", "WINDOW_CLOSE_AUDIT"
-                    }
-                    and not post_activation_checkpointed
+        except _ExternalStop as external_stop:
+            # A cooperative stop may interrupt an owned lifecycle write after it
+            # has opened SQLite's implicit transaction but before that unit reaches
+            # its commit point. Terminal provenance owns a separate, fresh
+            # transaction; discard the incomplete predecessor unit here rather than
+            # leaking its transaction into the terminalizer or committing it merely
+            # to make the terminalizer's guard pass.
+            if conn.in_transaction:
+                conn.rollback()
+            stop_reason = external_stop.reason
+        except KeyboardInterrupt:
+            if conn.in_transaction:
+                conn.rollback()
+            stop_reason = STOP_INTERRUPTED
+        except Exception as exc:
+            if conn.in_transaction:
+                conn.rollback()
+            if getattr(exc, "post_handoff_proof_fault", False):
+                proof_fault = exc
+            else:
+                progression_stop_cause = None
+                if standard_four_hour_campaign and all(
+                    (campaign_id, campaign_run_id)
                 ):
-                    _post_handoff_scope_recorder.checkpoint(
-                        conn,
-                        run_id,
-                        "AFTER_POST_ACTIVATION_15M_STATE_COMMIT",
-                    )
-                    post_activation_checkpointed = True
-            # Post-1h progression deliberately executes outside the predecessor
-            # step/job/work exception owner. Once those terminal surfaces commit,
-            # a later progression fault can only belong to the durable progression
-            # aggregate and cannot rewrite the predecessor.
-            if (
-                str(pending["step_kind"])
-                in {"CONTINUATION_CLOSE", "CONTINUATION_CLOSE_AUDIT"}
-                and standard_four_hour_campaign
-            ):
-                from printer_v1.operator_cli.operational_standard_4h import (
-                    run_standard_four_hour_campaign_barrier,
-                )
-
-                def _progression_cancellation_reason() -> str | None:
-                    external = (
-                        None if cancellation_probe is None else cancellation_probe()
-                    )
-                    if external:
-                        return str(external)
-                    return None if stop_reason == STOP_COMPLETED else str(stop_reason)
-
-                run_standard_four_hour_campaign_barrier(
-                    conn,
-                    db_path=str(path),
-                    campaign_id=str(campaign_id),
-                    configuration_id=str(configuration_id),
-                    run_id=str(campaign_run_id),
-                    cycle_id=str(
+                    progression_failure_cycle = str(
                         owned_proof_cycle_id
                         if four_token_proof_controller is not None
                         else cycle_id
-                    ),
-                    factory_run_id=str(run_id),
-                    operational_db_binding=operational_database_target_binding,
-                    canonical_authoritative_db_path=str(canonical),
-                    cancellation_probe=_progression_cancellation_reason,
-                )
-    except _ExternalStop as external_stop:
-        # A cooperative stop may interrupt an owned lifecycle write after it
-        # has opened SQLite's implicit transaction but before that unit reaches
-        # its commit point. Terminal provenance owns a separate, fresh
-        # transaction; discard the incomplete predecessor unit here rather than
-        # leaking its transaction into the terminalizer or committing it merely
-        # to make the terminalizer's guard pass.
-        if conn.in_transaction:
-            conn.rollback()
-        stop_reason = external_stop.reason
-    except KeyboardInterrupt:
-        stop_reason = STOP_INTERRUPTED
-    except Exception as exc:
-        if conn.in_transaction:
-            conn.rollback()
-        if getattr(exc, "post_handoff_proof_fault", False):
-            proof_fault = exc
-        else:
-            progression_stop_cause = None
-            if standard_four_hour_campaign and all(
-                (campaign_id, campaign_run_id)
-            ):
-                progression_failure_cycle = str(
-                    owned_proof_cycle_id
-                    if four_token_proof_controller is not None
-                    else cycle_id
-                )
-                progression_stop_cause = (
-                    _durable_standard_4h_progression_stop_cause(
-                        conn,
-                        campaign_id=str(campaign_id),
-                        campaign_run_id=str(campaign_run_id),
-                        cycle_id=progression_failure_cycle,
-                        exc=exc,
                     )
-                )
-                if progression_stop_cause is not None:
-                    progression_secondary_stop_fact = STOP_PREFLIGHT
-                elif isinstance(exc, sqlite3.Error):
-                    progression_row = conn.execute(
-                        """SELECT attempt_state,first_terminal_cause
-                           FROM printer_memory_factory_standard_4h_progression_attempts
-                           WHERE campaign_id=? AND campaign_run_id=?
-                             AND cycle_id=?""",
-                        (
-                            str(campaign_id),
-                            str(campaign_run_id),
-                            progression_failure_cycle,
-                        ),
-                    ).fetchone()
-                    if (
-                        progression_row is not None
-                        and progression_row[1] is None
-                        and str(progression_row[0])
-                        in {
-                            "WAITING_FOR_PREDECESSORS",
-                            "EVALUATING",
-                            "ELIGIBILITY_COMPLETE",
-                        }
-                    ):
-                        progression_primary_write_failed_cycles.add(
-                            progression_failure_cycle
+                    progression_stop_cause = (
+                        _durable_standard_4h_progression_stop_cause(
+                            conn,
+                            campaign_id=str(campaign_id),
+                            campaign_run_id=str(campaign_run_id),
+                            cycle_id=progression_failure_cycle,
+                            exc=exc,
                         )
-            stop_reason = progression_stop_cause or STOP_PREFLIGHT
-            discovery = {
-                **discovery,
-                "orchestration_error": f"{type(exc).__name__}: {exc}",
-            }
-    finally:
-        if governed_observer_token is not None:
-            from printer_v1.sources.governed_execution import (
-                reset_governed_attempt_observer,
+                    )
+                    if progression_stop_cause is not None:
+                        progression_secondary_stop_fact = STOP_PREFLIGHT
+                    elif isinstance(exc, sqlite3.Error):
+                        progression_row = conn.execute(
+                            """SELECT attempt_state,first_terminal_cause
+                               FROM printer_memory_factory_standard_4h_progression_attempts
+                               WHERE campaign_id=? AND campaign_run_id=?
+                                 AND cycle_id=?""",
+                            (
+                                str(campaign_id),
+                                str(campaign_run_id),
+                                progression_failure_cycle,
+                            ),
+                        ).fetchone()
+                        if (
+                            progression_row is not None
+                            and progression_row[1] is None
+                            and str(progression_row[0])
+                            in {
+                                "WAITING_FOR_PREDECESSORS",
+                                "EVALUATING",
+                                "ELIGIBILITY_COMPLETE",
+                            }
+                        ):
+                            progression_primary_write_failed_cycles.add(
+                                progression_failure_cycle
+                            )
+                stop_reason = progression_stop_cause or STOP_PREFLIGHT
+                discovery = {
+                    **discovery,
+                    "orchestration_error": f"{type(exc).__name__}: {exc}",
+                }
+        finally:
+            if governed_observer_token is not None:
+                from printer_v1.sources.governed_execution import (
+                    reset_governed_attempt_observer,
+                )
+                reset_governed_attempt_observer(governed_observer_token)
+            if proof_fault is not None:
+                if _post_handoff_scope_recorder is not None:
+                    _post_handoff_scope_recorder.record_factory_rows(conn, run_id)
+                raise proof_fault
+            _emit_supervision_event(
+                bool(supervision_execution_id), "TERMINAL_CAUSE", reason=stop_reason,
             )
-            reset_governed_attempt_observer(governed_observer_token)
-        if proof_fault is not None:
-            if _post_handoff_scope_recorder is not None:
-                _post_handoff_scope_recorder.record_factory_rows(conn, run_id)
-            conn.close()
-            raise proof_fault
-        _emit_supervision_event(
-            bool(supervision_execution_id), "TERMINAL_CAUSE", reason=stop_reason,
-        )
-        if standard_four_hour_campaign and all((campaign_id, campaign_run_id)):
-            from printer_v1.operator_cli.standard_4h_progression import (
-                terminalize_stopped_standard_4h_progression,
-            )
+            if standard_four_hour_campaign and all((campaign_id, campaign_run_id)):
+                from printer_v1.operator_cli.standard_4h_progression import (
+                    terminalize_stopped_standard_4h_progression,
+                )
 
-            progression_cycles = conn.execute(
-                """SELECT cycle_id
-                   FROM printer_memory_factory_standard_4h_progression_attempts
-                   WHERE campaign_id=? AND campaign_run_id=?
-                   ORDER BY cycle_id""",
-                (str(campaign_id), str(campaign_run_id)),
-            ).fetchall()
-            progression_stop_cause = str(
-                progression_secondary_stop_fact or stop_reason
-            )
-            # A withheld four-token completion sentinel must not be written into
-            # progression attempts as FACTORY_TERMINAL_OWNERSHIP / INTERRUPTED_REVIEW.
-            skip_completion_progression_stamp = False
-            if (
-                four_token_proof_controller is not None
-                and configuration_id is not None
-                and progression_stop_cause == STOP_COMPLETED
-            ):
-                admitted_for_progression = conn.execute(
-                    "SELECT cycle_id,cycle_ordinal FROM "
-                    "printer_memory_factory_campaign_cycles "
+                progression_cycles = conn.execute(
+                    """SELECT cycle_id
+                       FROM printer_memory_factory_standard_4h_progression_attempts
+                       WHERE campaign_id=? AND campaign_run_id=?
+                       ORDER BY cycle_id""",
+                    (str(campaign_id), str(campaign_run_id)),
+                ).fetchall()
+                progression_stop_cause = str(
+                    progression_secondary_stop_fact or stop_reason
+                )
+                # A withheld four-token completion sentinel must not be written into
+                # progression attempts as FACTORY_TERMINAL_OWNERSHIP / INTERRUPTED_REVIEW.
+                skip_completion_progression_stamp = False
+                if (
+                    four_token_proof_controller is not None
+                    and configuration_id is not None
+                    and progression_stop_cause == STOP_COMPLETED
+                ):
+                    admitted_for_progression = conn.execute(
+                        "SELECT cycle_id,cycle_ordinal FROM "
+                        "printer_memory_factory_campaign_cycles "
+                        "WHERE campaign_id=? AND run_id=? ORDER BY cycle_ordinal",
+                        (str(campaign_id), str(campaign_run_id)),
+                    ).fetchall()
+                    skip_completion_progression_stamp = (
+                        not _should_persist_four_token_shared_stop_reason(
+                            conn,
+                            stop_reason=str(stop_reason),
+                            campaign_id=str(campaign_id),
+                            campaign_run_id=str(campaign_run_id),
+                            configuration_id=str(configuration_id),
+                            factory_run_id=run_id,
+                            admitted_cycles=admitted_for_progression,
+                        )
+                    )
+                if not skip_completion_progression_stamp:
+                    for progression_cycle in progression_cycles:
+                        if str(progression_cycle[0]) in progression_primary_write_failed_cycles:
+                            continue
+                        try:
+                            with conn:
+                                terminalize_stopped_standard_4h_progression(
+                                    conn,
+                                    campaign_id=str(campaign_id),
+                                    campaign_run_id=str(campaign_run_id),
+                                    cycle_id=str(progression_cycle[0]),
+                                    stop_cause=progression_stop_cause,
+                                    now=_now(),
+                                )
+                        except sqlite3.Error:
+                            # Canonical progression persistence is the only fault owner.
+                            # Preserve the prior row; read-side accounting derives review.
+                            if conn.in_transaction:
+                                conn.rollback()
+            four_token_terminal: dict[str, Any] | None = None
+            if four_token_proof_controller is not None:
+                from printer_v1.operator_cli.four_token_factory_adapter import (
+                    finalize_four_token_shared_terminal,
+                    record_planned_lifecycle_zero_attempt_terminal_provenance,
+                    record_started_lifecycle_zero_attempt_terminal_provenance,
+                    reconcile_four_token_cycle_terminal,
+                    resolve_peer_stop_origin_cycle_id,
+                )
+
+                if stop_reason != STOP_COMPLETED:
+                    planned_provenance_recorded = (
+                        record_planned_lifecycle_zero_attempt_terminal_provenance(
+                            conn,
+                            campaign_id=str(campaign_id),
+                            campaign_run_id=str(campaign_run_id),
+                            factory_run_id=run_id,
+                            cycle_id=str(cycle_id),
+                            cause=str(stop_reason),
+                            now=_now(),
+                        )
+                    )
+                    if not planned_provenance_recorded:
+                        record_started_lifecycle_zero_attempt_terminal_provenance(
+                            conn,
+                            campaign_id=str(campaign_id),
+                            campaign_run_id=str(campaign_run_id),
+                            factory_run_id=run_id,
+                            cycle_id=str(cycle_id),
+                            cause=str(stop_reason),
+                            now=_now(),
+                        )
+
+                admitted_cycles = conn.execute(
+                    "SELECT cycle_id,cycle_ordinal FROM printer_memory_factory_campaign_cycles "
                     "WHERE campaign_id=? AND run_id=? ORDER BY cycle_ordinal",
                     (str(campaign_id), str(campaign_run_id)),
                 ).fetchall()
-                skip_completion_progression_stamp = (
-                    not _should_persist_four_token_shared_stop_reason(
-                        conn,
-                        stop_reason=str(stop_reason),
-                        campaign_id=str(campaign_id),
-                        campaign_run_id=str(campaign_run_id),
-                        configuration_id=str(configuration_id),
-                        factory_run_id=run_id,
-                        admitted_cycles=admitted_for_progression,
+                if not admitted_cycles:
+                    raise ValueError("four-token terminal found no admitted cycle")
+                if configuration_id is None:
+                    raise ValueError(
+                        "four-token terminal requires exact configuration identity"
                     )
-                )
-            if not skip_completion_progression_stamp:
-                for progression_cycle in progression_cycles:
-                    if str(progression_cycle[0]) in progression_primary_write_failed_cycles:
-                        continue
-                    try:
-                        with conn:
-                            terminalize_stopped_standard_4h_progression(
-                                conn,
-                                campaign_id=str(campaign_id),
-                                campaign_run_id=str(campaign_run_id),
-                                cycle_id=str(progression_cycle[0]),
-                                stop_cause=progression_stop_cause,
-                                now=_now(),
-                            )
-                    except sqlite3.Error:
-                        # Canonical progression persistence is the only fault owner.
-                        # Preserve the prior row; read-side accounting derives review.
-                        if conn.in_transaction:
-                            conn.rollback()
-        four_token_terminal: dict[str, Any] | None = None
-        if four_token_proof_controller is not None:
-            from printer_v1.operator_cli.four_token_factory_adapter import (
-                finalize_four_token_shared_terminal,
-                record_planned_lifecycle_zero_attempt_terminal_provenance,
-                record_started_lifecycle_zero_attempt_terminal_provenance,
-                reconcile_four_token_cycle_terminal,
-                resolve_peer_stop_origin_cycle_id,
-            )
-
-            if stop_reason != STOP_COMPLETED:
-                planned_provenance_recorded = (
-                    record_planned_lifecycle_zero_attempt_terminal_provenance(
-                        conn,
-                        campaign_id=str(campaign_id),
-                        campaign_run_id=str(campaign_run_id),
-                        factory_run_id=run_id,
-                        cycle_id=str(cycle_id),
-                        cause=str(stop_reason),
-                        now=_now(),
-                    )
-                )
-                if not planned_provenance_recorded:
-                    record_started_lifecycle_zero_attempt_terminal_provenance(
-                        conn,
-                        campaign_id=str(campaign_id),
-                        campaign_run_id=str(campaign_run_id),
-                        factory_run_id=run_id,
-                        cycle_id=str(cycle_id),
-                        cause=str(stop_reason),
-                        now=_now(),
-                    )
-
-            admitted_cycles = conn.execute(
-                "SELECT cycle_id,cycle_ordinal FROM printer_memory_factory_campaign_cycles "
-                "WHERE campaign_id=? AND run_id=? ORDER BY cycle_ordinal",
-                (str(campaign_id), str(campaign_run_id)),
-            ).fetchall()
-            if not admitted_cycles:
-                raise ValueError("four-token terminal found no admitted cycle")
-            if configuration_id is None:
-                raise ValueError(
-                    "four-token terminal requires exact configuration identity"
-                )
-            # The factory row is the real producer for a genuinely shared stop
-            # cause. Preserve its first stop reason before any cycle consumer
-            # evaluates a campaign-shared effect.
-            #
-            # Loop-local STOP_COMPLETED only means "no global stop fired while
-            # draining work". It is not shared completion truth. Token-local
-            # source failures must not be rewritten into SAFE_STOP_SOURCE_FAILURE
-            # here: the adapter treats any non-completion factory stop_reason
-            # consumed by an incomplete cycle as CAMPAIGN/CAMPAIGN. Publish
-            # STOP_COMPLETED only when every admitted cycle's canonical
-            # accounting already proves completion. Otherwise withhold the
-            # sentinel and leave cycle terminal truth to canonical accounting.
-            if _should_persist_four_token_shared_stop_reason(
-                conn,
-                stop_reason=str(stop_reason),
-                campaign_id=str(campaign_id),
-                campaign_run_id=str(campaign_run_id),
-                configuration_id=str(configuration_id),
-                factory_run_id=run_id,
-                admitted_cycles=admitted_cycles,
-            ):
-                conn.execute(
-                    "UPDATE printer_memory_factory_runs "
-                    "SET stop_reason=COALESCE(stop_reason,?),updated_at=? "
-                    "WHERE run_id=?",
-                    (str(stop_reason), _iso(), run_id),
-                )
-                conn.commit()
-            else:
-                conn.execute(
-                    "UPDATE printer_memory_factory_runs SET updated_at=? WHERE run_id=?",
-                    (_iso(), run_id),
-                )
-                conn.commit()
-            admitted_cycle_ids = tuple(str(item[0]) for item in admitted_cycles)
-            phase_a = []
-            for admitted in admitted_cycles:
-                admitted_cycle_id = str(admitted[0])
-                peer_origin = resolve_peer_stop_origin_cycle_id(
+                # The factory row is the real producer for a genuinely shared stop
+                # cause. Preserve its first stop reason before any cycle consumer
+                # evaluates a campaign-shared effect.
+                #
+                # Loop-local STOP_COMPLETED only means "no global stop fired while
+                # draining work". It is not shared completion truth. Token-local
+                # source failures must not be rewritten into SAFE_STOP_SOURCE_FAILURE
+                # here: the adapter treats any non-completion factory stop_reason
+                # consumed by an incomplete cycle as CAMPAIGN/CAMPAIGN. Publish
+                # STOP_COMPLETED only when every admitted cycle's canonical
+                # accounting already proves completion. Otherwise withhold the
+                # sentinel and leave cycle terminal truth to canonical accounting.
+                if _should_persist_four_token_shared_stop_reason(
                     conn,
+                    stop_reason=str(stop_reason),
                     campaign_id=str(campaign_id),
                     campaign_run_id=str(campaign_run_id),
                     configuration_id=str(configuration_id),
                     factory_run_id=run_id,
-                    target_cycle_id=admitted_cycle_id,
-                    admitted_cycle_ids=admitted_cycle_ids,
-                )
-                phase_a.append(
-                    reconcile_four_token_cycle_terminal(
+                    admitted_cycles=admitted_cycles,
+                ):
+                    conn.execute(
+                        "UPDATE printer_memory_factory_runs "
+                        "SET stop_reason=COALESCE(stop_reason,?),updated_at=? "
+                        "WHERE run_id=?",
+                        (str(stop_reason), _iso(), run_id),
+                    )
+                    conn.commit()
+                else:
+                    conn.execute(
+                        "UPDATE printer_memory_factory_runs SET updated_at=? WHERE run_id=?",
+                        (_iso(), run_id),
+                    )
+                    conn.commit()
+                admitted_cycle_ids = tuple(str(item[0]) for item in admitted_cycles)
+                phase_a = []
+                for admitted in admitted_cycles:
+                    admitted_cycle_id = str(admitted[0])
+                    peer_origin = resolve_peer_stop_origin_cycle_id(
                         conn,
                         campaign_id=str(campaign_id),
                         campaign_run_id=str(campaign_run_id),
-                        factory_run_id=run_id,
-                        cycle_id=admitted_cycle_id,
                         configuration_id=str(configuration_id),
-                        peer_stop_origin_cycle_id=peer_origin,
-                        now=_now(),
-                        terminal_phase=(
-                            "CAMPAIGN_PRE_LIFECYCLE"
-                            if (
-                                str(admitted[0]) == str(cycle_id)
-                                and not four_token_cycle_one_opening_completed
-                            )
-                            else None
-                        ),
+                        factory_run_id=run_id,
+                        target_cycle_id=admitted_cycle_id,
+                        admitted_cycle_ids=admitted_cycle_ids,
+                    )
+                    phase_a.append(
+                        reconcile_four_token_cycle_terminal(
+                            conn,
+                            campaign_id=str(campaign_id),
+                            campaign_run_id=str(campaign_run_id),
+                            factory_run_id=run_id,
+                            cycle_id=admitted_cycle_id,
+                            configuration_id=str(configuration_id),
+                            peer_stop_origin_cycle_id=peer_origin,
+                            now=_now(),
+                            terminal_phase=(
+                                "CAMPAIGN_PRE_LIFECYCLE"
+                                if (
+                                    str(admitted[0]) == str(cycle_id)
+                                    and not four_token_cycle_one_opening_completed
+                                )
+                                else None
+                            ),
+                        )
+                    )
+                four_token_terminal = {"phase_a": tuple(phase_a)}
+            else:
+                _cancel_pending(conn, run_id, stop_reason)
+                if stop_reason != STOP_COMPLETED:
+                    _cancel_owned_continuation_windows_for_run(
+                        conn,
+                        factory_run_id=run_id,
+                        terminal_cause=stop_reason,
+                    )
+            discovery_cleanup = _cancel_campaign_discovery_jobs(
+                conn,
+                discovery.get("selection_handoff_report", {}).get("batch_id"),
+                campaign_id=campaign_id,
+                campaign_run_id=campaign_run_id,
+                cycle_id=cycle_id,
+                terminal_cause=stop_reason,
+            )
+            conn.commit()
+            report = _final_report(
+                conn, run_id=run_id, config=config, discovery=discovery, before=before,
+                stop_reason=stop_reason, started_at=started_at,
+            )
+            from printer_v1.operator_cli.tracking_lifecycle_reconciliation import (
+                reconcile_factory_post_cycle_lifecycle,
+            )
+            lifecycle_reconciliation = reconcile_factory_post_cycle_lifecycle(
+                conn,
+                run_id=run_id,
+                selected_tokens=report["selected_tokens"],
+                discovery_results=discovery.get("discovery_results", []),
+                per_token_outcomes=report["per_token_outcomes"],
+                stop_reason=report["stop_reason"],
+                archive_policy="cooldown",
+            )
+            conn.commit()
+            if (
+                _post_handoff_scope_recorder is not None
+                and not first_window_checkpointed
+            ):
+                _post_handoff_scope_recorder.record_lifecycle_event_ids(
+                    tuple(
+                        int(item["lifecycle_event_id"])
+                        for item in lifecycle_reconciliation.get("transitions", ())
+                        if item.get("lifecycle_event_id") is not None
                     )
                 )
-            four_token_terminal = {"phase_a": tuple(phase_a)}
-        else:
-            _cancel_pending(conn, run_id, stop_reason)
-            if stop_reason != STOP_COMPLETED:
-                _cancel_owned_continuation_windows_for_run(
-                    conn,
-                    factory_run_id=run_id,
-                    terminal_cause=stop_reason,
-                )
-        discovery_cleanup = _cancel_campaign_discovery_jobs(
-            conn,
-            discovery.get("selection_handoff_report", {}).get("batch_id"),
-            campaign_id=campaign_id,
-            campaign_run_id=campaign_run_id,
-            cycle_id=cycle_id,
-            terminal_cause=stop_reason,
-        )
-        conn.commit()
-        report = _final_report(
-            conn, run_id=run_id, config=config, discovery=discovery, before=before,
-            stop_reason=stop_reason, started_at=started_at,
-        )
-        from printer_v1.operator_cli.tracking_lifecycle_reconciliation import (
-            reconcile_factory_post_cycle_lifecycle,
-        )
-        lifecycle_reconciliation = reconcile_factory_post_cycle_lifecycle(
-            conn,
-            run_id=run_id,
-            selected_tokens=report["selected_tokens"],
-            discovery_results=discovery.get("discovery_results", []),
-            per_token_outcomes=report["per_token_outcomes"],
-            stop_reason=report["stop_reason"],
-            archive_policy="cooldown",
-        )
-        conn.commit()
-        if (
-            _post_handoff_scope_recorder is not None
-            and not first_window_checkpointed
-        ):
-            _post_handoff_scope_recorder.record_lifecycle_event_ids(
-                tuple(
-                    int(item["lifecycle_event_id"])
-                    for item in lifecycle_reconciliation.get("transitions", ())
-                    if item.get("lifecycle_event_id") is not None
-                )
-            )
-            try:
                 _post_handoff_scope_recorder.checkpoint(
                     conn,
                     run_id,
                     "AFTER_FIRST_LIFECYCLE_WINDOW_COMMIT",
                 )
-            except Exception:
-                conn.close()
-                raise
-            first_window_checkpointed = True
-        report = _final_report(
-            conn, run_id=run_id, config=config, discovery=discovery, before=before,
-            stop_reason=stop_reason, started_at=started_at,
-        )
-        if four_token_terminal is not None:
-            if four_token_shared_terminalizer is None:
-                raise ValueError("authoritative shared terminal owner missing")
+                first_window_checkpointed = True
+            report = _final_report(
+                conn, run_id=run_id, config=config, discovery=discovery, before=before,
+                stop_reason=stop_reason, started_at=started_at,
+            )
+            if four_token_terminal is not None:
+                if four_token_shared_terminalizer is None:
+                    raise ValueError("authoritative shared terminal owner missing")
 
-            def _shared_terminal_from_accounting(
-                *, terminal_accounting: Mapping[str, Any] | None = None
-            ) -> Mapping[str, Any]:
-                if terminal_accounting is None:
-                    shared_status, shared_cause = (
-                        _resolve_four_token_no_accounting_shared_terminal(
-                            conn,
-                            campaign_id=str(campaign_id),
-                            campaign_run_id=str(campaign_run_id),
-                            factory_run_id=run_id,
-                            phase_a=phase_a,
+                def _shared_terminal_from_accounting(
+                    *, terminal_accounting: Mapping[str, Any] | None = None
+                ) -> Mapping[str, Any]:
+                    if terminal_accounting is None:
+                        shared_status, shared_cause = (
+                            _resolve_four_token_no_accounting_shared_terminal(
+                                conn,
+                                campaign_id=str(campaign_id),
+                                campaign_run_id=str(campaign_run_id),
+                                factory_run_id=run_id,
+                                phase_a=phase_a,
+                            )
                         )
+                        return four_token_shared_terminalizer(
+                            terminal_cause=shared_cause,
+                            run_status=shared_status,
+                        )
+                    aggregate_outcome = str(
+                        terminal_accounting.get("execution_outcome") or ""
                     )
+                    aggregate_first = terminal_accounting.get("first_cause")
+                    aggregate_cause = (
+                        aggregate_first.get("cause")
+                        if isinstance(aggregate_first, Mapping)
+                        else None
+                    )
+                    if aggregate_outcome == "TERMINAL_SUCCESS":
+                        shared_status = "COMPLETED"
+                        shared_cause = STOP_COMPLETED
+                    elif aggregate_outcome in {
+                        "CYCLE_FAILED",
+                        "CAMPAIGN_FAILED",
+                    }:
+                        shared_status = "FAILED"
+                        shared_cause = aggregate_cause
+                    else:
+                        shared_status = "SAFE_STOPPED"
+                        shared_cause = aggregate_cause
+                    if not str(shared_cause or "").strip():
+                        raise ValueError(
+                            "canonical campaign aggregate has no terminal cause"
+                        )
                     return four_token_shared_terminalizer(
-                        terminal_cause=shared_cause,
+                        terminal_cause=str(shared_cause),
                         run_status=shared_status,
                     )
-                aggregate_outcome = str(
-                    terminal_accounting.get("execution_outcome") or ""
-                )
-                aggregate_first = terminal_accounting.get("first_cause")
-                aggregate_cause = (
-                    aggregate_first.get("cause")
-                    if isinstance(aggregate_first, Mapping)
-                    else None
-                )
-                if aggregate_outcome == "TERMINAL_SUCCESS":
-                    shared_status = "COMPLETED"
-                    shared_cause = STOP_COMPLETED
-                elif aggregate_outcome in {
-                    "CYCLE_FAILED",
-                    "CAMPAIGN_FAILED",
-                }:
-                    shared_status = "FAILED"
-                    shared_cause = aggregate_cause
-                else:
-                    shared_status = "SAFE_STOPPED"
-                    shared_cause = aggregate_cause
-                if not str(shared_cause or "").strip():
-                    raise ValueError(
-                        "canonical campaign aggregate has no terminal cause"
-                    )
-                return four_token_shared_terminalizer(
-                    terminal_cause=str(shared_cause),
-                    run_status=shared_status,
-                )
 
-            phase_b = finalize_four_token_shared_terminal(
-                conn,
-                campaign_id=str(campaign_id),
-                campaign_run_id=str(campaign_run_id),
-                factory_run_id=run_id,
-                configuration_id=str(configuration_id),
-                shared_terminalizer=_shared_terminal_from_accounting,
-            )
-            four_token_terminal.update(phase_b)
-            _synchronize_four_token_report_terminal_from_durable_factory(
-                conn,
-                run_id=run_id,
-                report=report,
-            )
-        report["post_cycle_lifecycle_reconciliation"] = lifecycle_reconciliation
-        report["campaign_discovery_cleanup"] = discovery_cleanup
-        if four_token_terminal is not None:
-            report["four_token_terminal"] = four_token_terminal
-        _apply_post_report_integrity(report)
-        if four_token_terminal is not None:
-            _synchronize_four_token_report_terminal_from_durable_factory(
-                conn,
-                run_id=run_id,
-                report=report,
-                require_match=True,
-            )
-        report["full_run_evidence_deltas"] = dict(report["table_deltas"])
-        report["recovery_evidence_deltas"] = {
-            table: 0 for table in report["table_deltas"]
-        }
+                phase_b = finalize_four_token_shared_terminal(
+                    conn,
+                    campaign_id=str(campaign_id),
+                    campaign_run_id=str(campaign_run_id),
+                    factory_run_id=run_id,
+                    configuration_id=str(configuration_id),
+                    shared_terminalizer=_shared_terminal_from_accounting,
+                )
+                four_token_terminal.update(phase_b)
+                _synchronize_four_token_report_terminal_from_durable_factory(
+                    conn,
+                    run_id=run_id,
+                    report=report,
+                )
+            report["post_cycle_lifecycle_reconciliation"] = lifecycle_reconciliation
+            report["campaign_discovery_cleanup"] = discovery_cleanup
+            if four_token_terminal is not None:
+                report["four_token_terminal"] = four_token_terminal
+            _apply_post_report_integrity(report)
+            if four_token_terminal is not None:
+                _synchronize_four_token_report_terminal_from_durable_factory(
+                    conn,
+                    run_id=run_id,
+                    report=report,
+                    require_match=True,
+                )
+            report["full_run_evidence_deltas"] = dict(report["table_deltas"])
+            report["recovery_evidence_deltas"] = {
+                table: 0 for table in report["table_deltas"]
+            }
 
-        if four_token_terminal is None:
-            conn.execute(
-                "UPDATE printer_memory_factory_runs SET run_status=?,stop_reason=?,finished_at=?,final_report_json=?,updated_at=? WHERE run_id=?",
-                (report["run_status"], report["stop_reason"], report["finished_at"], _json(report), _iso(), run_id),
+            if four_token_terminal is None:
+                conn.execute(
+                    "UPDATE printer_memory_factory_runs SET run_status=?,stop_reason=?,finished_at=?,final_report_json=?,updated_at=? WHERE run_id=?",
+                    (report["run_status"], report["stop_reason"], report["finished_at"], _json(report), _iso(), run_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE printer_memory_factory_runs SET stop_reason=COALESCE(stop_reason,?),"
+                    "finished_at=COALESCE(finished_at,?),final_report_json=?,updated_at=? "
+                    "WHERE run_id=? AND run_status!='RUNNING'",
+                    (report["stop_reason"], report["finished_at"], _json(report), _iso(), run_id),
+                )
+            conn.commit()
+            _emit_supervision_event(
+                bool(supervision_execution_id),
+                "CLEANUP_COMPLETE",
+                run_id=run_id,
+                stop_reason=report["stop_reason"],
+                running_jobs=report["running_jobs_after_stop"],
             )
-        else:
-            conn.execute(
-                "UPDATE printer_memory_factory_runs SET stop_reason=COALESCE(stop_reason,?),"
-                "finished_at=COALESCE(finished_at,?),final_report_json=?,updated_at=? "
-                "WHERE run_id=? AND run_status!='RUNNING'",
-                (report["stop_reason"], report["finished_at"], _json(report), _iso(), run_id),
+    finally:
+        # Never commit an incomplete unit. Preserve a propagating failure even
+        # if rollback/close also fails, and always attempt close exactly once.
+        original_error = sys.exception()
+        try:
+            if conn.in_transaction:
+                conn.rollback()
+        except BaseException as rollback_error:
+            if original_error is None:
+                original_error = rollback_error
+                raise
+            original_error.add_note(
+                f"factory rollback failed: {type(rollback_error).__name__}: {rollback_error}"
             )
-        conn.commit()
-        _emit_supervision_event(
-            bool(supervision_execution_id),
-            "CLEANUP_COMPLETE",
-            run_id=run_id,
-            stop_reason=report["stop_reason"],
-            running_jobs=report["running_jobs_after_stop"],
+        finally:
+            try:
+                conn.close()
+            except BaseException as close_error:
+                if original_error is None:
+                    raise
+                original_error.add_note(
+                    f"factory close failed: {type(close_error).__name__}: {close_error}"
+                )
+    if supervision_execution_id:
+        from printer_v1.operator_cli.proof_supervision import (
+            finalize_execution_from_report,
         )
-        conn.close()
-        if supervision_execution_id:
-            from printer_v1.operator_cli.proof_supervision import (
-                finalize_execution_from_report,
-            )
-            finalize_execution_from_report(path, supervision_execution_id, report)
+        finalize_execution_from_report(path, supervision_execution_id, report)
     return report
