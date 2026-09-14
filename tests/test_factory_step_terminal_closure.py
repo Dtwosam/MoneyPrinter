@@ -24,8 +24,7 @@ def _rows(db):
         connection.close()
 
 
-@pytest.mark.parametrize('factory_status', ['RUNNING', 'SAFE_STOPPED'])
-def test_exact_factory_step_closure_preserves_evidence_and_replay(tmp_path: Path, factory_status):
+def seed_step_closure_graph(tmp_path: Path, factory_status='RUNNING'):
     db = tmp_path / 'closure.sqlite3'
     _seed(db, campaign_state='RUNNING', run_state='RUNNING',
           cycle_state='TRACKING', factory_status=factory_status)
@@ -79,6 +78,13 @@ def test_exact_factory_step_closure_preserves_evidence_and_replay(tmp_path: Path
             VALUES ('window',?,?,?,'slot',1,1,'WINDOW_15M','COLLECTING','root',?,0,?,?)""",
             (CAMPAIGN, RUN, CYCLE, instant, instant, instant))
     connection.close()
+    return db
+
+
+@pytest.mark.parametrize('factory_status', ['RUNNING', 'SAFE_STOPPED'])
+def test_exact_factory_step_closure_preserves_evidence_and_replay(tmp_path: Path, factory_status):
+    db = seed_step_closure_graph(tmp_path, factory_status)
+    instant = NOW.isoformat()
     before = _rows(db)
     kwargs = dict(campaign_id=CAMPAIGN, run_id=RUN, cycle_id=CYCLE,
                   factory_run_id=FACTORY, lifecycle_started=True, run_status='FAILED',

@@ -137,22 +137,25 @@ terminal-adapter tests, six cooperative-resume checks and the standalone real
 Authoritative failed-run cleanup/lease/Scheduler residue remains untouched.
 No new Standard-4H authorization is permitted while that residue remains.
 
-## Latest failed-run closure repair
+## Latest failed-run cleanup authority
 
-The read-only/disposable cleanup preflight for execution
-`20260914T123749Z-f4617e1d5431` was blocked: canonical reconciliation left
-31 active factory steps after stopping the factory and cancelling Scheduler work.
-This repair closes exact factory PENDING/RUNNING steps as CANCELLED in unified
-terminal reconciliation, preserving existing reasons, finish times and completed
-evidence. Disposable regressions cover unrelated-run isolation and replay.
-The authoritative DB remains untouched and healthy at the identity above.
+Canonical disposable cleanup now reaches `clean_terminal=true`, including exact
+factory-step closure. Historical six-unit evidence for execution
+`20260914T123749Z-f4617e1d5431` is absent. Reporting remains truthfully blocked:
+`SIX_UNIT_ACCOUNTING_BLOCKED / SIX_UNIT_EVIDENCE_MISSING`; no canonical report
+may be synthesized. The original incomplete-cleanup terminal summary is immutable.
 
-The historical first cause remains `LEASE_RENEWAL_SQLITE_LOCKED`; the fresh-
-transaction exception was secondary terminalization failure. The exact historical
-SQLite lock holder remains unproven.
+A separate cleanup-only authorization/preparation/wrapper is implemented and
+verified with disposable packages. It binds exact Git/DB/residue/artifact facts,
+consumes once before canonical cleanup/reconciliation, independently proves zero
+state and evidence preservation, and writes a separate immutable no-report
+resolution. Post-consumption failure never permits reuse or automatic recovery.
+Authoritative DB residue remains untouched; no real cleanup authorization exists.
+The first cause stays `LEASE_RENEWAL_SQLITE_LOCKED`; the fresh-transaction error
+is secondary. The historical SQLite lock holder remains unproven.
 
 ## Exact next permitted action
 
-After successful repair verification, rerun the read-only/disposable failed-run
-cleanup preflight. No authoritative cleanup, cleanup authorization, or new
-Standard-4H authority is yet permitted. Consumed authorities remain non-reusable.
+Read-only cleanup-authorization readiness/preparation audit. Do not prepare or
+apply the real authorization without the later explicit operator decision.
+No Standard-4H authority is permitted yet; consumed authorities remain non-reusable.
