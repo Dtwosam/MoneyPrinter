@@ -58,10 +58,21 @@ selection and Cycle 2 are not invented. Actual supply failures and successful
 pair persistence retain existing behavior. SQLite attribution and factory
 connection-lifetime regressions remain passing.
 
+Cadence-isolation reconciliation changed tests only: the market-bound and
+PAIR_READY expectations were stale; the two boundary tests lacked a SQLite
+fixture and sufficient completion horizon. Market discovery reserves one
+DexScreener request at 5 seconds; reconciliation is a separate governed unit.
+The factory yields to lifecycle work when `now + quantum >= next_due_work_at`.
+New acquisition also requires the existing 17,100-second completion reserve.
+PAIR_READY is intermediate: the coordinator atomically creates Cycle 2 and
+marks the same frozen attempt CONSUMED after enforced admission checks.
+Request budgets, cadence, retries, Scheduler ownership and production code are
+unchanged. All four targets and the full cadence file pass.
+
 Unchanged baseline failures remain in migration-discovery's missing helper,
-exact-recovery active-work preflight, the older migration-catalogue fixture,
-and four cadence-isolation expectations (quantum bound, two incomplete DB
-fixtures, and PAIR_READY terminality), reproduced on the starting HEAD.
+exact-recovery active-work preflight and the older migration-catalogue fixture.
+Three adjacent PAIR_READY behavioral fixtures also reproduce completion-reserve
+rejection on `14468f31`; they remain outside the four-target reconciliation.
 
 Authoritative failed-run cleanup/lease/Scheduler residue remains untouched.
 No new Standard-4H authorization is permitted while that residue remains.
@@ -77,10 +88,10 @@ identity remain unchanged, preserving the audited healthy state.
 
 ## Exact next permitted action
 
-The next recommended development lane is to reconcile the four pre-existing
-cadence-isolation regressions against current acquisition-bound and PAIR_READY
-contracts using disposable tests; do not change operational policy merely to
-satisfy stale expectations. Any cleanup of failed execution
-`20260914T123749Z-f4617e1d5431` still requires a separate exact-identity preflight
-and explicit operator approval. Do not reuse consumed authority or prepare a
-Standard-4H rerun while authoritative residue remains.
+The next permitted development lane is to reconcile the three adjacent
+PAIR_READY fixtures (temporary defer, reentry before spent discovery gates,
+and skipping future acquisition conflict) with durable attempt state and the
+current completion-reserve contract, using disposable state only. Any cleanup
+of failed execution `20260914T123749Z-f4617e1d5431` still requires separate
+exact-identity preflight and explicit operator approval. Do not reuse consumed
+authority or prepare a Standard-4H rerun while authoritative residue remains.

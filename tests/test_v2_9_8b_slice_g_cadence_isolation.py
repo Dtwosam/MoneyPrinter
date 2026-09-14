@@ -30,6 +30,7 @@ from printer_v1.operator_cli.authoritative_live_operational_campaign import (
     _persist_completed_later_cycle_refresh_progress,
 )
 from printer_v1.operator_cli.four_token_proof_integration import (
+    FOUR_TOKEN_LATER_CYCLE_COMPLETION_RESERVE_SECONDS,
     FourTokenAdmissionDisposition,
     FourTokenAdmissionDispositionKind,
     LaterCycleCandidateSupply,
@@ -206,9 +207,14 @@ def test_g2_imminent_lifecycle_deadline_blocks_acquisition_quantum() -> None:
         ("direct_pump_page_and_transactions_rpc", 7, 5.0),
         ("pumpswap_exact_verifier_rpc", 4, 20.0),
     ]
-    assert acquisition_quantum_bound(
-        AcquisitionQuantumKind.MARKET_DISCOVERY
-    ).worst_case_seconds == 83.0
+    # Market discovery is one governed DexScreener batch. Reconciliation is
+    # separately bounded; the former aggregate 83-second envelope is obsolete.
+    market = acquisition_quantum_bound(AcquisitionQuantumKind.MARKET_DISCOVERY)
+    assert market.worst_case_seconds == 5.0
+    assert market.transport_count == 1
+    assert [(item.name, item.count, item.timeout_seconds) for item in market.components] == [
+        ("dexscreener_market_batch_http", 1, 5.0),
+    ]
     assert acquisition_quantum_bound(
         AcquisitionQuantumKind.PROTOCOL_CONFIRMATION
     ).worst_case_seconds == 20.0
@@ -431,7 +437,23 @@ def _admission_disposition() -> FourTokenAdmissionDisposition:
     )
 
 
-def test_g2_boundary_selects_lifecycle_without_starting_acquisition() -> None:
+@pytest.fixture
+def admission_connection(callback_database):
+    # The boundary resolves persisted attempts and refresh waits before deciding
+    # whether acquisition may run. Use the current migrated ownership fixture.
+    path, _, _ = callback_database
+    connection = sqlite3.connect(path)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys=ON")
+    try:
+        yield connection
+    finally:
+        connection.close()
+
+
+def test_g2_boundary_selects_lifecycle_without_starting_acquisition(
+    admission_connection,
+) -> None:
     callback_calls = 0
 
     def forbidden_callback(**_kwargs):
@@ -440,13 +462,17 @@ def test_g2_boundary_selects_lifecycle_without_starting_acquisition() -> None:
         raise AssertionError("acquisition crossed an imminent lifecycle deadline")
 
     result = _run_four_token_admission_boundary(
-        connection=object(),
+        connection=admission_connection,
         controller=object(),
         binding=_Binding(),
         first_cycle_id="cycle-g-1",
         now=NOW,
         next_due_work_at=NOW + timedelta(seconds=30),
-        proof_deadline=NOW + timedelta(hours=1),
+        # Leave the full completion reserve so this exercises cadence priority,
+        # not the earlier insufficient-lifecycle-horizon rejection.
+        proof_deadline=NOW + timedelta(
+            seconds=FOUR_TOKEN_LATER_CYCLE_COMPLETION_RESERVE_SECONDS + 1
+        ),
         project_health=lambda: _Projection(),
         evaluate=lambda _projection: _admission_disposition(),
         later_cycle_callback=forbidden_callback,
@@ -459,12 +485,18 @@ def test_g2_boundary_selects_lifecycle_without_starting_acquisition() -> None:
         acquisition_quantum_worst_case_seconds=QUANTUM_SECONDS,
     )
 
+    assert admission_connection.total_changes == 0
+    assert admission_connection.execute(
+        "SELECT COUNT(*) FROM printer_pre_admission_discovery_attempts"
+    ).fetchone()[0] == 0
     assert callback_calls == 0
     assert result.disposition.kind is FourTokenAdmissionDispositionKind.LIFECYCLE_WORK
     assert result.disposition.at == NOW + timedelta(seconds=30)
 
 
-def test_g2_protocol_resume_exact_five_second_deadline_guard_blocks_source() -> None:
+def test_g2_protocol_resume_exact_five_second_deadline_guard_blocks_source(
+    admission_connection,
+) -> None:
     callback_calls = 0
     bound = acquisition_quantum_bound(
         AcquisitionQuantumKind.PROTOCOL_RESUME_MARKET
@@ -476,13 +508,17 @@ def test_g2_protocol_resume_exact_five_second_deadline_guard_blocks_source() -> 
         raise AssertionError("resume market crossed an imminent lifecycle deadline")
 
     result = _run_four_token_admission_boundary(
-        connection=object(),
+        connection=admission_connection,
         controller=object(),
         binding=_Binding(),
         first_cycle_id="cycle-g-1",
         now=NOW,
         next_due_work_at=NOW + timedelta(seconds=bound),
-        proof_deadline=NOW + timedelta(hours=1),
+        # Leave the full completion reserve so this exercises cadence priority,
+        # not the earlier insufficient-lifecycle-horizon rejection.
+        proof_deadline=NOW + timedelta(
+            seconds=FOUR_TOKEN_LATER_CYCLE_COMPLETION_RESERVE_SECONDS + 1
+        ),
         project_health=lambda: _Projection(),
         evaluate=lambda _projection: _admission_disposition(),
         later_cycle_callback=forbidden_callback,
@@ -496,6 +532,10 @@ def test_g2_protocol_resume_exact_five_second_deadline_guard_blocks_source() -> 
     )
 
     assert bound == 5.0
+    assert admission_connection.total_changes == 0
+    assert admission_connection.execute(
+        "SELECT COUNT(*) FROM printer_pre_admission_discovery_attempts"
+    ).fetchone()[0] == 0
     assert callback_calls == 0
     assert result.disposition.kind is FourTokenAdmissionDispositionKind.LIFECYCLE_WORK
     assert result.disposition.at == NOW + timedelta(seconds=5)
@@ -555,7 +595,10 @@ def test_g10_cooperative_path_does_not_start_background_thread(monkeypatch) -> N
 
 def test_g3_nonterminal_yield_does_not_consume_the_only_admission_attempt() -> None:
     assert _later_cycle_attempt_is_terminal("RUNNING") is False
-    for state in ("PAIR_READY", "NO_PAIR", "BLOCKED", "FAILED", "CANCELLED", "CONSUMED"):
+    # A frozen pair can defer to lifecycle work and later be atomically
+    # consumed; freezing alone must not close the one admission opportunity.
+    assert _later_cycle_attempt_is_terminal("PAIR_READY") is False
+    for state in ("NO_PAIR", "BLOCKED", "FAILED", "CANCELLED", "CONSUMED"):
         assert _later_cycle_attempt_is_terminal(state) is True
 
 
