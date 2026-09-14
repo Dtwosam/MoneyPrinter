@@ -11,6 +11,11 @@ import json
 import sqlite3
 from typing import Any, Mapping
 
+from printer_v1.operator_cli.pre_admission_discovery_attempt import (
+    PreAdmissionAttemptError,
+    pre_admission_persistence_diagnostic_for_exception,
+)
+
 
 class PreAdmissionAttemptEvidenceError(RuntimeError):
     """Fail-closed attempt-evidence persistence or reduction fault."""
@@ -78,15 +83,33 @@ def append_pre_admission_attempt_evidence(
                 "ATTEMPT_EVIDENCE_EVENT_KEY_CONFLICT"
             )
         return False
-    connection.execute(
-        """INSERT INTO printer_pre_admission_attempt_evidence(
-               attempt_id,event_key,opportunity_ordinal,claim_ordinal,
-               evidence_kind,mint_identity,pair_identity,categorical_reason,
-               source_request_id,source_response_id,source_failure_id,
-               payload_json,payload_hash,observed_at,created_at
-           ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-        values,
-    )
+    try:
+        connection.execute(
+            """INSERT INTO printer_pre_admission_attempt_evidence(
+                   attempt_id,event_key,opportunity_ordinal,claim_ordinal,
+                   evidence_kind,mint_identity,pair_identity,categorical_reason,
+                   source_request_id,source_response_id,source_failure_id,
+                   payload_json,payload_hash,observed_at,created_at
+               ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            values,
+        )
+    except Exception as exc:
+        # This append precedes the legacy source-link persistence owner. Keep
+        # its failure in the same typed persistence channel so orchestration
+        # cannot attribute a failed evidence write to the supply callback.
+        diagnostic = pre_admission_persistence_diagnostic_for_exception(
+            exc,
+            producer_code=(
+                "SOURCE_EVIDENCE_LINK_INSERT" if source_request_id is not None
+                else "PRE_ADMISSION_PERSISTENCE_UNKNOWN"
+            ),
+            operation_phase=(
+                "SOURCE_LINK" if source_request_id is not None else "UNKNOWN_PHASE"
+            ),
+        )
+        raise PreAdmissionAttemptError(
+            diagnostic.reason_code, diagnostic=diagnostic,
+        ) from exc
     return True
 
 

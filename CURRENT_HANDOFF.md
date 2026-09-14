@@ -50,10 +50,18 @@ factory report loading, lifecycle rotation/continuity/coverage, pre-lifecycle
 refresh/graduated supply, authoritative readiness/marker/recovery, and separate
 backup/recovery/report utilities. Borrowed raw handles remain uninstrumented.
 
-Focused attribution/heartbeat/factory checks pass. Unchanged baseline failures
-remain in later-cycle persistence-cause classification, migration-discovery
-sleep's missing helper, exact-recovery active-work preflight, and the older
-campaign-migration fixture's noncanonical catalogue expectation.
+Later-cycle evidence INSERT failures now enter the existing typed persistence
+handler and retain `LATER_CYCLE_ATTEMPT_PERSISTENCE_FAILED` through attempt,
+Scheduler diagnostic, factory and shared terminalization. The already-committed
+attempt/claim and observed callback execution remain truthful; failed evidence,
+selection and Cycle 2 are not invented. Actual supply failures and successful
+pair persistence retain existing behavior. SQLite attribution and factory
+connection-lifetime regressions remain passing.
+
+Unchanged baseline failures remain in migration-discovery's missing helper,
+exact-recovery active-work preflight, the older migration-catalogue fixture,
+and four cadence-isolation expectations (quantum bound, two incomplete DB
+fixtures, and PAIR_READY terminality), reproduced on the starting HEAD.
 
 Authoritative failed-run cleanup/lease/Scheduler residue remains untouched.
 No new Standard-4H authorization is permitted while that residue remains.
@@ -69,10 +77,10 @@ identity remain unchanged, preserving the audited healthy state.
 
 ## Exact next permitted action
 
-The next recommended development lane is the pre-existing later-cycle
-persistence-failure classification regression: preserve
-`LATER_CYCLE_ATTEMPT_PERSISTENCE_FAILED` instead of the generic supply failure,
-using disposable state. Any cleanup of failed execution
+The next recommended development lane is to reconcile the four pre-existing
+cadence-isolation regressions against current acquisition-bound and PAIR_READY
+contracts using disposable tests; do not change operational policy merely to
+satisfy stale expectations. Any cleanup of failed execution
 `20260914T123749Z-f4617e1d5431` still requires a separate exact-identity preflight
 and explicit operator approval. Do not reuse consumed authority or prepare a
 Standard-4H rerun while authoritative residue remains.

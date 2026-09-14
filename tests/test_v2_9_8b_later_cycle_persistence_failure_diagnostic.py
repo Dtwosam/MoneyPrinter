@@ -786,3 +786,75 @@ def test_successful_or_cancelled_job_discards_staged_failure(tmp_path, terminal)
         assert last_error is None
     finally:
         connection.close()
+
+
+def test_attempt_evidence_ledger_failure_preserves_persistence_owner(database):
+    path, request_id, response_id = database
+    connection = sqlite3.connect(path)
+    connection.execute(
+        "CREATE TRIGGER fixture_fail_attempt_evidence_source BEFORE INSERT ON "
+        "printer_pre_admission_attempt_evidence "
+        "WHEN NEW.evidence_kind='SOURCE_REQUEST_TERMINAL' BEGIN "
+        "SELECT RAISE(ABORT,'fixture evidence ledger failure'); END"
+    )
+    connection.commit()
+    connection.close()
+    supply_calls = []
+
+    def supply(**_):
+        supply_calls.append(True)
+        return LaterCycleCandidateSupply(
+            (), (LaterCycleSourceEvidence('ELIGIBLE_SUPPLY', request_id, response_id),),
+            'NO_PAIR',
+        )
+
+    callback = _callback(path, supply)
+    result = _invoke(callback)
+    assert result.first_terminal_cause == FAILURE
+    assert _invoke(callback) == result
+    assert len(supply_calls) == 1
+    _assert_terminal(path, producer='SOURCE_EVIDENCE_LINK_INSERT',
+                     category='CONSTRAINT_OR_INTEGRITY', phase='SOURCE_LINK')
+    connection = sqlite3.connect(path)
+    try:
+        assert connection.execute(
+            'SELECT evidence_kind FROM printer_pre_admission_attempt_evidence'
+        ).fetchall() == [('OPPORTUNITY_EXECUTED',)]
+        # The attempt/claim and observed callback execution are durable; the
+        # rejected source fact, selection and Cycle 2 are never invented.
+        assert connection.execute(
+            'SELECT count(*) FROM printer_pre_admission_discovery_attempt_source_links'
+        ).fetchone()[0] == 0
+        with pytest.raises(attempts.PreAdmissionAttemptError, match='INVALID_ATTEMPT_TRANSITION'):
+            attempts.terminalize_pre_admission_attempt(
+                connection, attempt_id=result.attempt_id,
+                state=attempts.PreAdmissionAttemptState.FAILED,
+                cause='LATER_CYCLE_SUPPLY_FAILED', now=NOW,
+            )
+        connection.commit()
+    finally:
+        connection.close()
+    assert _rows(path)[0]['first_terminal_cause'] == FAILURE
+    _assert_no_retry_or_successor_authority(path)
+
+
+def test_committed_attempt_then_actual_supply_failure_keeps_supply_cause(database):
+    from printer_v1.operator_cli.authoritative_live_operational_campaign import LiveOperationalError
+    path, _, _ = database
+    calls = []
+
+    def supply(**_):
+        attempt, job = _rows(path)
+        assert attempt['attempt_state'] == 'RUNNING'
+        assert job['status'] == 'RUNNING'
+        calls.append(True)
+        raise LiveOperationalError('LATER_CYCLE_SUPPLY_FAILED')
+
+    result = _invoke(_callback(path, supply))
+    assert result.first_terminal_cause == 'LATER_CYCLE_SUPPLY_FAILED'
+    assert result.state == 'FAILED' and result.selected_count == 0
+    assert calls == [True]
+    attempt, job = _rows(path)
+    assert attempt['first_terminal_cause'] == 'LATER_CYCLE_SUPPLY_FAILED'
+    assert job['last_error'] == 'LATER_CYCLE_SUPPLY_FAILED'
+    _assert_no_retry_or_successor_authority(path)
