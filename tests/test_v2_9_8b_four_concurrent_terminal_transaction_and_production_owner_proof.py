@@ -404,83 +404,60 @@ def _assert_terminal_cleanup(
 
 
 def test_successful_phase_a_preserves_completed_four_hour_slot_evidence(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch,
 ) -> None:
-    path = _seed_campaign(tmp_path / "phase-a-success.sqlite3")
+    from tests.test_v2_9_8b_lane3_standard_4h_progression import (
+        _FactoryLoopDateTime, _run_standard_factory_loop,
+    )
+    from tests.test_v2_9_8b_four_token_factory_wake_ordering import (
+        CAMPAIGN_ID, CAMPAIGN_RUN_ID, CYCLE_ID, FACTORY_RUN_ID,
+    )
+    from printer_v1.operator_cli.four_token_factory_adapter import (
+        four_token_cycle_through_4h_validation,
+    )
+    monkeypatch.setattr(
+        "printer_v1.operator_cli.one_token_4h_runtime.datetime", _FactoryLoopDateTime,
+    )
+    # Complete real owned 4H work using the established accelerated offline
+    # transport harness. Slot labels alone do not prove through-4H completion.
+    path, report = _run_standard_factory_loop(
+        tmp_path, monkeypatch, operational_binding="VALID", disposable_binding=None,
+    )
     connection = _open(path)
     try:
-        for ordinal, token_id in ((1, 11), (2, 12)):
-            _insert_token_pair(
-                connection,
-                token_id=token_id,
-                pair_id=100 + token_id,
-            )
-            connection.execute(
-                """
-                INSERT INTO printer_memory_factory_campaign_token_slots(
-                    token_slot_id,campaign_id,run_id,cycle_id,slot_ordinal,
-                    token_identity,token_row_id,mint_identity,pair_identity,
-                    pair_row_id,lifecycle_identity,token_state,created_at,updated_at
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                """,
-                (
-                    f"slot-cycle-1-{ordinal}",
-                    "campaign-1",
-                    "campaign-run-1",
-                    "cycle-1",
-                    ordinal,
-                    f"solana-mainnet:mint-{token_id}",
-                    token_id,
-                    f"mint-{token_id}",
-                    f"pool-{token_id}",
-                    100 + token_id,
-                    LIFECYCLE,
-                    "WINDOW_4H_CLOSED",
-                    _iso(NOW),
-                    _iso(NOW),
-                ),
-            )
-        connection.commit()
-        with (
-            patch(
-                "printer_v1.operator_cli.four_token_factory_adapter."
-                "derive_cycle_terminal_accounting_result",
-                return_value={
-                    "execution_outcome": "TERMINAL_SUCCESS",
-                    "primary_fault": None,
-                },
-            ),
-            patch(
-                "printer_v1.operator_cli.four_token_factory_adapter."
-                "_validate_pre_lifecycle_zero_attempt_provenance_shape",
-                return_value=False,
-            ),
-            patch(
-                "printer_v1.operator_cli.four_token_proof_integration."
-                "cycle_scoped_factory_step_ids",
-                return_value=(),
-            ),
-        ):
-            result = reconcile_four_token_cycle_terminal(
-                connection,
-                campaign_id="campaign-1",
-                campaign_run_id="campaign-run-1",
-                factory_run_id="factory-1",
-                cycle_id="cycle-1",
-                configuration_id="configuration-1",
-                now=NOW + timedelta(hours=4),
+        validation = four_token_cycle_through_4h_validation(
+            connection, campaign_id=CAMPAIGN_ID, campaign_run_id=CAMPAIGN_RUN_ID,
+            factory_run_id=FACTORY_RUN_ID, cycle_id=CYCLE_ID,
+        )
+        assert validation["four_token_through_4h_complete"], validation
+        configuration_id = connection.execute(
+            "SELECT configuration_id FROM printer_memory_factory_campaign_configurations "
+            "WHERE campaign_id=?", (CAMPAIGN_ID,),
+        ).fetchone()[0]
+
+        def evidence():
+            return tuple(
+                (table, tuple(tuple(row) for row in connection.execute(query)))
+                for table, query in (
+                    ("slots", "SELECT * FROM printer_memory_factory_campaign_token_slots ORDER BY token_slot_id"),
+                    ("windows", "SELECT * FROM printer_memory_factory_campaign_windows WHERE window_kind='WINDOW_4H' ORDER BY window_id"),
+                    ("memory", "SELECT * FROM printer_memory_windows WHERE window_kind='WINDOW_4H' ORDER BY id"),
+                )
             )
 
+        before = evidence()
+        with patch(
+            "printer_v1.operator_cli.four_token_factory_adapter.derive_cycle_terminal_accounting_result",
+            return_value={"execution_outcome": "TERMINAL_SUCCESS", "primary_fault": None},
+        ):
+            result = reconcile_four_token_cycle_terminal(
+                connection, campaign_id=CAMPAIGN_ID, campaign_run_id=CAMPAIGN_RUN_ID,
+                factory_run_id=FACTORY_RUN_ID, cycle_id=CYCLE_ID,
+                configuration_id=configuration_id, now=_FactoryLoopDateTime.now(timezone.utc),
+            )
         assert result["cycle_state"] == "TERMINAL_COMPLETED"
-        states = [
-            str(row[0])
-            for row in connection.execute(
-                "SELECT token_state FROM printer_memory_factory_campaign_token_slots "
-                "WHERE campaign_id='campaign-1' AND run_id='campaign-run-1' "
-                "AND cycle_id='cycle-1' ORDER BY slot_ordinal"
-            ).fetchall()
-        ]
-        assert states == ["WINDOW_4H_CLOSED", "WINDOW_4H_CLOSED"]
+        assert evidence() == before
+        _integrity(connection)
     finally:
         connection.close()
 
@@ -524,7 +501,8 @@ def _assert_frozen_pair_state(connection, attempt_id, *, consumed):
     _integrity(connection)
 
 
-def _resume_frozen_pair(frozen_pair, *, evaluate, health=HEALTH, now=None, next_due=None):
+def _resume_frozen_pair(frozen_pair, *, evaluate, health=HEALTH, now=None, next_due=None,
+                        project_health=None):
     from printer_v1.operator_cli.authoritative_live_operational_campaign import (
         AuthoritativeLiveOperationalCampaignOwner,
     )
@@ -551,7 +529,7 @@ def _resume_frozen_pair(frozen_pair, *, evaluate, health=HEALTH, now=None, next_
         # Deliberately less than the new-acquisition reserve: a durable pair
         # must resume admission, not be treated as a fresh acquisition.
         proof_deadline=current + timedelta(hours=4),
-        project_health=lambda: SimpleNamespace(health=health), evaluate=evaluate,
+        project_health=project_health or (lambda: SimpleNamespace(health=health)), evaluate=evaluate,
         later_cycle_callback=callback, admit=admit_two_token_cycle_from_attempt,
         materialize=materialize_consumed_pre_admission_pair,
         plan_opening=lambda **_: None,
@@ -612,95 +590,29 @@ def test_pair_ready_cycle2_attempt_survives_temporary_post_discovery_defer(
     _assert_consumed_once(frozen_pair, second, evidence)
 
 
-def test_pair_ready_admission_does_not_require_future_discovery_capacity(
-    tmp_path: Path,
-) -> None:
-    path = _seed_campaign(tmp_path / "pair-ready-discovery-budget.sqlite3")
-    connection = _open(path)
-    healthy = MultiCycleAdmissionHealth()
-    post_discovery = MultiCycleAdmissionHealth(
-        provider_budgets_available=False,
-        discovery_capacity_available=False,
-    )
-    projections = iter(
-        (
-            SimpleNamespace(health=healthy, recheck_at=None),
-            SimpleNamespace(
-                health=post_discovery,
-                recheck_at=NOW + timedelta(minutes=1),
+def test_pair_ready_admission_does_not_require_future_discovery_capacity(frozen_pair) -> None:
+    _, connection, _, admit_at = frozen_pair
+    evidence = _pair_evidence(connection)
+    projections = iter((
+        SimpleNamespace(health=HEALTH, recheck_at=None),
+        SimpleNamespace(
+            health=MultiCycleAdmissionHealth(
+                provider_budgets_available=False, discovery_capacity_available=False,
             ),
-        )
-    )
-    admitted_health: list[MultiCycleAdmissionHealth] = []
-    observed_rechecks: list[datetime | None] = []
+            recheck_at=admit_at + timedelta(minutes=1),
+        ),
+    ))
+    observed = []
 
     def evaluate(projection):
-        observed_rechecks.append(getattr(projection, "recheck_at", None))
-        health = projection.health
-        if not health.provider_budgets_available:
-            return FourTokenAdmissionDisposition(
-                FourTokenAdmissionDispositionKind.REARM,
-                "provider_budget_unavailable",
-                NOW + timedelta(minutes=1),
-                False,
-            )
-        if not health.discovery_capacity_available:
-            return FourTokenAdmissionDisposition(
-                FourTokenAdmissionDispositionKind.REARM,
-                "discovery_capacity_unavailable",
-                NOW + timedelta(minutes=1),
-                False,
-            )
-        return FourTokenAdmissionDisposition(
-            FourTokenAdmissionDispositionKind.CYCLE_ADMISSION,
-            "ADMISSION_READY",
-            NOW,
-            True,
-        )
+        observed.append((projection.health, projection.recheck_at))
+        return _ready_disposition(admit_at)
 
-    with patch(
-        "printer_v1.operator_cli.cadence_authority."
-        "require_cycle_slot_tracking_authorities",
-        return_value=None,
-    ):
-        result = _run_four_token_admission_boundary(
-            connection=connection,
-            controller=SimpleNamespace(policy=POLICY),
-            binding=BINDING,
-            first_cycle_id="cycle-1",
-            now=NOW,
-            next_due_work_at=NOW + timedelta(minutes=2),
-            proof_deadline=NOW + timedelta(hours=4),
-            project_health=lambda: next(projections),
-            evaluate=evaluate,
-            later_cycle_callback=lambda **kwargs: SimpleNamespace(
-                attempt_id=(
-                    "pre-admission:campaign-1:campaign-run-1:factory-1:c0002"
-                ),
-                state="PAIR_READY",
-                first_terminal_cause="",
-            ),
-            admit=lambda **kwargs: (
-                admitted_health.append(kwargs["health"])
-                or SimpleNamespace(
-                    mutation_performed=True,
-                    cycle_id="cycle-1-2",
-                )
-            ),
-            materialize=lambda **kwargs: None,
-            plan_opening=lambda **kwargs: None,
-        )
-
-    assert result.admitted is True
-    assert result.cycle_id == "cycle-1-2"
-    assert len(admitted_health) == 1
-    assert admitted_health[0].provider_budgets_available is True
-    assert admitted_health[0].discovery_capacity_available is True
-    assert admitted_health[0].source_budget_available is True
-    assert admitted_health[0].scheduler_budget_available is True
-    assert admitted_health[0].close_reserve_available is True
-    assert observed_rechecks == [None, None]
-    connection.close()
+    result = _resume_frozen_pair(
+        frozen_pair, evaluate=evaluate, project_health=lambda: next(projections),
+    )
+    assert observed == [(HEALTH, None), (HEALTH, None)]
+    _assert_consumed_once(frozen_pair, result, evidence)
 
 
 def test_existing_pair_ready_reenters_before_spent_discovery_gates(frozen_pair) -> None:
@@ -740,86 +652,26 @@ def test_existing_pair_ready_skips_future_acquisition_quantum_conflict(frozen_pa
     _assert_consumed_once(frozen_pair, result, evidence)
 
 
-def test_pair_ready_survives_nonmutating_atomic_admission_recheck(
-    tmp_path: Path,
-) -> None:
-    path = _seed_campaign(tmp_path / "pair-ready-nonmutating-admit.sqlite3")
-    connection = _open(path)
-    admission_ready = FourTokenAdmissionDisposition(
-        FourTokenAdmissionDispositionKind.CYCLE_ADMISSION,
-        "ADMISSION_READY",
-        NOW,
-        True,
+def test_pair_ready_survives_nonmutating_atomic_admission_recheck(frozen_pair) -> None:
+    _, connection, attempt_id, admit_at = frozen_pair
+    evidence = _pair_evidence(connection)
+    # Outer disposition allows entry; the real transactional owner must still
+    # reject unavailable close reserve and roll back tentative tracking claims.
+    first = _resume_frozen_pair(
+        frozen_pair, evaluate=lambda _: _ready_disposition(admit_at),
+        health=MultiCycleAdmissionHealth(close_reserve_available=False),
     )
-    callback_calls: list[str] = []
-    admit_calls: list[int] = []
-
-    def callback(**kwargs):
-        callback_calls.append(str(kwargs["cycle_id"]))
-        return SimpleNamespace(
-            attempt_id="pre-admission:campaign-1:campaign-run-1:factory-1:c0002",
-            state="PAIR_READY",
-            first_terminal_cause="",
-        )
-
-    def first_admit(**kwargs):
-        admit_calls.append(1)
-        return SimpleNamespace(mutation_performed=False, cycle_id=None)
-
-    first = _run_four_token_admission_boundary(
-        connection=connection,
-        controller=SimpleNamespace(policy=POLICY),
-        binding=BINDING,
-        first_cycle_id="cycle-1",
-        now=NOW,
-        next_due_work_at=NOW + timedelta(minutes=2),
-        proof_deadline=NOW + timedelta(hours=4),
-        project_health=lambda: SimpleNamespace(health=HEALTH),
-        evaluate=lambda projection: admission_ready,
-        later_cycle_callback=callback,
-        admit=first_admit,
-        materialize=lambda **kwargs: None,
-        plan_opening=lambda **kwargs: None,
-        acquisition_quantum_worst_case_seconds=30.0,
-    )
-
-    assert first.admitted is False
-    assert first.attempt_state == "PAIR_READY"
+    assert not first.admitted and first.attempt_state == "PAIR_READY"
     assert not _later_cycle_attempt_is_terminal(first.attempt_state)
-
-    with patch(
-        "printer_v1.operator_cli.cadence_authority."
-        "require_cycle_slot_tracking_authorities",
-        return_value=None,
-    ):
-        second = _run_four_token_admission_boundary(
-            connection=connection,
-            controller=SimpleNamespace(policy=POLICY),
-            binding=BINDING,
-            first_cycle_id="cycle-1",
-            now=NOW + timedelta(seconds=1),
-            next_due_work_at=NOW + timedelta(minutes=2),
-            proof_deadline=NOW + timedelta(hours=4),
-            project_health=lambda: SimpleNamespace(health=HEALTH),
-            evaluate=lambda projection: admission_ready,
-            later_cycle_callback=callback,
-            admit=lambda **kwargs: (
-                admit_calls.append(2)
-                or SimpleNamespace(
-                    mutation_performed=True,
-                    cycle_id="cycle-1-2",
-                )
-            ),
-            materialize=lambda **kwargs: None,
-            plan_opening=lambda **kwargs: None,
-            acquisition_quantum_worst_case_seconds=30.0,
-        )
-
-    assert second.admitted is True
-    assert second.cycle_id == "cycle-1-2"
-    assert callback_calls == ["cycle-1-2", "cycle-1-2"]
-    assert admit_calls == [1, 2]
-    connection.close()
+    _assert_frozen_pair_state(connection, attempt_id, consumed=False)
+    assert _pair_evidence(connection) == evidence
+    assert connection.execute(
+        "SELECT COUNT(*) FROM printer_tracking_queue WHERE token_id IN (21,22)"
+    ).fetchone()[0] == 0
+    second = _resume_frozen_pair(
+        frozen_pair, evaluate=lambda _: _ready_disposition(admit_at),
+    )
+    _assert_consumed_once(frozen_pair, second, evidence)
 
 
 def _seed_frozen_pair(path: Path):
@@ -2167,7 +2019,7 @@ def test_cycle2_deadline_then_cycle1_snapshot_progress(tmp_path: Path) -> None:
     assert waiting.status == WAITING_FOR_ELIGIBLE_SUPPLY
     attempt = create_scheduled_pre_admission_attempt(
         connection,
-        attempt_id="attempt-c2",
+        attempt_id="pre-admission:campaign-1:campaign-run-1:factory-1:c0002",
         campaign_id="campaign-1",
         campaign_run_id="campaign-run-1",
         configuration_id="configuration-1",
@@ -2310,6 +2162,16 @@ def test_cycle2_deadline_then_cycle1_snapshot_progress(tmp_path: Path) -> None:
         assert factory["run_status"] == "RUNNING"
         assert factory["stop_reason"] is None
         assert slot["token_state"] == "WINDOW_1H_CONTINUING"
+        attempts = reopened.execute(
+            "SELECT attempt_id,attempt_state,first_terminal_cause "
+            "FROM printer_pre_admission_discovery_attempts"
+        ).fetchall()
+        assert [tuple(row) for row in attempts] == [
+            (attempt.attempt_id, "CANCELLED", ACQUISITION_DEADLINE_EXHAUSTED)
+        ]
+        assert reopened.execute(
+            "SELECT COUNT(*) FROM printer_memory_factory_campaign_cycles WHERE cycle_ordinal=2"
+        ).fetchone()[0] == 0
         _integrity(reopened)
     finally:
         reopened.close()
@@ -2461,7 +2323,7 @@ def test_serial_close_evidence_owner_marks_missed_close_failed(tmp_path: Path) -
     connection.close()
 
 
-def test_cooperative_resume_reuses_governed_source_request(tmp_path: Path) -> None:
+def test_cooperative_resume_reuses_governed_source_request(tmp_path: Path, monkeypatch) -> None:
     path = _seed_campaign(tmp_path / "gov-resume.sqlite3")
     connection = _open(path)
     attempt = create_scheduled_pre_admission_attempt(
@@ -2521,6 +2383,17 @@ def test_cooperative_resume_reuses_governed_source_request(tmp_path: Path) -> No
         )
         return payload
 
+    def protocol_transport(_ctx):
+        transport_calls.append("protocol")
+        # A real governed confirmation with an offline account-not-found result.
+        return {"primary": {"result": {"context": {"slot": 100}, "value": [None, None]}},
+                "owners": None, "owner_addresses": [], "response_bytes": 64}
+
+    monkeypatch.setattr(
+        "printer_v1.sources.generic_present_pool_account_batch.build_generic_present_pool_account_batch_transport",
+        lambda **_: protocol_transport,
+    )
+    assert connection.execute("SELECT COUNT(*) FROM printer_source_requests").fetchone()[0] == 0
     stage = build_pre_lifecycle_refresh_stage(
         db_path=path,
         request_key_prefix=request_prefix,
@@ -2586,13 +2459,27 @@ def test_cooperative_resume_reuses_governed_source_request(tmp_path: Path) -> No
     replay = second.get("stage_reports", {}).get("dexscreener_fresh_profiles", {})
     assert replay.get("status") == "COOPERATIVE_CHECKPOINT_REPLAY"
     assert int(replay.get("source_requests") or 0) == 0
-    assert transport_calls == ["dex"]
+    assert transport_calls == ["dex", "protocol"]
     assert int(
         connection.execute("SELECT COUNT(*) FROM printer_source_requests").fetchone()[0]
-    ) == 1
+    ) == 2
     assert int(
         connection.execute("SELECT COUNT(*) FROM printer_source_responses").fetchone()[0]
-    ) == 1
+    ) == 2
+    rows = connection.execute(
+        "SELECT id,source_name,request_kind,request_key FROM printer_source_requests ORDER BY id"
+    ).fetchall()
+    assert len(rows) == 2
+    assert rows[0]["id"] == request_id and rows[0]["request_key"] == request_key
+    assert rows[1]["source_name"] == "solana_rpc"
+    assert rows[1]["request_kind"] == "generic_present_pool_account_batch"
+    assert rows[1]["request_key"].startswith(request_prefix + "-refresh-2-protocol-")
+    assert int(second.get("source_operations") or 0) == 1
+    assert connection.execute(
+        "SELECT COUNT(*) FROM printer_source_responses WHERE source_request_id=?", (request_id,),
+    ).fetchone()[0] == 1
+    assert connection.execute("SELECT COUNT(*) FROM printer_pre_admission_discovery_attempts").fetchone()[0] == 1
+    assert connection.execute("SELECT COUNT(*) FROM printer_memory_factory_campaign_cycles WHERE cycle_ordinal=2").fetchone()[0] == 0
     policy = exact_operational_policy()
     assert policy["automatic_retries"] == 0
     assert policy["endpoint_rotation"] is False

@@ -72,27 +72,41 @@ unchanged. All four targets and the full cadence file pass.
 Unchanged baseline failures remain in migration-discovery's missing helper,
 exact-recovery active-work preflight and the older migration-catalogue fixture.
 
-PAIR_READY reentry reconciliation also changes tests only. The temporary
-post-discovery defer test lacked a persisted attempt/pair and relied on synthetic
-callback/admission results. The spent-discovery reentry and future-quantum
-conflict tests mocked only the PAIR_READY lookup, contradicting the real empty
-attempt lookup. All three were incomplete disposable fixtures, not production
-defects; each previously failed with INSUFFICIENT_LATER_CYCLE_COMPLETION_RESERVE.
-They now share a migrated, owned, committed frozen-pair fixture with successful
-Scheduler acquisition and source evidence, and use real callback, admission and
-materialization owners. Defer preserves the pair without writes; lawful reentry
-consumes the same attempt exactly once without another source request,
-acquisition job, attempt or duplicate selection.
+Durable PAIR_READY reentry remains reconciled: the 17,100-second reserve guards
+new acquisition when no durable attempt exists, not admission of a frozen pair.
+Prospective discovery capacity and acquisition-quantum conflicts do not require
+reacquisition; lifecycle priority, health, ownership and deadlines still apply.
 
-The 17,100-second reserve guards new acquisition when no durable attempt exists;
-it is not reapplied to durable PAIR_READY. Prospective discovery capacity and
-future acquisition-quantum conflicts do not require reacquiring a frozen pair.
-Lifecycle priority, admission health, ownership and deadlines remain enforced.
-The three targets plus atomic consumption pass (4 tests); related full-file
-verification has 41 passes and 5 failures also reproduced at `da995f54`:
-through-4h terminal evidence, two other synthetic PAIR_READY fixtures, deadline
-then snapshot progress, and cooperative-resume source-request count. These
-additional baseline failures are untouched. Reserve/deadline checks pass (4).
+The remaining five owner-proof failures are reconciled without production edits:
+
+- Through-4H preservation: B (incomplete fixture). Closed slot labels lacked
+  committed progression, owned completed work and bound clean physical memory.
+  The accelerated offline lifecycle fixture now passes the real through-4H
+  validator; terminalization preserves exact slot/window/memory rows.
+- Future-discovery admission: B. Synthetic PAIR_READY lacked durable state; real
+  frozen-pair admission now proves only prospective discovery health is waived.
+- Atomic admission recheck: B. Synthetic pair/admission returns lacked durable
+  truth. Real close-reserve rejection rolls back tracking claims and preserves
+  the pair; later healthy admission consumes it exactly once.
+- Cycle-2 deadline then Cycle-1 snapshot: B. The attempt ID did not match the
+  factory's exact canonical lookup. Expiry now cancels that same attempt with
+  ACQUISITION_DEADLINE_EXHAUSTED while Scheduler-owned Cycle-1 work succeeds;
+  no second attempt or Cycle 2 appears and factory first-cause remains unchanged.
+- Cooperative source reuse: A (stale total-count expectation), plus B (missing
+  offline protocol transport). Discovery replays its committed request at zero
+  new cost; the next quantum makes one distinct governed protocol confirmation.
+  Exact request counts are 0 -> 1 -> 2, with no duplicate discovery or retry.
+
+The initial unchanged source-test reproduction attempted the default Solana RPC
+transport once and recorded generic_present_pool_account_batch_url_error with
+zero response bytes. This violated the offline execution boundary; it is not
+reported as zero attempted provider calls. The fixture now injects an offline
+protocol transport; subsequent verification also blocks socket connections.
+The older StandardFourHourCloseMemoryTerminalTests fixture separately fails
+because it expects the retired unsplit LONG_CONTINUATION_CLOSE step; untouched.
+Verification: all 21 owner-proof tests, 50 related admission/cadence/deadline/
+terminal-adapter tests, six cooperative-resume checks and the standalone real
+4H lifecycle audit pass. Compile/import and diff checks pass.
 
 Authoritative failed-run cleanup/lease/Scheduler residue remains untouched.
 No new Standard-4H authorization is permitted while that residue remains.
