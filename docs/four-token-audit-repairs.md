@@ -19,10 +19,15 @@ Related accounting, SQLite attribution and lease-contention verification passed
 natural acquisition or memory-production coverage. Diff review confirmed the
 change is confined to acceptance; no cadence, budget or execution policy changed.
 
+## F-03 — P3: standalone reader-contention regression
+
+The heartbeat reader-contention test now uses the package-qualified sibling
+import. Default `python -m pytest` no longer depends on adding `tests` to
+PYTHONPATH. The actual disposable held-reader COMMIT regression passes as part
+of the 123-test verification above. This changes no heartbeat runtime behavior.
+
 ## Remaining repair work
 
-- F-03: qualify the SQLite heartbeat test's sibling import and verify default
-  interpreter invocation without a custom PYTHONPATH.
 - F-02: label legacy orchestration coverage honestly and exercise natural memory
   producers without injected promotion, safety, Scheduler or health outcomes.
 - The stronger test exposed a 4H binding-before-quality defect; preserve exact

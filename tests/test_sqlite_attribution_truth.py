@@ -212,7 +212,7 @@ def test_failed_context_manager_commit_records_failure_then_rollback(fixture_db)
 
 def test_real_campaign_heartbeat_reader_contention(tmp_path):
     from datetime import timedelta
-    from test_v2_9_8b_20_sqlite_heartbeat_concurrency import _seed_supervision, NOW
+    from tests.test_v2_9_8b_20_sqlite_heartbeat_concurrency import _seed_supervision, NOW
     from printer_v1.db import apply_migrations
     from printer_v1.db.sqlite_write_contracts import active_writer_attribution
     from printer_v1.operator_cli.campaign_supervision import renew_campaign_lease

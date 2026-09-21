@@ -14,6 +14,8 @@ It now validates exact per-token 15m cadence from the frozen lane policy, includ
 FAST and mixed lanes. Missing, extra or conflicting evidence still blocks PASS.
 Disposable regressions cover all lane combinations, negative evidence and durable
 mixed/FAST finalizer acceptance. See `docs/four-token-audit-repairs.md`.
+The SQLite reader-contention regression also uses a package-qualified import and
+passes under the default interpreter invocation without custom PYTHONPATH.
 
 ## Proven blockers and limits
 
