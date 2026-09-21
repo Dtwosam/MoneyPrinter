@@ -17,12 +17,20 @@ mixed/FAST finalizer acceptance. See `docs/four-token-audit-repairs.md`.
 The SQLite reader-contention regression also uses a package-qualified import and
 passes under the default interpreter invocation without custom PYTHONPATH.
 
+The natural-memory four-token test exposed and verified a second P1 repair: both
+4H close paths now bind exact physical ownership before independent quality
+readers. Binding leaves CLOSE_PENDING; only the real quality and terminal owners
+can declare success. The offline integration passed through two cycles, four
+clean 4H episode/fingerprint pairs, terminal zero-state and released lease without
+fixture-driven quality promotion. Related stale close fixtures were corrected.
+
 ## Proven blockers and limits
 
-A stronger natural-memory test exposed a separate 4H quality-reader ordering
-blocker: the physical memory row was linked to its campaign only after quality
-validation required that link. Its repair and integration verification are in
-progress. Full acquisition-to-canonical-report proof is not yet established.
+The reproduced cadence and 4H binding blockers are repaired. Full
+acquisition-to-canonical-report proof is not yet established: the natural-memory
+case still starts from prevalidated selection/candidate evidence. The legacy
+fixture is explicitly labeled orchestration-only. See the repair document for
+the remaining public-composition proof design and verified boundaries.
 
 Historical primary failure remains LEASE_RENEWAL_SQLITE_LOCKED; the exact lock
 holder is NOT PROVEN. The secondary fresh-transaction defect was already repaired.
@@ -33,7 +41,7 @@ operational authorizations remain permanently non-reusable.
 
 ## Exact next permitted action
 
-Complete disposable four-token natural-memory and reporting-boundary verification,
-review the repairs and commit each meaningful change with its regression. No
+Extend the disposable public-composition fixture through governed acquisition,
+natural memory, measured six-unit accounting and accepted canonical report. No
 operational launch, provider call, authorization, cleanup, retry or resume is
 permitted by this development task.

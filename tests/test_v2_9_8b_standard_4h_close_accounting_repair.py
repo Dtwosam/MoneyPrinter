@@ -48,7 +48,9 @@ def _scheduler_db() -> sqlite3.Connection:
             step_kind TEXT NOT NULL,
             token_id INTEGER NOT NULL,
             pair_id INTEGER NOT NULL,
-            step_key TEXT NOT NULL
+            step_key TEXT NOT NULL,
+            step_status TEXT NOT NULL DEFAULT 'SUCCEEDED',
+            error_or_skip_reason TEXT
         );
         CREATE TABLE printer_memory_factory_campaign_windows (
             window_id TEXT PRIMARY KEY,

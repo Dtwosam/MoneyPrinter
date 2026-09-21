@@ -1,12 +1,17 @@
-"""End-to-end disposable audit of the Standard-4H memory lifecycle.
+"""Disposable four-token lifecycle and natural clean-memory integration.
 
-This file intentionally drives real production orchestration with the existing
-accelerated fixture-source clock. It does not contact providers, prepare an
-authorization, or touch the authoritative database.
+The natural-memory case runs real quality/promotion, support capture, Scheduler
+projection, admission health and deterministic lease renewal. The legacy case
+isolates orchestration with injected clean predecessors. Both use prevalidated
+candidate/selection fixtures; neither proves nomination/holder acquisition or
+canonical public report acceptance. Those boundaries have separate tests.
+No providers, operational authorization or authoritative database are used.
 """
 from __future__ import annotations
 
 import sqlite3
+
+import pytest
 
 from tests.test_v2_9_8b_lane3_standard_4h_progression import (
     _FactoryLoopDateTime,
@@ -180,11 +185,15 @@ def test_single_cycle_real_factory_reaches_two_terminal_four_hour_closes(
         connection.close()
 
 
+@pytest.mark.parametrize(
+    "natural_memory", [False, True], ids=["orchestration", "natural-memory"]
+)
 def test_two_cycle_four_token_real_factory_reaches_shared_terminal_standard4h(
     tmp_path,
     monkeypatch,
+    natural_memory,
 ) -> None:
-    """Drive the missing real overlap seam on disposable fixture-only state."""
+    """Drive the overlap seam; natural-memory retains the real quality owners."""
     import json
 
     from printer_v1.operator_cli.authoritative_live_operational_campaign import (
@@ -434,6 +443,7 @@ def test_two_cycle_four_token_real_factory_reaches_shared_terminal_standard4h(
             disposable_binding=None,
             four_token_setup=four_token_setup,
             cycle_one_tracking_lanes=("TRACK_FAST", "TRACK_NORMAL"),
+            natural_memory=natural_memory,
         )
     except Exception as exc:
         latest = aggregate_observations[-1] if aggregate_observations else {}

@@ -146,6 +146,7 @@ def _prepare(
     tmp_path,
     *,
     tracking_lanes=("TRACK_NORMAL", "TRACK_NORMAL"),
+    db_target_identity="db-1",
 ):
     db = tmp_path / "wake-order.sqlite3"
     backup = tmp_path / "wake-order.backup.sqlite3"
@@ -164,7 +165,7 @@ def _prepare(
         "INSERT INTO printer_memory_factory_campaigns("
         "campaign_id,campaign_state,db_mode,db_target_identity,policy_version) "
         "VALUES (?,?,?,?,?)",
-        (CAMPAIGN_ID, "RUNNING", "OPERATIONAL_PERSISTENT", "db-1", "policy-1"),
+        (CAMPAIGN_ID, "RUNNING", "OPERATIONAL_PERSISTENT", db_target_identity, "policy-1"),
     )
     connection.execute(
         "INSERT INTO printer_memory_factory_campaign_configurations("

@@ -1645,6 +1645,7 @@ def _run_standard_factory_loop(
     progression_predecessor_observations=None,
     four_token_setup=None,
     cycle_one_tracking_lanes=None,
+    natural_memory=False,
 ):
     from printer_v1.operator_cli import one_command_15m_factory as factory
     from printer_v1.operator_cli import operational_standard_4h as standard
@@ -1661,10 +1662,10 @@ def _run_standard_factory_loop(
         _prepare,
     )
 
-    db, backup, prepared_disposable = (
-        _prepare(tmp_path)
-        if cycle_one_tracking_lanes is None
-        else _prepare(tmp_path, tracking_lanes=cycle_one_tracking_lanes)
+    db, backup, prepared_disposable = _prepare(
+        tmp_path,
+        tracking_lanes=cycle_one_tracking_lanes or ("TRACK_NORMAL", "TRACK_NORMAL"),
+        db_target_identity="sha256:" + "a" * 64 if natural_memory else "db-1",
     )
     four_token_kwargs = (
         dict(four_token_setup(db)) if four_token_setup is not None else {}
@@ -1682,11 +1683,81 @@ def _run_standard_factory_loop(
         configuration_id=configuration_id,
         run_id=CAMPAIGN_RUN_ID,
         owner_id="lane3-factory-loop-owner",
-        lease_seconds=30_000,
-        now=datetime.now(timezone.utc),
+        lease_seconds=120 if natural_memory else 30_000,
+        now=START if natural_memory else datetime.now(timezone.utc),
     )
     clock = _FactoryLoopClock(START)
     _FactoryLoopDateTime.clock = clock
+    sleep = clock.sleep
+    if natural_memory:
+        monkeypatch.setattr(
+            "printer_v1.operator_cli.standard_4h_progression.datetime",
+            _FactoryLoopDateTime,
+        )
+        from printer_v1.operator_cli.campaign_supervision import renew_campaign_lease
+        from printer_v1.operator_cli.authoritative_admission_health import (
+            project_authoritative_admission_health,
+        )
+        from printer_v1.operator_cli.multi_cycle_campaign_coordinator import (
+            MultiCycleCampaignBinding,
+        )
+        from printer_v1.operator_cli.operational_database_target_binding import (
+            load_durable_operational_database_target_expectation,
+        )
+        from printer_v1.operator_cli.source_free_discovery_capacity import (
+            build_source_free_discovery_attempt_manifest,
+        )
+
+        next_renewal = START + timedelta(seconds=30)
+
+        def sleep(seconds):
+            nonlocal next_renewal
+            # Deterministic real renewals during the logical four-hour horizon.
+            # Concurrent reader/writer behavior remains covered separately.
+            while seconds > 0:
+                quantum = min(seconds, 30)
+                clock.sleep(quantum)
+                seconds -= quantum
+                if clock.instant < next_renewal:
+                    continue
+                renewal = renew_campaign_lease(
+                    db,
+                    supervision_id="lane3-factory-loop-supervision",
+                    campaign_id=CAMPAIGN_ID,
+                    configuration_id=configuration_id,
+                    run_id=CAMPAIGN_RUN_ID,
+                    owner_id="lane3-factory-loop-owner",
+                    lease_seconds=120,
+                    now=clock.instant,
+                )
+                assert renewal["renewal_confirmed"], renewal
+                next_renewal = clock.instant + timedelta(seconds=30)
+
+        expectation = load_durable_operational_database_target_expectation(
+            db, campaign_id=CAMPAIGN_ID, campaign_run_id=CAMPAIGN_RUN_ID,
+            cycle_id=CYCLE_ID, configuration_id=configuration_id,
+        )
+        health_binding = MultiCycleCampaignBinding(
+            campaign_id=CAMPAIGN_ID, campaign_run_id=CAMPAIGN_RUN_ID,
+            configuration_id=configuration_id, authoritative_factory_run_id=FACTORY_RUN_ID,
+        )
+        manifest = build_source_free_discovery_attempt_manifest()
+        def project_health(connection, instant):
+            return project_authoritative_admission_health(
+                connection,
+                db_path=db,
+                binding=health_binding,
+                first_cycle_id=CYCLE_ID,
+                operational_db_binding=operational_binding,
+                operational_db_expected=expectation,
+                canonical_authoritative_db_path=db,
+                supervision_id="lane3-factory-loop-supervision",
+                supervision_owner_id="lane3-factory-loop-owner",
+                discovery_manifest=manifest,
+                now=instant,
+            )
+
+        four_token_kwargs["four_token_health_projector"] = project_health
     monkeypatch.setattr(factory, "_now", clock.now)
     monkeypatch.setattr("printer_v1.sources.contracts.datetime", _FactoryLoopDateTime)
     monkeypatch.setattr(
@@ -1722,11 +1793,12 @@ def _run_standard_factory_loop(
             cycle_id=cycle_id,
         )
 
-    monkeypatch.setattr(
-        factory,
-        "_run_selective_1h_campaign_barrier",
-        selective_barrier_with_clean_predecessors,
-    )
+    if not natural_memory:
+        monkeypatch.setattr(
+            factory,
+            "_run_selective_1h_campaign_barrier",
+            selective_barrier_with_clean_predecessors,
+        )
     real_campaign_work_sync = factory._sync_owned_campaign_scheduler_job
 
     def preserve_running_campaign_work_across_scheduler_yield(
@@ -1744,21 +1816,23 @@ def _run_standard_factory_loop(
             connection, scheduler_job_id=int(scheduler_job_id)
         )
 
-    monkeypatch.setattr(
-        factory,
-        "_sync_owned_campaign_scheduler_job",
-        preserve_running_campaign_work_across_scheduler_yield,
-    )
-    monkeypatch.setattr(
-        factory,
-        "_capture_same_stream_5m_support",
-        lambda *_args, **_kwargs: {
-            "captured": False,
-            "verdict": "VALID_NO_CAPTURE",
-            "reason": "LANE3_FACTORY_BOUNDARY_FIXTURE_NO_MICRO_EVENT",
-            "window_5m_id": None,
-        },
-    )
+    if not natural_memory:
+        monkeypatch.setattr(
+            factory,
+            "_sync_owned_campaign_scheduler_job",
+            preserve_running_campaign_work_across_scheduler_yield,
+        )
+    if not natural_memory:
+        monkeypatch.setattr(
+            factory,
+            "_capture_same_stream_5m_support",
+            lambda *_args, **_kwargs: {
+                "captured": False,
+                "verdict": "VALID_NO_CAPTURE",
+                "reason": "LANE3_FACTORY_BOUNDARY_FIXTURE_NO_MICRO_EVENT",
+                "window_5m_id": None,
+            },
+        )
     real_opening_planner = factory._plan_opening_jobs
 
     def plan_owned_cycle_one_opening(
@@ -1793,9 +1867,10 @@ def _run_standard_factory_loop(
             four_token_proof=True,
         )
 
-    monkeypatch.setattr(
-        factory, "_plan_opening_jobs", plan_owned_cycle_one_opening
-    )
+    if not natural_memory:
+        monkeypatch.setattr(
+            factory, "_plan_opening_jobs", plan_owned_cycle_one_opening
+        )
     real_close_audit = factory._execute_close_audit_phase
 
     def close_audit_with_clean_first_hour(connection, step, **kwargs):
@@ -1824,9 +1899,10 @@ def _run_standard_factory_loop(
                 result["memory_pipeline"] = pipeline
         return result
 
-    monkeypatch.setattr(
-        factory, "_execute_close_audit_phase", close_audit_with_clean_first_hour
-    )
+    if not natural_memory:
+        monkeypatch.setattr(
+            factory, "_execute_close_audit_phase", close_audit_with_clean_first_hour
+        )
     if fail_progression_binding:
         real_progression_barrier = standard.run_standard_four_hour_campaign_barrier
 
@@ -1888,7 +1964,7 @@ def _run_standard_factory_loop(
         continuous_four_hour=True,
         total_duration_seconds=20_000,
         _window_seconds=900,
-        _continuation_seconds=3_600,
+        _continuation_seconds=2_700 if natural_memory else 3_600,
         max_selected_tokens=2,
         max_source_requests=2,
         campaign_id=CAMPAIGN_ID,
@@ -1896,7 +1972,7 @@ def _run_standard_factory_loop(
         cycle_id=CYCLE_ID,
         configuration_id=configuration_id,
         factory_run_id=FACTORY_RUN_ID,
-        _sleep=clock.sleep,
+        _sleep=sleep,
         _monotonic=clock.monotonic,
         **four_token_kwargs,
     )

@@ -6248,6 +6248,11 @@ def _audit_4h_close_from_evidence(
         current_close_snapshot_id=int(closing_snapshot_id),
     )
     conn.commit()
+    _bind_owned_long_memory_before_quality(
+        conn,
+        scheduler_job_id=int(step["scheduler_job_id"]),
+        memory_window_row_id=window_id,
+    )
     quality = run_4h_quality_gates(
         str(conn.execute("PRAGMA database_list").fetchone()[2]), window_id
     )
@@ -6386,6 +6391,11 @@ def _execute_long_4h_step(
     # E2Q/Lane-Q/E2Z use separate DB connections. Commit only the physical,
     # shared-context, and truthful outcome prerequisites before those owners run.
     conn.commit()
+    _bind_owned_long_memory_before_quality(
+        conn,
+        scheduler_job_id=int(step["scheduler_job_id"]),
+        memory_window_row_id=window_id,
+    )
     quality = run_4h_quality_gates(
         str(conn.execute("PRAGMA database_list").fetchone()[2]), window_id
     )
@@ -6976,6 +6986,32 @@ def _classify_owned_4h_terminal_state(
     ):
         return "DIRTY"
     return "NO_PROMOTION"
+
+
+def _bind_owned_long_memory_before_quality(
+    conn: sqlite3.Connection,
+    *,
+    scheduler_job_id: int,
+    memory_window_row_id: int,
+) -> None:
+    """Publish exact physical ownership before the separate cadence reader.
+
+    This is an identity checkpoint, not a successful quality or terminal result.
+    The window stays CLOSE_PENDING until quality gates finish. The existing
+    ownership writer validates token/pair/kind and commits the one-shot binding.
+    """
+    window = _owned_long_window_for_job(conn, scheduler_job_id=scheduler_job_id)
+    if window is None:
+        return  # Historical standalone long windows have no campaign owner.
+    if str(window["window_state"]) != "CLOSE_PENDING":
+        raise ValueError("WINDOW_4H quality binding requires CLOSE_PENDING")
+    from printer_v1.operator_cli.campaign_ownership import bind_window_memory_row_id
+
+    bind_window_memory_row_id(
+        conn,
+        window_id=str(window["window_id"]),
+        memory_window_row_id=int(memory_window_row_id),
+    )
 
 
 def _bind_owned_long_memory_window_at_close(

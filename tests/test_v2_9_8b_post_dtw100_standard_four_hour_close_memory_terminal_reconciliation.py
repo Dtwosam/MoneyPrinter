@@ -54,7 +54,7 @@ class StandardFourHourCloseMemoryTerminalTests(unittest.TestCase):
         row = self.fx.connection.execute(
             """SELECT * FROM printer_memory_factory_run_steps
                WHERE run_id='factory-run-1' AND token_id=?
-                 AND step_kind='LONG_CONTINUATION_CLOSE'""",
+                 AND step_kind='LONG_CONTINUATION_CLOSE_AUDIT'""",
             (int(token_id),),
         ).fetchone()
         self.assertIsNotNone(row)
@@ -407,7 +407,7 @@ class StandardFourHourCloseMemoryTerminalTests(unittest.TestCase):
             )
 
     def _complete_standard_long_work(self) -> dict[int, int]:
-        """Make all 92 planned long jobs/snapshots terminal without source execution."""
+        """Finish planned long jobs; only collection jobs produce snapshots."""
         memory_ids: dict[int, int] = {}
         next_snapshot_id = 30000
         rows = self.fx.connection.execute(
@@ -416,26 +416,31 @@ class StandardFourHourCloseMemoryTerminalTests(unittest.TestCase):
                ORDER BY scheduled_for,id"""
         ).fetchall()
         for row in rows:
-            next_snapshot_id += 1
             captured = str(row["scheduled_for"])
-            self.fx.connection.execute(
-                """INSERT INTO printer_token_snapshots(
-                    id,token_id,pair_id,captured_at,tracking_lane,snapshot_mode,
-                    source_status,data_quality_label
-                ) VALUES (?,?,?,?,?,'TOKEN','COMPLETE','CLEAN_DATA')""",
-                (
-                    next_snapshot_id,
-                    int(row["token_id"]),
-                    int(row["pair_id"]),
-                    captured,
-                    str(row["tracking_lane"]),
-                ),
-            )
+            snapshot_id = None
+            if row["step_kind"] in {
+                "LONG_CONTINUATION_SNAPSHOT", "LONG_CONTINUATION_CLOSE_EVIDENCE"
+            }:
+                next_snapshot_id += 1
+                self.fx.connection.execute(
+                    """INSERT INTO printer_token_snapshots(
+                        id,token_id,pair_id,captured_at,tracking_lane,snapshot_mode,
+                        source_status,data_quality_label
+                    ) VALUES (?,?,?,?,?,'TOKEN','COMPLETE','CLEAN_DATA')""",
+                    (
+                        next_snapshot_id,
+                        int(row["token_id"]),
+                        int(row["pair_id"]),
+                        captured,
+                        str(row["tracking_lane"]),
+                    ),
+                )
+                snapshot_id = next_snapshot_id
             self.fx.connection.execute(
                 """UPDATE printer_memory_factory_run_steps
                    SET step_status='SUCCEEDED',snapshot_id=?,started_at=?,finished_at=?,updated_at=?
                    WHERE id=?""",
-                (next_snapshot_id, captured, captured, captured, int(row["id"])),
+                (snapshot_id, captured, captured, captured, int(row["id"])),
             )
             self.fx.connection.execute(
                 """UPDATE printer_scheduler_jobs
@@ -489,7 +494,7 @@ class StandardFourHourCloseMemoryTerminalTests(unittest.TestCase):
         )
         self.assertTrue(report["enabled"])
         self.assertTrue(report["complete"], report.get("reasons"))
-        by_token = {int(row["token_id"]): row for row in report["per_token"]}
+        by_token = {int(row["token_id"]): row for row in report["eligible_window_details"]}
         self.assertEqual(int(by_token[1]["expected_snapshots"]), 61)
         self.assertEqual(int(by_token[2]["expected_snapshots"]), 31)
         self.assertEqual(by_token[1]["window_state"], "CLEAN_PROMOTED")
