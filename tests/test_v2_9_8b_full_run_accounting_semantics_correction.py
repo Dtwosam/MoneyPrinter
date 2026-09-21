@@ -109,6 +109,8 @@ class _SemanticsFixture(unittest.TestCase):
 
     # sub-classes may override for specific fault injections
     JOB_STATUS_OVERRIDES: dict = {}
+    TRACKING_LANES = {1: "TRACK_NORMAL", 2: "TRACK_NORMAL"}
+    SNAPSHOT_COUNTS = {1: 8, 2: 8}
     MEMORY: dict = {
         1: ("CLEAN_MEMORY", "CLEAN_DATA", 0),
         2: ("DIRTY_MEMORY", "MISSING_CRITICAL_DATA", 1),
@@ -243,9 +245,9 @@ class _SemanticsFixture(unittest.TestCase):
                     """INSERT INTO printer_tracking_queue(
                         id,token_id,pair_id,tracking_lane,tracking_action,
                         queue_status,source_status,data_quality_label
-                    ) VALUES (?,?,?,'TRACK_NORMAL','COOLDOWN','COOLDOWN',
+                    ) VALUES (?,?,?,?,'COOLDOWN','COOLDOWN',
                               'COMPLETE','CLEAN_DATA')""",
-                    (token, token, PAIR_OF[token]),
+                    (token, token, PAIR_OF[token], self.TRACKING_LANES[token]),
                 )
         create_cycle_with_two_slots(
             self.conn, campaign_id=CAMPAIGN, run_id=RUN, cycle_id=CYCLE,
@@ -266,7 +268,7 @@ class _SemanticsFixture(unittest.TestCase):
                 pair = PAIR_OF[token]
                 plan = [
                     (f"t{token}_snapshot_{i:02d}", "SNAPSHOT")
-                    for i in range(SNAPSHOTS_PER_TOKEN)
+                    for i in range(self.SNAPSHOT_COUNTS[token])
                 ] + [(f"t{token}_window_close", "WINDOW_CLOSE")]
                 for step_key, kind in plan:
                     source_id += 1
@@ -291,9 +293,9 @@ class _SemanticsFixture(unittest.TestCase):
                             id,token_id,pair_id,captured_at,tracking_lane,
                             snapshot_mode,price_usd,liquidity_usd,
                             source_status,data_quality_label
-                        ) VALUES (?,?,?,?,'TRACK_NORMAL','FACTORY',1.0,1000.0,
+                        ) VALUES (?,?,?,?,?,'FACTORY',1.0,1000.0,
                                   'COMPLETE','CLEAN_DATA')""",
-                        (source_id, token, pair, NOW),
+                        (source_id, token, pair, NOW, self.TRACKING_LANES[token]),
                     )
                     job_id += 1
                     status = self.JOB_STATUS_OVERRIDES.get(step_key, "SUCCEEDED")
@@ -335,9 +337,9 @@ class _SemanticsFixture(unittest.TestCase):
                             token_mint,pair_address,tracking_lane,scheduler_job_id,
                             source_request_id,source_response_id,memory_window_id,
                             snapshot_id,result_json
-                        ) VALUES (?,?,?,'SUCCEEDED',?,?,?,?,'TRACK_NORMAL',?,?,?,?,?,?)""",
+                        ) VALUES (?,?,?,'SUCCEEDED',?,?,?,?,?,?,?,?,?,?,?)""",
                         (FACTORY_RUN, step_key, kind, token, pair, MINT_OF[token],
-                         PAIR_ADDR[pair], job_id, source_id, source_id, mem_window,
+                         PAIR_ADDR[pair], self.TRACKING_LANES[token], job_id, source_id, source_id, mem_window,
                          source_id,
                          json.dumps({"lifecycle_reservations": reservations,
                                      "local_validations": validations})),

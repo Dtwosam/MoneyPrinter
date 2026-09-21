@@ -2,160 +2,36 @@
 
 ## Current capability
 
-Active branch: `assistant/v2-9-8b-later-cycle-mint-market-replay-repair`. Printer remains
-Solana-only, memecoin-only, and paper-only. Source Governor remains the sole
-source-request owner and Central Scheduler the sole scheduler owner; all
-evidence, provenance, freshness, clean-memory, and capability gates fail
-closed.
-
-The authoritative DB at `data/printer_v1.sqlite3` is at migration `64 /
-064_four_token_started_lifecycle_zero_attempt_provenance.sql`; failed-run
-SHA-256 is `98232a9cb09072c854a679c1cfba8ea5461a0ada6cb2bea3c41a34d9e999b0d0`.
-Dedicated migration-only exact-one-migration authorization infrastructure remains
-separate from runtime authority.
+Printer remains Solana-only, memecoin-only and paper-only. Source Governor and
+Central Scheduler retain sole ownership. Clean-memory, identity, provenance,
+capability and one-shot operational authorization gates remain fail-closed.
+WINDOW_5M is support-only; WINDOW_12H/24H and decision/trading surfaces stay locked.
 
 ## Latest meaningful result
 
-Migration authorization `V2_9_8B_MIGRATION_064_AUTH_20260914T115201Z_1506c3c7`
-remains consumed exactly once and migration `64/064` remains healthy.
+The four-token audit found a final acceptance gate hardcoded to two NORMAL lanes.
+It now validates exact per-token 15m cadence from the frozen lane policy, including
+FAST and mixed lanes. Missing, extra or conflicting evidence still blocks PASS.
+Disposable regressions cover all lane combinations, negative evidence and durable
+mixed/FAST finalizer acceptance. See `docs/four-token-audit-repairs.md`.
 
-Standard-4H authorization
-`V2_9_8B_FOUR_TOKEN_STD4H_AUTH_20260914T123005Z_565f8c31` remains permanently
-consumed exactly once. Durable lifecycle truth proves Cycle-1 lifecycle started;
-the earlier pre-lifecycle failure classification was stale. Terminalization
-encountered `planned-lifecycle zero-attempt provenance requires a fresh transaction`.
+## Proven blockers and limits
 
-The full read-only SQLite audit found the DB healthy. The highest-priority P1
-factory connection-lifetime defect is repaired: one outer ownership boundary
-rolls back incomplete writes and closes the connection across initialization,
-workload, and finalizer failures. `KeyboardInterrupt`, like `_ExternalStop`,
-rolls back an inherited transaction before terminalization. Disposable
-regressions prove release, exactly-once close, and preserved exception/report truth.
+A stronger natural-memory test exposed a separate 4H quality-reader ordering
+blocker: the physical memory row was linked to its campaign only after quality
+validation required that link. Its repair and integration verification are in
+progress. Full acquisition-to-canonical-report proof is not yet established.
 
-SQLite attribution V2 now distinguishes requested/acquired transactions,
-successful/failed commit and rollback, READ/WRITE/UNKNOWN activity, savepoints,
-and active-transaction close rollback. Connection/default-cursor execute,
-executemany, executescript, SQL terminals and connection context managers have
-disposable regressions. Heartbeat evidence snapshots the actual SQLite failure
-before rollback/retry; held-reader COMMIT and held-writer BEGIN contention are
-reproduced truthfully. Open result cursors remain explicitly uncertain lock
-evidence. Snapshot persistence installs fresh context without relabeling an
-existing transaction. See `docs/sqlite-attribution-contract.md` for semantics.
-
-Converted raw factories cover source recording, Scheduler, campaign persistence,
-snapshot/tracking queue, unified terminal reconciliation/readers, and supervision
-readers, preserving PRAGMAs/timeouts/ownership. Remaining raw operational paths
-include durable operation logging, source budget readers, proof supervision,
-factory report loading, lifecycle rotation/continuity/coverage, pre-lifecycle
-refresh/graduated supply, authoritative readiness/marker/recovery, and separate
-backup/recovery/report utilities. Borrowed raw handles remain uninstrumented.
-
-Later-cycle evidence INSERT failures now enter the existing typed persistence
-handler and retain `LATER_CYCLE_ATTEMPT_PERSISTENCE_FAILED` through attempt,
-Scheduler diagnostic, factory and shared terminalization. The already-committed
-attempt/claim and observed callback execution remain truthful; failed evidence,
-selection and Cycle 2 are not invented. Actual supply failures and successful
-pair persistence retain existing behavior. SQLite attribution and factory
-connection-lifetime regressions remain passing.
-
-Cadence-isolation reconciliation changed tests only: the market-bound and
-PAIR_READY expectations were stale; the two boundary tests lacked a SQLite
-fixture and sufficient completion horizon. Market discovery reserves one
-DexScreener request at 5 seconds; reconciliation is a separate governed unit.
-The factory yields to lifecycle work when `now + quantum >= next_due_work_at`.
-New acquisition also requires the existing 17,100-second completion reserve.
-PAIR_READY is intermediate: the coordinator atomically creates Cycle 2 and
-marks the same frozen attempt CONSUMED after enforced admission checks.
-Request budgets, cadence, retries, Scheduler ownership and production code are
-unchanged. All four targets and the full cadence file pass.
-
-Unchanged baseline failures remain in migration-discovery's missing helper,
-exact-recovery active-work preflight and the older migration-catalogue fixture.
-
-Durable PAIR_READY reentry remains reconciled: the 17,100-second reserve guards
-new acquisition when no durable attempt exists, not admission of a frozen pair.
-Prospective discovery capacity and acquisition-quantum conflicts do not require
-reacquisition; lifecycle priority, health, ownership and deadlines still apply.
-
-The remaining five owner-proof failures are reconciled without production edits:
-
-- Through-4H preservation: B (incomplete fixture). Closed slot labels lacked
-  committed progression, owned completed work and bound clean physical memory.
-  The accelerated offline lifecycle fixture now passes the real through-4H
-  validator; terminalization preserves exact slot/window/memory rows.
-- Future-discovery admission: B. Synthetic PAIR_READY lacked durable state; real
-  frozen-pair admission now proves only prospective discovery health is waived.
-- Atomic admission recheck: B. Synthetic pair/admission returns lacked durable
-  truth. Real close-reserve rejection rolls back tracking claims and preserves
-  the pair; later healthy admission consumes it exactly once.
-- Cycle-2 deadline then Cycle-1 snapshot: B. The attempt ID did not match the
-  factory's exact canonical lookup. Expiry now cancels that same attempt with
-  ACQUISITION_DEADLINE_EXHAUSTED while Scheduler-owned Cycle-1 work succeeds;
-  no second attempt or Cycle 2 appears and factory first-cause remains unchanged.
-- Cooperative source reuse: A (stale total-count expectation), plus B (missing
-  offline protocol transport). Discovery replays its committed request at zero
-  new cost; the next quantum makes one distinct governed protocol confirmation.
-  Exact request counts are 0 -> 1 -> 2, with no duplicate discovery or retry.
-
-The initial unchanged source-test reproduction attempted the default Solana RPC
-transport once and recorded generic_present_pool_account_batch_url_error with
-zero response bytes. This violated the offline execution boundary; it is not
-reported as zero attempted provider calls. The fixture now injects an offline
-protocol transport. Central test infrastructure now installs a CPython audit
-guard before pytest collection and when importing the tests package. DNS and
-non-Unix socket creation/connect/send are blocked locally; swallowed faults also
-fail pytest teardown. There is no live opt-out. Production code is unchanged.
-See `docs/development-test-network-boundary.md` for scope and offline helpers.
-All 16 safety regressions, six cooperative checks and 21 owner-proof tests pass.
-The two TestProductionQueueComposition failures are now reconciled with test-only
-changes. Both are A (stale Meteora/UNSUPPORTED_VENUE expectation) plus B (missing
-offline generic transport), not established production defects. The governed
-mixed queue uses existing offline PumpSwap and generic-present-pool fixtures:
-two requests/responses, three measured transports and three local validations;
-transport contexts prove Source Governor approval and execution ownership.
-
-Current nomination/queue routing uses case-insensitive pumpswap, pumpfun,
-pump-fun and pump-amm labels for PumpSwap account confirmation. Other labels,
-including literal PUMP, METEORA, meteora-damm-v2 and unrecognized-offline-venue,
-use generic mint/pool/executable-owner verification. No unsupported-venue-name
-zero-transport branch exists here; the obsolete test was replaced by nine
-routing cases rather than inventing an unsupported label. Routing does not
-itself establish identity or admission eligibility; some alias fixtures retain
-later identity conflicts, which this routing-only lane does not change.
-The network guard is unchanged and final verification records no unexpected
-violations or external attempts. The historical RPC attempt remains one past
-attempt. No production routing, source budget or retry policy changed.
-All 65 focused tests pass, including the full 12-case queue class, generic
-conversion, Source Governor and 16 network-safety regressions. Compile/import
-and diff checks pass; authoritative DB hash and physical identity are unchanged.
-The older StandardFourHourCloseMemoryTerminalTests fixture separately fails
-because it expects the retired unsplit LONG_CONTINUATION_CLOSE step; untouched.
-Verification: all 21 owner-proof tests, 50 related admission/cadence/deadline/
-terminal-adapter tests, six cooperative-resume checks and the standalone real
-4H lifecycle audit pass. Compile/import and diff checks pass.
-
-Authoritative failed-run cleanup/lease/Scheduler residue remains untouched.
-No new Standard-4H authorization is permitted while that residue remains.
-
-## Latest failed-run cleanup authority
-
-Canonical disposable cleanup now reaches `clean_terminal=true`, including exact
-factory-step closure. Historical six-unit evidence for execution
-`20260914T123749Z-f4617e1d5431` is absent. Reporting remains truthfully blocked:
-`SIX_UNIT_ACCOUNTING_BLOCKED / SIX_UNIT_EVIDENCE_MISSING`; no canonical report
-may be synthesized. The original incomplete-cleanup terminal summary is immutable.
-
-A separate cleanup-only authorization/preparation/wrapper is implemented and
-verified with disposable packages. It binds exact Git/DB/residue/artifact facts,
-consumes once before canonical cleanup/reconciliation, independently proves zero
-state and evidence preservation, and writes a separate immutable no-report
-resolution. Post-consumption failure never permits reuse or automatic recovery.
-Authoritative DB residue remains untouched; no real cleanup authorization exists.
-The first cause stays `LEASE_RENEWAL_SQLITE_LOCKED`; the fresh-transaction error
-is secondary. The historical SQLite lock holder remains unproven.
+Historical primary failure remains LEASE_RENEWAL_SQLITE_LOCKED; the exact lock
+holder is NOT PROVEN. The secondary fresh-transaction defect was already repaired.
+Historical six-unit evidence is incomplete and must never be reconstructed.
+The user reports the dedicated historical cleanup completed; this development
+repair has not re-read or modified authoritative operational state. Consumed
+operational authorizations remain permanently non-reusable.
 
 ## Exact next permitted action
 
-Read-only cleanup-authorization readiness/preparation audit. Do not prepare or
-apply the real authorization without the later explicit operator decision.
-No Standard-4H authority is permitted yet; consumed authorities remain non-reusable.
+Complete disposable four-token natural-memory and reporting-boundary verification,
+review the repairs and commit each meaningful change with its regression. No
+operational launch, provider call, authorization, cleanup, retry or resume is
+permitted by this development task.

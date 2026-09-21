@@ -1269,6 +1269,34 @@ def _no_retry_restart_resume_successor(
     )
 
 
+def _selected_token_cadence_complete(item: Mapping[str, Any]) -> bool:
+    """Validate exact per-token counts against the frozen 15m lane policy."""
+    cadence = item.get("cadence")
+    lane = item.get("tracking_lane")
+    if not isinstance(cadence, Mapping) or lane not in ("TRACK_NORMAL", "TRACK_FAST"):
+        return False
+    policy = get_cadence_policy("WINDOW_15M", lane)
+    if policy is None or not policy.enabled_for_real_collection:
+        return False
+    # The closing observation is accounted for separately from SNAPSHOT steps.
+    expected = policy.minimum_required_snapshots - 1
+    counts = {
+        "expected_snapshot_steps": expected,
+        "planned_snapshot_steps": expected,
+        "actual_snapshot_steps": expected,
+        "missing_snapshot_steps": 0,
+        "succeeded_close_count": 1,
+    }
+    return (
+        cadence.get("tracking_lane") == lane
+        and cadence.get("coverage_status") == "COMPLETE"
+        and all(
+            type(cadence.get(key)) is int and cadence[key] == value
+            for key, value in counts.items()
+        )
+    )
+
+
 def evaluate_campaign_acceptance_gate(
     report: Mapping[str, Any],
 ) -> dict[str, Any]:
@@ -1460,16 +1488,7 @@ def evaluate_campaign_acceptance_gate(
         "persisted_slot_dispositions_exact": bool(slot_dispositions)
         and all(bool(item.get("persisted_state_matches")) for item in slot_dispositions),
         "cadence_coverage_and_close_complete": len(selected) == 2
-        and all(
-            item.get("cadence", {}).get("coverage_status") == "COMPLETE"
-            and int(item.get("cadence", {}).get("missing_snapshot_steps") or 0) == 0
-            and int(item.get("cadence", {}).get("succeeded_close_count") or 0) == 1
-            for item in selected
-        )
-        and sum(
-            int(item.get("cadence", {}).get("actual_snapshot_steps") or 0)
-            for item in selected
-        ) == 16,
+        and all(_selected_token_cadence_complete(item) for item in selected),
         "zero_active_scheduler_jobs": bool(safety.get("zero_active_scheduler_jobs")),
         "zero_active_owned_work_after_cleanup": (
             type(safety.get("cleanup_evidence", {}).get(
