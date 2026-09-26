@@ -54,6 +54,10 @@ PACKAGE_KINDS = (MIGRATION_PACKAGE_KIND, AUTHORIZATION_PACKAGE_KIND)
 OPERATOR_RUNS_ROOT = "operator-runs"
 MIGRATION_PACKAGE_ROOT = "operator-runs/v2-9-8b-authoritative-mig050"
 AUTHORIZATION_PACKAGE_ROOT = "operator-runs/v2-9-8b-window-15m-final-authorization"
+# Visibility only: cleanup IDs still require explicit prior-non-reuse approval.
+FAILED_RUN_CLEANUP_AUTHORIZATION_PACKAGE_ROOT = (
+    "operator-runs/v2-9-8b-failed-run-cleanup-final-authorization"
+)
 
 # The controlled migration-055 application is the schema transition that produced
 # the current authoritative database. It is a distinct current-evidence identity
@@ -810,6 +814,7 @@ FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE = GitAuthorizationProfile(
         "operator-runs/v2-9-8b-four-token-final-authorization",
         "operator-runs/v2-9-8b-four-token-standard-four-hour-final-authorization",
         "operator-runs/v2-9-8b-four-token-admission-checkpoint-final-authorization",
+        FAILED_RUN_CLEANUP_AUTHORIZATION_PACKAGE_ROOT,
     ),
     migration_package_root=MIGRATION_063_PACKAGE_ROOT,
     migration_package_kind=MIGRATION_063_PACKAGE_KIND,
@@ -843,6 +848,7 @@ FOUR_TOKEN_ADMISSION_CHECKPOINT_AUTHORIZATION_PROFILE = GitAuthorizationProfile(
         "operator-runs/v2-9-8b-four-token-final-authorization",
         "operator-runs/v2-9-8b-four-token-standard-four-hour-final-authorization",
         "operator-runs/v2-9-8b-four-token-admission-checkpoint-final-authorization",
+        FAILED_RUN_CLEANUP_AUTHORIZATION_PACKAGE_ROOT,
     ),
     migration_package_root=MIGRATION_063_PACKAGE_ROOT,
     migration_package_kind=MIGRATION_063_PACKAGE_KIND,

@@ -36,8 +36,20 @@ evidence must never be reconstructed. This repair did not inspect or mutate the
 authoritative DB or repeat the user-reported historical cleanup. Consumed
 operational authorizations remain permanently non-reusable.
 
+## Post-cleanup provenance repair
+
+Read-only post-cleanup readiness passed at former HEAD
+`5185692c077cf0099bec3ad0da670ec1cd8bba53`. Authorization preparation then
+exposed missing historical cleanup-authorization visibility. This repair adds
+that explicit root to Standard-4H and admission-checkpoint history only;
+prior non-reuse declarations, byte identity, ambiguity and untracked-file gates
+remain enforced. Audit documents were preserved outside the repository.
+
 ## Exact next permitted action
 
-Continue ordinary development or focused review using disposable offline state.
-No proven blocker remains on the tested four-token path. No operational launch,
-provider call, authorization, cleanup, retry or resume is permitted by this task.
+The preparation approval bound to the former HEAD becomes stale with this
+commit. Perform a fresh read-only readiness audit bound to the new HEAD, then
+obtain separate operator approval for authorization preparation. This repair
+permits no operational authorization preparation, application, launch, provider
+call, cleanup, retry, resume or successor. The offline four-token proof above
+remains valid within its stated limits.

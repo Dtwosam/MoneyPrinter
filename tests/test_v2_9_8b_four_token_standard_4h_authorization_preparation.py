@@ -797,3 +797,108 @@ def test_prepare_rejects_dishonest_git_or_database_bindings(
         / profile.authorization_package_root
         / AUTHORIZATION_ID
     ).exists()
+
+
+CLEANUP_ROOT = "operator-runs/v2-9-8b-failed-run-cleanup-final-authorization"
+CLEANUP_ID = "V2_9_8B_FAILED_RUN_CLEANUP_AUTH_20260914T204923Z_93c0286a"
+
+
+def test_cleanup_visibility_is_limited_to_operational_four_token_profiles() -> None:
+    for profile in git_auth.supported_profiles():
+        assert (CLEANUP_ROOT in profile.historical_authorization_package_roots) == (
+            profile.command_mode in {
+                "four-token-standard-four-hour-run",
+                "four-token-admission-checkpoint-run",
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "error"),
+    [
+        ("none", None),
+        ("omitted", "unapproved historical authorization package"),
+        ("byte_drift", "SHA-256 mismatch"),
+        ("unexpected", "unapproved historical authorization package"),
+        ("ambiguous", "ambiguous across roots"),
+        ("arbitrary", "unexpected untracked repository file"),
+    ],
+)
+def test_cleanup_history_pre_marker_contract(
+    disposable_repository: DisposableFourTokenPreparationRepository,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    mutation: str,
+    error: str | None,
+) -> None:
+    """Cleanup visibility grants history classification, never implicit trust."""
+    repository = disposable_repository
+    production = git_auth.FOUR_TOKEN_STANDARD_FOUR_HOUR_AUTHORIZATION_PROFILE
+    profile = replace(
+        repository.profile,
+        historical_authorization_package_roots=production.historical_authorization_package_roots,
+    )
+    _patch_standard_four_hour_profile(profile=profile, monkeypatch=monkeypatch)
+    cleanup = repository.root / CLEANUP_ROOT / CLEANUP_ID / "final_authorization.json"
+    cleanup.parent.mkdir(parents=True)
+    # Historical evidence is bound as opaque bytes, not reinterpreted as current authority.
+    cleanup.write_text(json.dumps({"authorization_id": CLEANUP_ID, "consumed": True}))
+    document = operational.fixture_authorization_document(
+        branch=repository.branch,
+        head=repository.head,
+        database=repository.database_binding(),
+        authorization_id=AUTHORIZATION_ID,
+        migration_execution_id=MIGRATION_EXECUTION_ID,
+        prior_authorizations_non_reusable=() if mutation == "omitted" else (CLEANUP_ID,),
+    )
+    authorization = repository.root / profile.authorization_package_root / AUTHORIZATION_ID / "final_authorization.json"
+    authorization.parent.mkdir(parents=True)
+    authorization.write_text(json.dumps(document))
+
+    def build():
+        return operational.build_manifest_bytes(
+            repository_root=repository.root,
+            authorization_file=authorization,
+            authorization_sha256=_sha256(authorization),
+        )
+
+    if mutation == "omitted":
+        with pytest.raises(git_auth.GitProvenanceAuthorizationError, match=error):
+            build()
+        return
+    manifest, content = build()
+    historical = manifest["historical_authorization_evidence"]
+    assert len(historical) == 1
+    assert historical[0]["path"] == cleanup.relative_to(repository.root).as_posix()
+    assert historical[0]["authorization_id"] == CLEANUP_ID
+    assert historical[0]["evidence_class"] == git_auth.HISTORICAL_AUTHORIZATION_EVIDENCE_CLASS
+    assert historical[0]["sha256"] == _sha256(cleanup)
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_bytes(content)
+    if mutation == "byte_drift":
+        cleanup.write_bytes(cleanup.read_bytes().replace(b"true", b"null"))
+    elif mutation in {"unexpected", "ambiguous"}:
+        root = CLEANUP_ROOT if mutation == "unexpected" else ADMISSION_CHECKPOINT_ROOT
+        identity = CLEANUP_ID + "_UNAPPROVED" if mutation == "unexpected" else CLEANUP_ID
+        extra = repository.root / root / identity / "final_authorization.json"
+        extra.parent.mkdir(parents=True)
+        extra.write_bytes(cleanup.read_bytes())
+    elif mutation == "arbitrary":
+        extra = repository.root / "docs/audits/untracked.txt"
+        extra.parent.mkdir(parents=True)
+        extra.write_text("unapproved audit")
+
+    def validate():
+        return git_auth.validate_git_provenance_manifest_pre_marker(
+            repository_root=repository.root,
+            manifest_path=str(manifest_path),
+            manifest_sha256=_sha256(manifest_path),
+            profile=profile,
+        )
+
+    if error:
+        with pytest.raises(git_auth.GitProvenanceAuthorizationError, match=error):
+            validate()
+    else:
+        validated = validate()
+        assert cleanup.relative_to(repository.root).as_posix() in validated.allowed_untracked_paths
