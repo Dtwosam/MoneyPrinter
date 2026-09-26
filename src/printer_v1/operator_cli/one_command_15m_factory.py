@@ -4188,6 +4188,76 @@ def _execute_preclose_critical_phase(
     return phase
 
 
+def _observe_consumed_cycle_selection(
+    connection: sqlite3.Connection,
+    *,
+    campaign_id: str,
+    campaign_run_id: str,
+    cycle_id: str,
+    observer: Callable[[Mapping[str, Any]], None] | None,
+) -> None:
+    """Capture the real consumed selection at the Cycle-2 handoff boundary."""
+    if observer is None:
+        return
+    from printer_v1.sources.campaign_six_unit_accounting import build_campaign_stage_id
+
+    attempts = connection.execute(
+        "SELECT a.attempt_id,a.scheduler_job_id,j.job_kind,j.status "
+        "FROM printer_pre_admission_discovery_attempts a "
+        "JOIN printer_scheduler_jobs j ON j.id=a.scheduler_job_id "
+        "WHERE a.campaign_id=? AND a.campaign_run_id=? "
+        "AND a.consumed_cycle_id=? AND a.attempt_state='CONSUMED'",
+        (campaign_id, campaign_run_id, cycle_id),
+    ).fetchall()
+    slots = connection.execute(
+        "SELECT token_slot_id,slot_ordinal FROM printer_memory_factory_campaign_token_slots "
+        "WHERE campaign_id=? AND run_id=? AND cycle_id=? ORDER BY slot_ordinal",
+        (campaign_id, campaign_run_id, cycle_id),
+    ).fetchall()
+    if len(attempts) != 1 or [row["slot_ordinal"] for row in slots] != [1, 2]:
+        raise ValueError("CYCLE2_SELECTION_ACCOUNTING_IDENTITY_MISSING")
+    attempt = attempts[0]
+    if str(attempt["status"]) != "SUCCEEDED":
+        raise ValueError("CYCLE2_SELECTION_ACCOUNTING_JOB_NOT_SUCCEEDED")
+    observer({
+        "boundary": "DISCOVERY_SELECTION_TERMINAL",
+        "cycle_id": cycle_id,
+        "stage_id": build_campaign_stage_id(
+            campaign_id=campaign_id, run_id=campaign_run_id, cycle_id=cycle_id,
+            stage_kind="DISCOVERY_SELECTION_SCHEDULER", stage_sequence=1,
+        ),
+        "stage_terminal_status": "COMPLETED",
+        "stage_first_terminal_cause": None,
+        "scheduler_work_identities": [{
+            "scheduler_job_id": int(attempt["scheduler_job_id"]),
+            "job_kind": str(attempt["job_kind"]),
+            "target_category": "PRE_ADMISSION_ATTEMPT",
+            "target_identity": str(attempt["attempt_id"]),
+        }],
+        "slots": [dict(row) for row in slots],
+    })
+
+
+def _prior_preclose_validation_records(step: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Keep validation occurrences already committed by earlier claims of this job."""
+    if str(step["step_kind"]) not in PRE_CLOSE_STEP_KINDS:
+        return []
+    prior = json.loads(str(step["result_json"] or "{}"))
+    records = prior.get("local_validations", [])
+    if not isinstance(records, list):
+        raise ValueError("PRE_CLOSE_VALIDATION_HISTORY_INVALID")
+    for ordinal, record in enumerate(records, start=1):
+        if (
+            not isinstance(record, dict)
+            or record.get("scheduler_job_id") != int(step["scheduler_job_id"])
+            or record.get("step_key") != str(step["step_key"])
+            or record.get("subject_identity") != str(step["step_key"])
+            or record.get("validation_ordinal") != int(step["scheduler_job_id"]) * 1000 + ordinal
+        ):
+            raise ValueError("PRE_CLOSE_VALIDATION_HISTORY_INVALID")
+    return [dict(record) for record in records]
+
+
 def _checkpoint_and_yield_preclose_claim(
     conn: sqlite3.Connection,
     *,
@@ -9699,7 +9769,10 @@ def _standard_campaign_four_hour_terminal_validation(
         window_state = str(window["window_state"])
         if window_state not in success_states:
             window_reasons.append(f"nonterminal_or_failed_4h_window_state:{window_state}")
-        if str(window["token_state"]) != "WINDOW_4H_CLOSED":
+        # Shared terminal closure may advance a proven close to queue cooldown
+        # or archival before report readers run. All exact window, memory and
+        # Scheduler checks above still apply to these terminal dispositions.
+        if str(window["token_state"]) not in {"WINDOW_4H_CLOSED", "COOLDOWN", "ARCHIVED"}:
             window_reasons.append(f"token_slot_not_window_4h_closed:{window['token_state']}")
         if window_state in {"CLEAN_PROMOTED", "ALREADY_EXISTS_IDEMPOTENT"}:
             if clean_object is None:
@@ -11250,6 +11323,11 @@ def run_one_command_15m_factory(
                                     four_token_proof=True,
                                 )
                             conn.commit()
+                            _observe_consumed_cycle_selection(
+                                conn, campaign_id=str(campaign_id),
+                                campaign_run_id=str(campaign_run_id), cycle_id=cycle_id,
+                                observer=lifecycle_operation_observer,
+                            )
 
                         boundary = _run_four_token_admission_boundary(
                             connection=conn,
@@ -11681,6 +11759,9 @@ def run_one_command_15m_factory(
                                 "WINDOW_QUALITY_VALIDATED",
                             ]
                         )
+                    prior_validation_records = _prior_preclose_validation_records(pending)
+                    if len(prior_validation_records) + len(validation_kinds) >= 1000:
+                        raise ValueError("PRE_CLOSE_VALIDATION_ORDINAL_EXHAUSTED")
                     validation_records = [
                         {
                             **operation_cycle_identity,
@@ -11698,10 +11779,10 @@ def run_one_command_15m_factory(
                             ),
                         }
                         for index, validation_kind in enumerate(
-                            validation_kinds, start=1
+                            validation_kinds, start=len(prior_validation_records) + 1
                         )
                     ]
-                    result["local_validations"] = validation_records
+                    result["local_validations"] = prior_validation_records + validation_records
                     if lifecycle_operation_observer is not None:
                         for validation_record in validation_records:
                             lifecycle_operation_observer(validation_record)
@@ -12143,6 +12224,7 @@ def run_one_command_15m_factory(
                                 standard_four_hour_campaign=standard_four_hour_campaign,
                                 operational_db_binding=(
                                     operational_database_target_binding
+                                    or disposable_public_composition_proof_binding
                                 ),
                                 canonical_authoritative_db_path=str(canonical),
                                 cancellation_probe=_first_hour_cancellation_reason,
@@ -12237,6 +12319,7 @@ def run_one_command_15m_factory(
                                 standard_four_hour_campaign=standard_four_hour_campaign,
                                 operational_db_binding=(
                                     operational_database_target_binding
+                                    or disposable_public_composition_proof_binding
                                 ),
                                 canonical_authoritative_db_path=str(canonical),
                                 cancellation_probe=(
@@ -12383,7 +12466,10 @@ def run_one_command_15m_factory(
                             continuation_seconds=_continuation_seconds,
                             cycle_id=owned_proof_cycle_id,
                             standard_four_hour_campaign=standard_four_hour_campaign,
-                            operational_db_binding=operational_database_target_binding,
+                            operational_db_binding=(
+                                operational_database_target_binding
+                                or disposable_public_composition_proof_binding
+                            ),
                             canonical_authoritative_db_path=str(canonical),
                             cancellation_probe=(
                                 _exception_predecessor_cancellation_reason
@@ -12435,7 +12521,10 @@ def run_one_command_15m_factory(
                             else cycle_id
                         ),
                         factory_run_id=str(run_id),
-                        operational_db_binding=operational_database_target_binding,
+                        operational_db_binding=(
+                            operational_database_target_binding
+                            or disposable_public_composition_proof_binding
+                        ),
                         canonical_authoritative_db_path=str(canonical),
                         cancellation_probe=_progression_cancellation_reason,
                     )

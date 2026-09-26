@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 import json
 import re
 import sqlite3
-from typing import Any, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from printer_v1.operator_cli.cadence_authority import (
     CADENCE_AUTHORITY_RESOLVED,
@@ -22,10 +22,15 @@ from printer_v1.operator_cli.campaign_supervision import inspect_campaign_superv
 from printer_v1.operator_cli.multi_cycle_campaign_coordinator import (
     MultiCycleCampaignBinding,
 )
+if TYPE_CHECKING:
+    from printer_v1.operator_cli.window_15m_disposable_public_composition_proof import (
+        DisposablePublicCompositionProofBinding,
+    )
+
 from printer_v1.operator_cli.operational_database_target_binding import (
     OperationalDatabaseTargetBinding,
     load_durable_operational_database_target_expectation,
-    validate_operational_database_target_binding,
+    validate_campaign_runtime_database_binding,
 )
 from printer_v1.operator_cli.proof_db_schema_readiness import (
     validate_runtime_schema_connection,
@@ -789,7 +794,7 @@ def evaluate_standard_4h_progression(
     campaign_run_id: str,
     cycle_id: str,
     factory_run_id: str,
-    operational_db_binding: OperationalDatabaseTargetBinding | None,
+    operational_db_binding: OperationalDatabaseTargetBinding | DisposablePublicCompositionProofBinding | None,
     canonical_authoritative_db_path: str,
     cancellation_probe: Any | None = None,
     now: str | None = None,
@@ -888,7 +893,7 @@ def evaluate_standard_4h_progression(
         configuration_id=configuration_id,
         shared_admitted_cycle_scope=True,
     )
-    binding_reason = validate_operational_database_target_binding(
+    binding_reason = validate_campaign_runtime_database_binding(
         operational_db_binding,
         actual_db_path=db_path,
         canonical_authoritative_db_path=canonical_authoritative_db_path,
@@ -1387,7 +1392,7 @@ def commit_standard_4h_progression_handoff(
     factory_run_id: str,
     db_path: str,
     configuration_id: str,
-    operational_db_binding: OperationalDatabaseTargetBinding | None,
+    operational_db_binding: OperationalDatabaseTargetBinding | DisposablePublicCompositionProofBinding | None,
     canonical_authoritative_db_path: str,
     cancellation_probe: Any | None = None,
     now: str | None = None,
@@ -1471,7 +1476,7 @@ def commit_standard_4h_progression_handoff(
         configuration_id=configuration_id,
         shared_admitted_cycle_scope=True,
     )
-    binding_reason = validate_operational_database_target_binding(
+    binding_reason = validate_campaign_runtime_database_binding(
         operational_db_binding,
         actual_db_path=db_path,
         canonical_authoritative_db_path=canonical_authoritative_db_path,
@@ -1639,7 +1644,7 @@ def commit_standard_4h_progression_handoff(
         )
 
     def _atomic_precondition(atomic_connection: sqlite3.Connection) -> None:
-        atomic_binding_reason = validate_operational_database_target_binding(
+        atomic_binding_reason = validate_campaign_runtime_database_binding(
             operational_db_binding,
             actual_db_path=db_path,
             canonical_authoritative_db_path=canonical_authoritative_db_path,

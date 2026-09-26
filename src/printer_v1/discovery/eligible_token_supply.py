@@ -1472,6 +1472,7 @@ def run_persistent_eligible_token_supply(
     cooperative_resume: bool = False,
     prior_source_operations_used: int = 0,
     prior_source_request_coverage: Sequence[Mapping[str, Any]] | None = None,
+    prior_stage_reported_request_ids: Sequence[int] | None = None,
     cooperative_quantum: bool = False,
     cooperative_phase: str | None = None,
     cooperative_stage_budget: StageBudget | None = None,
@@ -1534,6 +1535,10 @@ def run_persistent_eligible_token_supply(
             if not isinstance(entry, Mapping):
                 raise EligibleTokenSupplyError("INVALID_PRIOR_SOURCE_REQUEST_COVERAGE")
             prior_source_request_coverage_rows.append(dict(entry))
+
+    prior_reported_ids = list(prior_stage_reported_request_ids or ())
+    if any(type(value) is not int or value <= 0 for value in prior_reported_ids):
+        raise EligibleTokenSupplyError("INVALID_PRIOR_STAGE_REPORTED_REQUEST_IDS")
 
     direct_acquisition_mode = str(cooperative_direct_mode or LIVE_TAIL_MODE)
     if direct_acquisition_mode not in DIRECT_ACQUISITION_MODES:
@@ -2516,6 +2521,9 @@ def run_persistent_eligible_token_supply(
 
             coverage = _current_source_request_coverage()
             diagnostics: dict[str, Any] = {
+                # Preserve reports from earlier Scheduler quanta independently
+                # of coverage; reconciliation still proves both against SQLite.
+                "stage_reported_request_ids": list(prior_reported_ids),
                 "campaign_source_request_coverage": coverage,
                 "dexscreener_locator": locator,
                 "direct_migration_discovery": discovery,
@@ -4357,6 +4365,7 @@ def run_persistent_eligible_token_supply(
             "final_refresh_source_request_coverage": (
                 _final_refresh_source_request_coverage()
             ),
+            "stage_reported_request_ids": list(prior_reported_ids),
             "campaign_source_request_coverage": _current_source_request_coverage(),
             "discovery_request_key_prefix": discovery_request_key_prefix,
             **(

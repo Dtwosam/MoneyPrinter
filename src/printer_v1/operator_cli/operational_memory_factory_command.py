@@ -3188,6 +3188,7 @@ def _apply_full_run_campaign_acceptance(
     forbidden_deltas: Mapping[str, int],
     accounting_owner: Any | None = None,
     accounting_stage_evidence_owner: Any | None = None,
+    accounting_stage_evidence_owner_for_cycle: Any | None = None,
     accounting_projection_factory: Any | None = None,
     action_local_ledger: Any | None = None,
     runtime_terminal_status: str | None = None,
@@ -3290,6 +3291,7 @@ def _apply_full_run_campaign_acceptance(
                 forbidden_capability_deltas=dict(forbidden_deltas or {}),
                 four_token_proof_owned=bool(four_token_proof_owned),
                 stage_evidence_owner=accounting_stage_evidence_owner,
+                stage_evidence_owner_for_cycle=accounting_stage_evidence_owner_for_cycle,
                 accounting_projection_factory=accounting_projection_factory,
             )
         finally:
@@ -3977,14 +3979,19 @@ def _run_operational_campaign(
 
     def _observe_lifecycle_operation(record: Mapping[str, Any]) -> None:
         lifecycle_operation_records.append(dict(record))
-        observe_lifecycle_action(record)
+        if record.get("boundary") == "DISCOVERY_SELECTION_TERMINAL":
+            _observe_full_run_stage(record)
+        else:
+            observe_lifecycle_action(record)
 
     def _observe_transport_identity(identity: Any) -> None:
-        action_local_ledger.observe_transport(identity)
-        if hasattr(identity, "as_dict"):
-            action_local_transport_identities.append(identity.as_dict())
-        elif isinstance(identity, Mapping):
-            action_local_transport_identities.append(dict(identity))
+        record = identity.as_dict() if hasattr(identity, "as_dict") else dict(identity)
+        measured_cycle = str(record.get("cycle_id") or cycle_id)
+        cycle_accounting_registry.owner_for_cycle(measured_cycle)
+        # Context provenance only: canonical transport identity stays unchanged.
+        record["cycle_id"] = measured_cycle
+        action_local_ledger.observe_transport(record)
+        action_local_transport_identities.append(record)
 
     def _observe_local_validation_identity(identity: Any) -> None:
         action_local_ledger.observe_local_validation(identity)
@@ -4004,17 +4011,19 @@ def _run_operational_campaign(
             started_at=_iso(),
         )
 
-    def _seal_holder_stage(ledger, status: str, cause: str | None):
-        return _seal_holder_accounting_stage(
-            campaign_id=command.campaign_id,
-            run_id=command.run_id,
-            cycle_id=cycle_id,
-            stage_sequence=campaign_units.sealed_stage_count + 1,
-            ledger=ledger,
-            status=status,
-            cause=cause,
-            evidence_sink=_campaign_stage_evidence_sink,
-        )
+    def _holder_sealer_for_cycle(bound_cycle_id: str):
+        def seal(ledger, status: str, cause: str | None):
+            holder_owner = cycle_accounting_registry.owner_for_cycle(bound_cycle_id)
+            return _seal_holder_accounting_stage(
+                campaign_id=command.campaign_id, run_id=command.run_id,
+                cycle_id=bound_cycle_id,
+                stage_sequence=holder_owner.sealed_stage_count + 1,
+                ledger=ledger, status=status, cause=cause,
+                evidence_sink=cycle_accounting_registry.stage_evidence_sink_for_cycle(bound_cycle_id),
+            )
+        return seal
+
+    _seal_holder_stage = _holder_sealer_for_cycle(cycle_id)
 
     def _observe_full_run_stage(record: Mapping[str, Any]) -> None:
         from printer_v1.sources.campaign_six_unit_accounting import (
@@ -4026,6 +4035,7 @@ def _run_operational_campaign(
         )
         stage_observer_state["invoked"] = True
         stage_id = str(record["stage_id"])
+        stage_cycle_id = str(record.get("cycle_id") or cycle_id)
         schedulers = [
             SchedulerWorkIdentity(
                 stage_id=stage_id,
@@ -4050,7 +4060,7 @@ def _run_operational_campaign(
         for identity in validations:
             action_local_ledger.observe_local_validation(identity)
         try:
-            campaign_units.ingest_stage_evidence(
+            cycle_accounting_registry.owner_for_cycle(stage_cycle_id).ingest_stage_evidence(
                 seal_campaign_stage_evidence(
                     stage_id=stage_id,
                     stage_kind="DISCOVERY_SELECTION_SCHEDULER",
@@ -4063,7 +4073,7 @@ def _run_operational_campaign(
                     ),
                     campaign_id=command.campaign_id,
                     run_id=command.run_id,
-                    cycle_id=cycle_id,
+                    cycle_id=stage_cycle_id,
                     evidence={
                         "evidence_kind": "CAMPAIGN_SIX_UNIT_EVIDENCE_V1",
                         "transport_operations": [],
@@ -4363,6 +4373,7 @@ def _run_operational_campaign(
                         ),
                     )
                 ),
+                holder_stage_evidence_sealer_for_cycle=_holder_sealer_for_cycle,
                 holder_stage_evidence_sealer=(
                     _seal_holder_stage
                     if _holder_stage_evidence_sealer_required(
@@ -4705,6 +4716,7 @@ def _run_operational_campaign(
             forbidden_deltas=dict(lifecycle.get("forbidden_deltas") or {}),
             accounting_owner=campaign_accounting_projection,
             accounting_stage_evidence_owner=campaign_units,
+            accounting_stage_evidence_owner_for_cycle=cycle_accounting_registry.owner_for_cycle,
             accounting_projection_factory=campaign_accounting_projection_factory,
             action_local_ledger=terminal_accounting_scope.action_local_ledger,
             runtime_terminal_status=(

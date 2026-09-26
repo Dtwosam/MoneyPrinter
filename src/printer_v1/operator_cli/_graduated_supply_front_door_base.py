@@ -790,6 +790,7 @@ def build_graduated_supply(
     migration_transport: Callable[[Any], Mapping[str, Any]],
     verifier_transport_factory: Callable[[str, str], Callable[[Any], Mapping[str, Any]]]
     | None = None,
+    protocol_account_batch_transport: Callable[[Any], Mapping[str, Any]] | None = None,
     dexscreener_transport_factory: Callable[[str, str], Callable[[Any], Mapping[str, Any]]]
     | None = None,
     dexscreener_batch_transport_factory: Callable[
@@ -830,6 +831,7 @@ def build_graduated_supply(
     cooperative_resume: bool = False,
     prior_source_operations_used: int = 0,
     prior_source_request_coverage: Sequence[Mapping[str, Any]] | None = None,
+    prior_stage_reported_request_ids: Sequence[int] | None = None,
     cooperative_quantum: bool = False,
     cooperative_phase: str | None = None,
     cooperative_stage_budget: Any | None = None,
@@ -930,6 +932,7 @@ def build_graduated_supply(
         cycle_seed=cycle_seed,
         migration_transport=migration_transport,
         verifier_transport_factory=verifier_transport_factory,
+        protocol_account_batch_transport=protocol_account_batch_transport,
         dexscreener_transport_factory=dexscreener_transport_factory,
         dexscreener_batch_transport_factory=dexscreener_batch_transport_factory,
         geckoterminal_reconciliation_transport_factory=(
@@ -981,6 +984,7 @@ def build_graduated_supply(
         cooperative_resume=cooperative_resume,
         prior_source_operations_used=prior_source_operations_used,
         prior_source_request_coverage=prior_source_request_coverage,
+        prior_stage_reported_request_ids=prior_stage_reported_request_ids,
         cooperative_quantum=cooperative_quantum,
         cooperative_phase=cooperative_phase,
         cooperative_stage_budget=cooperative_stage_budget,

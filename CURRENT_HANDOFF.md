@@ -9,39 +9,35 @@ WINDOW_5M is support-only; WINDOW_12H/24H and decision/trading surfaces stay loc
 
 ## Latest meaningful result
 
-The four-token audit found a final acceptance gate hardcoded to two NORMAL lanes.
-It now validates exact per-token 15m cadence from the frozen lane policy, including
-FAST and mixed lanes. Missing, extra or conflicting evidence still blocks PASS.
-Disposable regressions cover all lane combinations, negative evidence and durable
-mixed/FAST finalizer acceptance. See `docs/four-token-audit-repairs.md`.
-The SQLite reader-contention regression also uses a package-qualified import and
-passes under the default interpreter invocation without custom PYTHONPATH.
+The four-token repair now reaches canonical CAMPAIGN_PASS through raw offline
+nomination, governed acquisition, two-cycle admission and real 15m/1h/4h memory
+production. Four distinct tokens produce 12 clean episode/fingerprint pairs;
+per-cycle six-unit accounting matches, owned work drains and the lease releases.
 
-The natural-memory four-token test exposed and verified a second P1 repair: both
-4H close paths now bind exact physical ownership before independent quality
-readers. Binding leaves CLOSE_PENDING; only the real quality and terminal owners
-can declare success. The offline integration passed through two cycles, four
-clean 4H episode/fingerprint pairs, terminal zero-state and released lease without
-fixture-driven quality promotion. Related stale close fixtures were corrected.
+Repairs cover lane-specific acceptance, physical 4H ownership before quality reads,
+cooperative discovery evidence handoff, both cycles' stage sealing and selection
+capture, pre-close validation occurrence history, transport/holder cycle attribution,
+and lawful post-close cooldown/archival. Disposable runtime bindings retain exact
+identity checks and cannot satisfy operational authorization.
+
+The final raw public-composition regression passed in 535.91 seconds, including
+canonical CAMPAIGN_PASS and report-only replay with unchanged DB and artifact
+bytes. The replay reader no longer appends to terminal attribution evidence;
+runtime attribution stays active. Focused regression groups also pass. See
+`docs/four-token-audit-repairs.md` for mechanisms, verification and limits.
 
 ## Proven blockers and limits
 
-The reproduced cadence and 4H binding blockers are repaired. Full
-acquisition-to-canonical-report proof is not yet established: the natural-memory
-case still starts from prevalidated selection/candidate evidence. The legacy
-fixture is explicitly labeled orchestration-only. See the repair document for
-the remaining public-composition proof design and verified boundaries.
-
-Historical primary failure remains LEASE_RENEWAL_SQLITE_LOCKED; the exact lock
-holder is NOT PROVEN. The secondary fresh-transaction defect was already repaired.
-Historical six-unit evidence is incomplete and must never be reconstructed.
-The user reports the dedicated historical cleanup completed; this development
-repair has not re-read or modified authoritative operational state. Consumed
+No operational readiness or universal provider/crash-interleaving claim is made.
+The raw proof uses the offline market-nomination/present-pool branch. Historical
+LEASE_RENEWAL_SQLITE_LOCKED lock-holder attribution remains NOT PROVEN; the old
+secondary transaction defect was already repaired. Historical missing six-unit
+evidence must never be reconstructed. This repair did not inspect or mutate the
+authoritative DB or repeat the user-reported historical cleanup. Consumed
 operational authorizations remain permanently non-reusable.
 
 ## Exact next permitted action
 
-Extend the disposable public-composition fixture through governed acquisition,
-natural memory, measured six-unit accounting and accepted canonical report. No
-operational launch, provider call, authorization, cleanup, retry or resume is
-permitted by this development task.
+Continue ordinary development or focused review using disposable offline state.
+No proven blocker remains on the tested four-token path. No operational launch,
+provider call, authorization, cleanup, retry or resume is permitted by this task.

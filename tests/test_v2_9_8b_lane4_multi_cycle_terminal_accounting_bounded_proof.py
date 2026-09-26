@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import hashlib
+import hashlib
 import json
 from pathlib import Path
 import sqlite3
@@ -265,7 +266,75 @@ class Lane4ProofDB:
             now=NOW,
             slots=slots,
         )
+        self._seed_selection_provenance(cycle_id, ordinal, slots)
         return slots
+
+    def _seed_selection_provenance(self, cycle_id, ordinal, slots):
+        """Seed explicit selection inputs for this bounded terminal-reader fixture.
+
+        This fixture does not exercise acquisition. The public offline proof does.
+        """
+        if ordinal == 1:
+            batch = "lane4-bounded-selection"
+            self.connection.execute(
+                "INSERT INTO printer_selection_batches(batch_id,selected_count) VALUES (?,2)",
+                (batch,),
+            )
+            self.connection.execute(
+                "UPDATE printer_memory_factory_runs SET selection_batch_id=? WHERE run_id=?",
+                (batch, FACTORY_RUN),
+            )
+            for slot in slots:
+                self.connection.execute(
+                    "INSERT INTO printer_selection_batch_items("
+                    "batch_id,item_status,token_id,pair_id,token_mint,pair_address,tracking_lane) "
+                    "VALUES (?,'SELECTED',?,?,?,?,'TRACK_NORMAL')",
+                    (batch, slot["token_row_id"], slot["pair_row_id"],
+                     slot["mint_identity"], slot["pair_identity"]),
+                )
+        elif ordinal == 2:
+            attempt = "lane4-bounded-consumed-attempt"
+            job_id = self._next_id()
+            self.connection.execute(
+                "INSERT INTO printer_scheduler_jobs(id,job_name,job_kind,status,scheduled_for,finished_at) "
+                "VALUES (?,?,'PRE_ADMISSION_DISCOVERY_SELECTION','SUCCEEDED',?,?)",
+                (job_id, attempt, NOW, NOW),
+            )
+            facts = dict(
+                attempt_id=attempt, campaign_id=CAMPAIGN, campaign_run_id=CAMPAIGN_RUN,
+                configuration_id=CONFIGURATION, authoritative_factory_run_id=FACTORY_RUN,
+                proposed_cycle_ordinal=2, proposed_cycle_id=cycle_id,
+                scheduler_job_id=job_id, cycle_cutoff=NOW, evaluated_at=NOW,
+                selection_seed_identity="bounded-selection-seed", attempt_state="CONSUMED",
+                first_terminal_cause="PAIR_READY", terminal_at=NOW,
+                consumed_cycle_id=cycle_id, consumed_at=NOW, created_at=NOW, updated_at=NOW,
+            )
+            self._insert_fixture_row("printer_pre_admission_discovery_attempts", facts)
+            for slot in slots:
+                evidence = json.dumps({"fixture": "bounded-terminal-reader", "slot": slot}, sort_keys=True)
+                digest = hashlib.sha256(evidence.encode()).hexdigest()
+                facts = {key: slot[key] for key in (
+                    "slot_ordinal", "token_identity", "token_row_id", "mint_identity",
+                    "pair_identity", "pair_row_id", "lifecycle_identity",
+                )}
+                facts.update(
+                    attempt_id=attempt, canonical_market_identity=slot["pair_identity"],
+                    canonical_pool_identity=slot["pair_identity"],
+                    canonical_evidence_json=evidence, canonical_evidence_hash=digest,
+                    evidence_version="BOUNDED_TERMINAL_FIXTURE_V1", observed_at=NOW, created_at=NOW,
+                    frozen_tracking_lane="TRACK_NORMAL", frozen_discovery_action="TRACK_NORMAL",
+                    frozen_discovery_label="NORMAL", frozen_classification_reason="BOUNDED_FIXTURE",
+                    frozen_lane_evidence_hash=digest, frozen_lane_decided_at=NOW,
+                    frozen_lane_decision_owner="bounded-terminal-reader-fixture",
+                )
+                self._insert_fixture_row("printer_pre_admission_discovery_attempt_items", facts)
+        self.connection.commit()
+
+    def _insert_fixture_row(self, table, facts):
+        self.connection.execute(
+            f"INSERT INTO {table} ({','.join(facts)}) VALUES ({','.join('?' for _ in facts)})",
+            tuple(facts.values()),
+        )
 
     def _memory_window(
         self,
@@ -1203,7 +1272,7 @@ def test_summary_failure_does_not_rewrite_durable_report(proof_db: Lane4ProofDB)
 
 
 def test_report_only_returns_persisted_aggregate_without_writes(
-    proof_db: Lane4ProofDB,
+    proof_db: Lane4ProofDB, request,
 ) -> None:
     proof_db.seed_complete_cycle(CYCLE_1, 1, clean=True)
     proof_db.seed_complete_cycle(CYCLE_2, 2, clean=True)
@@ -1221,6 +1290,17 @@ def test_report_only_returns_persisted_aggregate_without_writes(
         cleanup={"cleanup_complete": True, "lease_released": True, "active_work": 0},
     )
     write_campaign_terminal_summary(proof_db.summary_path, summary=summary)
+    from printer_v1.db.sqlite_write_contracts import (
+        activate_writer_attribution, active_writer_attribution,
+        connect_attributed, deactivate_writer_attribution,
+    )
+    trace_path = proof_db.root / "sqlite-writer-attribution.json"
+    timeline = activate_writer_attribution(proof_db.db_path, artifact_path=trace_path)
+    request.addfinalizer(lambda: deactivate_writer_attribution(proof_db.db_path))
+    reader = connect_attributed(proof_db.db_path, connection_role="REGRESSION_SETUP")
+    reader.execute("SELECT 1").fetchall()
+    reader.close()
+    trace_before = trace_path.read_bytes()
     db_hash_before = hashlib.sha256(proof_db.db_path.read_bytes()).hexdigest()
     jobs_before = int(
         proof_db.connection.execute(
@@ -1252,6 +1332,9 @@ def test_report_only_returns_persisted_aggregate_without_writes(
         )
         == jobs_before
     )
+
+    assert trace_path.read_bytes() == trace_before
+    assert active_writer_attribution(proof_db.db_path) is timeline
 
 
 def test_report_only_blocks_missing_report_and_mismatched_summary(

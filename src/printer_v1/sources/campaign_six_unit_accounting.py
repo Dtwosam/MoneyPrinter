@@ -1403,9 +1403,10 @@ class CampaignActionLocalLedger:
     def slice_for_cycle(self, cycle_id: str) -> "CampaignActionLocalLedger":
         """Return the exact cycle-bearing action-local evidence slice.
 
-        Stage identity, not token id or list position, owns the partition.  The
-        returned ledger is an independent verification view and cannot ingest
-        evidence into the campaign ledger.
+        Cycle-bearing stages or explicit measurement-time cycle provenance own
+        the partition; token identity and list position never do. The returned
+        ledger is an independent verification view and cannot ingest evidence
+        into the campaign ledger.
         """
         exact_cycle = _require_nonempty_text(cycle_id, field_name="cycle_id")
         sliced = CampaignActionLocalLedger(
@@ -1418,6 +1419,7 @@ class CampaignActionLocalLedger:
             dict(item)
             for item in self.transport_identities
             if self._stage_belongs_to_cycle(item.get("stage"), exact_cycle)
+            or str(item.get("cycle_id") or "") == exact_cycle
         ]
         sliced.scheduler_work_identities = [
             dict(item)
@@ -1445,11 +1447,16 @@ class CampaignActionLocalLedger:
     def observe_transport(
         self, identity: TransportOperationIdentity | Mapping[str, Any]
     ) -> None:
-        self.transport_identities.append(
+        record = (
             identity.as_dict()
             if isinstance(identity, TransportOperationIdentity)
             else dict(identity)
         )
+        explicit_cycle = str(record.get("cycle_id") or "")
+        stage_parts = str(record.get("stage") or "").split("|")
+        if explicit_cycle and len(stage_parts) >= 3 and stage_parts[2] != explicit_cycle:
+            raise CampaignSixUnitError("ACTION_LOCAL_TRANSPORT_CYCLE_CONFLICT")
+        self.transport_identities.append(record)
 
     def observe_scheduler_work(
         self, identity: SchedulerWorkIdentity | Mapping[str, Any]

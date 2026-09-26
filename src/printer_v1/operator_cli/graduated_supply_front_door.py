@@ -1,7 +1,8 @@
 """V2-9.8B corrective adapter for graduated candidate-supply composition.
 
-The exact pre-repair implementation is preserved byte-for-byte in
-``_graduated_supply_front_door_base``.  This adapter owns only two bounded
+The original implementation lives in ``_graduated_supply_front_door_base``,
+including explicit transport injection forwarded to the governed owner.
+This adapter owns only two bounded
 correctives proven by the consumed Cycle-2 audit:
 
 * rejoin immutable direct-Pump graduation evidence for an exact historical

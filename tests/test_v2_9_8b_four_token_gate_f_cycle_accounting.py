@@ -7,6 +7,9 @@ from unittest.mock import patch
 from printer_v1.operator_cli.four_token_proof_integration import (
     aggregate_four_token_cycle_acceptance,
 )
+from printer_v1.operator_cli.multi_cycle_memory_growth import (
+    scaled_standard_four_hour_capacity_contract,
+)
 from printer_v1.operator_cli.one_command_15m_factory import (
     _standard_four_hour_cumulative_budget_for_run,
 )
@@ -20,7 +23,11 @@ def _db() -> sqlite3.Connection:
         CREATE TABLE printer_memory_factory_runs(run_id TEXT PRIMARY KEY,config_json TEXT);
         CREATE TABLE printer_memory_factory_campaign_token_slots(
             campaign_id TEXT,run_id TEXT,cycle_id TEXT,token_slot_id TEXT,
-            token_row_id INTEGER,pair_row_id INTEGER,slot_ordinal INTEGER
+            token_row_id INTEGER,pair_row_id INTEGER,slot_ordinal INTEGER,
+            tracking_queue_id INTEGER
+        );
+        CREATE TABLE printer_tracking_queue(
+            id INTEGER PRIMARY KEY,token_id INTEGER,pair_id INTEGER,tracking_lane TEXT
         );
         CREATE TABLE printer_memory_factory_run_steps(
             id INTEGER PRIMARY KEY,run_id TEXT,token_id INTEGER,pair_id INTEGER,
@@ -42,9 +49,13 @@ def _db() -> sqlite3.Connection:
             token_id = ordinal * 10 + slot
             pair_id = ordinal * 100 + slot
             connection.execute(
-                "INSERT INTO printer_memory_factory_campaign_token_slots VALUES (?,?,?,?,?,?,?)",
+                "INSERT INTO printer_memory_factory_campaign_token_slots VALUES (?,?,?,?,?,?,?,?)",
                 ("campaign-1", "campaign-run-1", cycle, f"{cycle}-slot-{slot}",
-                 token_id, pair_id, slot),
+                 token_id, pair_id, slot, token_id),
+            )
+            connection.execute(
+                "INSERT INTO printer_tracking_queue VALUES (?,?,?,?)",
+                (token_id, token_id, pair_id, "TRACK_NORMAL"),
             )
             connection.execute(
                 "INSERT INTO printer_memory_factory_run_steps VALUES (?,?,?,?,?,?,?)",
@@ -143,7 +154,10 @@ def test_aggregate_acceptance_rejects_derived_capacity_or_step_ownership_breach(
         "long_windows_activated": False,
     }
     over = _cycle(2)
-    over["accounting_package"]["scheduler_jobs"] = 221
+    ceiling = scaled_standard_four_hour_capacity_contract(4)[
+        "lifecycle_scheduler_outer_ceiling"
+    ]
+    over["accounting_package"]["scheduler_jobs"] = int(ceiling) - 200 + 1
     try:
         aggregate_four_token_cycle_acceptance([_cycle(1), over], shared=shared)
     except ValueError as exc:

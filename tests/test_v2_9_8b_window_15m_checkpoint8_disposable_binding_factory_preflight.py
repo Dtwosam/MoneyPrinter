@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import inspect
 import sqlite3
@@ -34,7 +35,7 @@ from printer_v1.operator_cli.window_15m_disposable_public_composition_proof impo
     build_disposable_public_composition_proof_plan,
 )
 
-import test_v2_9_7e_8_origin_to_lifecycle_integration as e8
+from tests import test_v2_9_7e_8_origin_to_lifecycle_integration as e8
 
 
 CORPUS_REASON = "operational persistent mode requires the authoritative corpus"
@@ -261,11 +262,16 @@ def test_dtw51_owner_driver_call_includes_disposable_binding_kw() -> None:
     source = Path(
         "src/printer_v1/operator_cli/authoritative_live_operational_campaign.py"
     ).read_text(encoding="utf-8")
-    # Narrow textual contract: lifecycle handoff forwards disposable binding.
-    assert "disposable_public_composition_proof_binding=" in source
-    # Must appear near the driver.run operational_database_target_binding forward.
-    idx_driver = source.find("result = self._driver.run(")
-    assert idx_driver != -1
-    window = source[idx_driver : idx_driver + 900]
-    assert "operational_database_target_binding=" in window
-    assert "disposable_public_composition_proof_binding=" in window
+    calls = [
+        node for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "run"
+        and isinstance(node.func.value, ast.Attribute)
+        and node.func.value.attr == "_driver"
+    ]
+    assert calls
+    for call in calls:
+        keywords = {keyword.arg for keyword in call.keywords}
+        assert "operational_database_target_binding" in keywords
+        assert "disposable_public_composition_proof_binding" in keywords

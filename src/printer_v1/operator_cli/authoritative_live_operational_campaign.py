@@ -3953,6 +3953,7 @@ class AuthoritativeLiveOperationalCampaignOwner:
             Callable[[], Mapping[str, Any]] | None
         ) = None,
         holder_stage_evidence_sealer: Callable[[Any, str, str | None], Mapping[str, Any]] | None = None,
+        holder_stage_evidence_sealer_for_cycle: Callable[[str], Callable[..., Mapping[str, Any]]] | None = None,
         operational_database_target_binding: Any | None = None,
         disposable_public_composition_proof_binding: Any | None = None,
         # V2-9.8B Post-DTW98 bounded pre-lifecycle temporal acquisition. The
@@ -4118,10 +4119,18 @@ class AuthoritativeLiveOperationalCampaignOwner:
                         later_supply_kwargs["stage_evidence_sink"] = (
                             later_cycle_stage_evidence_sink
                         )
+                    def observe_later_transport(identity: Any) -> None:
+                        if transport_identity_observer is None:
+                            return
+                        record = identity.as_dict() if hasattr(identity, "as_dict") else dict(identity)
+                        measured_cycle = str(context["proposed_cycle_id"])
+                        if record.get("cycle_id") not in (None, measured_cycle):
+                            raise LiveOperationalError("LATER_CYCLE_TRANSPORT_SCOPE_MISMATCH")
+                        record["cycle_id"] = measured_cycle
+                        transport_identity_observer(record)
+
                     if transport_identity_observer is not None:
-                        later_supply_kwargs["transport_identity_observer"] = (
-                            transport_identity_observer
-                        )
+                        later_supply_kwargs["transport_identity_observer"] = observe_later_transport
                     if local_validation_identity_observer is not None:
                         later_supply_kwargs["local_validation_identity_observer"] = (
                             local_validation_identity_observer
@@ -4176,9 +4185,13 @@ class AuthoritativeLiveOperationalCampaignOwner:
                                 eligible_target=2,
                                 permanent_memory_observation=True,
                                 holder_transport_identity_observer=(
-                                    transport_identity_observer
+                                    observe_later_transport
+                                    if transport_identity_observer is not None else None
                                 ),
-                                holder_stage_evidence_sealer=None,
+                                holder_stage_evidence_sealer=(
+                                    holder_stage_evidence_sealer_for_cycle(str(context["proposed_cycle_id"]))
+                                    if holder_stage_evidence_sealer_for_cycle is not None else None
+                                ),
                                 campaign_request_key_root=str(
                                     supply.diagnostics.get("request_key_root") or ""
                                 ),
@@ -4466,6 +4479,9 @@ class AuthoritativeLiveOperationalCampaignOwner:
                             "prior_source_request_coverage": list(
                                 (progress or {}).get("source_request_coverage") or ()
                             ),
+                            "prior_stage_reported_request_ids": list(
+                                (progress or {}).get("stage_reported_request_ids") or ()
+                            ),
                         },
                         holder_evidence_owner=holder_evidence_owner,
                         deadline_at=later_cycle_deadline,
@@ -4489,6 +4505,9 @@ class AuthoritativeLiveOperationalCampaignOwner:
                         "WAITING_FOR_ELIGIBLE_SUPPLY",
                         "ACQUISITION_QUANTUM_YIELDED",
                     }:
+                        from printer_v1.discovery.permanent_discovery_availability import (
+                            collect_stage_reported_request_ids,
+                        )
                         diagnostics = dict(result.diagnostics or {})
                         next_phase = str(
                             diagnostics.get("next_cooperative_phase")
@@ -4520,6 +4539,9 @@ class AuthoritativeLiveOperationalCampaignOwner:
                             "stage_budget": cooperative_stage_budget,
                             "source_operations_used": int(
                                 diagnostics.get("stage_local_source_requests") or 0
+                            ),
+                            "stage_reported_request_ids": collect_stage_reported_request_ids(
+                                diagnostics
                             ),
                             "source_request_coverage": list(
                                 diagnostics.get("campaign_source_request_coverage")
@@ -4621,7 +4643,10 @@ class AuthoritativeLiveOperationalCampaignOwner:
                     db_path=command.db_path,
                     binding=health_binding,
                     first_cycle_id=cycle_id,
-                    operational_db_binding=operational_database_target_binding,
+                    operational_db_binding=(
+                        operational_database_target_binding
+                        or disposable_public_composition_proof_binding
+                    ),
                     operational_db_expected=durable_health_expectation,
                     canonical_authoritative_db_path=CANONICAL_PERSISTENT_DB,
                     supervision_id=command.supervision_id,

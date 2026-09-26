@@ -1937,9 +1937,11 @@ def replay_campaign_terminal_report(
 ) -> dict[str, Any]:
     """Deterministic zero-source report-only replay; creates no duplicate row."""
     path = Path(db_path).resolve()
-    connection = connect_attributed(
+    # Replay must not append to a completed campaign's attribution artifact.
+    # Runtime readers keep their attribution; this immutable replay is strictly
+    # read-only and does not alter the process-wide active timeline.
+    connection = sqlite3.connect(
         f"{path.as_uri()}?mode=ro", uri=True, timeout=0.0,
-        connection_role="UNIFIED_TERMINAL_READER"
     )
     connection.row_factory = sqlite3.Row
     try:

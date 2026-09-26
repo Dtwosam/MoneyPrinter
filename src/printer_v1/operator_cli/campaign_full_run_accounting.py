@@ -4330,444 +4330,16 @@ def prepare_full_run_accounting_owner(
     return mutable_owner
 
 
-def finalize_full_run_ownership_and_report(
+def _seal_cycle_lifecycle_stages(
     connection: sqlite3.Connection,
     *,
     context: OperationalLifecycleOwnershipContext,
-    owner: CampaignSixUnitOwner | CampaignSixUnitProjection,
-    action_local: CampaignActionLocalLedger,
-    execution_id: str,
-    supervision_id: Any,
-    launch_git_provenance: Mapping[str, Any],
-    db_target_identity: str,
-    runtime_terminal_status: str,
-    cleanup_result: Mapping[str, Any] | None,
-    runtime_first_terminal_cause: str | None = None,
-    queue_dispositions: Mapping[int, str] | None = None,
-    forbidden_capability_deltas: Mapping[str, int] | None = None,
-    four_token_proof_owned: bool = False,
-    stage_evidence_owner: CampaignSixUnitOwner | None = None,
-    accounting_projection_factory: Callable[[], CampaignSixUnitProjection] | None = None,
-    now: str | None = None,
-) -> dict[str, Any]:
-    """Register ownership, seal accounting, reconcile, report, and gate a run.
-
-    This is the campaign-layer full-run boundary invoked after the factory closes
-    its windows and after unified terminal cleanup has produced the durable
-    authorization/runtime/lease/active-work facts (which are passed in, never
-    assumed). Because the memory-window close commits before campaign ownership
-    can be registered, this is an explicit fail-closed compensation boundary: any
-    registration/projection/accounting fault is preserved as a block reason and
-    prevents Campaign PASS. It never rewrites factory state.
-
-    Every accounting fact is measured from durable rows:
-
-    * campaign-window ownership from the succeeded ``WINDOW_CLOSE`` steps;
-    * Scheduler ownership carrying each job's *real* ``printer_scheduler_jobs``
-      status (never a hardcoded SUCCEEDED);
-    * owner slot-stage evidence sealing the exact lifecycle source transport
-      identities (with real response bytes / normalized rows), the projected
-      transport reservations, the Scheduler work, and the exact-pair validations;
-    * every started stage on the one coordinator-created owner, with unscoped
-      owner↔action-local equality across the complete repaired manifest.
-    """
-    connection.row_factory = sqlite3.Row
-    stamp = now or datetime.now(timezone.utc).isoformat()
-    blocked_reasons: list[str] = []
-    queue_dispositions = dict(queue_dispositions or {})
-    admitted_rows = connection.execute(
-        "SELECT cycle_id,cycle_ordinal FROM printer_memory_factory_campaign_cycles "
-        "WHERE campaign_id=? AND run_id=? ORDER BY cycle_ordinal,cycle_id",
-        (context.campaign_id, context.campaign_run_id),
-    ).fetchall()
-    admitted_ids = tuple(str(row["cycle_id"]) for row in admitted_rows)
-    admitted_ordinals = tuple(int(row["cycle_ordinal"]) for row in admitted_rows)
-    multi_cycle_accounting = bool(
-        isinstance(owner, CampaignSixUnitProjection) or len(admitted_rows) > 1
-    )
-    if multi_cycle_accounting and admitted_ordinals != REQUIRED_MULTI_CYCLE_ORDINALS:
-        raise FullRunAccountingError(
-            "full-run accounting requires exact admitted ordinals 1 and 2"
-        )
-    registered_ids = (
-        tuple(owner.registered_cycle_ids)
-        if isinstance(owner, CampaignSixUnitProjection)
-        else (str(owner.cycle_id),)
-    )
-    if registered_ids != admitted_ids:
-        raise FullRunAccountingError(
-            "registered six-unit owners do not match admitted cycles"
-        )
-    cycle_contexts = tuple(
-        OperationalLifecycleOwnershipContext(
-            campaign_id=context.campaign_id,
-            campaign_run_id=context.campaign_run_id,
-            cycle_id=str(row["cycle_id"]),
-            configuration_id=context.configuration_id,
-            factory_run_id=context.factory_run_id,
-        )
-        for row in admitted_rows
-    )
-    # The Lane-4 owner applies only to the currently authorized two-cycle
-    # campaign shape. Historical single-cycle reports retain their immutable
-    # legacy accounting path and are not reinterpreted through newer
-    # stage-scoped ownership rows that did not exist when they were produced.
-    cycle_accounting = (
-        {
-            item.cycle_id: derive_cycle_terminal_accounting_result(
-                connection, context=item
-            )
-            for item in cycle_contexts
-        }
-        if multi_cycle_accounting
-        else {}
-    )
-    campaign_terminal_accounting = (
-        derive_two_cycle_campaign_terminal_accounting(
-            connection,
-            campaign_id=context.campaign_id,
-            campaign_run_id=context.campaign_run_id,
-            configuration_id=context.configuration_id,
-            factory_run_id=context.factory_run_id,
-        )
-        if multi_cycle_accounting
-        else None
-    )
-    per_cycle_six_unit_reconciliation: list[dict[str, Any]] = []
-    if isinstance(owner, CampaignSixUnitProjection):
-        for cycle_context in cycle_contexts:
-            cycle_owner = owner.owner_for_cycle(cycle_context.cycle_id)
-            cycle_action_local = action_local.slice_for_cycle(
-                cycle_context.cycle_id
-            )
-            result = reconcile_full_run_owner_to_action_local(
-                cycle_owner,
-                cycle_action_local,
-                required_stage_kinds=REQUIRED_LIFECYCLE_STAGE_KINDS,
-            )
-            per_cycle_six_unit_reconciliation.append(
-                {"cycle_id": cycle_context.cycle_id, **dict(result)}
-            )
-            if result.get("equal") is not True:
-                blocked_reasons.append(
-                    f"CYCLE_SIX_UNIT_RECONCILIATION_INCOMPLETE:"
-                    f"{cycle_context.cycle_id}"
-                )
-    expected_owner_id = (
-        f"six-unit-owner|{context.campaign_id}|{context.campaign_run_id}|"
-        f"{context.cycle_id}"
-    )
-    expected_ledger_id = (
-        f"action-local-ledger|{context.campaign_id}|{context.campaign_run_id}|"
-        f"{context.cycle_id}"
-    )
-    if not isinstance(owner, CampaignSixUnitProjection) and owner.owner_id != expected_owner_id:
-        blocked_reasons.append("FULL_RUN_ACCOUNTING_OWNER_CONTINUITY_MISMATCH")
-    valid_ledger_ids = {
-        expected_ledger_id,
-        f"action-local-ledger|{context.campaign_id}|"
-        f"{context.campaign_run_id}|CAMPAIGN",
-    }
-    if action_local.ledger_id not in valid_ledger_ids:
-        blocked_reasons.append("ACTION_LOCAL_LEDGER_CONTINUITY_MISMATCH")
-    if (
-        owner.campaign_id != context.campaign_id
-        or owner.run_id != context.campaign_run_id
-        or (
-            not isinstance(owner, CampaignSixUnitProjection)
-            and owner.cycle_id != context.cycle_id
-        )
-    ):
-        blocked_reasons.append("FULL_RUN_ACCOUNTING_OWNER_IDENTITY_MISMATCH")
-
-    primary_step_ids = (
-        tuple(
-            int(value)
-            for value in cycle_accounting[context.cycle_id]["factory_step_ids"]
-        )
-        if multi_cycle_accounting
-        else ()
-    )
-    if multi_cycle_accounting and not primary_step_ids:
-        blocked_reasons.append(
-            f"CYCLE_SCOPED_FACTORY_STEP_OWNERSHIP_MISSING:{context.cycle_id}"
-        )
-    close_step_filter = ""
-    close_step_args: tuple[Any, ...] = (context.factory_run_id,)
-    if multi_cycle_accounting:
-        close_step_placeholders = ",".join("?" for _ in primary_step_ids) or "NULL"
-        close_step_filter = f" AND id IN ({close_step_placeholders})"
-        close_step_args = (context.factory_run_id, *primary_step_ids)
-    close_steps = connection.execute(
-        f"""SELECT id, token_id, pair_id, token_mint, pair_address, tracking_lane,
-                  memory_window_id, step_key
-           FROM printer_memory_factory_run_steps
-           WHERE run_id=?
-             AND step_kind IN ('WINDOW_CLOSE','WINDOW_CLOSE_AUDIT')
-             AND step_status='SUCCEEDED'
-             {close_step_filter}
-           ORDER BY id""",
-        close_step_args,
-    ).fetchall()
-
-    token_to_window: dict[int, str] = {}
-    token_to_slot: dict[int, str] = {}
-    token_to_terminal_state: dict[int, str] = {}
-    token_to_memory: dict[int, sqlite3.Row] = {}
-    # Exact durable target identity carried from the close step + campaign slot.
-    token_to_identity: dict[int, dict[str, Any]] = {}
-    registered_windows: list[str] = []
-
-    for step in close_steps:
-        token_id = int(step["token_id"])
-        pair_id = int(step["pair_id"])
-        memory_row_id = step["memory_window_id"]
-        if memory_row_id is None:
-            blocked_reasons.append(f"CLOSE_STEP_WITHOUT_MEMORY_WINDOW:{step['id']}")
-            continue
-        slot = connection.execute(
-            """SELECT token_slot_id, lifecycle_identity, mint_identity, pair_identity,
-                      tracking_queue_id
-               FROM printer_memory_factory_campaign_token_slots
-               WHERE cycle_id=? AND token_row_id=?""",
-            (context.cycle_id, token_id),
-        ).fetchone()
-        if slot is None:
-            blocked_reasons.append(f"NO_CAMPAIGN_SLOT_FOR_TOKEN:{token_id}")
-            continue
-        token_slot_id = str(slot["token_slot_id"])
-        memory = connection.execute(
-            """SELECT id, memory_status, data_quality_label, do_not_train
-               FROM printer_memory_windows WHERE id=?""",
-            (int(memory_row_id),),
-        ).fetchone()
-        if memory is None:
-            blocked_reasons.append(f"MEMORY_WINDOW_MISSING:{memory_row_id}")
-            continue
-        terminal_state = (
-            "CLEAN_PROMOTED"
-            if str(memory["memory_status"]) == "CLEAN_MEMORY"
-            else "DIRTY"
-        )
-        # R1: the already-persisted canonical campaign window is the authority.
-        # A proof-owned precreated root carries the deterministic ``cw:``
-        # identity; a lawful legacy non-precreated close keeps the historical
-        # identity and the exact lookup below.
-        (
-            window_id,
-            canonical_window_state,
-            window_identity_blocks,
-        ) = _resolve_close_boundary_campaign_window(
-            connection,
-            context=context,
-            token_slot_id=token_slot_id,
-            token_id=token_id,
-            pair_id=pair_id,
-            memory_row_id=int(memory_row_id),
-        )
-        token_to_window[token_id] = window_id
-        token_to_slot[token_id] = token_slot_id
-        token_to_terminal_state[token_id] = terminal_state
-        token_to_memory[token_id] = memory
-        # Carry the real token/pair identity from the close step and slot — the
-        # pair id is the step's own column, never derived from the token id.
-        token_to_identity[token_id] = {
-            "token_id": token_id,
-            "token_mint": step["token_mint"] or slot["mint_identity"],
-            "pair_id": pair_id,
-            "pair_address": step["pair_address"] or slot["pair_identity"],
-            "tracking_lane": step["tracking_lane"],
-            "token_slot_id": token_slot_id,
-                "memory_window_row_id": int(memory_row_id),
-                "campaign_window_id": window_id,
-                "memory_window_id": int(memory_row_id),
-        }
-        if window_identity_blocks:
-            blocked_reasons.extend(window_identity_blocks)
-        elif canonical_window_state is not None:
-            # Verified against the canonical ownership row; never re-created.
-            terminal_state = canonical_window_state
-            token_to_terminal_state[token_id] = terminal_state
-            registered_windows.append(window_id)
-        else:
-            owned_window = connection.execute(
-                """SELECT window_state, memory_window_row_id
-                   FROM printer_memory_factory_campaign_windows
-                   WHERE window_id=? AND campaign_id=? AND run_id=? AND cycle_id=?
-                     AND token_slot_id=?""",
-                (
-                    window_id,
-                    context.campaign_id,
-                    context.campaign_run_id,
-                    context.cycle_id,
-                    token_slot_id,
-                ),
-            ).fetchone()
-            if (
-                owned_window is None
-                or owned_window["memory_window_row_id"] is None
-                or int(owned_window["memory_window_row_id"]) != int(memory_row_id)
-            ):
-                blocked_reasons.append(
-                    f"WINDOW_NOT_REGISTERED_AT_CLOSE_BOUNDARY:{token_id}"
-                )
-            else:
-                terminal_state = str(owned_window["window_state"])
-                token_to_terminal_state[token_id] = terminal_state
-                registered_windows.append(window_id)
-
-    lifecycle_step_filter = ""
-    lifecycle_step_args: tuple[Any, ...] = (context.factory_run_id,)
-    if multi_cycle_accounting:
-        lifecycle_step_placeholders = (
-            ",".join("?" for _ in primary_step_ids) or "NULL"
-        )
-        lifecycle_step_filter = f" AND s.id IN ({lifecycle_step_placeholders})"
-        lifecycle_step_args = (context.factory_run_id, *primary_step_ids)
-    lifecycle_steps = connection.execute(
-        f"""SELECT s.id, s.scheduler_job_id, s.step_kind, s.token_id, s.pair_id,
-                  s.step_key, s.scheduled_for, s.source_request_id,
-                  s.source_response_id,
-                  s.result_json, s.step_status, s.error_or_skip_reason,
-                  j.status AS scheduler_job_status,
-                  q.source_name AS request_source_name,
-                  q.request_kind AS request_kind
-           FROM printer_memory_factory_run_steps s
-           LEFT JOIN printer_scheduler_jobs j ON j.id = s.scheduler_job_id
-           LEFT JOIN printer_source_requests q ON q.id = s.source_request_id
-           LEFT JOIN printer_source_responses r ON r.id = s.source_response_id
-           WHERE s.run_id=? AND s.step_kind IN (
-               'SNAPSHOT','WINDOW_CLOSE','WINDOW_CLOSE_PRE_CLOSE_CRITICAL',
-               'WINDOW_CLOSE_EVIDENCE','WINDOW_CLOSE_CONTEXT','WINDOW_CLOSE_AUDIT'
-           )
-             AND s.scheduler_job_id IS NOT NULL
-             {lifecycle_step_filter}
-           ORDER BY s.id""",
-        lifecycle_step_args,
-    ).fetchall()
-
-    # --- Scheduler ownership carrying each job's real terminal state (§6). ---
-    projected_jobs: list[int] = []
-    verified_jobs: list[int] = []
-    lifecycle_job_states: dict[int, str] = {}
-    for step in lifecycle_steps:
-        job_id = int(step["scheduler_job_id"])
-        token_id = int(step["token_id"])
-        window_id = token_to_window.get(token_id)
-        slot_id = token_to_slot.get(token_id)
-        if window_id is None or slot_id is None:
-            blocked_reasons.append(f"SCHEDULER_PROJECTION_WITHOUT_WINDOW:{job_id}")
-            continue
-        raw_status = str(step["scheduler_job_status"] or "").upper()
-        work_state = _JOB_STATUS_TO_WORK_STATE.get(raw_status)
-        if work_state is None:
-            blocked_reasons.append(
-                f"SCHEDULER_JOB_NOT_TERMINAL:{job_id}:{raw_status or 'MISSING'}"
-            )
-            lifecycle_job_states[job_id] = raw_status or "MISSING"
-            continue
-        lifecycle_job_states[job_id] = work_state
-        # R2: one job, one owner. When the exact canonical stage-scoped owner
-        # already exists, verify it — projecting would request a second owner.
-        disposition, ownership_block = (
-            _resolve_lifecycle_scheduler_owner_disposition(
-                connection,
-                context=context,
-                scheduler_job_id=job_id,
-                token_slot_id=slot_id,
-                window_id=window_id,
-            )
-        )
-        if disposition == "BLOCKED":
-            blocked_reasons.append(str(ownership_block))
-            continue
-        if disposition == "VERIFIED":
-            verified_jobs.append(job_id)
-            continue
-        try:
-            project_campaign_scheduler_job(
-                connection,
-                scheduler_work_id=campaign_scheduler_work_id(
-                    context.campaign_id, job_id
-                ),
-                campaign_id=context.campaign_id,
-                run_id=context.campaign_run_id,
-                cycle_id=context.cycle_id,
-                factory_run_id=context.factory_run_id,
-                token_slot_id=slot_id,
-                window_id=window_id,
-                work_intent=(
-                    f"{str(step['step_kind'])}|"
-                    f"factory_run={context.factory_run_id}|job={job_id}"
-                ),
-                scheduler_job_id=job_id,
-                deadline_at=str(step["scheduled_for"]),
-                stage_id=_slot_stage_id(
-                    context,
-                    _slot_ordinal_from_step_key(str(step["step_key"])),
-                ),
-                target_category="CAMPAIGN_WINDOW",
-                target_identity=window_id,
-                source_request_id=(
-                    None
-                    if step["source_request_id"] is None
-                    else int(step["source_request_id"])
-                ),
-                source_response_id=(
-                    None
-                    if step["source_response_id"] is None
-                    else int(step["source_response_id"])
-                ),
-            )
-            projected_jobs.append(job_id)
-        except CampaignOwnershipError as exc:
-            blocked_reasons.append(f"SCHEDULER_PROJECTION_FAILED:{job_id}:{exc}")
-
-    run_config_row = connection.execute(
-        "SELECT config_json FROM printer_memory_factory_runs WHERE run_id=?",
-        (context.factory_run_id,),
-    ).fetchone()
-    try:
-        run_config = json.loads(
-            "{}" if run_config_row is None else str(run_config_row["config_json"])
-        )
-    except (TypeError, json.JSONDecodeError):
-        run_config = {}
-    standard_four_hour_campaign = (
-        run_config.get("standard_four_hour_campaign") is True
-    )
-    # R3: inside the already-approved proof-aware context only, thread the exact
-    # proof-owned factory step identities so the canonical bare WINDOW_15M root
-    # stage is accepted for those steps and no others.
-    proof_root_stage_step_ids: tuple[int, ...] | None = None
-    if four_token_proof_owned:
-        from printer_v1.operator_cli.four_token_proof_integration import (
-            cycle_scoped_factory_step_ids,
-        )
-
-        proof_root_stage_step_ids = cycle_scoped_factory_step_ids(
-            connection,
-            campaign_id=context.campaign_id,
-            campaign_run_id=context.campaign_run_id,
-            factory_run_id=context.factory_run_id,
-            cycle_id=context.cycle_id,
-        )
-    scheduler_ownership = _load_terminal_scheduler_correspondence(
-        connection,
-        context=context,
-        standard_four_hour_campaign=standard_four_hour_campaign,
-        factory_step_ids=(primary_step_ids if multi_cycle_accounting else None),
-        proof_root_stage_step_ids=proof_root_stage_step_ids,
-    )
-    lawful_skipped_preclose_job_ids = {
-        int(job_id)
-        for job_id in (
-            scheduler_ownership.get("lawful_skipped_preclose_job_ids") or ()
-        )
-    }
-
+    lifecycle_steps: Sequence[sqlite3.Row],
+    lawful_skipped_preclose_job_ids: set[int],
+    blocked_reasons: list[str],
+) -> tuple[list[Mapping[str, Any]], int, int]:
+    """Seal one cycle from its durable execution-time evidence only."""
     # --- Seal the four approved mandatory stages from durable evidence. ---
-    slot_stage_ids: list[str] = []
     by_ordinal: dict[int, list[sqlite3.Row]] = {1: [], 2: []}
     for step in lifecycle_steps:
         by_ordinal[_slot_ordinal_from_step_key(str(step["step_key"]))].append(step)
@@ -4780,7 +4352,6 @@ def finalize_full_run_ownership_and_report(
         if not steps:
             continue
         stage_id = _slot_stage_id(context, ordinal)
-        slot_stage_ids.append(stage_id)
         ledger = MeasuredTransportLedger(
             campaign_id=context.campaign_id,
             run_id=context.campaign_run_id,
@@ -4970,17 +4541,503 @@ def finalize_full_run_ownership_and_report(
         )
         sealed_slot_stage_evidences.append(sealed)
 
-    owner = prepare_full_run_accounting_owner(
-        owner,
-        sealed_stage_evidences=sealed_slot_stage_evidences,
-        stage_evidence_owner=stage_evidence_owner,
-        accounting_projection_factory=accounting_projection_factory,
+    return sealed_slot_stage_evidences, sealed_transport_count, lifecycle_source_request_count
+
+
+def _load_cycle_lifecycle_steps(
+    connection: sqlite3.Connection,
+    *,
+    context: OperationalLifecycleOwnershipContext,
+    factory_step_ids: Sequence[int] | None,
+) -> Sequence[sqlite3.Row]:
+    lifecycle_step_filter = ""
+    lifecycle_step_args: tuple[Any, ...] = (context.factory_run_id,)
+    if factory_step_ids is not None:
+        lifecycle_step_placeholders = (
+            ",".join("?" for _ in factory_step_ids) or "NULL"
+        )
+        lifecycle_step_filter = f" AND s.id IN ({lifecycle_step_placeholders})"
+        lifecycle_step_args = (context.factory_run_id, *factory_step_ids)
+    return connection.execute(
+        f"""SELECT s.id, s.scheduler_job_id, s.step_kind, s.token_id, s.pair_id,
+                  s.step_key, s.scheduled_for, s.source_request_id,
+                  s.source_response_id,
+                  s.result_json, s.step_status, s.error_or_skip_reason,
+                  j.status AS scheduler_job_status,
+                  q.source_name AS request_source_name,
+                  q.request_kind AS request_kind
+           FROM printer_memory_factory_run_steps s
+           LEFT JOIN printer_scheduler_jobs j ON j.id = s.scheduler_job_id
+           LEFT JOIN printer_source_requests q ON q.id = s.source_request_id
+           LEFT JOIN printer_source_responses r ON r.id = s.source_response_id
+           WHERE s.run_id=? AND s.step_kind IN (
+               'SNAPSHOT','WINDOW_CLOSE','WINDOW_CLOSE_PRE_CLOSE_CRITICAL',
+               'WINDOW_CLOSE_EVIDENCE','WINDOW_CLOSE_CONTEXT','WINDOW_CLOSE_AUDIT'
+           )
+             AND s.scheduler_job_id IS NOT NULL
+             {lifecycle_step_filter}
+           ORDER BY s.id""",
+        lifecycle_step_args,
+    ).fetchall()
+
+
+def finalize_full_run_ownership_and_report(
+    connection: sqlite3.Connection,
+    *,
+    context: OperationalLifecycleOwnershipContext,
+    owner: CampaignSixUnitOwner | CampaignSixUnitProjection,
+    action_local: CampaignActionLocalLedger,
+    execution_id: str,
+    supervision_id: Any,
+    launch_git_provenance: Mapping[str, Any],
+    db_target_identity: str,
+    runtime_terminal_status: str,
+    cleanup_result: Mapping[str, Any] | None,
+    runtime_first_terminal_cause: str | None = None,
+    queue_dispositions: Mapping[int, str] | None = None,
+    forbidden_capability_deltas: Mapping[str, int] | None = None,
+    four_token_proof_owned: bool = False,
+    stage_evidence_owner: CampaignSixUnitOwner | None = None,
+    stage_evidence_owner_for_cycle: Callable[[str], CampaignSixUnitOwner] | None = None,
+    accounting_projection_factory: Callable[[], CampaignSixUnitProjection] | None = None,
+    now: str | None = None,
+) -> dict[str, Any]:
+    """Register ownership, seal accounting, reconcile, report, and gate a run.
+
+    This is the campaign-layer full-run boundary invoked after the factory closes
+    its windows and after unified terminal cleanup has produced the durable
+    authorization/runtime/lease/active-work facts (which are passed in, never
+    assumed). Because the memory-window close commits before campaign ownership
+    can be registered, this is an explicit fail-closed compensation boundary: any
+    registration/projection/accounting fault is preserved as a block reason and
+    prevents Campaign PASS. It never rewrites factory state.
+
+    Every accounting fact is measured from durable rows:
+
+    * campaign-window ownership from the succeeded ``WINDOW_CLOSE`` steps;
+    * Scheduler ownership carrying each job's *real* ``printer_scheduler_jobs``
+      status (never a hardcoded SUCCEEDED);
+    * owner slot-stage evidence sealing the exact lifecycle source transport
+      identities (with real response bytes / normalized rows), the projected
+      transport reservations, the Scheduler work, and the exact-pair validations;
+    * every started stage on the one coordinator-created owner, with unscoped
+      owner↔action-local equality across the complete repaired manifest.
+    """
+    connection.row_factory = sqlite3.Row
+    stamp = now or datetime.now(timezone.utc).isoformat()
+    blocked_reasons: list[str] = []
+    queue_dispositions = dict(queue_dispositions or {})
+    admitted_rows = connection.execute(
+        "SELECT cycle_id,cycle_ordinal FROM printer_memory_factory_campaign_cycles "
+        "WHERE campaign_id=? AND run_id=? ORDER BY cycle_ordinal,cycle_id",
+        (context.campaign_id, context.campaign_run_id),
+    ).fetchall()
+    admitted_ids = tuple(str(row["cycle_id"]) for row in admitted_rows)
+    admitted_ordinals = tuple(int(row["cycle_ordinal"]) for row in admitted_rows)
+    multi_cycle_accounting = bool(
+        isinstance(owner, CampaignSixUnitProjection) or len(admitted_rows) > 1
     )
+    if multi_cycle_accounting and admitted_ordinals != REQUIRED_MULTI_CYCLE_ORDINALS:
+        raise FullRunAccountingError(
+            "full-run accounting requires exact admitted ordinals 1 and 2"
+        )
+    registered_ids = (
+        tuple(owner.registered_cycle_ids)
+        if isinstance(owner, CampaignSixUnitProjection)
+        else (str(owner.cycle_id),)
+    )
+    if registered_ids != admitted_ids:
+        raise FullRunAccountingError(
+            "registered six-unit owners do not match admitted cycles"
+        )
+    cycle_contexts = tuple(
+        OperationalLifecycleOwnershipContext(
+            campaign_id=context.campaign_id,
+            campaign_run_id=context.campaign_run_id,
+            cycle_id=str(row["cycle_id"]),
+            configuration_id=context.configuration_id,
+            factory_run_id=context.factory_run_id,
+        )
+        for row in admitted_rows
+    )
+    # The Lane-4 owner applies only to the currently authorized two-cycle
+    # campaign shape. Historical single-cycle reports retain their immutable
+    # legacy accounting path and are not reinterpreted through newer
+    # stage-scoped ownership rows that did not exist when they were produced.
+    cycle_accounting = (
+        {
+            item.cycle_id: derive_cycle_terminal_accounting_result(
+                connection, context=item
+            )
+            for item in cycle_contexts
+        }
+        if multi_cycle_accounting
+        else {}
+    )
+    campaign_terminal_accounting = (
+        derive_two_cycle_campaign_terminal_accounting(
+            connection,
+            campaign_id=context.campaign_id,
+            campaign_run_id=context.campaign_run_id,
+            configuration_id=context.configuration_id,
+            factory_run_id=context.factory_run_id,
+        )
+        if multi_cycle_accounting
+        else None
+    )
+    expected_owner_id = (
+        f"six-unit-owner|{context.campaign_id}|{context.campaign_run_id}|"
+        f"{context.cycle_id}"
+    )
+    expected_ledger_id = (
+        f"action-local-ledger|{context.campaign_id}|{context.campaign_run_id}|"
+        f"{context.cycle_id}"
+    )
+    if not isinstance(owner, CampaignSixUnitProjection) and owner.owner_id != expected_owner_id:
+        blocked_reasons.append("FULL_RUN_ACCOUNTING_OWNER_CONTINUITY_MISMATCH")
+    valid_ledger_ids = {
+        expected_ledger_id,
+        f"action-local-ledger|{context.campaign_id}|"
+        f"{context.campaign_run_id}|CAMPAIGN",
+    }
+    if action_local.ledger_id not in valid_ledger_ids:
+        blocked_reasons.append("ACTION_LOCAL_LEDGER_CONTINUITY_MISMATCH")
+    if (
+        owner.campaign_id != context.campaign_id
+        or owner.run_id != context.campaign_run_id
+        or (
+            not isinstance(owner, CampaignSixUnitProjection)
+            and owner.cycle_id != context.cycle_id
+        )
+    ):
+        blocked_reasons.append("FULL_RUN_ACCOUNTING_OWNER_IDENTITY_MISMATCH")
+
+    primary_step_ids = (
+        tuple(
+            int(value)
+            for value in cycle_accounting[context.cycle_id]["factory_step_ids"]
+        )
+        if multi_cycle_accounting
+        else ()
+    )
+    if multi_cycle_accounting and not primary_step_ids:
+        blocked_reasons.append(
+            f"CYCLE_SCOPED_FACTORY_STEP_OWNERSHIP_MISSING:{context.cycle_id}"
+        )
+    close_step_filter = ""
+    close_step_args: tuple[Any, ...] = (context.factory_run_id,)
+    if multi_cycle_accounting:
+        close_step_placeholders = ",".join("?" for _ in primary_step_ids) or "NULL"
+        close_step_filter = f" AND id IN ({close_step_placeholders})"
+        close_step_args = (context.factory_run_id, *primary_step_ids)
+    close_steps = connection.execute(
+        f"""SELECT id, token_id, pair_id, token_mint, pair_address, tracking_lane,
+                  memory_window_id, step_key
+           FROM printer_memory_factory_run_steps
+           WHERE run_id=?
+             AND step_kind IN ('WINDOW_CLOSE','WINDOW_CLOSE_AUDIT')
+             AND step_status='SUCCEEDED'
+             {close_step_filter}
+           ORDER BY id""",
+        close_step_args,
+    ).fetchall()
+
+    token_to_window: dict[int, str] = {}
+    token_to_slot: dict[int, str] = {}
+    token_to_terminal_state: dict[int, str] = {}
+    token_to_memory: dict[int, sqlite3.Row] = {}
+    # Exact durable target identity carried from the close step + campaign slot.
+    token_to_identity: dict[int, dict[str, Any]] = {}
+    registered_windows: list[str] = []
+
+    for step in close_steps:
+        token_id = int(step["token_id"])
+        pair_id = int(step["pair_id"])
+        memory_row_id = step["memory_window_id"]
+        if memory_row_id is None:
+            blocked_reasons.append(f"CLOSE_STEP_WITHOUT_MEMORY_WINDOW:{step['id']}")
+            continue
+        slot = connection.execute(
+            """SELECT token_slot_id, lifecycle_identity, mint_identity, pair_identity,
+                      tracking_queue_id
+               FROM printer_memory_factory_campaign_token_slots
+               WHERE cycle_id=? AND token_row_id=?""",
+            (context.cycle_id, token_id),
+        ).fetchone()
+        if slot is None:
+            blocked_reasons.append(f"NO_CAMPAIGN_SLOT_FOR_TOKEN:{token_id}")
+            continue
+        token_slot_id = str(slot["token_slot_id"])
+        memory = connection.execute(
+            """SELECT id, memory_status, data_quality_label, do_not_train
+               FROM printer_memory_windows WHERE id=?""",
+            (int(memory_row_id),),
+        ).fetchone()
+        if memory is None:
+            blocked_reasons.append(f"MEMORY_WINDOW_MISSING:{memory_row_id}")
+            continue
+        terminal_state = (
+            "CLEAN_PROMOTED"
+            if str(memory["memory_status"]) == "CLEAN_MEMORY"
+            else "DIRTY"
+        )
+        # R1: the already-persisted canonical campaign window is the authority.
+        # A proof-owned precreated root carries the deterministic ``cw:``
+        # identity; a lawful legacy non-precreated close keeps the historical
+        # identity and the exact lookup below.
+        (
+            window_id,
+            canonical_window_state,
+            window_identity_blocks,
+        ) = _resolve_close_boundary_campaign_window(
+            connection,
+            context=context,
+            token_slot_id=token_slot_id,
+            token_id=token_id,
+            pair_id=pair_id,
+            memory_row_id=int(memory_row_id),
+        )
+        token_to_window[token_id] = window_id
+        token_to_slot[token_id] = token_slot_id
+        token_to_terminal_state[token_id] = terminal_state
+        token_to_memory[token_id] = memory
+        # Carry the real token/pair identity from the close step and slot — the
+        # pair id is the step's own column, never derived from the token id.
+        token_to_identity[token_id] = {
+            "token_id": token_id,
+            "token_mint": step["token_mint"] or slot["mint_identity"],
+            "pair_id": pair_id,
+            "pair_address": step["pair_address"] or slot["pair_identity"],
+            "tracking_lane": step["tracking_lane"],
+            "token_slot_id": token_slot_id,
+                "memory_window_row_id": int(memory_row_id),
+                "campaign_window_id": window_id,
+                "memory_window_id": int(memory_row_id),
+        }
+        if window_identity_blocks:
+            blocked_reasons.extend(window_identity_blocks)
+        elif canonical_window_state is not None:
+            # Verified against the canonical ownership row; never re-created.
+            terminal_state = canonical_window_state
+            token_to_terminal_state[token_id] = terminal_state
+            registered_windows.append(window_id)
+        else:
+            owned_window = connection.execute(
+                """SELECT window_state, memory_window_row_id
+                   FROM printer_memory_factory_campaign_windows
+                   WHERE window_id=? AND campaign_id=? AND run_id=? AND cycle_id=?
+                     AND token_slot_id=?""",
+                (
+                    window_id,
+                    context.campaign_id,
+                    context.campaign_run_id,
+                    context.cycle_id,
+                    token_slot_id,
+                ),
+            ).fetchone()
+            if (
+                owned_window is None
+                or owned_window["memory_window_row_id"] is None
+                or int(owned_window["memory_window_row_id"]) != int(memory_row_id)
+            ):
+                blocked_reasons.append(
+                    f"WINDOW_NOT_REGISTERED_AT_CLOSE_BOUNDARY:{token_id}"
+                )
+            else:
+                terminal_state = str(owned_window["window_state"])
+                token_to_terminal_state[token_id] = terminal_state
+                registered_windows.append(window_id)
+
+    lifecycle_steps = _load_cycle_lifecycle_steps(
+        connection, context=context,
+        factory_step_ids=primary_step_ids if multi_cycle_accounting else None,
+    )
+
+    # --- Scheduler ownership carrying each job's real terminal state (§6). ---
+    projected_jobs: list[int] = []
+    verified_jobs: list[int] = []
+    lifecycle_job_states: dict[int, str] = {}
+    for step in lifecycle_steps:
+        job_id = int(step["scheduler_job_id"])
+        token_id = int(step["token_id"])
+        window_id = token_to_window.get(token_id)
+        slot_id = token_to_slot.get(token_id)
+        if window_id is None or slot_id is None:
+            blocked_reasons.append(f"SCHEDULER_PROJECTION_WITHOUT_WINDOW:{job_id}")
+            continue
+        raw_status = str(step["scheduler_job_status"] or "").upper()
+        work_state = _JOB_STATUS_TO_WORK_STATE.get(raw_status)
+        if work_state is None:
+            blocked_reasons.append(
+                f"SCHEDULER_JOB_NOT_TERMINAL:{job_id}:{raw_status or 'MISSING'}"
+            )
+            lifecycle_job_states[job_id] = raw_status or "MISSING"
+            continue
+        lifecycle_job_states[job_id] = work_state
+        # R2: one job, one owner. When the exact canonical stage-scoped owner
+        # already exists, verify it — projecting would request a second owner.
+        disposition, ownership_block = (
+            _resolve_lifecycle_scheduler_owner_disposition(
+                connection,
+                context=context,
+                scheduler_job_id=job_id,
+                token_slot_id=slot_id,
+                window_id=window_id,
+            )
+        )
+        if disposition == "BLOCKED":
+            blocked_reasons.append(str(ownership_block))
+            continue
+        if disposition == "VERIFIED":
+            verified_jobs.append(job_id)
+            continue
+        try:
+            project_campaign_scheduler_job(
+                connection,
+                scheduler_work_id=campaign_scheduler_work_id(
+                    context.campaign_id, job_id
+                ),
+                campaign_id=context.campaign_id,
+                run_id=context.campaign_run_id,
+                cycle_id=context.cycle_id,
+                factory_run_id=context.factory_run_id,
+                token_slot_id=slot_id,
+                window_id=window_id,
+                work_intent=(
+                    f"{str(step['step_kind'])}|"
+                    f"factory_run={context.factory_run_id}|job={job_id}"
+                ),
+                scheduler_job_id=job_id,
+                deadline_at=str(step["scheduled_for"]),
+                stage_id=_slot_stage_id(
+                    context,
+                    _slot_ordinal_from_step_key(str(step["step_key"])),
+                ),
+                target_category="CAMPAIGN_WINDOW",
+                target_identity=window_id,
+                source_request_id=(
+                    None
+                    if step["source_request_id"] is None
+                    else int(step["source_request_id"])
+                ),
+                source_response_id=(
+                    None
+                    if step["source_response_id"] is None
+                    else int(step["source_response_id"])
+                ),
+            )
+            projected_jobs.append(job_id)
+        except CampaignOwnershipError as exc:
+            blocked_reasons.append(f"SCHEDULER_PROJECTION_FAILED:{job_id}:{exc}")
+
+    run_config_row = connection.execute(
+        "SELECT config_json FROM printer_memory_factory_runs WHERE run_id=?",
+        (context.factory_run_id,),
+    ).fetchone()
+    try:
+        run_config = json.loads(
+            "{}" if run_config_row is None else str(run_config_row["config_json"])
+        )
+    except (TypeError, json.JSONDecodeError):
+        run_config = {}
+    standard_four_hour_campaign = (
+        run_config.get("standard_four_hour_campaign") is True
+    )
+    # R3: inside the already-approved proof-aware context only, thread the exact
+    # proof-owned factory step identities so the canonical bare WINDOW_15M root
+    # stage is accepted for those steps and no others.
+    proof_root_stage_step_ids: tuple[int, ...] | None = None
+    if four_token_proof_owned:
+        from printer_v1.operator_cli.four_token_proof_integration import (
+            cycle_scoped_factory_step_ids,
+        )
+
+        proof_root_stage_step_ids = cycle_scoped_factory_step_ids(
+            connection,
+            campaign_id=context.campaign_id,
+            campaign_run_id=context.campaign_run_id,
+            factory_run_id=context.factory_run_id,
+            cycle_id=context.cycle_id,
+        )
+    scheduler_ownership = _load_terminal_scheduler_correspondence(
+        connection,
+        context=context,
+        standard_four_hour_campaign=standard_four_hour_campaign,
+        factory_step_ids=(primary_step_ids if multi_cycle_accounting else None),
+        proof_root_stage_step_ids=proof_root_stage_step_ids,
+    )
+    lawful_skipped_preclose_job_ids = {
+        int(job_id)
+        for job_id in (
+            scheduler_ownership.get("lawful_skipped_preclose_job_ids") or ()
+        )
+    }
+
+    sealed_transport_count = 0
+    lifecycle_source_request_count = 0
+    for cycle_context in cycle_contexts:
+        cycle_steps = (
+            lifecycle_steps if cycle_context.cycle_id == context.cycle_id
+            else _load_cycle_lifecycle_steps(
+                connection, context=cycle_context,
+                factory_step_ids=cycle_accounting[cycle_context.cycle_id]["factory_step_ids"],
+            )
+        )
+        cycle_skipped = lawful_skipped_preclose_job_ids
+        if cycle_context.cycle_id != context.cycle_id:
+            cycle_ownership = _load_terminal_scheduler_correspondence(
+                connection, context=cycle_context,
+                standard_four_hour_campaign=standard_four_hour_campaign,
+                factory_step_ids=cycle_accounting[cycle_context.cycle_id]["factory_step_ids"],
+                proof_root_stage_step_ids=(
+                    cycle_accounting[cycle_context.cycle_id]["factory_step_ids"]
+                    if four_token_proof_owned else None
+                ),
+            )
+            cycle_skipped = set(cycle_ownership.get("lawful_skipped_preclose_job_ids") or ())
+        stages, transports, requests = _seal_cycle_lifecycle_stages(
+            connection, context=cycle_context, lifecycle_steps=cycle_steps,
+            lawful_skipped_preclose_job_ids=cycle_skipped,
+            blocked_reasons=blocked_reasons,
+        )
+        mutable_cycle_owner = stage_evidence_owner
+        if multi_cycle_accounting and stage_evidence_owner_for_cycle is not None:
+            mutable_cycle_owner = stage_evidence_owner_for_cycle(cycle_context.cycle_id)
+        elif cycle_context.cycle_id != context.cycle_id:
+            mutable_cycle_owner = None
+        owner = prepare_full_run_accounting_owner(
+            owner, sealed_stage_evidences=stages,
+            stage_evidence_owner=mutable_cycle_owner,
+            accounting_projection_factory=accounting_projection_factory,
+        )
+        sealed_transport_count += transports
+        lifecycle_source_request_count += requests
 
     # Fail-closed transport proof: a lifecycle-started run whose lifecycle steps
     # made source requests can never seal zero source transport identities.
     if lifecycle_source_request_count > 0 and sealed_transport_count == 0:
         blocked_reasons.append("LIFECYCLE_SOURCE_TRANSPORT_IDENTITIES_ZERO")
+
+    per_cycle_six_unit_reconciliation: list[dict[str, Any]] = []
+    if isinstance(owner, CampaignSixUnitProjection):
+        for cycle_context in cycle_contexts:
+            cycle_owner = owner.owner_for_cycle(cycle_context.cycle_id)
+            cycle_action_local = action_local.slice_for_cycle(
+                cycle_context.cycle_id
+            )
+            result = reconcile_full_run_owner_to_action_local(
+                cycle_owner,
+                cycle_action_local,
+                required_stage_kinds=REQUIRED_LIFECYCLE_STAGE_KINDS,
+            )
+            per_cycle_six_unit_reconciliation.append(
+                {"cycle_id": cycle_context.cycle_id, **dict(result)}
+            )
+            if result.get("equal") is not True:
+                blocked_reasons.append(
+                    f"CYCLE_SIX_UNIT_RECONCILIATION_INCOMPLETE:"
+                    f"{cycle_context.cycle_id}"
+                )
 
     reconciliation = reconcile_full_run_owner_to_action_local(
         owner,

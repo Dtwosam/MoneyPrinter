@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 import sqlite3
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 
 from printer_v1.operator_cli import one_command_15m_factory as factory
 from printer_v1.operator_cli.campaign_active_work import (
@@ -30,9 +30,14 @@ from printer_v1.operator_cli.campaign_supervision import (
     CampaignSupervisionError,
     inspect_campaign_supervision,
 )
+if TYPE_CHECKING:
+    from printer_v1.operator_cli.window_15m_disposable_public_composition_proof import (
+        DisposablePublicCompositionProofBinding,
+    )
+
 from printer_v1.operator_cli.operational_database_target_binding import (
     OperationalDatabaseTargetBinding,
-    validate_operational_database_target_binding,
+    validate_campaign_runtime_database_binding,
 )
 from printer_v1.operator_cli.operational_standard_4h import (
     standard_four_hour_capacity_contract,
@@ -561,7 +566,7 @@ def project_operational_health(
     db_path: str | Path,
     binding: MultiCycleCampaignBinding,
     first_cycle_id: str,
-    operational_db_binding: OperationalDatabaseTargetBinding | None,
+    operational_db_binding: OperationalDatabaseTargetBinding | DisposablePublicCompositionProofBinding | None,
     operational_db_expected: Mapping[str, Any],
     canonical_authoritative_db_path: str | Path,
     supervision_id: str,
@@ -613,7 +618,7 @@ def project_operational_health(
 
     db_healthy = True
     try:
-        mismatch = validate_operational_database_target_binding(
+        mismatch = validate_campaign_runtime_database_binding(
             operational_db_binding,
             actual_db_path=resolved_path,
             canonical_authoritative_db_path=canonical_authoritative_db_path,
@@ -765,7 +770,7 @@ def project_authoritative_admission_health(
     db_path: str | Path,
     binding: MultiCycleCampaignBinding,
     first_cycle_id: str,
-    operational_db_binding: OperationalDatabaseTargetBinding | None,
+    operational_db_binding: OperationalDatabaseTargetBinding | DisposablePublicCompositionProofBinding | None,
     operational_db_expected: Mapping[str, Any],
     canonical_authoritative_db_path: str | Path,
     supervision_id: str,

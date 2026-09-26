@@ -48,6 +48,9 @@ def test_success_fixture_materializes_every_label_with_zero_fallback(tmp_path: P
     expected = tuple(ordinary_window_15m_builder_identities())
     assert tuple(materialized.outputs_by_label) == expected
     assert materialized.provider_fallback_allowed is False
+    assert materialized.graduated_supply_kwargs["protocol_account_batch_transport"] is (
+        materialized.graduated_supply_kwargs["verifier_transport_factory"]
+    )
     assert materialized.fixture_composition_manifest_sha256 == (
         prepared.runtime.fixture_composition_manifest_sha256
     )

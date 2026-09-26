@@ -622,6 +622,55 @@ def validate_disposable_public_composition_proof_invocation(
     return None
 
 
+def validate_campaign_runtime_database_binding(
+    binding: Any,
+    *,
+    actual_db_path: str | Path,
+    canonical_authoritative_db_path: str | Path,
+    expected: Mapping[str, Any],
+) -> str | None:
+    """Validate an already-admitted runtime scope, without granting authority.
+
+    Development composition has its own typed capability and durable expectation;
+    it never satisfies the separate operational invocation/authorization gate.
+    Callers load the expectation from the exact campaign configuration. Shared
+    Cycle-2 callers must first prove the admitted scope with the existing loader.
+    """
+    from printer_v1.operator_cli.window_15m_disposable_public_composition_proof import (
+        BINDING_SCHEMA_VERSION,
+        PROOF_SCHEMA_VERSION,
+        DisposablePublicCompositionProofBinding,
+    )
+
+    if not isinstance(binding, DisposablePublicCompositionProofBinding):
+        return validate_operational_database_target_binding(
+            binding,
+            actual_db_path=actual_db_path,
+            canonical_authoritative_db_path=canonical_authoritative_db_path,
+            expected=expected,
+        )
+    if binding.binding_schema_version != BINDING_SCHEMA_VERSION:
+        return "DISPOSABLE_PROOF_BINDING_VERSION_UNSUPPORTED"
+    if binding.proof_schema_version != PROOF_SCHEMA_VERSION:
+        return "DISPOSABLE_PROOF_SCHEMA_VERSION_UNSUPPORTED"
+    facts = dict(expected or {})
+    return validate_disposable_public_composition_proof_invocation(
+        binding,
+        expectation=facts,
+        actual_db_path=actual_db_path,
+        canonical_authoritative_db_path=canonical_authoritative_db_path,
+        execution_id=str(facts.get("execution_id") or ""),
+        campaign_id=str(facts.get("campaign_id") or ""),
+        campaign_run_id=str(facts.get("campaign_run_id") or ""),
+        cycle_id=str(facts.get("cycle_id") or ""),
+        configuration_id=str(facts.get("configuration_id") or ""),
+        durable_db_target_identity=str(facts.get("durable_db_target_identity") or ""),
+        fixture_composition_manifest_sha256=str(
+            facts.get("fixture_composition_manifest_sha256") or ""
+        ),
+    )
+
+
 def validate_bound_operational_invocation(
     binding: OperationalDatabaseTargetBinding | None,
     *,
@@ -712,6 +761,7 @@ __all__ = [
     "validated_authorization_runtime_facts",
     "validate_authorized_database_preflight",
     "validate_disposable_public_composition_proof_invocation",
+    "validate_campaign_runtime_database_binding",
     "validate_operational_database_target_binding",
     "validate_bound_operational_invocation",
 ]

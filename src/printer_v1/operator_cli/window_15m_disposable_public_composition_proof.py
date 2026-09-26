@@ -656,6 +656,12 @@ def materialize_disposable_public_composition_execution(
         "verifier_transport_factory": routed(
             "graduated_supply.verifier_transport_factory"
         ),
+        # The marked verifier also implements the governed account-batch port.
+        # Keep present-pool confirmation inside the offline composition instead
+        # of leaving the production adapter's default transport reachable.
+        "protocol_account_batch_transport": routed(
+            "graduated_supply.verifier_transport_factory"
+        ),
         "locator_transport": routed(
             "graduated_supply.locator_transport"
         ),
